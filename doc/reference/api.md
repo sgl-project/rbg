@@ -176,8 +176,8 @@ recovering the removed RI. See [Failure Handling](../features/failure-handling.m
 | Value | Description |
 |-------|-------------|
 | `None` | No automatic restart |
-| `RecreateRoleInstanceOnPodRestart` | Preserve existing behavior and recreate only the affected role instance on its existing triggers |
-| `RecreateRoleInstanceOnPodRestartFromCreation` | Opt-in policy: same ordinary-container unexpected-restart and Failed-pod triggers, plus desired member deletion and triggers before first Ready, after desired generation is observed; RoleInstanceSet only |
+| `RecreateRoleInstanceOnPodRestart` | Compatibility policy: recreate the affected instance's member Pods on Failed-pod or unexpected ordinary-container restart triggers, retaining the Ready/recent-restart gate and no deletion trigger |
+| `RecreateRoleInstanceOnPodRestartFromCreation` | Opt-in RoleInstanceSet-only policy: recreate all affected instance member Pods on Failed phase, unexpected ordinary-container restart, or observed desired-member deletion, including before first Ready, after desired generation is observed and revisions match. Retains the RoleInstance object and UID. Deletion is best-effort; see [Failure handling](../features/failure-handling.md). |
 
 ## ScalingAdapter
 
@@ -302,6 +302,82 @@ recovering the removed RI. See [Failure Handling](../features/failure-handling.m
 | `initContainers` | []Container — init containers to inject |
 | `containers` | []Container — sidecar containers to inject |
 | `volumes` | []Volume — volumes to inject |
+
+## RoleInstance Member Recovery
+
+A `RoleInstance` owns the member Pods of one group. Recreation replaces its
+member Pods, not the RoleInstance object: its UID and revision history remain
+unchanged. RoleInstanceSet-backed roles implement both recreation policies;
+LeaderWorkerSet-backed roles delegate their legacy restart handling to LWS and
+reject `RecreateRoleInstanceOnPodRestartFromCreation` at admission. The default remains
+`RecreateRoleInstanceOnPodRestart`; existing configurations do not opt into startup
+or observed-deletion triggers on upgrade. Deployment/StatefulSet behavior is
+unchanged.
+
+With `RecreateRoleInstanceOnPodRestartFromCreation`, an explicit Failed phase, unexpected
+ordinary-container restart, or observed `deletionTimestamp` on a desired member
+can rebuild all member Pods before first Ready. Init-container and native-sidecar
+restarts are not triggers. A live `Succeeded` member does not trigger recovery,
+but its observed deletion does. Missing slots alone are not deletion signals: if
+termination is missed, normal reconciliation may replace only that member.
+`RecreateRoleInstanceOnPodRestart` retains its Ready/recent-restart gate and no
+deletion trigger. Both policies respect generation/revision and in-place-update
+guards and the exact Pod annotation value `restart-trigger-policy: "Ignore"`.
+`Ignore` prevents initiation only; those Pods still retire when another member
+triggers a group rebuild. Absent, `"Inherit"`, and unknown annotation values inherit
+the role policy. Sidecars declared as ordinary containers are inspected; init
+containers and native sidecars are not.
+
+Deletion must remain observable through fresh API validation before acceptance.
+An observed deleting member already gone at validation causes a
+`RestartSignalDropped` Warning event, not a durable recovery request. Deletions
+missed during backoff, controller downtime, or force deletion can fall back to
+ordinary member repair; never-observed signals do not imply a warning. A later
+runtime failure timeout or startup/liveness probe that terminates an ordinary
+container can produce a new explicit failure/restart signal. Pending or NotReady
+alone, including a readiness-probe failure, does not. Missing-member triggers and
+a NotReady timeout remain deferred.
+
+Generation-only spec changes that preserve policy and Pod-template revision can
+be acknowledged before recovery, then retain the remaining failure backoff; a
+spec generation bump alone does not guarantee immediate bypass.
+
+### RoleInstancePodReference
+
+Identifies a specific Pod incarnation in the RoleInstance's namespace:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | string | Name of the member Pod selected for deletion |
+| `uid` | types.UID (string) | UID of that Pod incarnation; a same-name replacement is not selected by this reference |
+
+### RoleInstanceStatus Recovery Fields
+
+| Field / condition | Type | Description |
+|-------------------|------|-------------|
+| `retiringPods` | []RoleInstancePodReference (optional) | Durable deletion list persisted with restart count/time before any Delete. While non-empty, normal creation/update is blocked. The list is cleared only after every recorded old UID is confirmed absent from the API; Delete acceptance or replacement readiness is not completion. Resumed after controller restart without charging another attempt, including after policy/template changes. |
+| `restartCount` | int32 | Accepted rebuild attempts. On the next attempt more than `max(maxDelaySeconds*2, 10 minutes)` after the previous attempt began, reset before charging the new attempt (count becomes 1); Ready is not required for this reset. |
+| `lastRestartTime` | *metav1.Time | Start time of the most recently accepted attempt; backoff waits only the remainder of the interval measured from this timestamp. |
+| `Restarting` (condition) | RoleInstanceCondition | True only while `retiringPods` is non-empty. Cleared after old UIDs disappear, not after replacements become Ready; it is informational, not an independent readiness latch. |
+| `RoleInstanceReady` (condition) | RoleInstanceCondition | False with reason `Restarting` and message `Removing the previous member Pods` while draining. |
+
+All recorded old UIDs must be gone before any replacement is created. UID-pinned
+deletes do not remove same-name replacements. Finalizers can hold the drain
+indefinitely. After five minutes of active draining, a `RetirementStalled` Warning
+event asks operators to inspect remaining Pods/finalizers; it never forces cleanup.
+The controller does not force-delete or fence nodes, and API UID absence is not
+proof that processes on a partitioned node have stopped. Baselines for
+old in-place container updates are cleared when recording the drain. After the
+drain, the new policy permits repeated startup-failure rounds without ever
+becoming Ready; the legacy policy's eligibility gate is unchanged.
+
+**Upgrade/behavior change:** a legacy `Restarting=True` condition without a
+`retiringPods` ledger is not a recorded drain or a suppression latch. It can clear;
+a remaining eligible fault may cause one extra rebuild under normal backoff and
+budget. This is not a one-release migration. Update CRDs with the controller to
+retain the ledger. See
+[Failure handling](../features/failure-handling.md) for backoff, missed deletion,
+component dependency, and node-partition limitations.
 
 ## RoleInstanceSet Rollback Recovery
 

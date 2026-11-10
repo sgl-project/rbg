@@ -61,7 +61,7 @@ func TestTransientFailureConditionsClearAfterRecovery(t *testing.T) {
 
 	current := &workloadsv1alpha2.RoleInstance{}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), current))
-	require.NoError(t, updater.UpdateInstanceStatus(ctx, current, &workloadsv1alpha2.RoleInstanceStatus{}, []*v1.Pod{pod}))
+	require.NoError(t, updater.UpdateInstanceStatus(ctx, current, &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: current.Generation}, []*v1.Pod{pod}))
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), current))
 
 	assertCondition := func(conditionType workloadsv1alpha2.RoleInstanceConditionType, want bool) {

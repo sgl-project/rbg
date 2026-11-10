@@ -66,8 +66,6 @@ func budgetFixture(t *testing.T, limit *int32) (*realControl, *workloadsv1alpha2
 	pods[0].Status.Phase = v1.PodFailed
 	cli := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(instance, &v1.Pod{}).WithObjects(objects...).Build()
 	control := &realControl{Client: cli, apiReader: cli, recorder: record.NewFakeRecorder(100)}
-	control.ClearRestarting(instance)
-	t.Cleanup(func() { control.ClearRestarting(instance) })
 	return control, instance, pods
 }
 
@@ -76,6 +74,25 @@ func liveBudgetInstance(t *testing.T, c *realControl, instance *workloadsv1alpha
 	live := &workloadsv1alpha2.RoleInstance{}
 	require.NoError(t, c.apiReader.Get(context.Background(), client.ObjectKeyFromObject(instance), live))
 	return live
+}
+
+// acceptBudgetRestart exercises the shared budget+retirement transaction without
+// driving Pod deletion; real Scale follows this with the durable UID drain.
+func (c *realControl) acceptBudgetRestart(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) ([]*v1.Pod, bool, error) {
+	fresh, err := c.readBudgetInstance(ctx, instance)
+	if err != nil {
+		return nil, false, err
+	}
+	if fresh.DeletionTimestamp != nil || fresh.Status.RestartBudgetExhausted || len(fresh.Status.RetiringPods) > 0 {
+		return nil, false, nil
+	}
+	pods, err := c.listBudgetPods(ctx, fresh)
+	if err != nil {
+		return nil, false, err
+	}
+	accepted, err := c.shouldRecreateInstanceGuarded(ctx, fresh, pods, fresh.Status.InPlaceUpdateContainerBaselines, fresh.Status.CurrentRevision, fresh.Status.UpdateRevision)
+	instance.Status = *fresh.Status.DeepCopy()
+	return pods, accepted, err
 }
 
 func TestRestartBudgetUnsetAndHealthyZero(t *testing.T) {
@@ -129,6 +146,7 @@ func TestRestartBudgetExactCountAndNoQuietReset(t *testing.T) {
 	for round := int32(1); round <= 2; round++ {
 		instance = liveBudgetInstance(t, c, instance)
 		instance.Status.Conditions = nil // prior group completed its restart
+		instance.Status.RetiringPods = nil
 		old := metav1.NewTime(time.Now().Add(-time.Hour))
 		instance.Status.LastRestartTime = &old
 		instance.Status.RestartCount = 9
@@ -150,6 +168,7 @@ func TestRestartBudgetExactCountAndNoQuietReset(t *testing.T) {
 	}
 	instance = liveBudgetInstance(t, c, instance)
 	instance.Status.Conditions = nil
+	instance.Status.RetiringPods = nil
 	now := metav1.Now()
 	instance.Status.LastRestartTime = &now // would normally require backoff
 	require.NoError(t, c.Status().Update(ctx, instance))
@@ -222,7 +241,6 @@ func TestRestartBudgetExhaustionRetainsCompleteGroupAndRecovery(t *testing.T) {
 		require.True(t, liveBudgetInstance(t, c, instance).Status.RestartBudgetExhausted)
 	}
 	// A new controller process has no cache and must still honor the persistent marker.
-	c.ClearRestarting(instance)
 	live = liveBudgetInstance(t, c, instance)
 	live.Annotations = map[string]string{constants.RoleInstanceRecoverAnnotationKey: "true"}
 	require.NoError(t, c.Client.Update(ctx, live))
@@ -391,8 +409,7 @@ func TestRestartBudgetOptimisticStatusBeforeDelete(t *testing.T) {
 		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), live))
 		require.Nil(t, live.DeletionTimestamp)
 	}
-	_, cached := restartingCache.Load(instanceKey(instance))
-	require.False(t, cached, "failed transactions must not poison the restart cache")
+	require.Empty(t, liveBudgetInstance(t, c, instance).Status.RetiringPods, "failed transactions must not authorize deletion")
 }
 
 func TestRestartBudgetRejectsStaleIdentityGenerationAndEvidence(t *testing.T) {

@@ -38,6 +38,7 @@ type RoleInstanceStatusApplyConfiguration struct {
 	GroupRestartCount               *int32                                                          `json:"groupRestartCount,omitempty"`
 	GroupRestartRevision            *string                                                         `json:"groupRestartRevision,omitempty"`
 	RestartBudgetExhausted          *bool                                                           `json:"restartBudgetExhausted,omitempty"`
+	RetiringPods                    []RoleInstancePodReferenceApplyConfiguration                    `json:"retiringPods,omitempty"`
 }
 
 // RoleInstanceStatusApplyConfiguration constructs a declarative configuration of the RoleInstanceStatus type for use with
@@ -163,5 +164,18 @@ func (b *RoleInstanceStatusApplyConfiguration) WithGroupRestartRevision(value st
 // If called multiple times, the RestartBudgetExhausted field is set to the value of the last call.
 func (b *RoleInstanceStatusApplyConfiguration) WithRestartBudgetExhausted(value bool) *RoleInstanceStatusApplyConfiguration {
 	b.RestartBudgetExhausted = &value
+	return b
+}
+
+// WithRetiringPods adds the given value to the RetiringPods field in the declarative configuration
+// and returns the receiver, so that objects can be build by chaining "With" function invocations.
+// If called multiple times, values provided by each call will be appended to the RetiringPods field.
+func (b *RoleInstanceStatusApplyConfiguration) WithRetiringPods(values ...*RoleInstancePodReferenceApplyConfiguration) *RoleInstanceStatusApplyConfiguration {
+	for i := range values {
+		if values[i] == nil {
+			panic("nil value passed to WithRetiringPods")
+		}
+		b.RetiringPods = append(b.RetiringPods, *values[i])
+	}
 	return b
 }

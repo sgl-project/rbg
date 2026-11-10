@@ -187,6 +187,12 @@ func hasRestartBudgetLifecycle(instance *workloadsv1alpha2.RoleInstance) bool {
 // handles persisted suppression even if the policy/budget has since been removed.
 // nil-budget healthy RIs are never blocked by this lifecycle.
 func (c *realControl) reconcileRestartBudget(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) (bool, error) {
+	if len(instance.Status.RetiringPods) > 0 && !instance.Status.RestartBudgetExhausted && instance.DeletionTimestamp == nil {
+		// Accepted retirement owns this pass. Delay spec/recovery changes until
+		// it finishes rather than reading the API for every stuck member round.
+		// Acceptance and confirmDrain still validate live status at their CAS.
+		return false, nil
+	}
 	if !hasRestartBudgetLifecycle(instance) {
 		return false, nil
 	}
@@ -218,7 +224,6 @@ func (c *realControl) reconcileRestartBudget(ctx context.Context, instance *work
 		if err := c.patchBudgetStatus(ctx, fresh, base); err != nil {
 			return true, err
 		}
-		c.ClearRestarting(fresh)
 		if recovering {
 			base = fresh.DeepCopy()
 			delete(fresh.Annotations, constants.RoleInstanceRecoverAnnotationKey)
@@ -252,7 +257,7 @@ func (c *realControl) reconcileRestartBudget(ctx context.Context, instance *work
 	if err != nil {
 		return true, err
 	}
-	if isInstanceRestarting(fresh) || !shouldRecreateInstance(fresh, pods, fresh.Status.InPlaceUpdateContainerBaselines) {
+	if len(fresh.Status.RetiringPods) > 0 || !shouldRecreateInstance(fresh, pods, fresh.Status.InPlaceUpdateContainerBaselines) {
 		return false, nil
 	}
 	if err := c.exhaustRestartBudget(ctx, fresh); err != nil {
@@ -274,57 +279,6 @@ func (c *realControl) exhaustRestartBudget(ctx context.Context, fresh *workloads
 	fresh.Status.RestartBudgetExhausted = true
 	EnforceRestartBudgetConditions(fresh)
 	return c.patchBudgetStatus(ctx, fresh, base)
-}
-
-// acceptBudgetRestart revalidates live identity, generation and owned Pod failure
-// evidence. Budget + Restarting + backoff are persisted before the caller deletes
-// any Pod. It returns the live complete group, never the cached delete list.
-func (c *realControl) acceptBudgetRestart(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) ([]*v1.Pod, bool, error) {
-	fresh, err := c.readBudgetInstance(ctx, instance)
-	if err != nil {
-		return nil, false, err
-	}
-	if fresh.DeletionTimestamp != nil || fresh.Status.RestartBudgetExhausted || isInstanceRestarting(fresh) {
-		return nil, false, nil
-	}
-	pods, err := c.listBudgetPods(ctx, fresh)
-	if err != nil {
-		return nil, false, err
-	}
-	if !shouldRecreateInstance(fresh, pods, fresh.Status.InPlaceUpdateContainerBaselines) {
-		return nil, false, nil
-	}
-	base := fresh.DeepCopy()
-	if !prepareGroupRestartBudget(fresh) {
-		if err := c.exhaustRestartBudget(ctx, fresh); err != nil {
-			return nil, false, err
-		}
-		copyRestartBudgetStatus(instance, fresh)
-		return nil, false, c.terminateBudgetPods(ctx, fresh)
-	}
-	// No in-memory cache mutation until the optimistic status transaction succeeds.
-	updateRestartTracking(fresh)
-	setBudgetRestarting(fresh)
-	if err := c.patchBudgetStatus(ctx, fresh, base); err != nil {
-		return nil, false, err
-	}
-	instance.Status = *fresh.Status.DeepCopy()
-	restartingCache.Store(instanceKey(instance), true)
-	return pods, true, nil
-}
-
-func setBudgetRestarting(instance *workloadsv1alpha2.RoleInstance) {
-	// setRestartingCondition also writes a cache; use a local snapshot until commit.
-	for i := range instance.Status.Conditions {
-		if instance.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceRestarting {
-			instance.Status.Conditions = slices.Delete(instance.Status.Conditions, i, i+1)
-			break
-		}
-	}
-	instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-		Type: workloadsv1alpha2.RoleInstanceRestarting, Status: v1.ConditionTrue,
-		LastTransitionTime: metav1.Now(), Reason: restartPolicyTriggeredReason, Message: restartPolicyTriggeredMessage,
-	})
 }
 
 func (c *realControl) mutateBudgetPodFinalizer(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod, retain bool) error {

@@ -19,6 +19,7 @@ package roleinstance
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/openkruise/kruise/pkg/util/expectations"
@@ -88,9 +89,6 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	instance := new(workloadsv1alpha2.RoleInstance)
 	if err := r.Get(ctx, request.NamespacedName, instance); err != nil {
 		if apierrors.IsNotFound(err) {
-			r.syncControl.ClearRestarting(&workloadsv1alpha2.RoleInstance{
-				ObjectMeta: metav1.ObjectMeta{Namespace: request.Namespace, Name: request.Name},
-			})
 			logger.Info("Instance has been deleted")
 			return reconcile.Result{}, nil
 		}
@@ -100,7 +98,6 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	// Skip reconcile if the instance is being deleted to avoid StorageError
 	// caused by precondition failures when the object's UID becomes empty during foreground deletion.
 	if instance.DeletionTimestamp != nil {
-		r.syncControl.ClearRestarting(instance)
 		return reconcile.Result{}, r.syncControl.CleanupRestartBudget(ctx, instance)
 	}
 
@@ -151,14 +148,6 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, err
 	}
 
-	// Clear the in-memory restarting cache when instance becomes Ready
-	for _, cond := range newStatus.Conditions {
-		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
-			r.syncControl.ClearRestarting(instance)
-			break
-		}
-	}
-
 	if err = r.truncateHistory(filteredPods, revisions, currentRevision, updateRevision); err != nil {
 		logger.Error(err, "Failed to truncate history for Instance")
 	}
@@ -195,16 +184,8 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		})
 	}
 	if scaling {
-		// Propagate Restarting condition only when scaling is active (restart-policy
-		// triggered deletion or pod creation is still in progress). Once scaling
-		// completes (scaling=false), the condition is no longer propagated so that
-		// setInstanceConditions can clear it when the instance becomes Ready.
-		for _, cond := range updateInstance.Status.Conditions {
-			if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue {
-				newStatus.Conditions = append(newStatus.Conditions, cond)
-				break
-			}
-		}
+		// Restarting is projected by the status updater from the authoritative
+		// retiring UID list, independent of whether Scale wrote any Pods.
 		// Propagate restart tracking only when updateRestartTracking modified
 		// the values during Scale (i.e., a restart-policy-triggered deletion
 		// was triggered). ApplyRevision produces zero-value status fields, so
@@ -219,12 +200,8 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		return syncResult{err: podsScaleErr, requeue: scaleRequeue}
 	}
 	// Restart backoff: delay not elapsed, skip Update and just requeue.
-	// Do NOT propagate the Restarting condition here. The Restarting condition
-	// should only be set when a restart is actually in progress (scaling=true
-	// for deletion/creation). Propagating it during backoff causes the Ready
-	// condition to become False (pods are Failed), which then prevents
-	// shouldRecreateInstance from triggering on the next reconcile because
-	// wasInstanceReady() returns false.
+	// Do NOT project the Restarting condition here: no deletion has started yet,
+	// so there are no retiring UIDs to advertise.
 	if scaleRequeue > 0 {
 		return syncResult{requeue: scaleRequeue}
 	}
@@ -252,7 +229,14 @@ func (r *reconciler) getOwnedPods(ctx context.Context, instance *workloadsv1alph
 		Namespace:     instance.Namespace,
 		FieldSelector: fields.SelectorFromSet(fields.Set{fieldindex.IndexNameForOwnerRefUID: string(instance.UID)}),
 	}
-	return instanceutil.GetActiveAndInactivePods(ctx, r.Client, opts)
+	active, inactive, err := instanceutil.GetActiveAndInactivePods(ctx, r.Client, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The owner UID index includes auxiliary (non-controller) references too.
+	// Neither topology nor Failed cleanup may treat those Pods as members.
+	foreign := func(pod *v1.Pod) bool { return !metav1.IsControlledBy(pod, instance) }
+	return slices.DeleteFunc(active, foreign), slices.DeleteFunc(inactive, foreign), nil
 }
 
 func (r *reconciler) getActiveRevisions(instance *workloadsv1alpha2.RoleInstance, revisions []*apps.ControllerRevision) (

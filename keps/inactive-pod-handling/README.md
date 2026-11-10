@@ -1,50 +1,53 @@
 # KEP-173: Inactive Pod Handling Enhancement
 
+Refs #542. This proposal covers explicit failure signals and best-effort observed
+member deletion, not every missing-member or NotReady recovery scenario.
+
 <!-- toc -->
 - [Background and Motivation](#background-and-motivation)
 - [Goals](#goals)
 - [Non-Goals](#non-goals)
 - [Design Proposal](#design-proposal)
-    - [User Stories](#user-stories)
-    - [Risks and Mitigations](#risks-and-mitigations)
+  - [User Stories](#user-stories)
+  - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
-    - [New Detection Functions](#new-detection-functions)
-    - [RoleInstance Controller Changes](#roleinstance-controller-changes)
-    - [RestartPolicy Handling Matrix](#restartpolicy-handling-matrix)
-    - [Test Plan](#test-plan)
+  - [Detection and Reconciliation Outline](#detection-and-reconciliation-outline)
+  - [RoleInstance Controller Changes](#roleinstance-controller-changes)
+  - [RestartPolicy Handling Matrix](#restartpolicy-handling-matrix)
+  - [Test Plan](#test-plan)
 <!-- /toc -->
 
 ## Two Levels of Failed Pod Handling
 
 This KEP addresses two distinct levels of handling when a Pod enters Failed state (Evicted, UnexpectedAdmissionError, etc.). Understanding this separation is critical for correct implementation.
 
-### Level 1: Delete Failed Pod (All RestartPolicies)
+### Level 1: Ordinary Failed-Pod Repair (All RestartPolicies)
 
 | Aspect | Description |
 |--------|-------------|
 | **Trigger** | Pod enters Failed state (Phase=Failed) |
 | **Handler** | RoleInstance Controller (`instance_scale.go`) |
-| **Behavior** | Delete Failed pod, then create replacement on next reconcile |
+| **Behavior** | When no group recovery/backoff/drain or budget suppression takes precedence, delete Failed pod, then create replacement on next reconcile |
 | **Why delete first** | `hasOrphanPod` blocks creation when same-name pod still exists |
 | **Key point** | This follows native K8s StatefulSet behavior - Failed Pods with fixed names must be deleted before replacement |
 
-### Level 2: Recreate Entire Instance (RecreateRoleInstanceOnPodRestart only)
+### Level 2: Recreate All Member Pods (Either Recreation Policy)
 
 | Aspect | Description |
 |--------|-------------|
-| **Trigger** | Pod enters Failed state AND restartPolicy=`RecreateRoleInstanceOnPodRestart` |
+| **Trigger** | Eligible Failed-pod or unexpected ordinary-container restart under either recreation policy; observed desired-member deletion additionally triggers `RecreateRoleInstanceOnPodRestartFromCreation` |
 | **Handler** | RoleInstance Controller (`instance_scale.go` → `shouldRecreateInstance`) |
-| **Behavior** | Delete ALL pods (active + inactive) → recreate entire Instance |
-| **Key point** | Maintains Instance-level consistency; only the affected Instance is recreated |
+| **Behavior** | Persist all old member names/UIDs → drain every recorded UID → create replacements; preserve the RoleInstance object and UID |
+| **Key point** | Only the affected instance's Pods are rebuilt; legacy Ready/recent-restart eligibility is preserved, while the new policy permits startup recovery |
 
 ### Container Restart Handling
 
 | Aspect | Description |
 |--------|-------------|
-| **Trigger** | Container inside Pod restarts (RestartCount increases) |
-| **Handler** | Underlying workload controller (e.g. LWS controller) |
-| **restartPolicy involved** | `RecreateRoleInstanceOnPodRestart`: LWS controller recreates RoleInstance |
-| **Key point** | RBG controller does NOT handle container restart - delegated to workload controllers |
+| **Trigger** | Unexpected ordinary-container restart; init containers and native sidecars are not inspected |
+| **Handler** | RoleInstance controller for RoleInstanceSet-backed roles; LWS controller for LWS-backed roles |
+| **restartPolicy involved** | Both recreation policies on RoleInstanceSet; only legacy `RecreateRoleInstanceOnPodRestart` on LWS |
+| **Key point** | RoleInstanceSet-backed roles handle restart detection in `shouldRecreateInstance`, including in-place-update allowances; LWS-backed roles remain delegated because RBG only manages the LeaderWorkerSet CR |
 
 ### Why Two Levels
 
@@ -52,13 +55,19 @@ The RoleInstance Controller handles Failed pods in a two-level approach:
 
 1. **Level 1 (pod-level replacement)**: For `RestartPolicy=None`, a Failed pod is deleted, then normal reconciliation detects the missing pod and creates a replacement. This is analogous to how StatefulSet handles Failed pods with ordinal identity.
 
-2. **Level 2 (Instance-level recreation)**: For `RestartPolicy=RecreateRoleInstanceOnPodRestart`, when a pod becomes Failed, the entire RoleInstance is recreated (all pods deleted and recreated together). This ensures Instance-level consistency for tightly-coupled multi-pod workloads.
+2. **Level 2 (group rebuild)**: Under either recreation policy, an eligible fault retires all member Pods, including active, inactive, and `Ignore` members. The RoleInstance object is retained. The durable UID barrier completes before any replacements are created. The legacy policy retains its Ready/recent-restart gate; the new policy additionally handles startup faults and observed member deletion.
 
 ## Policy Compatibility
 
-`RecreateRoleInstanceOnPodRestart` remains unchanged for existing workloads: its unexpected-container-restart and Failed-pod handling stays readiness-gated, and it does not gain desired-member-deletion handling.
+`RecreateRoleInstanceOnPodRestart` retains its existing eligibility for Failed-pod and unexpected ordinary-container restart triggers: Ready or a recent restart is required, and desired-member deletion is not a trigger. Durable draining changes how an accepted round completes, not which faults opt existing workloads into recovery.
 
-`RecreateRoleInstanceOnPodRestartFromCreation` is a separate opt-in policy for RoleInstanceSet-backed roles. It preserves the ordinary-container unexpected-restart and Failed-pod triggers, but also handles those triggers before the instance first becomes Ready and recreates the instance when a desired member pod is deleted, once the RoleInstance has observed the desired generation. This policy is rejected for LeaderWorkerSet-backed roles because the vendored LWS v0.7 adapter cannot implement these additional triggers; the older policy remains supported there.
+`RecreateRoleInstanceOnPodRestartFromCreation` is a separate opt-in policy for RoleInstanceSet-backed roles. It handles the same explicit faults before first Ready and observed deletion (`deletionTimestamp != nil`) of a desired member. Desired generation must be observed and current/update revisions must match. Missing slots alone are not triggers. This policy is rejected for LeaderWorkerSet-backed roles because vendored LWS v0.7 cannot implement the additional semantics; the older policy remains supported there. The default remains `RecreateRoleInstanceOnPodRestart`; upgrading does not switch existing workloads to the new policy, and Deployment/StatefulSet behavior is unchanged.
+
+**Upgrade behavior:** a legacy `Restarting=True` condition without a durable
+`status.retiringPods` ledger is not a resumable drain or a Ready-based suppression
+latch. It can clear and a still-visible eligible fault may cause one extra rebuild,
+subject to normal backoff and budget. This is not a one-release migration. Update
+the CRDs together with the controller so accepted drains can persist their ledger.
 
 ## Bounded RoleInstance Recovery (phase 2)
 
@@ -82,7 +91,7 @@ policy, backoff, or budget. An accepted group rebuild consumes exactly one attem
 Repeated/suppressed attempts and the exhaustion termination consume none. Persist
 accounting and restart tracking with optimistic locking before deleting any Pod,
 after uncached RI UID/generation and owned failure-evidence revalidation. Keep the
-budget mutation composable with additional durable bookkeeping in a single status CAS.
+budget mutation composable with a retiring-Pod UID ledger in a single status CAS.
 
 The durable budget is independent of backoff `restartCount`, which may reset after
 a quiet period. Ready/quiet transitions, policy edits, and limit edits/removal do
@@ -139,11 +148,13 @@ terminal-phase resource release or durable logs).
 
 ## Background and Motivation
 
-The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted, UnexpectedAdmissionError, Failed).
+The RBG project's original failure mode was incomplete handling of Pod abnormal
+states (e.g., Evicted, UnexpectedAdmissionError, Failed). The recovery design below
+addresses explicit signals while retaining the observation limits described here.
 
-**Root Cause**: Native Kubernetes controllers treat Failed/Succeeded Pods as inactive and immediately create new Pods to maintain replica count. However, RBG's current implementation only triggers recreation when a Pod is deleted, lacking handling for Pods that directly enter the Failed state.
+**Original root cause**: Failed Pods with fixed names blocked replacement through `hasOrphanPod`; this KEP introduced explicit Failed-pod cleanup. The implemented recovery now also supports durable group draining and opt-in startup/member-loss triggers, as described below.
 
-**Specific Issues**:
+**Historical Issues**:
 
 1. **Failed/Evicted Pod does not trigger replacement**
    - RoleInstance Controller treats Failed pods as inactive (correct) but doesn't delete them
@@ -155,26 +166,29 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
    - **StatefulSet**: Deletes Failed pod (ordinal names), then creates replacement with same name
    - **RoleInstance**: Must delete Failed pod (fixed names like StatefulSet), then create replacement
 
-3. **DisruptionTarget handling limited to terminal pods**
-   - Kubernetes 1.22+ introduced `DisruptionTarget` condition
-   - RBG handles DisruptionTarget condition on terminal pods (Phase=Failed) but does not preemptively act before eviction completes
-   - This matches K8s native controller behavior - controllers react after pod becomes terminal
+3. **Disruption intent alone is not a failure signal**
+   - A `DisruptionTarget` condition alone does not initiate recovery.
+   - Failed phase is sufficient, regardless of the reason string; deletion is a separate best-effort signal only under the opt-in policy.
 
 **Example**: Suppose a Pod is Evicted due to node resource shortage, its Phase becomes Failed. Without this fix, the Failed Pod stays indefinitely because `hasOrphanPod` blocks replacement creation. The service operates with reduced replicas until manual intervention.
 
 ## Goals
 
 - Correctly detect and handle Failed/Evicted/UnexpectedAdmissionError Pod states
-- Delete Failed pods immediately so replacements can be created, without waiting for GC
+- Delete Failed pods through ordinary repair when no group recovery, backoff, drain, or budget suppression takes precedence
 - Follow Kubernetes native StatefulSet pattern for fixed-name pod replacement
 - Preserve the existing behavior of `RecreateRoleInstanceOnPodRestart` for compatibility
 - Offer `RecreateRoleInstanceOnPodRestartFromCreation` as an opt-in policy that also covers pre-Ready failures and deletion of a desired member pod
 - Reject the new policy for LeaderWorkerSet-backed roles until their adapter can implement its semantics
-- Support DisruptionTarget condition detection (K8s 1.22+)
+- Correctly detect Failed phase without requiring eviction-specific reason strings
 
 ## Non-Goals
 
-- Do not handle Pod Succeeded state (normal completion) - explicitly excluded from trigger conditions
+- A live `Succeeded` Pod is normal completion, not a fault trigger. Under `RecreateRoleInstanceOnPodRestartFromCreation`, observed deletion is a separate signal and triggers regardless of phase, including `Succeeded`. With Pod `restartPolicy: Always`, kubelet normally assigns `Succeeded` only during termination.
+- Do not introduce persistent membership history, a missing-slot trigger, a deletion-intent log, or a Pending recovery task
+- Do not trigger on Pending, model loading, NotReady alone, or a NotReady timeout; do not force-delete Pods or fence nodes
+- Do not inspect init-container or native-sidecar restarts; ordinary containers (including sidecars declared there) remain eligible
+- Container restart handling for LWS-backed roles remains delegated to LWS
 - Do not handle Unschedulable pods (PodScheduled=False) - these pods are still active per IsPodActive and rely on K8s scheduler retry
 - Keep the new policy's additional triggers opt-in; existing `RecreateRoleInstanceOnPodRestart` workloads retain their current behavior
 
@@ -184,12 +198,13 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 
 #### Story 1: Evicted Pod Automatic Replacement
 
-> As an operator, when a Pod is evicted due to node resource shortage, I want RBG to immediately detect it and create a replacement Pod, without waiting for GC cleanup.
+> As an operator using ordinary member repair, when a Pod is evicted due to node resource shortage, I want RBG to detect its Failed phase and create a replacement without waiting for GC cleanup.
 
 **Expected Behavior**:
+
 - After Pod is evicted, Phase becomes Failed, status.reason="Evicted"
 - RoleInstance Controller detects Pod entering inactive state
-- Failed pod is deleted, replacement pod created on next reconcile
+- For `None` (or an ineligible group fault), the Failed pod is deleted and replaced through ordinary reconciliation; eligible group faults instead follow the guarded, backoff/budget-governed rebuild path.
 - Active replica count restored automatically
 
 #### Story 2: Failed Pod Triggers Instance Recreation
@@ -197,16 +212,18 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 > As an operator with `RecreateRoleInstanceOnPodRestart` policy, when a Pod enters Failed state, I want the entire RoleInstance to be recreated for consistency.
 
 **Expected Behavior**:
+
 - Pod enters Failed state (e.g., Evicted, Error)
-- `shouldRecreateInstance` detects Failed pod with RecreateRoleInstanceOnPodRestart policy
+- For an eligible, already observed instance, `shouldRecreateInstance` detects Failed pod with RecreateRoleInstanceOnPodRestart policy
 - All pods in the affected Instance are deleted and recreated together
 - Only the affected Instance is recreated; other Instances remain untouched
 
 #### Story 3: RestartPolicy=None Creates Replacement Pod
 
-> As an operator with default RestartPolicy (None), when a Pod enters Failed state, I want a replacement Pod created to maintain the desired replica count.
+> As an operator with `RestartPolicy=None`, when a Pod enters Failed state, I want a replacement Pod created to maintain the desired replica count.
 
 **Expected Behavior**:
+
 - Pod enters Failed state
 - Failed pod is deleted on next reconcile
 - Replacement pod with same name created on subsequent reconcile
@@ -216,115 +233,41 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 
 | Risk | Mitigation |
 |------|------------|
-| Extended trigger conditions may cause unexpected recreation loops | Use `wasInstanceReady` check to avoid triggering during initial creation; require `Generation == ObservedGeneration` to avoid triggering during spec changes |
+| Extended trigger conditions may cause unexpected recreation loops | Keep legacy Ready/recent-restart gating. The new policy requires explicit faults, not NotReady; both policies retain generation/revision and in-place guards. Backoff bounds attempt frequency, and `status.retiringPods` prevents overlapping rounds. |
 | Frequent Failed Pod state transitions may increase controller load | Only react to Failed phase (terminal state), not intermediate transitions |
-| DisruptionTarget condition depends on K8s 1.22+ | Also support traditional detection method (status.reason) to ensure backward compatibility |
+| Disruption intent can precede an actual failure | Do not use `DisruptionTarget` alone as a trigger; use Failed phase or, under the opt-in policy, observed desired-member deletion |
 
 ## Design Details
 
-### New Detection Functions
+### Detection and Reconciliation Outline
 
-**Principle**: Prioritize reusing native Kubernetes functions, avoid redefining.
+The implementation uses the existing Pod lifecycle classification and
+`shouldRecreateInstance` in `pkg/reconciler/roleinstance/sync/instance_scale.go`.
+Failed phase is sufficient: no eviction-specific helper or reason-string matching
+is required. A live Succeeded Pod is completion, not failure. Pod events enqueue
+reconciliation; they are not a persistent membership history.
 
-Native K8s functions available (can be used directly):
+The following is **conceptual pseudocode**, not additional Go helper APIs:
 
-| Native Function | Location | Purpose |
-|----------------|----------|---------|
-| `kubecontroller.IsPodActive(pod)` | `vendor/k8s.io/kubernetes/pkg/controller/controller_utils.go` | Phase != Succeeded/Failed && DeletionTimestamp == nil |
-| `podutil.IsPodTerminal(pod)` | `vendor/k8s.io/kubernetes/pkg/api/v1/pod/util.go` | Phase == Failed || Phase == Succeeded |
-| `kubecontroller.IsPodTerminating(pod)` | `vendor/k8s.io/kubernetes/pkg/controller/controller_utils.go` | !IsPodTerminal && DeletionTimestamp != nil |
-
-**Note**: The project already uses `kubecontroller.IsPodActive` in `pkg/reconciler/roleinstance/utils/instance_utils.go`.
-
-Add the following **helper functions** in `pkg/utils/pod_utils.go` (based on native functions and constants):
-
-#### PodBecameInactive (State Transition Detection)
-
-```go
-import (
-    kubecontroller "k8s.io/kubernetes/pkg/controller"
-    podutil "k8s.io/kubernetes/pkg/api/v1/pod"
-)
-
-// PodBecameInactive checks if a Pod transitioned from active to inactive state.
-// Used in predicates to capture state transition events.
-func PodBecameInactive(oldPod, newPod *corev1.Pod) bool {
-    if oldPod == nil || newPod == nil {
-        return false
-    }
-    wasActive := kubecontroller.IsPodActive(oldPod)
-    nowInactive := !kubecontroller.IsPodActive(newPod)
-    return wasActive && nowInactive
-}
+```text
+if a retiring-Pod UID ledger exists:
+    resume UID-pinned deletion; block normal creation/update
+    confirm every recorded old UID is absent through the API before clearing ledger
+else:
+    evaluate resolved policy and generation/revision/in-place/Ignore guards
+    if an eligible explicit fault is present:
+        enforce budget and remaining attempt-time backoff
+        freshly validate instance identity/generation and owned member evidence
+        if the observed deletion disappeared: warn RestartSignalDropped; do not accept
+        otherwise persist ledger, count/time and budget accounting before deletion
+    if no recovery, backoff, or exhaustion suppression takes precedence:
+        perform ordinary Failed-Pod cleanup and missing-member repair
 ```
 
-#### IsPodEvicted
-
-```go
-// IsPodEvicted checks if a Pod was evicted due to resource shortage.
-// Evicted Pod has Phase=Failed, status.reason="Evicted".
-// Also supports DisruptionTarget condition (K8s 1.22+).
-func IsPodEvicted(pod *corev1.Pod) bool {
-    if pod == nil || !podutil.IsPodTerminal(pod) {
-        return false
-    }
-    if pod.Status.Phase != corev1.PodFailed {
-        return false
-    }
-    // Check DisruptionTarget condition (K8s 1.22+)
-    // Native reasons: PreemptionByScheduler, TerminationByKubelet
-    for _, cond := range pod.Status.Conditions {
-        if cond.Type == corev1.DisruptionTarget {
-            return true
-        }
-    }
-    // Traditional detection: status.reason = "Evicted"
-    return pod.Status.Reason == "Evicted"
-}
-```
-
-#### IsPodUnexpectedAdmissionError
-
-```go
-// IsPodUnexpectedAdmissionError checks if a Pod failed due to admission issues.
-func IsPodUnexpectedAdmissionError(pod *corev1.Pod) bool {
-    if pod == nil || pod.Status.Phase != corev1.PodFailed {
-        return false
-    }
-    return pod.Status.Reason == "UnexpectedAdmissionError"
-}
-```
-
-#### GetPodInactiveReason
-
-```go
-// GetPodInactiveReason returns the specific reason for Pod being inactive.
-// Based on podutil.IsPodTerminal and native constants.
-func GetPodInactiveReason(pod *corev1.Pod) string {
-    if pod == nil {
-        return "PodNotFound"
-    }
-    if pod.DeletionTimestamp != nil {
-        if podutil.IsPodTerminal(pod) {
-            return "PodTerminatingTerminal"
-        }
-        return "PodTerminating"
-    }
-    if pod.Status.Phase == corev1.PodSucceeded {
-        return "PodSucceeded"
-    }
-    if pod.Status.Phase == corev1.PodFailed {
-        if IsPodEvicted(pod) {
-            return "PodEvicted"
-        }
-        if IsPodUnexpectedAdmissionError(pod) {
-            return "UnexpectedAdmissionError"
-        }
-        return "PodFailed"
-    }
-    return "Unknown"
-}
-```
+Only ordinary-container statuses are inspected for unexpected restarts; init
+containers and native sidecars are excluded. The new policy additionally accepts
+observed deletion of a currently desired member, regardless of Pod phase, but
+cannot turn a missing slot into a deletion signal.
 
 ### RoleInstance Controller Changes
 
@@ -332,91 +275,113 @@ func GetPodInactiveReason(pod *corev1.Pod) string {
 
 **Scope**: RoleInstance Controller handles Pod Failed → replacement Pod creation. This is inherent Pod lifecycle management.
 
-#### Understanding shouldRecreateInstance
+#### Trigger Evaluation and Compatibility
 
-The `shouldRecreateInstance` function exists to handle a special case:
+`calculateDiffsWithExpectation` evaluates recovery before ordinary Failed-pod
+cleanup and scaling. `shouldRecreateInstance` checks the resolved policy,
+observed generation, matching current/update revisions, Pod in-place-update
+state, and the effective `restart-trigger-policy` annotation. A recorded drain
+is resumed before evaluating any new trigger or backoff.
 
-**When restartPolicy=`RecreateRoleInstanceOnPodRestart` AND a Pod becomes Failed**:
-- Instead of just deleting and replacing the Failed Pod, recreate the entire Instance
-- This maintains Instance-level consistency on Pod failures
+- `None`: no group-rebuild trigger. Failed, non-terminating Pods are removed so
+  normal reconciliation can replace them individually.
+- `RecreateRoleInstanceOnPodRestart`: retain the existing Ready or recent-restart
+  eligibility gate and Failed/non-terminating or unexpected ordinary-container
+  restart triggers. Deletion does not initiate recovery.
+- `RecreateRoleInstanceOnPodRestartFromCreation`: no Ready gate. The same explicit fault
+  signals and observed deletion of a desired member can initiate a round, even
+  during startup. Slots no longer desired after scale-in are excluded. Observed
+  deletion is a signal regardless of phase, including `Succeeded`; a live
+  `Succeeded` member is not a fault.
 
-**When restartPolicy is NOT `RecreateRoleInstanceOnPodRestart`** (i.e., `None`):
-- Pod Failed → delete Failed pod → next reconcile creates replacement Pod
-- This is the default behavior (same as StatefulSet)
+Init containers and native sidecars do not trigger recovery or consume the
+ordinary-container in-place allowance. Ordinary containers retain the
+ImageID-based +1 allowance after an in-place image change; same-digest or
+ContainerID-based detection is not added. Only the exact annotation value
+`"Ignore"` excludes a Pod as an initiator; absent, `"Inherit"`, and unrecognised
+values inherit the policy. This is not a deletion exemption: another member's
+fault still retires all selected owned members, including `Ignore` Pods.
 
-#### Correct Implementation of shouldRecreateInstance
+#### Durable Acceptance and Drain
 
-```go
-// shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
-// This applies when:
-//   - restartPolicy = RecreateRoleInstanceOnPodRestart AND any Pod is in Failed phase
-//
-// Note: This function does NOT handle container restart.
-// Container restart with RecreateRoleInstanceOnPodRestart is handled by the
-// underlying workload controller (e.g. LWS controller).
-//
-// Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion
-// and should not trigger Instance recreation.
-func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
-    if instance.Spec.RestartPolicy != workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart {
-        return false
-    }
-    if len(pods) == 0 {
-        return false
-    }
-    if !wasInstanceReady(instance) || instance.Generation != instance.Status.ObservedGeneration {
-        return false
-    }
-    // Check if any Pod is in Failed phase (excluding pods being deleted)
-    for _, p := range pods {
-        if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
-            return true
-        }
-    }
-    return false
-}
-```
+An accepted rebuild persists `status.retiringPods`, a list of
+`RoleInstancePodReference` (`name`, `uid`) values, with `restartCount` and
+`lastRestartTime` before any Delete. Acceptance revalidates the instance and its
+owned member Pods against the API, preventing a stale cache snapshot from
+starting an obsolete round. Old in-place-update baselines are cleared when the
+round is recorded, so replacement Pods do not inherit old restart allowances.
 
-#### How Pod Failed → Replacement Pod Works (Two Levels)
+Subsequent reconciles and controller restarts resume the recorded UID list
+without charging another attempt. A recorded drain takes precedence even if
+policy, generation, or revision changes. Normal creation/update is blocked
+until **all recorded old UIDs are absent from the API**, not merely until Delete
+is accepted. The controller uses the informer view during draining and confirms
+completion against the API before releasing creation. Delete requests use UID
+preconditions, not stale resourceVersion preconditions; same-name replacements
+are not deleted on behalf of old UIDs. Pod events drive progress, with a
+30-second safety requeue while draining.
 
-The `calculateDiffsWithExpectation` function handles Pod Failed in two levels:
+`Restarting` is projected from the recorded list, not an independent gate or a
+Ready-based completion latch. During drain, `RoleInstanceReady=False` has reason
+`Restarting` and message `Removing the previous member Pods`. Once all old UIDs
+are absent, the list and `Restarting` clear without waiting for replacements to
+become Ready. The RoleInstance object, UID, and revision history remain intact.
+Under the new policy, replacement startup faults can start successive rounds
+without any Ready transition. Legacy trigger eligibility remains unchanged.
+After five minutes of an active drain, emit a `RetirementStalled` Warning event on
+the RoleInstance to prompt inspection of remaining old Pods, finalizers, and node
+health. The warning is diagnostic only: never force-delete Pods or remove their
+finalizers to break the barrier.
 
-**Level 1: Delete Failed Pods (applies to ALL RestartPolicies)**
+#### Backoff and Observation Limits
 
-Failed pods must be deleted first because they block replacement creation (`hasOrphanPod` detects the same-name pod still exists):
+The first accepted attempt has no prior delay. Later eligible faults wait only
+for the remainder of the interval from the preceding `lastRestartTime`:
 
-```go
-// Delete inactive (Failed) pods so that replacements can be created on next reconcile.
-for _, p := range inactivePods {
-    if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
-        toDeletePods = append(toDeletePods, p)
-    }
-}
-```
+`interval = min(baseDelaySeconds * 2^(restartCount-1), maxDelaySeconds)`
 
-**Level 2: Instance Recreation (only RecreateRoleInstanceOnPodRestart)**
+`remaining = max(0, lastRestartTime + interval - now)`
 
-When `shouldRecreateInstance` returns true, ALL pods (active + inactive) are deleted and recreated:
+For example, base=10, count=1, and a previous attempt at t=0 means a fault at t=3
+waits 7 seconds; one at t=12 waits no more. Draining and initialization consume
+the interval. On the next accepted attempt more than
+`max(maxDelaySeconds * 2, 10 minutes)` after the last attempt began, the count is
+reset before charging the new round (count becomes 1). This measures elapsed
+time, not continuous Ready service; long unsuccessful startup can also reset it.
 
-```go
-allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
-allPods = append(allPods, pods...)
-allPods = append(allPods, inactivePods...)
-if shouldRecreateInstance(updateInstance, allPods) {
-    return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods}, nil
-}
-```
+During backoff, visible eligible faults are re-evaluated without cleaning Failed
+Pods or individually replacing members. A policy or actual revision change can
+release that eligibility, but cannot cancel a recorded drain. A generation-only
+spec change that preserves policy and Pod-template revision can first be
+acknowledged in `observedGeneration`, then still retain the remaining failure
+backoff; a generation bump is not a guaranteed immediate bypass.
 
-**Scale Function Ordering**: Delete is checked before Create to ensure Failed pods are removed before attempting replacement (which would be blocked by `hasOrphanPod`):
+Deletion recovery is best-effort: the controller must observe a desired member
+with `deletionTimestamp` set, then confirm the owned signal through fresh API
+validation before accepting a round. If the observed deleting member disappears
+before validation, emit `RestartSignalDropped` as a Warning on the RoleInstance;
+do not persist a recovery task, and ordinary reconciliation may repair only the
+missing member. Deletions missed during backoff or a controller outage, or removal
+without an observable terminating window (for example force deletion/PodGC), can
+also fall back to ordinary repair. Never-observed signals do not imply a warning.
+Missing-member triggers and a NotReady timeout are deferred.
 
-```go
-func (c *realControl) Scale(...) (bool, error) {
-    diffRes, err := c.calculateDiffsWithExpectation(...)
-    if diffRes.toDeleteNum > 0 { return c.deletePods(...) }  // Delete first
-    if diffRes.toScaleNum > 0 { return c.createPods(...) }   // Then create
-    return false, nil
-}
-```
+Under the new policy a later explicit Failed phase or unexpected ordinary-container
+restart can rebuild the current group. A runtime failure timeout that exits the
+container, or a configured startup/liveness probe that kills it, can provide this
+later signal. A replacement that only hangs or stays NotReady cannot itself
+trigger recovery; without such a timeout or probe, no later signal is guaranteed.
+Readiness probes alone do not restart containers.
+
+Component `startAfter` dependencies still use PodReady; mutually initializing
+ranks must not wait on each other's Ready. Status writes, Pod writes, and
+creation remain separate API operations, not a cross-resource transaction with
+external/racing creators. Finalizer-held old Pods block replacement indefinitely.
+For an unreachable node, eviction normally starts after not-ready/unreachable
+tolerations (typically 300 seconds), but deletion can remain stuck. Old UID
+absence is not proof that a process on a partitioned node has exited. RBG does
+not force-delete or fence; lower tolerations improve detection, not necessarily
+safe cleanup.
 
 ### RestartPolicy Handling Matrix
 
@@ -425,16 +390,16 @@ func (c *realControl) Scale(...) (bool, error) {
 | RestartPolicy | Pod Failed Behavior |
 |--------------|---------------------|
 | `None` | Delete Failed pod → next reconcile creates replacement (pod-level) |
-| `RecreateRoleInstanceOnPodRestart` | `shouldRecreateInstance` triggers → delete ALL Instance pods → recreate all (Instance-level), retaining its existing readiness and generation guards |
-| `RecreateRoleInstanceOnPodRestartFromCreation` | Same unexpected-restart and Failed-pod triggers, including before first Ready, plus desired member deletion after observed generation matches; recreate the affected instance |
+| `RecreateRoleInstanceOnPodRestart` | Eligible Failed-pod signal → persist and drain all old member UIDs → create replacements; retain Ready/recent-restart and generation/revision guards |
+| `RecreateRoleInstanceOnPodRestartFromCreation` | Eligible Failed-pod signal can rebuild all member Pods before first Ready; observed desired-member deletion is an additional trigger, after generation/revision guards |
 
 #### Container Restart
 
 | RestartPolicy | Container Restart Behavior |
 |--------------|---------------------------|
 | `None` | Do nothing - let container restart naturally |
-| `RecreateRoleInstanceOnPodRestart` | Existing behavior, including its readiness gate; for LeaderWorkerSet roles the LWS v0.7 controller handles the policy |
-| `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstanceSet recreates on unexpected ordinary-container restart before first Ready or after desired member deletion, and on Failed pods; unsupported for LeaderWorkerSet |
+| `RecreateRoleInstanceOnPodRestart` | RoleInstance controller handles unexpected ordinary-container restart with its Ready/recent-restart gate; LWS-backed roles delegate to LWS v0.7 |
+| `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstance controller rebuilds on unexpected ordinary-container restart, including before first Ready; unsupported for LeaderWorkerSet |
 
 #### Summary
 
@@ -443,10 +408,10 @@ func (c *realControl) Scale(...) (bool, error) {
 | Pod Failed + `None` | RoleInstance Controller | Delete Failed pod, create replacement |
 | Pod Failed + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate entire Instance, preserving existing guards |
 | Pod Failed + `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstance Controller | Recreate entire Instance, including before first Ready |
-| Desired member deleted + `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstance Controller | Recreate affected Instance after desired generation is observed |
+| Observed desired-member deletion + `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstance Controller | Rebuild affected instance's Pods after generation/revision guards; missed termination falls back to individual repair |
 | Container restart + `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstance Controller (RoleInstanceSet only) | Recreate affected Instance, including before first Ready |
 | Container restart + `None` | None (K8s default) | Let container restart |
-| Container restart + `RecreateRoleInstanceOnPodRestart` | Existing workload behavior | Preserve current behavior |
+| Container restart + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller (LWS Controller for LWS-backed roles) | Rebuild member Pods with legacy Ready/recent-restart eligibility |
 
 ### Test Plan
 
@@ -456,71 +421,62 @@ func (c *realControl) Scale(...) (bool, error) {
 
 | Test Name | File | Test Content |
 |-----------|------|--------------|
-| `TestShouldRecreateInstance` | `pkg/reconciler/roleinstance/sync/instance_scale_test.go` | Verify Instance recreation logic: RecreateRoleInstanceOnPodRestart triggers on PodFailed, None does not, guards for Ready/Generation/DeletionTimestamp |
-| `TestWasInstanceReady` | `pkg/reconciler/roleinstance/sync/instance_scale_test.go` | Verify wasInstanceReady helper checks condition correctly |
+| `TestShouldRecreateInstance` | `pkg/reconciler/roleinstance/sync/instance_scale_test.go` | Verify legacy Ready/recent-restart gate and no deletion trigger; new-policy startup faults, desired-member observed deletion, live Succeeded exclusion, generation/revision/in-place guards, ordinary containers only, and Ignore initiation filtering |
+| `TestRestartAcceptance*` / `TestRestartRecordBeforeDelete` | `pkg/reconciler/roleinstance/sync/instance_scale_test.go` | Verify retiring UIDs and count/time persist before Delete, stale-cache rejection, and resume without re-charging |
+| `TestRestartFinalizerCountsOnceAndBlocksReplacement` / `TestRestartBarrierUsesOldUIDNotReusedName` | `pkg/reconciler/roleinstance/sync/instance_scale_test.go` | Verify durable drain count, finalizer barrier, and same-name/different-UID safety |
 | `TestFailedPodDeletion` | `pkg/reconciler/roleinstance/sync/instance_scale_test.go` | Verify Failed pods without DeletionTimestamp are deleted, Succeeded pods and terminating pods are skipped |
 | `TestPodRunningAndReady` | `pkg/utils/pod_utils_test.go` | Verify pod running and ready detection |
 | `TestPodDeleted` | `pkg/utils/pod_utils_test.go` | Verify pod deletion detection |
+
+#### Durable Recovery Coverage
+
+Unit and envtest coverage must verify controller-restart recovery of a recorded
+drain, finalizer-held old UIDs blocking every replacement, same-name/different-UID
+safety, repeated startup-failure rounds without Ready under the new policy, and
+`Restarting` clearing at drain completion rather than at Ready. Verify that
+`Ignore` members cannot initiate a round but are retired in another member's
+round, and that backoff/stability reset uses attempt time, not Ready duration.
+The envtest recovery suite is in
+`test/envtest/testcase/restart_policy/durable_recovery_test.go`. These tests use
+explicit simulated faults; they do not establish real distributed-framework
+startup or serving correctness.
 
 #### E2E Tests
 
 **Test File Location**: `test/e2e/testcase/v1alpha2/inactive_pod.go`
 
-**Test Environment**: Kind cluster (existing CI workflow)
+**Test Environment**: a Kubernetes cluster with a real kubelet (for example Kind)
+with the controller and current CRDs installed. Compilation alone does not verify
+kubelet behavior, controller convergence, or distributed-framework correctness.
 
-**Method to Simulate Pod Abnormal State**:
+These specs do not synthesize Pod phases through status patches. Existing helpers
+and role wrappers create native RoleInstanceSet workloads. `buildFailingPodTemplate`
+runs a container with `restartPolicy: Never`; `failPod` requests a non-zero exit and
+watches for the kubelet-owned Failed phase before the controller removes the Pod.
+`utils.RestartNginxContainer` induces an actual ordinary-container restart.
 
-In a real K8s cluster, triggering real Pod Eviction is difficult, so use **manually modifying Pod status subresource** to simulate:
+- **Ordinary Failed-Pod repair / None**: start Ready standalone replicas, induce
+  the real terminal failure, and verify that only the failed member's UID changes.
+- **Unexpected ordinary-container restart**: start Ready multi-member instances
+  with `RecreateRoleInstanceOnPodRestartFromCreation`, induce a real restart, and verify that
+  all affected members get new UIDs while other instances remain unchanged.
+- **Observed member deletion**: start a Ready, two-member native RoleInstance with
+  the opt-in policy. Record all Pod UIDs and the RoleInstance UID. Attach a
+  test-only finalizer to one member and issue a real UID-preconditioned Delete.
+  Wait until its deletion is observed and the durable ledger contains every old
+  member UID with `restartCount == 1`; only then release the finalizer. Verify
+  every old member UID rotates, the RoleInstance UID is unchanged, the ledger
+  clears, `restartCount` remains exactly one, and the instance returns to Ready.
+  Always remove the test finalizer during cleanup, including assertion failures,
+  so the observation barrier cannot strand a Pod or block namespace teardown.
+- **Ignore and recovery stability**: use real ordinary-container restarts to
+  verify initiation filtering, complete-group retirement of ignored siblings,
+  and stable member UIDs after recovery.
 
-```go
-// Simulate Evicted Pod
-func SetPodEvicted(ctx context.Context, client client.Client, pod *corev1.Pod) error {
-    pod.Status.Phase = corev1.PodFailed
-    pod.Status.Reason = "Evicted"
-    pod.Status.Message = "The node was low on resource: ephemeral-storage."
-    return client.Status().Update(ctx, pod)
-}
-```
-
-**Test Cases**:
-
-##### Case 1: Evicted Pod Triggers Replacement Pod Creation
-
-- Create RBG with standalone role (Deployment, Replicas=2)
-- Wait for pods ready
-- Simulate one pod Evicted (Phase=Failed, Reason="Evicted")
-- Verify active pod count returns to 2 (replacement created)
-
-##### Case 2: Failed Pod Triggers RoleInstance Recreation (RecreateRoleInstanceOnPodRestart)
-
-- Create RBG with LeaderWorker role and `RestartPolicy=RecreateRoleInstanceOnPodRestart` (Replicas=2)
-- Wait for pods ready, record initial UIDs
-- Simulate one pod Failed
-- Verify affected Instance's pods are all recreated (new UIDs, correct count)
-- Verify other Instances are unaffected
-
-##### Case 3: RestartPolicy=None Creates Replacement Pod
-
-- Create RBG with standalone role (Deployment, Replicas=3)
-- Wait for pods ready, record initial UIDs
-- Simulate one pod Evicted
-- Verify active pod count returns to 3
-- Verify at least one pod has a new UID (replacement created)
-
-#### Test Helper Functions
-
-Located in `test/utils/utils.go`:
-
-```go
-// SetPodEvicted simulates Pod Evicted state
-func SetPodEvicted(ctx context.Context, rclient client.Client, pod *corev1.Pod) error
-
-// SetPodFailed simulates Pod Failed state
-func SetPodFailed(ctx context.Context, rclient client.Client, pod *corev1.Pod) error
-
-// GetActivePodCount gets active Pod count (using native IsPodActive)
-func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rbgName string) (int, error)
-```
+The deletion spec deliberately holds the terminating window: a deletion that
+vanishes before fresh API validation is outside the guaranteed trigger boundary.
+Unit/envtest coverage, not fake kubelet e2e phase mutations, exercises dropped
+signals, drain resumption, and controller race paths.
 
 ---
 
@@ -535,7 +491,7 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
 - 2026-05-09: Refactored to properly separate controller responsibilities
   - Updated KEP documentation with two-level handling approach
   - RoleInstance Controller handles both Level 1 (delete Failed pod) and Level 2 (recreate Instance)
-  - Removed `ContainerRestarted` check from `shouldRecreateInstance` (handled by LWS controller)
+  - Historical container-restart delegation applied to the LWS path; current RoleInstanceSet handling is described above.
 
 - 2026-05-18: Updated after upstream #340 removed Pod Controller
   - Removed Pod Controller references (deprecated by upstream #340)
@@ -543,15 +499,29 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
   - Simplified handling matrix to two policies: None and RecreateRoleInstanceOnPodRestart
   - Updated test plan to reference actual existing tests
 
-## Key Files Changed
+- Current: Opt-in startup/member-loss recovery and durable member drain (Refs #542)
+  - Added `RecreateRoleInstanceOnPodRestartFromCreation` for RoleInstanceSet-backed roles; legacy `RecreateRoleInstanceOnPodRestart` retains Ready/recent-restart gating and no deletion trigger.
+  - Persist `status.retiringPods` name/UID references with count/time before Delete, resume across controller restarts, and block creation until every recorded old UID is gone.
+  - Project `Restarting` and readiness from the drain; do not wait for replacement Ready to complete a round. The new policy can retry repeated startup faults.
+  - Observed deletion triggers only the new policy, regardless of Pod phase; missed termination is ordinary member repair. Init-container/native-sidecar restarts are excluded, and `Ignore` filters initiation only.
+  - Fresh validation can drop an observed deletion (`RestartSignalDropped`); missing-member/NotReady triggers remain deferred. `RetirementStalled` warns after five minutes of active drain without forcing cleanup.
+  - A real-Delete e2e uses a cleanup-protected finalizer to keep the deletion observable until durable acceptance; compile-only validation does not establish live-cluster results.
 
-| File | Change Type |
-|------|-------------|
-| `pkg/utils/pod_utils.go` | Added/modified functions |
-| `pkg/utils/pod_utils_test.go` | Added tests |
-| `pkg/reconciler/roleinstance/sync/instance_scale.go` | Modified: two-level Failed pod handling |
-| `pkg/reconciler/roleinstance/sync/instance_scale_test.go` | Added: TestShouldRecreateInstance, TestFailedPodDeletion |
-| `pkg/reconciler/roleinstance/instance_reconciler.go` | Modified: pass inactivePods to Scale |
-| `pkg/reconciler/roleinstance/sync/api.go` | Modified: Scale interface accepts inactivePods |
-| `test/e2e/testcase/v1alpha2/inactive_pod.go` | Added E2E tests |
-| `test/utils/utils.go` | Added helper functions |
+## Implementation File Map
+
+This map describes the current recovery path, not a list of newly introduced
+helper APIs:
+
+- `pkg/reconciler/roleinstance/sync/instance_scale.go`: trigger eligibility,
+  attempt-time backoff, durable acceptance/drain and ordinary Failed-Pod cleanup.
+- `pkg/reconciler/roleinstance/sync/restart_budget.go`: persistent budget,
+  exhaustion and retained-Pod recovery/cleanup.
+- `pkg/reconciler/roleinstance/instance_reconciler.go` and
+  `pkg/reconciler/roleinstance/instance_status.go`: reconciliation and
+  recovery status projection/preservation.
+- `api/workloads/v1alpha2/roleinstance_types.go`: restart tracking and retiring-Pod
+  reference API.
+- `pkg/reconciler/roleinstance/sync/*_test.go`,
+  `test/envtest/testcase/restart_policy/`, and
+  `test/e2e/testcase/v1alpha2/inactive_pod.go`: unit, API-server, and real-kubelet
+  recovery coverage respectively.
