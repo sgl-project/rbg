@@ -47,73 +47,118 @@ func usesSelectiveScaleDown(role *workloadsv1alpha2.RoleSpec, set *workloadsv1al
 	return present || set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] != ""
 }
 
-// reconcileSelectiveMembership is the only writer of replicas and skip records
-// while selective scaling is in use. It also updates the ordinary template in
-// the same conditional request, avoiding an SSA ownership handoff entirely.
-// A conflict is returned to the workqueue, which rereads both parent and child;
-// it must never retry an old plan against a new child resource version.
+// reconcileSelectiveMembership commits replicas, record and template through
+// one conditional writer while selective scaling is active. Ordinary SSA and its
+// ownership handoff resume only after E and the sparse record are cleared.
+// Conflicts return to the workqueue for a fresh parent/child read and plan.
 func (r *RoleInstanceSetReconciler) reconcileSelectiveMembership(ctx context.Context, observed *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, strategy *workloadsv1alpha2.RollingUpdate, revision string) error {
-	parent := &workloadsv1alpha2.RoleBasedGroup{}
-	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(observed), parent); err != nil {
-		return err
-	}
-	if parent.UID != observed.UID || parent.ResourceVersion != observed.ResourceVersion || parent.DeletionTimestamp != nil {
-		return apierrors.NewConflict(workloadsv1alpha2.GroupVersion.WithResource("rolebasedgroups").GroupResource(), observed.Name, fmt.Errorf("role configuration changed before membership commitment"))
-	}
-	if err := workloadsv1alpha2.ValidateExcludedOrdinals(parent); err != nil {
-		return err
-	}
-	if pattern := role.Annotations[constants.RoleInstancePatternKey]; pattern != "" && pattern != string(constants.StatefulPattern) {
-		return fmt.Errorf("cannot change a sparse RIS to non-Stateful mode; fill committed gaps first")
-	}
-	// role may contain the existing coordination scaling override; it was
-	// calculated from this exact parent version and retains that role's E.
-	exclusions, err := ordinals.Parse(role.Annotations[constants.ExcludedOrdinalsAnnotationKey])
+	parent, err := r.readSelectiveParent(ctx, observed, role)
 	if err != nil {
 		return err
 	}
-	old := &workloadsv1alpha2.RoleInstanceSet{}
-	key := client.ObjectKey{Namespace: parent.Namespace, Name: parent.GetWorkloadName(role)}
-	err = r.apiReader.Get(ctx, key, old)
-	exists := err == nil
-	if err != nil && !apierrors.IsNotFound(err) {
+	old, exists, err := r.readSelectiveChild(ctx, parent, role)
+	if err != nil {
 		return err
 	}
-	var members []int
-	if exists {
-		// Stateful committed records must not be inherited from an orphan or a
-		// previous parent UID, even when ordinary workload adoption is possible.
-		owner := metav1.GetControllerOf(old)
-		if owner == nil || owner.UID != parent.UID || owner.Name != parent.Name || owner.Kind != "RoleBasedGroup" {
-			return fmt.Errorf("cannot commit membership of RIS %s: controller ownership does not match RBG UID", key)
-		}
-		if old.DeletionTimestamp != nil {
-			return fmt.Errorf("cannot commit membership of deleting RIS %s", key)
-		}
-		if pattern := old.Annotations[constants.RoleInstancePatternKey]; pattern != "" && pattern != string(constants.StatefulPattern) {
-			return fmt.Errorf("cannot use selective scaling on non-Stateful RIS %s", key)
-		}
-		members, err = old.CommittedOrdinals()
-		if err != nil {
-			return err
-		}
-	}
-	next, err := ordinals.Select(members, int(ptr.Deref(role.Replicas, 1)), exclusions)
+	next, err := planSelectiveMembership(old, exists, role)
 	if err != nil {
 		return err
 	}
 	record := ordinals.Record(next)
-	config, err := r.constructRoleInstanceSetApplyConfiguration(ctx, parent, role, strategy, revision, old)
+	desired, err := r.buildSelectiveTarget(ctx, parent, role, strategy, revision, old, record)
 	if err != nil {
 		return err
+	}
+	if !exists {
+		return r.client.Create(ctx, desired, client.FieldOwner(utils.FieldManager))
+	}
+	updated := mergeSelectiveTarget(old, desired, record)
+	if apiequality.Semantic.DeepEqual(old.Spec, updated.Spec) && apiequality.Semantic.DeepEqual(old.Annotations, updated.Annotations) &&
+		apiequality.Semantic.DeepEqual(old.Labels, updated.Labels) && apiequality.Semantic.DeepEqual(old.OwnerReferences, updated.OwnerReferences) {
+		return nil
+	}
+	patch, err := buildSelectivePatch(old, updated, record)
+	if err != nil {
+		return err
+	}
+	return r.client.Patch(ctx, updated, client.RawPatch(types.MergePatchType, patch), client.FieldOwner(utils.FieldManager))
+}
+
+func (r *RoleInstanceSetReconciler) readSelectiveParent(ctx context.Context, observed *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) (*workloadsv1alpha2.RoleBasedGroup, error) {
+	parent := &workloadsv1alpha2.RoleBasedGroup{}
+	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(observed), parent); err != nil {
+		return nil, err
+	}
+	// Status writes advance resourceVersion without changing role configuration.
+	// UID and Generation reject replaced parents and stale spec-derived plans.
+	if parent.UID != observed.UID || parent.Generation != observed.Generation || parent.DeletionTimestamp != nil {
+		return nil, apierrors.NewConflict(workloadsv1alpha2.GroupVersion.WithResource("rolebasedgroups").GroupResource(), observed.Name, fmt.Errorf("role configuration changed before membership commitment"))
+	}
+	if err := workloadsv1alpha2.ValidateExcludedOrdinals(parent); err != nil {
+		return nil, err
+	}
+	if pattern := role.Annotations[constants.RoleInstancePatternKey]; pattern != "" && pattern != string(constants.StatefulPattern) {
+		return nil, fmt.Errorf("cannot change a sparse RIS to non-Stateful mode; fill committed gaps first")
+	}
+	return parent, nil
+}
+
+func (r *RoleInstanceSetReconciler) readSelectiveChild(ctx context.Context, parent *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) (*workloadsv1alpha2.RoleInstanceSet, bool, error) {
+	old := &workloadsv1alpha2.RoleInstanceSet{}
+	key := client.ObjectKey{Namespace: parent.Namespace, Name: parent.GetWorkloadName(role)}
+	if err := r.apiReader.Get(ctx, key, old); err != nil {
+		if apierrors.IsNotFound(err) {
+			return old, false, nil
+		}
+		return nil, false, err
+	}
+	if old.DeletionTimestamp != nil {
+		return nil, false, fmt.Errorf("cannot commit membership of deleting RIS %s", key)
+	}
+	if pattern := old.Annotations[constants.RoleInstancePatternKey]; pattern != "" && pattern != string(constants.StatefulPattern) {
+		return nil, false, fmt.Errorf("cannot use selective scaling on non-Stateful RIS %s", key)
+	}
+	if old.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] != "" {
+		// Never inherit sparse membership from an orphan or a previous parent.
+		owner := metav1.GetControllerOf(old)
+		if owner == nil || owner.UID != parent.UID || owner.Name != parent.Name || owner.Kind != "RoleBasedGroup" {
+			return nil, false, fmt.Errorf("cannot commit membership of RIS %s: controller ownership does not match RBG UID", key)
+		}
+	} else if err := checkWorkloadClaimable(old, parent); err != nil {
+		return nil, false, err
+	}
+	return old, true, nil
+}
+
+func planSelectiveMembership(old *workloadsv1alpha2.RoleInstanceSet, exists bool, role *workloadsv1alpha2.RoleSpec) ([]int, error) {
+	// The effective role may include a coordination replica override calculated
+	// from the same parent generation, while retaining the role exclusion input.
+	exclusions, err := ordinals.Parse(role.Annotations[constants.ExcludedOrdinalsAnnotationKey])
+	if err != nil {
+		return nil, err
+	}
+	var members []int
+	if exists {
+		members, err = old.CommittedOrdinals()
+		if err != nil {
+			return nil, err
+		}
+	}
+	return ordinals.Select(members, int(ptr.Deref(role.Replicas, 1)), exclusions)
+}
+
+func (r *RoleInstanceSetReconciler) buildSelectiveTarget(ctx context.Context, parent *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, strategy *workloadsv1alpha2.RollingUpdate, revision string, old *workloadsv1alpha2.RoleInstanceSet, record string) (*workloadsv1alpha2.RoleInstanceSet, error) {
+	config, err := r.constructRoleInstanceSetApplyConfiguration(ctx, parent, role, strategy, revision, old)
+	if err != nil {
+		return nil, err
 	}
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(config)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	desired := &workloadsv1alpha2.RoleInstanceSet{}
 	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, desired); err != nil {
-		return err
+		return nil, err
 	}
 	desired.OwnerReferences = []metav1.OwnerReference{*metav1.NewControllerRef(parent, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))}
 	if desired.Annotations == nil {
@@ -125,15 +170,20 @@ func (r *RoleInstanceSetReconciler) reconcileSelectiveMembership(ctx context.Con
 	} else {
 		delete(desired.Annotations, constants.CommittedSkipOrdinalsAnnotationKey)
 	}
-	if !exists {
-		// Creation establishes the count, target and template in a single request.
-		return r.client.Create(ctx, desired, client.FieldOwner(utils.FieldManager))
-	}
+	return desired, nil
+}
+
+func mergeSelectiveTarget(old, desired *workloadsv1alpha2.RoleInstanceSet, record string) *workloadsv1alpha2.RoleInstanceSet {
 	updated := old.DeepCopy()
-	for i := range updated.OwnerReferences {
-		if ptr.Deref(updated.OwnerReferences[i].Controller, false) {
+	hasController := false
+	for i, owner := range updated.OwnerReferences {
+		if ptr.Deref(owner.Controller, false) || owner.UID == desired.OwnerReferences[0].UID {
 			updated.OwnerReferences[i] = desired.OwnerReferences[0]
+			hasController = true
 		}
+	}
+	if !hasController {
+		updated.OwnerReferences = append(updated.OwnerReferences, desired.OwnerReferences[0])
 	}
 	updated.Spec = desired.Spec
 	// These child-level controls are not written by the RBG template builder.
@@ -163,18 +213,19 @@ func (r *RoleInstanceSetReconciler) reconcileSelectiveMembership(ctx context.Con
 	for key, value := range desired.Labels {
 		updated.Labels[key] = value
 	}
-	if apiequality.Semantic.DeepEqual(old.Spec, updated.Spec) && apiequality.Semantic.DeepEqual(old.Annotations, updated.Annotations) && apiequality.Semantic.DeepEqual(old.Labels, updated.Labels) && apiequality.Semantic.DeepEqual(old.OwnerReferences, updated.OwnerReferences) {
-		return nil
-	}
+	return updated
+}
+
+func buildSelectivePatch(old, updated *workloadsv1alpha2.RoleInstanceSet, record string) ([]byte, error) {
 	// Include both target fields even when one value is unchanged. The resource
 	// version precondition prevents applying this plan to a replacement UID too.
 	patch, err := client.MergeFromWithOptions(old, client.MergeFromWithOptimisticLock{}).Data(updated)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	var content map[string]interface{}
 	if err = json.Unmarshal(patch, &content); err != nil {
-		return err
+		return nil, err
 	}
 	spec, ok := content["spec"].(map[string]interface{})
 	if !ok {
@@ -195,9 +246,9 @@ func (r *RoleInstanceSetReconciler) reconcileSelectiveMembership(ctx context.Con
 	}
 	patch, err = json.Marshal(content)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return r.client.Patch(ctx, updated, client.RawPatch(types.MergePatchType, patch), client.FieldOwner(utils.FieldManager))
+	return patch, nil
 }
 
 // Retain ordinary synchronization's removal semantics without deleting metadata

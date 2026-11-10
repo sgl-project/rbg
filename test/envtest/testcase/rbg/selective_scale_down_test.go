@@ -19,6 +19,7 @@ package rbg
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -84,7 +85,7 @@ var _ = Describe("Stateful selective scale-down", func() {
 		return result
 	}
 	names := func(values map[string]types.UID) []string {
-		result := []string{}
+		result := make([]string, 0, len(values))
 		for name := range values {
 			result = append(result, name)
 		}
@@ -110,7 +111,7 @@ var _ = Describe("Stateful selective scale-down", func() {
 		revisionNames := func() []string {
 			list := &apps.ControllerRevisionList{}
 			Expect(testutil.K8sClient.List(testutil.Ctx, list, client.InNamespace(namespace))).To(Succeed())
-			values := []string{}
+			values := make([]string, 0, len(list.Items))
 			for _, item := range list.Items {
 				values = append(values, item.Name)
 			}
@@ -129,6 +130,20 @@ var _ = Describe("Stateful selective scale-down", func() {
 			name := fmt.Sprintf("%s-%d", setKey.Name, ordinal)
 			Expect(instances(group.Name)[name]).To(Equal(original[name]))
 		}
+		// Status SSA in the real controller must not turn an unchanged spec
+		// into a failed membership commit and a workqueue warning.
+		Consistently(func() []string {
+			events := &corev1.EventList{}
+			Expect(testutil.K8sClient.List(testutil.Ctx, events, client.InNamespace(namespace))).To(Succeed())
+			warnings := make([]string, 0, len(events.Items))
+			for _, event := range events.Items {
+				if event.InvolvedObject.UID == group.UID && event.Reason == "FailedReconcileWorkload" &&
+					strings.Contains(event.Message, "role configuration changed before membership commitment") {
+					warnings = append(warnings, event.Message)
+				}
+			}
+			return warnings
+		}, time.Second, interval).Should(BeEmpty())
 		// Fixed-count E changes and clearing E leave membership and template revisions intact.
 		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) {
 			g.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = "0,2,4"

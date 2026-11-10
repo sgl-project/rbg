@@ -30,6 +30,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	apiruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
@@ -194,6 +195,16 @@ func TestConditionalMembershipWithLegacyApplyOwnership(t *testing.T) {
 	parent.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = "1,3"
 	require.NoError(t, c.Update(ctx, parent))
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(parent), parent))
+	// Match the controller's status SSA: the typed parent snapshot retains
+	// its old resourceVersion while its spec Generation is unchanged.
+	statusOnly := &unstructured.Unstructured{Object: map[string]interface{}{
+		"apiVersion": workloadsv1alpha2.GroupVersion.String(), "kind": "RoleBasedGroup",
+		"metadata": map[string]interface{}{"name": parent.Name, "namespace": parent.Namespace},
+		"status":   map[string]interface{}{"observedGeneration": parent.Generation, "roleStatuses": []interface{}{}},
+	}}
+	require.NoError(t, c.Status().Patch(ctx, statusOnly, client.Apply, client.FieldOwner("rbg"), client.ForceOwnership))
+	require.NotEqual(t, parent.ResourceVersion, statusOnly.GetResourceVersion())
+	require.Equal(t, parent.Generation, statusOnly.GetGeneration())
 	wrapped.fail = true
 	wrapped.sawApply = false
 	wrapped.writes = nil
@@ -235,6 +246,9 @@ func TestConditionalMembershipWithLegacyApplyOwnership(t *testing.T) {
 	require.Equal(t, []int{0, 2, 4}, members)
 	require.Equal(t, "keep", committed.Annotations["example.org/external"])
 	require.NotContains(t, committed.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	// The writer intentionally leaves the observed parent snapshot untouched;
+	// refresh it before the test submits the next spec edit.
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(parent), parent))
 	// Editing or emptying E at fixed replicas must not reinterpret stored M,
 	// nor re-enter forced SSA, even when the computed child target is unchanged.
 	for _, value := range []string{"0,2,4", ""} {
@@ -509,4 +523,74 @@ func TestOrdinaryRISRemovesMetadataAfterManagedFieldsHandoff(t *testing.T) {
 			require.Len(t, wrapped.migrations, migrations, "a completed handoff must not migrate repeatedly")
 		})
 	}
+}
+
+func TestSelectiveDenseOrphanReapply(t *testing.T) {
+	_, file, _, _ := runtime.Caller(0)
+	environment := &envtest.Environment{CRDDirectoryPaths: []string{filepath.Join(filepath.Dir(file), "../../../../config/crd/bases")}, ErrorIfCRDPathMissing: true}
+	cfg, err := environment.Start()
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, environment.Stop()) })
+	scheme := apiruntime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c, err := client.New(cfg, client.Options{Scheme: scheme})
+	require.NoError(t, err)
+	ctx := context.Background()
+	const namespace = "orphan-reapply"
+	require.NoError(t, c.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: namespace}}))
+	role := wrappers.BuildStandaloneRole("worker").WithReplicas(5).Obj()
+	parent := wrappers.BuildBasicRoleBasedGroup("group", namespace).WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+	require.NoError(t, c.Create(ctx, parent))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(parent), parent))
+	wrapped := &guardedClient{Client: c}
+	r := reconciler.NewRoleInstanceSetReconciler(scheme, wrapped)
+	r.SetAPIReader(c)
+	sync := func() error {
+		parent.SetGroupVersionKind(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+		return r.Reconciler(ctx, parent, &parent.Spec.Roles[0], nil, "stable")
+	}
+	require.NoError(t, sync())
+	get := func() *workloadsv1alpha2.RoleInstanceSet {
+		set := &workloadsv1alpha2.RoleInstanceSet{}
+		require.NoError(t, c.Get(ctx, client.ObjectKey{Namespace: namespace, Name: parent.GetWorkloadName(&parent.Spec.Roles[0])}, set))
+		return set
+	}
+	dense := get()
+	oldParentUID := parent.UID
+	// Envtest has no garbage collector. Simulate its orphaning of both owned
+	// objects before deleting and recreating the same-name parent.
+	orphanPatch := client.RawPatch(types.MergePatchType, []byte(`{"metadata":{"ownerReferences":null}}`))
+	require.NoError(t, c.Patch(ctx, dense, orphanPatch))
+	services := &corev1.ServiceList{}
+	require.NoError(t, c.List(ctx, services, client.InNamespace(namespace)))
+	for i := range services.Items {
+		if owner := metav1.GetControllerOf(&services.Items[i]); owner != nil && owner.UID == oldParentUID {
+			require.NoError(t, c.Patch(ctx, &services.Items[i], orphanPatch))
+		}
+	}
+	require.NoError(t, c.Delete(ctx, parent))
+	role.Replicas = ptr.To[int32](3)
+	role.Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1,3"}
+	parent = wrappers.BuildBasicRoleBasedGroup("group", namespace).WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+	require.NoError(t, c.Create(ctx, parent))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(parent), parent))
+	require.NotEqual(t, oldParentUID, parent.UID)
+	wrapped.writes = nil
+	require.NoError(t, sync())
+	adopted := get()
+	require.Equal(t, dense.UID, adopted.UID)
+	require.Equal(t, parent.UID, metav1.GetControllerOf(adopted).UID)
+	assertConditionalMembershipWrite(t, wrapped.writes, dense.ResourceVersion, 3, "1,3")
+	require.Contains(t, wrapped.writes[0].body["metadata"].(map[string]interface{}), "ownerReferences")
+	members, err := adopted.CommittedOrdinals()
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 2, 4}, members)
+	// The dense exception must not allow inheriting an orphan's sparse record.
+	require.NoError(t, c.Patch(ctx, adopted, orphanPatch))
+	wrapped.writes = nil
+	require.Error(t, sync())
+	require.Empty(t, wrapped.writes)
+	require.Equal(t, "1,3", get().Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
+	require.Nil(t, metav1.GetControllerOf(get()))
 }

@@ -279,6 +279,10 @@ rbg.workloads.x-k8s.io/excluded-ordinals: "1,3,8-10"
 
 功能同步绕过普通强制 SSA；删除 E 但仍有稀疏记录时也不例外，避免 apply 省略原先管理的字段导致值被清除。仅当 E 和非空记录均不存在时，普通同步才可恢复强制 SSA，并携带读取时的子对象资源版本作为前置条件。若普通写入方读取连续成员后发生了新的稀疏提交，过期 apply 必须冲突，不能覆盖新目标。这些要求约束控制器的写入及路径切换，不承诺阻止任意外部强制 apply。
 
+父对象快照通过 UID 和 spec Generation 判断是否仍有效，status-only 写入不应拒绝配置未变化的计划；子对象 patch 仍使用读取时的资源版本。删除中的父对象、子对象，以及非 Stateful 子对象，均应在任何目标写入前被拒绝。
+
+子对象存在非空已提交记录时，必须匹配精确 controller owner，不能继承 orphan 或旧父对象的稀疏成员。连续成员子对象则复用普通工作负载的可接管检查：无 controller owner 时必须携带匹配的 group-name label，其他 controller 持有的对象仍应拒绝。接管合法 dense orphan 时，在同一条件 patch 中写入 controller owner、副本数和记录，并保留其他 owner 引用。
+
 Create 和条件 merge-patch 会记录 `rbg/Update` 所有权，与 `rbg/Apply` 不同。执行普通 SSA 前，使用 `csaupgrade.UpgradeManagedFieldsPatch` 仅将控制器在主资源上的 Update 字段合并到 Apply manager。普通 create 后，以及恢复普通路径时（包括已有对象残留 Update 所有权）均执行此交接。保留 Create-only 语义，避免覆盖并发创建的稀疏子对象。交接使用 UID 和资源版本保护，失败时停止，后续 SSA 使用响应返回的新资源版本。不能迁移其他 manager 或 status 子资源的所有权。否则，SSA 省略角色 label、annotation 或条件 gang 标识时，Update entry 仍可能持有它们，导致字段无法移除。
 
 例如，当前有五个实例 `[0,1,2,3,4]`，用户同时将副本数改为 3、E 设为 `[1,3]`：
@@ -429,6 +433,8 @@ HPA、Scaling Adapter 继续按现有方式管理副本数，不增加交接流�
 - 在真实 API server 上先建立旧 SSA managed fields，再启用功能。断言 JSON merge-patch 请求同时携带读取时的资源版本、副本数和记录，清空记录时显式包含 null。
 - 注入失败和真实写入冲突均保留旧的两个目标字段；控制器重启后通过重新读取重试。
 - 删除 E 但保留非空记录时，继续使用条件写入方；两者均不存在后，验证普通强制 SSA 可安全恢复。
+- 父对象仅被 status SSA 更新后，旧 typed 快照仍可提交，控制器流程不产生配置冲突告警；父对象 UID 或 spec Generation 变化时仍拒绝旧计划。
+- 删除中的父/子对象和非 Stateful 子对象应报错且不 patch 副本数或记录；orphan/re-apply 可接管合法 dense 子对象且不重建，稀疏或无关 orphan、其他 controller 持有的对象仍被拒绝。
 - 对新建且未启用功能的 RIS，移除角色 label、annotation 和条件 gang 标识，断言普通 SSA 后对应字段消失；对残留 Update 所有权和功能退出路径重复验证。
 - 所有权交接失败或冲突时停止后续 SSA，支持重新读取后重试，拒绝同名 UID 重建，重复执行幂等，并保留其他 manager 字段及 status 子资源 manager。
 - 将基于旧连续成员快照的普通 SSA 与新的稀疏提交交错执行：过期 apply 必须冲突并保留新目标。覆盖元数据移除、无关子对象控制字段保留、重复同步收敛，以及同名子对象 UID 变化。

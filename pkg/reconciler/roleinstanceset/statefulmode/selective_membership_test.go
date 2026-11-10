@@ -87,7 +87,8 @@ func TestSparseSurgeBudgetPauseAndCompletion(t *testing.T) {
 	h.assertDeleted(t)
 	h.set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstr.FromInt32(1))
 	surge := h.instance(5, h.intermediate.Name, true)
-	withSurge := append(instances, surge)
+	withSurge := append(make([]*workloadsv1alpha2.RoleInstance, 0, len(instances)+1), instances...)
+	withSurge = append(withSurge, surge)
 	_, err = h.control.progressUpdate(context.Background(), h.set, &h.set.Status, h.current, h.intermediate, []*apps.ControllerRevision{h.current, h.intermediate}, withSurge, withSurge, 0, topo)
 	require.NoError(t, err)
 	h.assertDeleted(t, four.Name)
@@ -141,7 +142,7 @@ func TestSparseSurgeWaitsForMinReadySeconds(t *testing.T) {
 	h := newRollbackTestHarness(t, "sparse-min-ready", 3, 2, 1)
 	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
 	h.set.Spec.MinReadySeconds = 30
-	var instances []*workloadsv1alpha2.RoleInstance
+	instances := make([]*workloadsv1alpha2.RoleInstance, 0, 4)
 	for _, ordinal := range []int{0, 2, 4} {
 		inst := h.instance(ordinal, h.current.Name, true)
 		inst.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now().Add(-time.Minute))
@@ -256,7 +257,7 @@ func TestSparseEarlyRollbackGapFillingRetainsReplacementProtection(t *testing.T)
 				recorder:        recorder,
 			}
 			updateExpectations.DeleteExpectations(getInstanceSetKey(h.set))
-			var instances []*workloadsv1alpha2.RoleInstance
+			instances := make([]*workloadsv1alpha2.RoleInstance, 0, len(tc.healthyMembers)+2)
 			for _, ordinal := range tc.healthyMembers {
 				instances = append(instances, h.instance(ordinal, h.current.Name, true))
 			}

@@ -372,6 +372,19 @@ before a concurrent sparse commitment must conflict instead of overwriting the
 new target. These requirements govern controller writes and transitions; they
 do not promise protection against arbitrary external forced apply.
 
+Parent snapshot freshness uses UID and spec Generation so status-only writes
+do not reject an otherwise current plan. The child patch still requires the
+observed resource version. Reject deleting parents, deleting children and
+non-Stateful children before any target write.
+
+A child with a non-empty committed record requires the exact controller owner;
+never inherit sparse membership from an orphan or a previous parent. A dense
+child may instead use ordinary workload claimability: an ownerless child must
+carry the matching group-name label, and foreign controller ownership remains
+rejected. Adopt a claimable dense orphan by writing its controller owner,
+replicas and record together in the conditional patch, preserving other owner
+references.
+
 Create and conditional merge-patch requests record `rbg/Update` ownership,
 which is distinct from `rbg/Apply`. Before ordinary SSA, fold only the
 controller's main-resource Update fields into its Apply manager using
@@ -604,6 +617,12 @@ controller implementation or runtime verification has been completed.
   fields intact, and fresh readers can retry after controller restart.
 - With E removed but a non-empty record retained, keep using the conditional
   writer. After both are absent, verify ordinary forced SSA resumes safely.
+- Status-only parent SSA must allow commitment from the prior typed snapshot,
+  without configuration-conflict warnings in the controller flow. Changed parent
+  UID or spec Generation must still reject the stale plan.
+- Deleting parents/children and non-Stateful children must error without patching
+  replicas or records. Orphan/re-apply must adopt a claimable dense child without
+  recreating it; reject sparse or unrelated orphans and foreign-owned children.
 - On newly created non-feature RIS objects, remove role labels, annotations,
   and conditional gang flags and assert they disappear after ordinary SSA.
   Repeat for legacy Update ownership and feature-to-ordinary transitions.

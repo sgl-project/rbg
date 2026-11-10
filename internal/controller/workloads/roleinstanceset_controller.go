@@ -106,6 +106,8 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 	}
 }
 
+const invalidCommittedOrdinalsReason = "InvalidCommittedOrdinals"
+
 func (r *RoleInstanceSetReconciler) validateCommittedMembership(ctx context.Context, set *v1alpha2.RoleInstanceSet) error {
 	var validationErr error
 	if set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] != "" {
@@ -118,8 +120,8 @@ func (r *RoleInstanceSetReconciler) validateCommittedMembership(ctx context.Cont
 	updated := set.DeepCopy()
 	conditions := updated.Status.Conditions[:0]
 	for _, condition := range updated.Status.Conditions {
-		if condition.Type == v1alpha2.RoleInstanceSetConditionFailedScale && (validationErr != nil || condition.Reason == "InvalidCommittedOrdinals") {
-			if validationErr != nil && condition.Reason == "InvalidCommittedOrdinals" && condition.Status == corev1.ConditionTrue && condition.Message == validationErr.Error() {
+		if condition.Type == v1alpha2.RoleInstanceSetConditionFailedScale && (validationErr != nil || condition.Reason == invalidCommittedOrdinalsReason) {
+			if validationErr != nil && condition.Reason == invalidCommittedOrdinalsReason && condition.Status == corev1.ConditionTrue && condition.Message == validationErr.Error() {
 				return validationErr
 			}
 			continue
@@ -128,10 +130,10 @@ func (r *RoleInstanceSetReconciler) validateCommittedMembership(ctx context.Cont
 	}
 	updated.Status.Conditions = conditions
 	if validationErr != nil {
-		r.recorder.Event(set, corev1.EventTypeWarning, "InvalidCommittedOrdinals", validationErr.Error())
+		r.recorder.Event(set, corev1.EventTypeWarning, invalidCommittedOrdinalsReason, validationErr.Error())
 		updated.Status.Conditions = append(updated.Status.Conditions, v1alpha2.RoleInstanceSetCondition{
 			Type: v1alpha2.RoleInstanceSetConditionFailedScale, Status: corev1.ConditionTrue,
-			Reason: "InvalidCommittedOrdinals", Message: validationErr.Error(), LastTransitionTime: metav1.Now(),
+			Reason: invalidCommittedOrdinalsReason, Message: validationErr.Error(), LastTransitionTime: metav1.Now(),
 		})
 	}
 	if len(updated.Status.Conditions) != len(set.Status.Conditions) || validationErr != nil {

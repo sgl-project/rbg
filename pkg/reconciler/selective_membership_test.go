@@ -45,6 +45,7 @@ func selectiveTestObjects(t *testing.T, replicas int32, e string) (*workloadsv1a
 	role.Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: e}
 	group := wrappers.BuildBasicRoleBasedGroup("selective", "default").WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
 	group.UID = "parent-uid"
+	group.Generation = 1
 	group.APIVersion = workloadsv1alpha2.GroupVersion.String()
 	group.Kind = "RoleBasedGroup"
 	child := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{Name: group.GetWorkloadName(&role), Namespace: group.Namespace, UID: "child-uid", OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(group, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))}}, Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To[int32](5)}}
@@ -100,6 +101,7 @@ func TestSelectiveMembershipCommitsCountAndRecordTogether(t *testing.T) {
 	latest := &workloadsv1alpha2.RoleBasedGroup{}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), latest))
 	latest.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = "0,2"
+	latest.Generation++
 	require.NoError(t, c.Update(ctx, latest))
 	c.fail = false
 	require.Error(t, r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable-hash"), "stale parent must not be committed")
@@ -154,7 +156,7 @@ func TestSelectiveInitialCreationAndFixedCount(t *testing.T) {
 }
 
 func TestSelectiveInvalidRecordAndWrongOwnerBlockCommit(t *testing.T) {
-	for _, scenario := range []string{"invalid record", "old owner", "orphan", "invalid input", "stateless"} {
+	for _, scenario := range []string{"invalid record", "old owner", "orphan", "invalid input", "stateless", "deleting parent", "deleting child", "stateless child"} {
 		t.Run(scenario, func(t *testing.T) {
 			group, child, scheme := selectiveTestObjects(t, 3, "1,3")
 			child.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1"}
@@ -169,7 +171,18 @@ func TestSelectiveInvalidRecordAndWrongOwnerBlockCommit(t *testing.T) {
 				group.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = "1,,3"
 			case "stateless":
 				group.Spec.Roles[0].Annotations[constants.RoleInstancePatternKey] = string(constants.StatelessPattern)
+			case "deleting parent":
+				now := metav1.Now()
+				group.DeletionTimestamp = &now
+				group.Finalizers = []string{"example.org/hold"}
+			case "deleting child":
+				now := metav1.Now()
+				child.DeletionTimestamp = &now
+				child.Finalizers = []string{"example.org/hold"}
+			case "stateless child":
+				child.Annotations[constants.RoleInstancePatternKey] = string(constants.StatelessPattern)
 			}
+			before := child.DeepCopy()
 			c := &membershipPatchClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, child).Build()}
 			ctx := context.Background()
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), group))
@@ -179,6 +192,8 @@ func TestSelectiveInvalidRecordAndWrongOwnerBlockCommit(t *testing.T) {
 			actual := &workloadsv1alpha2.RoleInstanceSet{}
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(child), actual))
 			require.Equal(t, int32(5), *actual.Spec.Replicas)
+			require.Equal(t, before.Annotations, actual.Annotations)
+			require.Equal(t, before.OwnerReferences, actual.OwnerReferences)
 		})
 	}
 }
@@ -215,4 +230,98 @@ func TestSelectiveWriterUsesUncachedRecordAfterInputRemoval(t *testing.T) {
 	members, err := actual.CommittedOrdinals()
 	require.NoError(t, err)
 	require.Equal(t, []int{0, 1, 2, 4}, members)
+}
+
+func TestSelectiveStatusOnlyParentUpdateDoesNotBlockCommit(t *testing.T) {
+	ctx := context.Background()
+	group, child, scheme := selectiveTestObjects(t, 3, "1,3")
+	c := &membershipPatchClient{Client: fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(group).WithObjects(group, child).Build()}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), group))
+	latest := group.DeepCopy()
+	latest.Status.Conditions = []metav1.Condition{{
+		Type: "Ready", Status: metav1.ConditionFalse, Reason: "Progressing",
+		LastTransitionTime: metav1.Now(),
+	}}
+	require.NoError(t, c.Status().Update(ctx, latest))
+	require.NotEqual(t, group.ResourceVersion, latest.ResourceVersion)
+	require.Equal(t, group.Generation, latest.Generation)
+	r := NewRoleInstanceSetReconciler(scheme, c)
+	require.NoError(t, r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable"))
+	require.Len(t, c.patches, 1)
+	actual := &workloadsv1alpha2.RoleInstanceSet{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(child), actual))
+	members, err := actual.CommittedOrdinals()
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 2, 4}, members)
+}
+
+func TestSelectiveDenseOrphanAdoption(t *testing.T) {
+	for _, tc := range []struct {
+		name, record    string
+		wrongLabel, bad bool
+	}{
+		{name: "dense orphan"},
+		{name: "sparse orphan", record: "1", bad: true},
+		{name: "unrelated orphan", wrongLabel: true, bad: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			group, child, scheme := selectiveTestObjects(t, 3, "1,3")
+			otherOwner := metav1.OwnerReference{APIVersion: "v1", Kind: "ConfigMap", Name: "observer", UID: "observer-uid"}
+			child.OwnerReferences = []metav1.OwnerReference{otherOwner}
+			child.Labels = map[string]string{constants.GroupNameLabelKey: group.Name}
+			child.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: tc.record}
+			if tc.wrongLabel {
+				child.Labels[constants.GroupNameLabelKey] = "unrelated"
+			}
+			c := &membershipPatchClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, child).Build()}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), group))
+			r := NewRoleInstanceSetReconciler(scheme, c)
+			err := r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable")
+			actual := &workloadsv1alpha2.RoleInstanceSet{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(child), actual))
+			if tc.bad {
+				require.Error(t, err)
+				require.Empty(t, c.patches)
+				require.Equal(t, child.Spec.Replicas, actual.Spec.Replicas)
+				require.Equal(t, child.Annotations, actual.Annotations)
+				require.Equal(t, child.OwnerReferences, actual.OwnerReferences)
+				return
+			}
+			require.NoError(t, err)
+			require.Len(t, c.patches, 1)
+			require.Equal(t, child.UID, actual.UID)
+			require.Equal(t, group.UID, metav1.GetControllerOf(actual).UID)
+			require.Contains(t, actual.OwnerReferences, otherOwner)
+			require.Equal(t, "1,3", actual.Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
+			require.Equal(t, int32(3), *actual.Spec.Replicas)
+			metadata := c.patches[0]["metadata"].(map[string]interface{})
+			require.Contains(t, metadata, "ownerReferences")
+			require.NotEmpty(t, metadata["resourceVersion"])
+			require.EqualValues(t, 3, c.patches[0]["spec"].(map[string]interface{})["replicas"])
+			require.Equal(t, "1,3", metadata["annotations"].(map[string]interface{})[constants.CommittedSkipOrdinalsAnnotationKey])
+		})
+	}
+}
+
+func TestSelectiveRejectsChangedParentIdentityOrGeneration(t *testing.T) {
+	for _, changedUID := range []bool{false, true} {
+		t.Run(fmt.Sprintf("changedUID=%v", changedUID), func(t *testing.T) {
+			ctx := context.Background()
+			observed, child, scheme := selectiveTestObjects(t, 3, "1,3")
+			latest := observed.DeepCopy()
+			if changedUID {
+				latest.UID = "replacement-parent"
+			} else {
+				latest.Generation++
+				latest.Spec.Roles[0].Replicas = ptr.To[int32](4)
+			}
+			c := &membershipPatchClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(latest, child).Build()}
+			r := NewRoleInstanceSetReconciler(scheme, c)
+			err := r.reconcileRoleInstanceSet(ctx, observed, &observed.Spec.Roles[0], nil, "stable")
+			require.True(t, apierrors.IsConflict(err), "%v", err)
+			require.Empty(t, c.patches)
+		})
+	}
 }
