@@ -23,6 +23,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -30,6 +31,7 @@ import (
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/client-go/rest"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
@@ -69,18 +71,22 @@ func SetupV1alpha1GateTestEnv() {
 		ErrorIfCRDPathMissing: true,
 	}
 
-	// Pre-generate the CA and allocate the local serving host/port so that
-	// InstallCRDs (called during Start) sees a populated CA and enables
-	// conversion webhooks on the CRDs. Without this, the CRDs are installed
-	// with conversion strategy None and the v1alpha1 request path never
-	// traverses the production conversion chain.
+	// Belt-and-braces: controller-runtime's Start() itself calls
+	// PrepWithoutInstalling() before InstallCRDs, so conversion webhooks are
+	// enabled either way. The explicit call is harmless and makes the
+	// allocation visible at the setup site.
 	Expect(TestEnv.WebhookInstallOptions.PrepWithoutInstalling()).To(Succeed())
 
 	Cfg, err = TestEnv.Start()
 	Expect(err).NotTo(HaveOccurred())
 	Expect(Cfg).NotTo(BeNil())
 
-	K8sClient, err = client.New(Cfg, client.Options{Scheme: scheme.Scheme})
+	// Route the suite client through a warning recorder so the specs can
+	// assert the on-the-wire CRD-level deprecation warning (the admission
+	// webhook warnings are gone; the CRD warning is the sole layer).
+	clientCfg := rest.CopyConfig(Cfg)
+	clientCfg.WarningHandler = GateWarnings
+	K8sClient, err = client.New(clientCfg, client.Options{Scheme: scheme.Scheme})
 	Expect(err).NotTo(HaveOccurred())
 	Expect(K8sClient).NotTo(BeNil())
 
@@ -235,3 +241,49 @@ func buildValidatingWebhookConfig(opts envtest.WebhookInstallOptions, specs []ga
 func containsStr(s, substr string) bool {
 	return len(s) >= len(substr) && strings.Contains(s, substr)
 }
+
+// GateWarningRecorder collects Warning headers returned by the API server.
+type GateWarningRecorder struct {
+	mu       sync.Mutex
+	warnings []string
+}
+
+// Reset drops all recorded warnings. Call it at the start of every spec.
+func (r *GateWarningRecorder) Reset() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.warnings = nil
+}
+
+// HandleWarningHeader implements rest.WarningHandler.
+func (r *GateWarningRecorder) HandleWarningHeader(code int, agent string, text string) {
+	if code < 200 || code > 299 || text == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.warnings = append(r.warnings, text)
+}
+
+// Containing returns every recorded warning containing substr.
+func (r *GateWarningRecorder) Containing(substr string) []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, warning := range r.warnings {
+		if strings.Contains(warning, substr) {
+			out = append(out, warning)
+		}
+	}
+	return out
+}
+
+// All returns a copy of every recorded warning.
+func (r *GateWarningRecorder) All() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.warnings...)
+}
+
+// GateWarnings is shared by the v1a1gate suite's client.
+var GateWarnings = &GateWarningRecorder{}

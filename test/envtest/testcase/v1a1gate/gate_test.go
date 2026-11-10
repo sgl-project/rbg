@@ -23,6 +23,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
 )
 
@@ -109,3 +110,85 @@ var _ = Describe("v1alpha1 request path through the conversion chain", Ordered, 
 })
 
 const gateNamespace = "v1a1-gate-test"
+
+var _ = Describe("v1alpha1 wire contract", Ordered, func() {
+	BeforeAll(func() {
+		// The namespace may already exist from the first Describe's BeforeAll.
+		_ = testutil.K8sClient.Create(testutil.Ctx, &corev1.Namespace{
+			ObjectMeta: metav1.ObjectMeta{Name: gateNamespace},
+		})
+	})
+
+	BeforeEach(func() {
+		testutil.GateWarnings.Reset()
+	})
+
+	It("returns exactly one v1alpha1 deprecation warning carrying the 0.10.0 timeline", func() {
+		rbg := buildV1a1RBG("warn-single")
+		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+
+		warnings := testutil.GateWarnings.All()
+		Expect(warnings).To(HaveLen(1),
+			"v1alpha1 write must return exactly one warning (the CRD-level deprecationWarning), not %d", len(warnings))
+		Expect(warnings[0]).To(ContainSubstring("v1alpha1"))
+		Expect(warnings[0]).To(ContainSubstring("deprecated"))
+		Expect(warnings[0]).To(ContainSubstring("0.10.0"))
+	})
+
+	It("does not warn on v1alpha2 writes", func() {
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "warn-v1a2-none", Namespace: gateNamespace},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "worker",
+					Replicas: ptr.To(int32(1)),
+					Pattern: workloadsv1alpha2.Pattern{
+						StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+							TemplateSource: workloadsv1alpha2.TemplateSource{},
+						},
+					},
+				}},
+			},
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+		Expect(testutil.GateWarnings.All()).To(BeEmpty(),
+			"a v1alpha2 write must not carry a v1alpha1 deprecation warning")
+	})
+
+	It("rejects a v1alpha1 create that omits the workload field", func() {
+		// The v1alpha1 CRD requires workload.apiVersion to match an
+		// apiVersion pattern; an empty string fails schema validation
+		// before any admission webhook runs. This pins that the v1alpha1
+		// path cannot silently default to a deprecated workload type
+		// now that the v1alpha1 admission webhooks are removed.
+		rbg := &workloadsv1alpha1.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "warn-defaulted", Namespace: gateNamespace},
+			Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha1.RoleSpec{{
+					Name:     "worker",
+					Replicas: ptr.To(int32(1)),
+					// Workload field omitted: schema validation rejects
+					// the empty apiVersion (pattern mismatch).
+					TemplateSource: workloadsv1alpha1.TemplateSource{
+						Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{
+								Containers: []corev1.Container{{Name: "nginx", Image: "nginx:latest"}},
+							},
+						},
+					},
+				}},
+			},
+		}
+		err := testutil.K8sClient.Create(testutil.Ctx, rbg)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("workload.apiVersion"))
+	})
+
+	// Grandfathering (same-type update) and type-exact switch (StatefulSet ->
+	// Deployment) through the v1alpha1 conversion chain are covered by the
+	// deprecation suite (test/envtest/testcase/deprecation/), which seeds
+	// grandfathered objects before installing the gate. In this suite the gate
+	// is already active, so the mutating webhook defaults every create to
+	// RoleInstanceSet, making pre-gate grandfathering infeasible without the
+	// two-phase setup.
+})
