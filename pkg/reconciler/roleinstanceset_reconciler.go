@@ -190,11 +190,14 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	// fold the string in and default the delays to these very values.
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate()
 	if backoff := role.GetRawRestartBackoff(); backoff != nil &&
-		(backoff.BaseDelaySeconds != nil || backoff.MaxDelaySeconds != nil) {
+		(backoff.BaseDelaySeconds != nil || backoff.MaxDelaySeconds != nil || backoff.MaxGroupRestarts != nil) {
 		restartPolicyApplyConfig := workloadsv1alpha2client.RestartPolicyConfig().
 			WithType(role.GetRestartPolicy()).
 			WithBaseDelaySeconds(role.GetBaseDelaySeconds()).
 			WithMaxDelaySeconds(role.GetMaxDelaySeconds())
+		if backoff.MaxGroupRestarts != nil {
+			restartPolicyApplyConfig.WithMaxGroupRestarts(*backoff.MaxGroupRestarts)
+		}
 		roleInstanceTemplateConfig.WithRestartPolicyConfig(restartPolicyApplyConfig)
 	} else {
 		roleInstanceTemplateConfig.WithRestartPolicy(role.GetRestartPolicy())

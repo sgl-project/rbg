@@ -187,6 +187,21 @@ type RoleInstanceStatus struct {
 	// recreation. Used to compute exponential backoff between restart attempts.
 	// +optional
 	LastRestartTime *metav1.Time `json:"lastRestartTime,omitempty"`
+
+	// GroupRestartCount is the durable number of accepted group rebuilds in
+	// GroupRestartRevision. Unlike RestartCount it never resets after a quiet period.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	GroupRestartCount int32 `json:"groupRestartCount,omitempty"`
+
+	// GroupRestartRevision identifies the Pod templates (not policy, budget or size).
+	// +optional
+	GroupRestartRevision string `json:"groupRestartRevision,omitempty"`
+
+	// RestartBudgetExhausted suppresses creation and updates until explicit recovery
+	// or a new Pod-template revision, even if the budget is changed or removed.
+	// +optional
+	RestartBudgetExhausted bool `json:"restartBudgetExhausted,omitempty"`
 }
 
 // ContainerUpdateBaseline records the pre-update state of a container for
@@ -226,6 +241,9 @@ type RoleInstanceComponentStatus struct {
 type RoleInstanceConditionType string
 
 const (
+	// RoleInstanceDegraded indicates that automatic group recovery is exhausted.
+	RoleInstanceDegraded RoleInstanceConditionType = "Degraded"
+
 	// RoleInstanceReady corresponding condition status was set to "False" by multiple writers,
 	// the condition status will be considered as "True" only when all these writers
 	// set it to "True".

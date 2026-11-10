@@ -8935,6 +8935,13 @@ spec:
                           format: int32
                           type: integer
                       type: object
+                    maxGroupRestarts:
+                      description: |-
+                        MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                        revision. Requires an explicit whole-RoleInstance recreate policy in RestartPolicy.
+                      format: int32
+                      minimum: 0
+                      type: integer
                     minReadySeconds:
                       default: 0
                       description: |-
@@ -16438,6 +16445,11 @@ spec:
                       workloads
                     rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
                       && self.workload.kind == 'InstanceSet')
+                  - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                      recreate policy
+                    rule: '!has(self.maxGroupRestarts) || (has(self.restartPolicy)
+                      && (self.restartPolicy == ''RecreateRoleInstanceOnPodRestart''
+                      || self.restartPolicy == ''RecreateRoleInstanceOnPodRestartFromCreation''))'
                   - message: template and templateRef are mutually exclusive
                     rule: '!(has(self.template) && has(self.templateRef))'
                 minItems: 1
@@ -23995,6 +24007,13 @@ spec:
                               format: int32
                               minimum: 0
                               type: integer
+                            maxGroupRestarts:
+                              description: |-
+                                MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                                revision. Unset is unlimited; zero stops on the first eligible fault.
+                              format: int32
+                              minimum: 0
+                              type: integer
                             type:
                               description: |-
                                 Type defines the restart policy when pod failures happen.
@@ -24010,6 +24029,10 @@ spec:
                               to baseDelaySeconds
                             rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                               || self.maxDelaySeconds >= self.baseDelaySeconds'
+                          - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                              recreate policy
+                            rule: '!has(self.maxGroupRestarts) || (has(self.type)
+                              && self.type != ''None'')'
                       type: object
                     dependencies:
                       description: Dependencies of the role
@@ -25444,6 +25467,13 @@ spec:
                               format: int32
                               minimum: 0
                               type: integer
+                            maxGroupRestarts:
+                              description: |-
+                                MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                                revision. Unset is unlimited; zero stops on the first eligible fault.
+                              format: int32
+                              minimum: 0
+                              type: integer
                             type:
                               description: |-
                                 Type defines the restart policy when pod failures happen.
@@ -25459,6 +25489,10 @@ spec:
                               to baseDelaySeconds
                             rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                               || self.maxDelaySeconds >= self.baseDelaySeconds'
+                          - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                              recreate policy
+                            rule: '!has(self.maxGroupRestarts) || (has(self.type)
+                              && self.type != ''None'')'
                         sharedServiceSelection:
                           description: |-
                             SharedServiceSelection indicates the service policy of the role. When unset, a RoleInstanceSet

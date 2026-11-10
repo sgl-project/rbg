@@ -62,6 +62,15 @@ func ValidateRestartPolicyWorkloadCompatibility(fieldPath string, roles []RoleSp
 	var allErrs []error
 	for i := range roles {
 		role := &roles[i]
+		cfg := role.GetRestartPolicyConfig()
+		if cfg.MaxGroupRestarts != nil {
+			if *cfg.MaxGroupRestarts < 0 || !IsRoleInstanceRecreatePolicy(cfg.Type) {
+				allErrs = append(allErrs, fmt.Errorf("%s[%d] (role %q): maxGroupRestarts must be non-negative and requires a whole-RoleInstance recreate policy", fieldPath, i, role.Name))
+			}
+			if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+				allErrs = append(allErrs, fmt.Errorf("%s[%d] (role %q): maxGroupRestarts is only supported by native RoleInstanceSet workloads", fieldPath, i, role.Name))
+			}
+		}
 		if role.GetRestartPolicy() != RecreateRoleInstanceOnPodRestartFromCreation {
 			continue
 		}

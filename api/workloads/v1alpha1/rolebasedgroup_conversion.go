@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -160,9 +161,7 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 			Size:                src.LeaderWorkerSet.Size,
 			LeaderTemplatePatch: src.LeaderWorkerSet.PatchLeaderTemplate,
 			WorkerTemplatePatch: src.LeaderWorkerSet.PatchWorkerTemplate,
-			RestartPolicyConfig: &v2.RestartPolicyConfig{
-				Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
-			},
+			RestartPolicyConfig: convertRestartPolicyConfigV1alpha1ToV2(src.RestartPolicy, src.MaxGroupRestarts),
 		}
 		// Template source
 		if src.Template != nil || src.TemplateRef != nil {
@@ -189,10 +188,8 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 		}
 		dst.Pattern = v2.Pattern{
 			CustomComponentsPattern: &v2.CustomComponentsPattern{
-				Components: components,
-				RestartPolicyConfig: &v2.RestartPolicyConfig{
-					Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
-				},
+				Components:          components,
+				RestartPolicyConfig: convertRestartPolicyConfigV1alpha1ToV2(src.RestartPolicy, src.MaxGroupRestarts),
 			},
 		}
 
@@ -218,6 +215,20 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 // None for StandalonePattern) at runtime — matching v1alpha1's documented behavior.
 func convertRestartPolicyV1alpha1ToV2(src RestartPolicyType) v2.RestartPolicyType {
 	return v2.RestartPolicyType(src)
+}
+
+// convertRestartPolicyConfigV1alpha1ToV2 builds the hub restart config from the
+// fields v1alpha1 carries. A missing legacy policy stays empty so the hub's
+// pattern-aware default applies (Recreate for LeaderWorkerPattern /
+// CustomComponentsPattern, None for StandalonePattern), matching v1alpha1's
+// documented behavior. v1alpha1 has no backoff fields, so the delays stay unset
+// and the hub defaults apply at runtime.
+func convertRestartPolicyConfigV1alpha1ToV2(legacy RestartPolicyType, maxGroupRestarts *int32) *v2.RestartPolicyConfig {
+	dst := &v2.RestartPolicyConfig{Type: convertRestartPolicyV1alpha1ToV2(legacy)}
+	if maxGroupRestarts != nil {
+		dst.MaxGroupRestarts = ptr.To(*maxGroupRestarts)
+	}
+	return dst
 }
 
 // convertTemplateRefV1alpha1ToV2 converts a v1alpha1 TemplateRef (+patch) to a v1alpha2 TemplateRef.
@@ -350,6 +361,12 @@ func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 	dst.Annotations = src.Annotations
 	dst.Replicas = src.Replicas
 	dst.RestartPolicy = RestartPolicyType(src.GetRawRestartPolicyType())
+	// Only the restart budget has a v1alpha1 representation; the backoff delays are
+	// v1alpha2-only, so a v1alpha1 read-modify-write intentionally drops them.
+	dst.MaxGroupRestarts = nil
+	if backoff := src.GetRawRestartBackoff(); backoff != nil && backoff.MaxGroupRestarts != nil {
+		dst.MaxGroupRestarts = ptr.To(*backoff.MaxGroupRestarts)
+	}
 	dst.Dependencies = src.Dependencies
 	dst.ServicePorts = src.ServicePorts
 	dst.MinReadySeconds = src.MinReadySeconds

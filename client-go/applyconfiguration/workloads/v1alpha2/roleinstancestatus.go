@@ -35,6 +35,9 @@ type RoleInstanceStatusApplyConfiguration struct {
 	InPlaceUpdateContainerBaselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline `json:"inPlaceUpdateContainerBaselines,omitempty"`
 	RestartCount                    *int32                                                          `json:"restartCount,omitempty"`
 	LastRestartTime                 *v1.Time                                                        `json:"lastRestartTime,omitempty"`
+	GroupRestartCount               *int32                                                          `json:"groupRestartCount,omitempty"`
+	GroupRestartRevision            *string                                                         `json:"groupRestartRevision,omitempty"`
+	RestartBudgetExhausted          *bool                                                           `json:"restartBudgetExhausted,omitempty"`
 }
 
 // RoleInstanceStatusApplyConfiguration constructs a declarative configuration of the RoleInstanceStatus type for use with
@@ -136,5 +139,29 @@ func (b *RoleInstanceStatusApplyConfiguration) WithRestartCount(value int32) *Ro
 // If called multiple times, the LastRestartTime field is set to the value of the last call.
 func (b *RoleInstanceStatusApplyConfiguration) WithLastRestartTime(value v1.Time) *RoleInstanceStatusApplyConfiguration {
 	b.LastRestartTime = &value
+	return b
+}
+
+// WithGroupRestartCount sets the GroupRestartCount field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the GroupRestartCount field is set to the value of the last call.
+func (b *RoleInstanceStatusApplyConfiguration) WithGroupRestartCount(value int32) *RoleInstanceStatusApplyConfiguration {
+	b.GroupRestartCount = &value
+	return b
+}
+
+// WithGroupRestartRevision sets the GroupRestartRevision field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the GroupRestartRevision field is set to the value of the last call.
+func (b *RoleInstanceStatusApplyConfiguration) WithGroupRestartRevision(value string) *RoleInstanceStatusApplyConfiguration {
+	b.GroupRestartRevision = &value
+	return b
+}
+
+// WithRestartBudgetExhausted sets the RestartBudgetExhausted field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the RestartBudgetExhausted field is set to the value of the last call.
+func (b *RoleInstanceStatusApplyConfiguration) WithRestartBudgetExhausted(value bool) *RoleInstanceStatusApplyConfiguration {
+	b.RestartBudgetExhausted = &value
 	return b
 }

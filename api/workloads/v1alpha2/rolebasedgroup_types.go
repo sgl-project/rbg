@@ -196,6 +196,7 @@ func IsRoleInstanceRecreatePolicy(policy RestartPolicyType) bool {
 
 // RestartPolicyConfig groups restart policy type and backoff configuration.
 // +kubebuilder:validation:XValidation:rule="!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds) || self.maxDelaySeconds >= self.baseDelaySeconds",message="maxDelaySeconds must be greater than or equal to baseDelaySeconds"
+// +kubebuilder:validation:XValidation:rule="!has(self.maxGroupRestarts) || (has(self.type) && self.type != 'None')",message="maxGroupRestarts requires an explicit whole-RoleInstance recreate policy"
 type RestartPolicyConfig struct {
 	// Type defines the restart policy when pod failures happen.
 	// Default is RecreateRoleInstanceOnPodRestart.
@@ -219,6 +220,14 @@ type RestartPolicyConfig struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=600
 	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
+
+	// MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+	// revision. Unset is unlimited; zero stops on the first eligible fault. Exhaustion
+	// terminates and retains the group's Pod API objects until explicit RI recovery.
+	// Only supported by native RoleInstanceSet workloads.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 }
 
 // resolveRestartPolicyConfig folds the deprecated restartPolicy string into cfg.

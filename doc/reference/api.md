@@ -119,6 +119,58 @@ Reusable pod template at RBG level:
 |-------|-------------|
 | `gracePeriodSeconds` | *int32 — wait time before forcing update |
 
+## RestartPolicyConfig and RoleInstance restart budget
+
+Both served RBG APIs preserve this configuration. The v1alpha1 path is
+`spec.roles[].restartPolicy` plus `spec.roles[].maxGroupRestarts`; the v1alpha2
+path is under `leaderWorkerPattern` or `customComponentsPattern`. Conversion
+carries the effective policy and nil/zero/nonzero restart budgets without losing
+them. `baseDelaySeconds` and `maxDelaySeconds` are v1alpha2-only: they have no
+v1alpha1 field and are not round-tripped through v1alpha1.
+
+Writing a component-backed role through v1alpha1 is still subject to the existing
+v1alpha1 rule that a role-level template is required; a role created through
+v1alpha2 has none, so that write is rejected until the rule is relaxed. The
+leader-worker shape is unaffected.
+
+
+`RestartPolicyConfig` also has optional `maxGroupRestarts` (`*int32`, minimum `0`,
+unset = unlimited). It requires an explicit `type` of
+`RecreateRoleInstanceOnPodRestart` or `RecreateRoleInstanceOnPodRestartFromCreation` and is
+supported only by native RoleInstanceSet workloads. Place it on a role's
+`leaderWorkerPattern.restartPolicyConfig` or
+`customComponentsPattern.restartPolicyConfig` (v1alpha1: `spec.roles[].maxGroupRestarts`,
+which requires the same policy spelled out in `spec.roles[].restartPolicy`); it is propagated to
+`RoleInstanceSet.spec.roleInstanceTemplate.restartPolicyConfig` and then to
+`RoleInstance.spec.restartPolicyConfig`.
+
+The following `RoleInstanceStatus` fields persist the per-instance budget:
+
+- `groupRestartCount` (`int32`): accepted full-group rebuilds. Persisted before
+  deleting Pods; does not reset after Ready or a quiet period, unlike backoff's
+  `restartCount`.
+- `groupRestartRevision` (`string`): opaque Pod-template identity. Policy, delay,
+  limit and component-size edits do not change it; a new Pod template gets a fresh
+  budget. The RI UID already identifies the replica.
+- `restartBudgetExhausted` (`bool`): persistent suppression, independent of the
+  current configured policy/limit. No replacement creation or updates while true.
+
+At exhaustion, `Degraded=True` with reason `GroupRestartBudgetExceeded` and
+`RoleInstanceReady=False`. The complete group is terminated. Owned Pods that are
+not already deleting receive the internal
+`rbg.workloads.x-k8s.io/group-restart-budget-cleanup` finalizer, retaining their API
+objects while kubelet terminates containers and releases scheduled resources.
+No Pod phase is synthesized; native logs are not guaranteed. The same finalizer on
+the RI protects teardown cleanup.
+
+Explicit recovery is the RI annotation `rbg.workloads.x-k8s.io/recover=true`, added
+**after** exhaustion. The controller invalidates pre-exhaustion annotations,
+releases budget Pod finalizers, clears the count and suppression, consumes the
+annotation, and permits a fresh group. Other annotation values, Ready transitions,
+and policy/limit edits/removal do not recover an exhausted RI. RI deletion,
+scale-down and rollout remove budget finalizers as teardown without charging or
+recovering the removed RI. See [Failure Handling](../features/failure-handling.md).
+
 ## RestartPolicyType
 
 | Value | Description |

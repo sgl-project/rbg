@@ -133,6 +133,80 @@ With the above configuration: first crash is immediate, second crash delayed 10s
 
 > **Note**: `maxDelaySeconds` must be greater than or equal to `baseDelaySeconds` (enforced by CEL validation at admission). Because `maxDelaySeconds` defaults to 600, setting `baseDelaySeconds` above 600 without explicitly setting `maxDelaySeconds` will be rejected. If you need a base delay above 600s, set `maxDelaySeconds` to the same or higher value.
 
+## Bounded Group Recovery
+
+Both served RBG APIs support the same budget: v1alpha1 configures it as `spec.roles[].maxGroupRestarts` alongside `spec.roles[].restartPolicy`; v1alpha2 sets it on the pattern's `restartPolicyConfig.maxGroupRestarts`. Conversion preserves the effective policy and `maxGroupRestarts`, including explicit zero. `baseDelaySeconds` and `maxDelaySeconds` are v1alpha2-only: v1alpha1 has no field for them, so they are not round-tripped through v1alpha1.
+
+When writing through v1alpha1, note that v1alpha1 still requires a role-level template for a component-backed role. A component-backed role that was created through v1alpha2 has no such template, so its v1alpha1 write is rejected by that pre-existing v1alpha1 validation; the spec change has to go through v1alpha2 until the template requirement is relaxed. Leader-worker roles are unaffected because they carry a role-level template.
+
+
+For native RoleInstanceSet workloads, set `restartPolicyConfig.maxGroupRestarts` on
+`leaderWorkerPattern` or `customComponentsPattern` (or on a directly managed
+RoleInstance's `spec.restartPolicyConfig`):
+
+```yaml
+restartPolicyConfig:
+  type: RecreateRoleInstanceOnPodRestartFromCreation
+  maxGroupRestarts: 2
+```
+
+The optional non-negative limit applies to **both** whole-RoleInstance recreate
+policies. Specify `type` explicitly when setting a budget. `None` and backing
+LeaderWorkerSet, Deployment, and StatefulSet workloads do not support a budget.
+An unset limit preserves unbounded automatic recovery. `0` permits healthy initial
+creation, but stops recovery on the first eligible fault; `2` permits exactly two
+accepted whole-group rebuilds, then stops on the next eligible fault. Ignored
+components cannot trigger exhaustion, but are terminated with the complete group
+if another member triggers it.
+
+### Durable accounting and exhaustion
+
+The budget is per RoleInstance UID and Pod-template revision. The RI status carries
+`groupRestartCount`, `groupRestartRevision`, and `restartBudgetExhausted`. Accepted
+rebuilds are recorded under an optimistic status lock **before** any Pod deletion;
+repeated or suppressed attempts do not consume budget. The durable count is separate
+from the quiet-period-resetting `restartCount` used for backoff. Ready transitions,
+quiet periods, component size changes, policy edits, and limit edits/removal do not
+reset it. When no budget remains, exhaustion takes precedence over restart backoff.
+
+On exhaustion, the RI reports `Degraded=True`, reason
+`GroupRestartBudgetExceeded`, and `RoleInstanceReady=False`. The controller stops
+replacement creation and in-place updates, adds the internal
+`rbg.workloads.x-k8s.io/group-restart-budget-cleanup` finalizer to **all owned Pods
+that can still receive it**, then requests deletion of the complete group. Pods
+already deleting cannot acquire a new finalizer. Suppression is persisted in RI
+status and survives controller restarts, even if all retained Pods disappear.
+Changing or removing the limit or policy does **not** unfreeze an exhausted RI.
+
+Finalizers retain Pod **API objects and status**, not running containers. Kubelet's
+Kubernetes 1.27+ normal deletion flow transitions Pods to a terminal phase and
+releases scheduled resources (including GPUs); the controller never synthesizes
+Pod phases. Native kubelet/CRI logs are best effort and are **not** guaranteed to
+remain available. Export diagnostics to an external logging system.
+
+### Explicit recovery and lifecycle cleanup
+
+After investigating and fixing the failure, annotate the **RoleInstance**, not an
+RBG, RoleInstanceSet, or Pod:
+
+```bash
+kubectl annotate roleinstance <instance-name> -n <namespace> \
+  rbg.workloads.x-k8s.io/recover=true --overwrite
+```
+
+Only the exact value `true` requests recovery. An annotation that predates
+exhaustion is removed when exhaustion is recorded: recovery must be requested
+afterward. Recovery releases the group's budget finalizers, clears suppression and
+the durable count, and allows a fresh group. The controller consumes the annotation.
+A new Pod-template revision also releases obsolete retained objects and gets a fresh
+budget; a limit/policy/size edit alone is not a new Pod-template revision.
+
+Deleting an RI, selecting it for rollout replacement, or scaling it down is
+**teardown**, not recovery. An RI cleanup finalizer keeps cleanup retryable until
+all of its owned Pods have had budget finalizers removed. Teardown never charges
+another restart, clears the counter as a recovery side effect, or creates a new
+group. Other RI replicas remain independent and continue normal reconciliation.
+
 ## Excluding Components from Restart Policy Trigger
 
 You can prevent specific pods from triggering the role's restart policy by setting an annotation on the pod template. This is useful for auxiliary components (e.g., monitoring, logging sidecars) whose failures should not affect the main workload. The annotation works with any deployment pattern (standalonePattern, leaderWorkerPattern, or customComponentsPattern).

@@ -37,6 +37,8 @@ type Interface interface {
 	// ClearRestarting removes the instance from the in-memory restarting cache.
 	// Called when the instance transitions to Ready, or when it is deleted.
 	ClearRestarting(instance *workloadsv1alpha2.RoleInstance)
+	// CleanupRestartBudget releases retained Pod objects during RI teardown.
+	CleanupRestartBudget(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) error
 }
 
 // restartingCache tracks instances currently undergoing restart-policy recreation.

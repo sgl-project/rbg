@@ -47,6 +47,10 @@ const (
 
 func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, time.Duration, error) {
+	// Budget lifecycle precedes backoff, ordinary scale and in-place updates.
+	if blocked, err := c.reconcileRestartBudget(ctx, updateInstance); blocked || err != nil {
+		return true, RestartBudgetRequeueAfter, err
+	}
 	// Record node bindings for in-place scheduling.
 	// Piggybacks on the already-fetched pods — no additional API calls.
 	RecordNodeBindings(c.bindings, updateInstance, pods)
@@ -113,6 +117,16 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods = append(allPods, inactivePods...)
 
 	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines) {
+		if updateInstance.Spec.GetRestartPolicyConfig().MaxGroupRestarts != nil || updateInstance.Status.GroupRestartRevision != "" {
+			livePods, accepted, err := c.acceptBudgetRestart(ctx, updateInstance)
+			if err != nil {
+				return nil, err
+			}
+			if !accepted {
+				return &expectationDiff{requeueAfter: RestartBudgetRequeueAfter}, nil
+			}
+			return &expectationDiff{toDeleteNum: len(livePods), toDeletePod: livePods}, nil
+		}
 		// Mark instance as restarting to prevent cascading re-triggers
 		setRestartingCondition(updateInstance)
 		// Update restart tracking for exponential backoff
@@ -332,7 +346,8 @@ func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha
 	var modified bool
 
 	for _, pod := range podsToDelete {
-		if err := c.Delete(ctx, pod); err != nil {
+		uid := pod.UID
+		if err := c.Delete(ctx, pod, client.Preconditions{UID: &uid}); err != nil && !apierrors.IsNotFound(err) {
 			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedDelete", "failed to delete pod %s: %v", pod.Name, err)
 			return modified, err
 		}
@@ -741,8 +756,8 @@ func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
 		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
 			instance.Status.Conditions[i].Status = v1.ConditionTrue
 			instance.Status.Conditions[i].LastTransitionTime = metav1.Now()
-			instance.Status.Conditions[i].Reason = "RestartPolicyTriggered"
-			instance.Status.Conditions[i].Message = "Instance is being recreated due to restart policy"
+			instance.Status.Conditions[i].Reason = restartPolicyTriggeredReason
+			instance.Status.Conditions[i].Message = restartPolicyTriggeredMessage
 			return
 		}
 	}
@@ -750,8 +765,8 @@ func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
 		Type:               workloadsv1alpha2.RoleInstanceRestarting,
 		Status:             v1.ConditionTrue,
 		LastTransitionTime: metav1.Now(),
-		Reason:             "RestartPolicyTriggered",
-		Message:            "Instance is being recreated due to restart policy",
+		Reason:             restartPolicyTriggeredReason,
+		Message:            restartPolicyTriggeredMessage,
 	})
 }
 

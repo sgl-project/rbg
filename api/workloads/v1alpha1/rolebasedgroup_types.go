@@ -296,6 +296,7 @@ type RollingUpdate struct {
 // +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'InstanceSet'",message="templateRef is not supported for InstanceSet workloads"
 // +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'LeaderWorkerSet'",message="templateRef is not supported for LeaderWorkerSet workloads"
 // +kubebuilder:validation:XValidation:rule="(has(self.template) != has(self.templateRef)) || (has(self.workload) && self.workload.kind == 'InstanceSet')",message="template or templateRef must be set for non-InstanceSet workloads"
+// +kubebuilder:validation:XValidation:rule="!has(self.maxGroupRestarts) || (has(self.restartPolicy) && (self.restartPolicy == 'RecreateRoleInstanceOnPodRestart' || self.restartPolicy == 'RecreateRoleInstanceOnPodRestartFromCreation'))",message="maxGroupRestarts requires an explicit whole-RoleInstance recreate policy"
 // Note: "templatePatch is only valid when templateRef is set" validation is done in controller
 // because templatePatch is runtime.RawExtension (x-kubernetes-preserve-unknown-fields) which CEL cannot inspect
 type RoleSpec struct {
@@ -332,6 +333,12 @@ type RoleSpec struct {
 	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart,RecreateRoleInstanceOnPodRestartFromCreation}
 	// +optional
 	RestartPolicy RestartPolicyType `json:"restartPolicy,omitempty"`
+
+	// MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+	// revision. Requires an explicit whole-RoleInstance recreate policy in RestartPolicy.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 
 	// Dependencies of the role
 	// +optional

@@ -136,17 +136,29 @@ func validateV1alpha1DeprecatedRoles(
 		return err
 	}
 	for i := range newRoles {
-		if newRoles[i].RestartPolicy == RecreateRoleInstanceOnPodRestartFromCreation && converted.Roles[i].StandalonePattern != nil {
-			// StandalonePattern has no restart-policy field, so conversion drops
-			// the role-level v1alpha1 value. Carry it in a validation-only pattern
-			// to check the backing workload rather than silently accepting it.
-			converted.Roles[i].Pattern = v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
-				RestartPolicyConfig: &v2.RestartPolicyConfig{Type: v2.RecreateRoleInstanceOnPodRestartFromCreation},
-			}}
+		role := &newRoles[i]
+		if role.MaxGroupRestarts != nil && !v2.IsRoleInstanceRecreatePolicy(v2.RestartPolicyType(role.RestartPolicy)) {
+			// Match the RoleSpec CEL rule even when this validator is invoked without
+			// API-server schema validation. Legacy/default fallback is not an explicit type.
+			return fmt.Errorf("%s[%d] (role %q): maxGroupRestarts requires an explicit whole-RoleInstance recreate policy", fieldPath, i, role.Name)
+		}
+		if converted.Roles[i].StandalonePattern != nil &&
+			(role.MaxGroupRestarts != nil || role.RestartPolicy == RecreateRoleInstanceOnPodRestartFromCreation) {
+			// StandalonePattern has no restart-policy field. Validate the v1alpha1 restart
+			// fields in a temporary pattern before grandfathering so neither an unsupported
+			// policy nor a budget can disappear during conversion.
+			cfg := convertRestartPolicyConfigV1alpha1ToV2(role.RestartPolicy, role.MaxGroupRestarts)
+			converted.Roles[i].Pattern = v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{RestartPolicyConfig: cfg}}
 		}
 	}
 	if err := v2.ValidateRestartPolicyWorkloadCompatibility(fieldPath, converted.Roles); err != nil {
 		return err
+	}
+	for i := range newRoles {
+		role := &newRoles[i]
+		if role.MaxGroupRestarts != nil && role.LeaderWorkerSet == nil && len(role.Components) == 0 {
+			return fmt.Errorf("%s[%d] (role %q): maxGroupRestarts requires leaderWorkerSet or components; standalone roles cannot retain restart configuration", fieldPath, i, role.Name)
+		}
 	}
 
 	oldWorkloadTypes := make(map[string]string, len(oldRoles))

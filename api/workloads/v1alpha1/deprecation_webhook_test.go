@@ -18,6 +18,7 @@ package v1alpha1
 
 import (
 	"context"
+	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -244,4 +245,76 @@ func TestDeprecatedWorkloadValidatorValidateUpdateTrustsAdmissionOldObject(t *te
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "new uses are not accepted")
 	})
+}
+
+func TestRestartBudgetAlpha1Admission(t *testing.T) {
+	tests := []struct {
+		name     string
+		workload WorkloadSpec
+		policy   RestartPolicyType
+		budget   *int32
+		wantErr  string
+	}{
+		{name: "nil budget", policy: RecreateRoleInstanceOnPodRestartFromCreation},
+		{name: "zero budget", policy: RecreateRoleInstanceOnPodRestartFromCreation, budget: ptr.To(int32(0))},
+		{name: "positive budget", policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(3))},
+		{name: "None without budget", policy: NoneRestartPolicy},
+		{name: "None zero budget", policy: NoneRestartPolicy, budget: ptr.To(int32(0)), wantErr: "requires an explicit whole-RoleInstance recreate policy"},
+		{name: "None positive budget", policy: NoneRestartPolicy, budget: ptr.To(int32(3)), wantErr: "requires an explicit whole-RoleInstance recreate policy"},
+		{name: "empty policy with budget", budget: ptr.To(int32(3)), wantErr: "requires an explicit whole-RoleInstance recreate policy"},
+		{name: "negative budget", policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(-1)), wantErr: "non-negative"},
+		{name: "STS budget", workload: WorkloadSpec{APIVersion: "apps/v1", Kind: "StatefulSet"}, policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(2)), wantErr: "maxGroupRestarts is only supported"},
+		{name: "LWS budget", workload: WorkloadSpec{APIVersion: "leaderworkerset.x-k8s.io/v1", Kind: "LeaderWorkerSet"}, policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(0)), wantErr: "maxGroupRestarts is only supported"},
+		{name: "custom workload budget", workload: WorkloadSpec{APIVersion: "example.com/v1", Kind: "CustomWorkload"}, policy: RecreateRoleInstanceOnPodRestart, budget: ptr.To(int32(2)), wantErr: "maxGroupRestarts is only supported"},
+		{name: "deployment from-creation policy", workload: WorkloadSpec{APIVersion: "apps/v1", Kind: "Deployment"}, policy: RecreateRoleInstanceOnPodRestartFromCreation, wantErr: "is not supported"},
+	}
+	for _, tt := range tests {
+		for _, pattern := range []string{"leaderWorker", "components", "standalone"} {
+			for _, set := range []bool{false, true} {
+				t.Run(fmt.Sprintf("%s/%s/set=%t", tt.name, pattern, set), func(t *testing.T) {
+					role := restartBudgetRole(pattern)
+					role.Workload = tt.workload
+					role.RestartPolicy = tt.policy
+					role.MaxGroupRestarts = tt.budget
+					oldRole := restartBudgetRole(pattern)
+					oldRole.Workload = tt.workload
+					var obj, old runtime.Object
+					fieldPath := "spec.roles[0]"
+					if set {
+						obj = &RoleBasedGroupSet{Spec: RoleBasedGroupSetSpec{Template: RoleBasedGroupSpec{Roles: []RoleSpec{role}}}}
+						old = &RoleBasedGroupSet{Spec: RoleBasedGroupSetSpec{Template: RoleBasedGroupSpec{Roles: []RoleSpec{oldRole}}}}
+						fieldPath = "spec.template.roles[0]"
+					} else {
+						obj = &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{role}}}
+						old = &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{oldRole}}}
+					}
+					wantErr := tt.wantErr
+					if wantErr == "" && pattern == "standalone" && tt.budget != nil {
+						wantErr = "standalone roles cannot retain restart configuration"
+					}
+					for _, allowExisting := range []bool{false, true} {
+						validator := &deprecatedWorkloadValidator{EnableDeprecatedWorkloadTypes: allowExisting}
+						for _, update := range []bool{false, true} {
+							var warnings []string
+							var err error
+							if update {
+								warnings, err = validator.ValidateUpdate(context.Background(), old, obj)
+							} else {
+								warnings, err = validator.ValidateCreate(context.Background(), obj)
+							}
+							require.Len(t, warnings, 1)
+							if wantErr == "" {
+								require.NoError(t, err)
+								continue
+							}
+							require.Error(t, err)
+							assert.Contains(t, err.Error(), wantErr)
+							assert.Contains(t, err.Error(), fieldPath)
+							assert.NotContains(t, err.Error(), "deprecated", "restart compatibility precedes grandfathering")
+						}
+					}
+				})
+			}
+		}
+	}
 }

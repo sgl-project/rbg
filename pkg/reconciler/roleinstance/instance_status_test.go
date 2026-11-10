@@ -17,13 +17,19 @@ limitations under the License.
 package roleinstance
 
 import (
+	"context"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 )
 
 func TestInconsistentBaselines(t *testing.T) {
@@ -229,4 +235,107 @@ func TestRestartTrackingChanged(t *testing.T) {
 			assert.Equal(t, tt.expectedChanged, result)
 		})
 	}
+}
+
+func TestStaleStatusPreservesLiveRestartBudget(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	stale := instance.DeepCopy()
+	instance.Status.GroupRestartCount = 2
+	instance.Status.GroupRestartRevision = "template-hash"
+	instance.Status.RestartBudgetExhausted = true
+	instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceCustomReady, Status: v1.ConditionFalse, Reason: "LiveExternal"})
+	synccontrol.EnforceRestartBudgetConditions(instance)
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(instance).WithObjects(instance).Build()
+	updater := &realStatusUpdater{Client: c, apiReader: c}
+	status := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation, Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+		{Type: workloadsv1alpha2.RoleInstanceReady, Status: v1.ConditionTrue},
+		{Type: workloadsv1alpha2.RoleInstanceCustomReady, Status: v1.ConditionTrue, Reason: "StaleExternal"},
+	}}
+	require.NoError(t, updater.updateStatus(ctx, stale, status))
+	live := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.EqualValues(t, 2, live.Status.GroupRestartCount)
+	require.Equal(t, "template-hash", live.Status.GroupRestartRevision)
+	require.True(t, live.Status.RestartBudgetExhausted)
+	conditions := map[workloadsv1alpha2.RoleInstanceConditionType]workloadsv1alpha2.RoleInstanceCondition{}
+	for _, condition := range live.Status.Conditions {
+		require.NotContains(t, conditions, condition.Type)
+		conditions[condition.Type] = condition
+	}
+	require.Equal(t, v1.ConditionFalse, conditions[workloadsv1alpha2.RoleInstanceReady].Status)
+	require.Equal(t, synccontrol.GroupRestartBudgetExceeded, conditions[workloadsv1alpha2.RoleInstanceDegraded].Reason)
+	require.Equal(t, "LiveExternal", conditions[workloadsv1alpha2.RoleInstanceCustomReady].Reason)
+	// Nor can a stale exhausted snapshot resurrect state after explicit recovery.
+	stale = live.DeepCopy()
+	live.Status.RestartBudgetExhausted = false
+	live.Status.GroupRestartCount = 0
+	live.Status.Conditions = nil
+	require.NoError(t, c.Status().Update(ctx, live))
+	staleStatus := stale.Status.DeepCopy()
+	require.NoError(t, updater.updateStatus(ctx, stale, staleStatus))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.False(t, live.Status.RestartBudgetExhausted)
+	require.Zero(t, live.Status.GroupRestartCount)
+	for _, cond := range live.Status.Conditions {
+		require.NotEqual(t, workloadsv1alpha2.RoleInstanceDegraded, cond.Type)
+	}
+}
+
+type budgetStatusWriteCounter struct {
+	client.Client
+	writes int
+}
+type budgetCountingStatusWriter struct {
+	client.SubResourceWriter
+	owner *budgetStatusWriteCounter
+}
+
+func (c *budgetStatusWriteCounter) Status() client.SubResourceWriter {
+	return &budgetCountingStatusWriter{SubResourceWriter: c.Client.Status(), owner: c}
+}
+func (c *budgetCountingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	c.owner.writes++
+	return c.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+func TestExhaustedRestartBudgetStatusConverges(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.ReadyPolicy = workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone
+	instance.Status.RestartBudgetExhausted = true
+	instance.Status.GroupRestartRevision = "template"
+	synccontrol.EnforceRestartBudgetConditions(instance)
+	cli := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(instance).WithObjects(instance).Build()
+	counter := &budgetStatusWriteCounter{Client: cli}
+	updater := newStatusUpdater(counter, cli)
+	update := func() {
+		live := &workloadsv1alpha2.RoleInstance{}
+		require.NoError(t, cli.Get(ctx, client.ObjectKeyFromObject(instance), live))
+		status := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: live.Generation}
+		require.NoError(t, updater.UpdateInstanceStatus(ctx, live, status, nil))
+	}
+	update()
+	require.Positive(t, counter.writes, "initial component-status projection should be written")
+	writes := counter.writes
+	update()
+	require.Equal(t, writes, counter.writes, "unchanged exhausted conditions must not rewrite status every reconcile")
+}
+
+func TestStaleStatusDoesNotRollBackObservedGeneration(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	stale := instance.DeepCopy()
+	instance.Status.ObservedGeneration = 5
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(instance).WithObjects(instance).Build()
+	updater := &realStatusUpdater{Client: c, apiReader: c}
+	require.NoError(t, updater.updateStatus(ctx, stale, &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1}))
+	live := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.EqualValues(t, 5, live.Status.ObservedGeneration)
+	// Different RI UID at the same name must never receive the old object's status.
+	stale.UID = "old-uid"
+	require.NoError(t, updater.updateStatus(ctx, stale, &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 9, LastRestartTime: &metav1.Time{}}))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.EqualValues(t, 5, live.Status.ObservedGeneration)
 }

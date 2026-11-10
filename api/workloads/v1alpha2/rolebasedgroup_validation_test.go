@@ -1050,3 +1050,19 @@ func TestRoleBasedGroupValidator_ValidateUpdate_TypeExactGrandfathering(t *testi
 		assert.Contains(t, err.Error(), "new uses are not accepted")
 	})
 }
+
+func TestRestartBudgetWorkloadCompatibility(t *testing.T) {
+	for _, workload := range []string{constants.RoleInstanceSetWorkloadType, constants.LeaderWorkerSetWorkloadType, constants.DeploymentWorkloadType, constants.StatefulSetWorkloadType} {
+		for _, policy := range []RestartPolicyType{RestartPolicyNone, RecreateRoleInstanceOnPodRestart, RecreateRoleInstanceOnPodRestartFromCreation} {
+			for _, limit := range []int32{-1, 0, 2} {
+				role := RoleSpec{Name: "worker", Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: workload}, Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{RestartPolicyConfig: &RestartPolicyConfig{Type: policy, MaxGroupRestarts: ptr.To(limit)}}}}
+				err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{role})
+				if workload == constants.RoleInstanceSetWorkloadType && IsRoleInstanceRecreatePolicy(policy) && limit >= 0 {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+			}
+		}
+	}
+}
