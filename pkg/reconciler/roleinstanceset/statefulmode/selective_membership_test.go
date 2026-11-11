@@ -19,6 +19,7 @@ package statefulmode
 import (
 	"context"
 	"fmt"
+	"math"
 	"testing"
 	"time"
 
@@ -118,7 +119,9 @@ func TestSparseEarlyRollbackRetainsReplacementScope(t *testing.T) {
 	require.Equal(t, []string{"sparse-rollback-5"}, h.objects.created)
 	require.Empty(t, h.objects.deleted)
 	require.NoError(t, h.control.persistRolloutReplacementState(context.Background(), h.set, &h.set.Status, h.current.Name, 4))
-	require.Equal(t, int32(2), h.set.Status.RolloutReplacementState.Partition)
+	// Bounds are ordinals: position 2 of [0,2,4] is recorded as [4,5).
+	require.Equal(t, int32(4), h.set.Status.RolloutReplacementState.Partition)
+	require.Equal(t, int32(5), h.set.Status.RolloutReplacementState.Replicas)
 	// Missing high ordinal 4 remains a replacement in logical position 2.
 	topo, err := computeTopologyForReconcile(h.set, append(instances[:2:2], h.instance(5, h.current.Name, true)), h.current.Name, h.current.Name)
 	require.NoError(t, err)
@@ -241,14 +244,15 @@ func TestSparseEarlyRollbackGapFillingRetainsReplacementProtection(t *testing.T)
 			h.reconcile(t, zero, two, four, surge)
 			h.assertDeleted(t, four.Name)
 			require.Equal(t, &workloadsv1alpha2.RolloutReplacementState{
-				UpdateRevision: h.current.Name, Partition: 2, Replicas: 3,
+				UpdateRevision: h.current.Name, Partition: 4, Replicas: 5,
 			}, h.set.Status.RolloutReplacementState)
 
 			h.set.Spec.Replicas = ptr.To(tc.replicas)
 			h.set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] = tc.record
 			h.set.Generation++
 			// Recover only persisted state in a fresh controller. Position 2 is
-			// now healthy member 2, but the missing replacement is still member 4.
+			// now healthy member 2; the recorded ordinal bounds still identify
+			// the missing replacement as member 4, including once no gap remains.
 			h.set = h.set.DeepCopy()
 			recorder := record.NewFakeRecorder(64)
 			h.control = &defaultStatefulInstanceSetControl{
@@ -455,5 +459,68 @@ func TestDenseSurgeSurvivesExclusionRemoval(t *testing.T) {
 		topo, err = computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
 		require.NoError(t, err)
 		require.Equal(t, []int{0, 1, 2, 4}, topo.ordinals, "clearing input must not reinterpret an existing surge identity")
+	}
+}
+
+// A replacement persisted while members were [0,2] stays protected after a
+// scale-up fills the last gap. Positions [0,2) of the dense [0,1,2] would no
+// longer include the missing replacement 2; its recorded ordinal bounds do.
+func TestReplacementScopeSurvivesLastGapFill(t *testing.T) {
+	h := newRollbackTestHarness(t, "last-gap", 2, 0, 1)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1"}
+	zero := h.instance(0, h.current.Name, true)
+	two := h.instance(2, h.intermediate.Name, true)
+	surge := h.instance(3, h.current.Name, true)
+	h.reconcile(t, zero, two, surge)
+	h.assertDeleted(t, two.Name)
+	require.Equal(t, &workloadsv1alpha2.RolloutReplacementState{
+		UpdateRevision: h.current.Name, Partition: 0, Replicas: 3,
+	}, h.set.Status.RolloutReplacementState)
+
+	h.set.Spec.Replicas = ptr.To[int32](3)
+	delete(h.set.Annotations, constants.CommittedSkipOrdinalsAnnotationKey)
+	h.set.Generation++
+	updateExpectations.DeleteExpectations(getInstanceSetKey(h.set))
+	instances := make([]*workloadsv1alpha2.RoleInstance, 0, 4)
+	instances = append(instances, zero, h.instance(1, h.current.Name, true), surge)
+	h.reconcile(t, instances...)
+	h.assertDeleted(t)
+	require.Equal(t, []string{two.Name}, h.objects.created)
+	require.NotNil(t, h.set.Status.RolloutReplacementState, "filling the last gap must not release the replacement")
+
+	replacement := h.instance(2, h.current.Name, false)
+	instances = append(instances, replacement)
+	h.reconcile(t, instances...)
+	h.assertDeleted(t)
+	require.NotNil(t, h.set.Status.RolloutReplacementState)
+
+	replacement.Status.Conditions[0].Status = "True"
+	h.reconcile(t, instances...)
+	h.assertDeleted(t, surge.Name)
+	require.Nil(t, h.set.Status.RolloutReplacementState)
+}
+
+func TestReplacementStateOrdinalBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		members      []int
+		partition    int
+		lower, upper int32
+	}{
+		{name: "dense bounds equal partition and replicas", members: []int{0, 1, 2}, partition: 1, lower: 1, upper: 3},
+		{name: "dense empty update range", members: []int{0, 1, 2}, partition: 3, lower: 3, upper: 3},
+		{name: "no members", lower: 0, upper: 0},
+		{name: "sparse bounds are ordinals", members: []int{0, 2, 4}, partition: 1, lower: 2, upper: 5},
+		{name: "largest ordinal saturates the upper bound", members: []int{math.MaxInt32 - 1, math.MaxInt32}, lower: math.MaxInt32 - 1, upper: math.MaxInt32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lower, upper := updateRangeOrdinalBounds(tc.members, tc.partition)
+			require.Equal(t, tc.lower, lower)
+			require.Equal(t, tc.upper, upper)
+			state := &workloadsv1alpha2.RolloutReplacementState{Partition: lower, Replicas: upper}
+			for position, ordinal := range tc.members {
+				require.Equal(t, position >= tc.partition, replacementStateCoversOrdinal(state, ordinal), "ordinal %d", ordinal)
+			}
+		})
 	}
 }

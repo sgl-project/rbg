@@ -141,16 +141,16 @@ func TestRolloutReplacementStateRangeChanges(t *testing.T) {
 		active                 bool
 	}{
 		{name: "lower partition protects overlapping replacement", oldPartition: 1, oldCount: 3, partition: 0, replicas: 3, unreadyOrdinal: 1, active: true},
-		{name: "lower partition conservatively protects newly eligible members", oldPartition: 1, oldCount: 3, partition: 0, replicas: 3, unreadyOrdinal: 0, active: true},
+		{name: "lower partition does not expand recorded scope", oldPartition: 1, oldCount: 3, partition: 0, replicas: 3, unreadyOrdinal: 0},
 		{name: "raise partition protects overlapping replacement", oldCount: 3, partition: 1, replicas: 3, unreadyOrdinal: 2, active: true},
 		{name: "raise partition excludes completed update range", oldCount: 3, partition: 1, replicas: 3, unreadyOrdinal: 0},
 		{name: "scale down protects remaining replacement", oldCount: 3, replicas: 2, unreadyOrdinal: 1, active: true},
 		{name: "scale down protects missing replacement", oldCount: 3, replicas: 2, unreadyOrdinal: 1, missing: true, active: true},
 		{name: "scale down excludes removed replacement", oldCount: 3, replicas: 2, unreadyOrdinal: 2},
 		{name: "scale up protects original replacement", oldCount: 2, replicas: 3, unreadyOrdinal: 1, active: true},
-		{name: "scale up conservatively protects new members", oldCount: 2, replicas: 3, unreadyOrdinal: 2, active: true},
-		{name: "current range above recorded bounds remains protected", oldCount: 2, partition: 2, replicas: 3, unreadyOrdinal: 2, active: true},
-		{name: "current range below recorded bounds remains protected", oldPartition: 2, oldCount: 3, replicas: 2, unreadyOrdinal: 0, active: true},
+		{name: "scale up does not expand recorded scope", oldCount: 2, replicas: 3, unreadyOrdinal: 2},
+		{name: "partition above recorded scope ends protection", oldCount: 2, partition: 2, replicas: 3, unreadyOrdinal: 2},
+		{name: "scale down below recorded scope ends protection", oldPartition: 2, oldCount: 3, replicas: 2, unreadyOrdinal: 0},
 		{name: "scale to zero ends protection", oldCount: 3, unreadyOrdinal: 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

@@ -606,20 +606,46 @@ func (ssc *defaultStatefulInstanceSetControl) persistTerminatingRolloutReplaceme
 		if !isCreated(instance) || !isTerminating(instance) || getInstanceRevision(instance) == updateRevision {
 			continue
 		}
-		ordinal := topo.position(getOrdinal(instance))
-		if ordinal < topo.partition || ordinal >= topo.replicas || replacementStateCoversOrdinal(status.RolloutReplacementState, ordinal) {
+		ordinal := getOrdinal(instance)
+		position := topo.position(ordinal)
+		if position < topo.partition || position >= topo.replicas || replacementStateCoversOrdinal(status.RolloutReplacementState, ordinal) {
 			continue
 		}
-		return ssc.persistRolloutReplacementState(ctx, set, status, updateRevision, getOrdinal(instance))
+		return ssc.persistRolloutReplacementState(ctx, set, status, updateRevision, ordinal)
 	}
 	return nil
 }
 
 // replacementStateCoversOrdinal checks whether another intent write is needed.
-// Completion independently checks the whole current update range, since these
-// recorded positions cannot identify original members after gap filling.
 func replacementStateCoversOrdinal(state *workloadsv1alpha2.RolloutReplacementState, ordinal int) bool {
-	return state != nil && ordinal >= int(state.Partition) && ordinal < int(state.Replicas)
+	if state == nil {
+		return false
+	}
+	lower, upper := replacementStateBounds(state)
+	return ordinal >= lower && ordinal < upper
+}
+
+// replacementStateBounds returns the recorded [lower, upper) ordinal bounds.
+// Replicas saturates at MaxInt32 and then also covers the largest ordinal.
+func replacementStateBounds(state *workloadsv1alpha2.RolloutReplacementState) (int, int) {
+	upper := int(state.Replicas)
+	if state.Replicas == math.MaxInt32 {
+		upper++
+	}
+	return int(state.Partition), upper
+}
+
+// updateRangeOrdinalBounds returns the ordinal bounds of the update range for
+// sorted committed members. Without gaps these equal partition and replicas.
+func updateRangeOrdinalBounds(members []int, partition int) (int32, int32) {
+	lower, upper := int64(partition), int64(0)
+	if partition < len(members) {
+		lower = int64(members[partition])
+	}
+	if n := len(members); n > 0 {
+		upper = int64(members[n-1]) + 1
+	}
+	return int32(min(lower, math.MaxInt32)), int32(min(upper, math.MaxInt32))
 }
 
 // computeTopologyForReconcile derives early-rollback work from persisted status
@@ -953,8 +979,7 @@ func (ssc *defaultStatefulInstanceSetControl) persistRolloutReplacementState(
 	if err != nil {
 		return err
 	}
-	ordinal = memberPosition(ordinal, members)
-	if ordinal < 0 || ordinal >= len(members) {
+	if memberPosition(ordinal, members) < 0 {
 		return nil
 	}
 	maxSurge, err := computeMaxSurge(set)
@@ -968,10 +993,13 @@ func (ssc *defaultStatefulInstanceSetControl) persistRolloutReplacementState(
 	if err != nil {
 		return err
 	}
+	// Record ordinals rather than positions: later membership changes can move
+	// a different member into a recorded position.
+	lower, upper := updateRangeOrdinalBounds(members, partition)
 	state := &workloadsv1alpha2.RolloutReplacementState{
 		UpdateRevision: updateRevision,
-		Replicas:       ptr.Deref(set.Spec.Replicas, 0),
-		Partition:      int32(partition),
+		Replicas:       upper,
+		Partition:      lower,
 	}
 	if previous := status.RolloutReplacementState; previous != nil {
 		// Only an actual additional replacement expands the persisted scope;

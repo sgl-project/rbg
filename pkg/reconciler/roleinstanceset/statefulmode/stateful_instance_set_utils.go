@@ -538,13 +538,17 @@ func nextSurgeOrdinal(skips, exclusions ordinals.Ranges, start int) (int, error)
 	}
 }
 
-// rolloutReplacementStateActive conservatively checks the whole current update
-// range while replacement intent for this revision is persisted. The recorded
-// positional bounds cannot identify the original members after gap filling:
-// a saved position may now refer to a different, healthy instance. Keeping the
-// current range protected can retain surge longer, but cannot release it while
-// a desired replacement is missing or unready. No new status fields are needed.
-// This function does not mutate the informer snapshot or status.
+// rolloutReplacementStateActive checks the persisted replacement scope against
+// the current update range. Without committed gaps, positions equal ordinals,
+// so only the overlap of the recorded ordinal bounds and the current range is
+// checked: changes to replicas or partition must not abandon replacements in
+// that overlap, or add unrelated members to the original scope. A sparse set
+// conservatively checks the whole current update range, because membership
+// edits can move different members into the recorded bounds; this can retain
+// surge longer, but never releases it while a replacement is missing or
+// unready. Recording ordinals also keeps the original replacement protected
+// when its last gap is filled mid-replacement. Pause deliberately retains
+// protection. This function does not mutate the informer snapshot or status.
 func rolloutReplacementStateActive(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instances []*workloadsv1alpha2.RoleInstance,
@@ -562,6 +566,11 @@ func rolloutReplacementStateActive(
 	if err != nil {
 		return true
 	} // computeTopology reports the invalid record before acting.
+	if dense := len(members) == 0 || members[len(members)-1] == len(members)-1; dense {
+		lower, upper := replacementStateBounds(state)
+		partition = max(partition, lower)
+		replicas = min(replicas, upper)
+	}
 	return !allBaseAtUpdateRevHealthy(instances, partition, replicas, updateRevision, members)
 }
 
