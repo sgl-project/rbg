@@ -17822,6 +17822,13 @@ spec:
                           format: int32
                           type: integer
                       type: object
+                    maxGroupRestarts:
+                      description: |-
+                        MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                        revision. Requires an explicit whole-RoleInstance recreate policy in RestartPolicy.
+                      format: int32
+                      minimum: 0
+                      type: integer
                     minReadySeconds:
                       default: 0
                       description: |-
@@ -17845,6 +17852,7 @@ spec:
                       enum:
                       - None
                       - RecreateRoleInstanceOnPodRestart
+                      - RecreateRoleInstanceOnPodRestartFromCreation
                       type: string
                     rolloutStrategy:
                       description: |-
@@ -25324,6 +25332,11 @@ spec:
                       workloads
                     rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
                       && self.workload.kind == 'InstanceSet')
+                  - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                      recreate policy
+                    rule: '!has(self.maxGroupRestarts) || (has(self.restartPolicy)
+                      && (self.restartPolicy == ''RecreateRoleInstanceOnPodRestart''
+                      || self.restartPolicy == ''RecreateRoleInstanceOnPodRestartFromCreation''))'
                   - message: template and templateRef are mutually exclusive
                     rule: '!(has(self.template) && has(self.templateRef))'
                 minItems: 1
@@ -32858,6 +32871,7 @@ spec:
                           enum:
                           - None
                           - RecreateRoleInstanceOnPodRestart
+                          - RecreateRoleInstanceOnPodRestartFromCreation
                           type: string
                         restartPolicyConfig:
                           description: |-
@@ -32880,6 +32894,13 @@ spec:
                               format: int32
                               minimum: 0
                               type: integer
+                            maxGroupRestarts:
+                              description: |-
+                                MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                                revision. Unset is unlimited; zero stops on the first eligible fault.
+                              format: int32
+                              minimum: 0
+                              type: integer
                             type:
                               description: |-
                                 Type defines the restart policy when pod failures happen.
@@ -32887,6 +32908,7 @@ spec:
                               enum:
                               - None
                               - RecreateRoleInstanceOnPodRestart
+                              - RecreateRoleInstanceOnPodRestartFromCreation
                               type: string
                           type: object
                           x-kubernetes-validations:
@@ -32894,6 +32916,10 @@ spec:
                               to baseDelaySeconds
                             rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                               || self.maxDelaySeconds >= self.baseDelaySeconds'
+                          - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                              recreate policy
+                            rule: '!has(self.maxGroupRestarts) || (has(self.type)
+                              && self.type != ''None'')'
                       type: object
                     dependencies:
                       description: Dependencies of the role
@@ -34305,6 +34331,7 @@ spec:
                           enum:
                           - None
                           - RecreateRoleInstanceOnPodRestart
+                          - RecreateRoleInstanceOnPodRestartFromCreation
                           type: string
                         restartPolicyConfig:
                           description: |-
@@ -34327,6 +34354,13 @@ spec:
                               format: int32
                               minimum: 0
                               type: integer
+                            maxGroupRestarts:
+                              description: |-
+                                MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                                revision. Unset is unlimited; zero stops on the first eligible fault.
+                              format: int32
+                              minimum: 0
+                              type: integer
                             type:
                               description: |-
                                 Type defines the restart policy when pod failures happen.
@@ -34334,6 +34368,7 @@ spec:
                               enum:
                               - None
                               - RecreateRoleInstanceOnPodRestart
+                              - RecreateRoleInstanceOnPodRestartFromCreation
                               type: string
                           type: object
                           x-kubernetes-validations:
@@ -34341,6 +34376,10 @@ spec:
                               to baseDelaySeconds
                             rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                               || self.maxDelaySeconds >= self.baseDelaySeconds'
+                          - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                              recreate policy
+                            rule: '!has(self.maxGroupRestarts) || (has(self.type)
+                              && self.type != ''None'')'
                         sharedServiceSelection:
                           description: |-
                             SharedServiceSelection indicates the service policy of the role. When unset, a RoleInstanceSet
@@ -58832,6 +58871,13 @@ spec:
                               format: int32
                               type: integer
                           type: object
+                        maxGroupRestarts:
+                          description: |-
+                            MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                            revision. Requires an explicit whole-RoleInstance recreate policy in RestartPolicy.
+                          format: int32
+                          minimum: 0
+                          type: integer
                         minReadySeconds:
                           default: 0
                           description: |-
@@ -58855,6 +58901,7 @@ spec:
                           enum:
                           - None
                           - RecreateRoleInstanceOnPodRestart
+                          - RecreateRoleInstanceOnPodRestartFromCreation
                           type: string
                         rolloutStrategy:
                           description: |-
@@ -66450,6 +66497,11 @@ spec:
                           workloads
                         rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
                           && self.workload.kind == 'InstanceSet')
+                      - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                          recreate policy
+                        rule: '!has(self.maxGroupRestarts) || (has(self.restartPolicy)
+                          && (self.restartPolicy == ''RecreateRoleInstanceOnPodRestart''
+                          || self.restartPolicy == ''RecreateRoleInstanceOnPodRestartFromCreation''))'
                       - message: template and templateRef are mutually exclusive
                         rule: '!(has(self.template) && has(self.templateRef))'
                     minItems: 1
@@ -74211,6 +74263,7 @@ spec:
                                   enum:
                                   - None
                                   - RecreateRoleInstanceOnPodRestart
+                                  - RecreateRoleInstanceOnPodRestartFromCreation
                                   type: string
                                 restartPolicyConfig:
                                   description: |-
@@ -74233,6 +74286,13 @@ spec:
                                       format: int32
                                       minimum: 0
                                       type: integer
+                                    maxGroupRestarts:
+                                      description: |-
+                                        MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                                        revision. Unset is unlimited; zero stops on the first eligible fault.
+                                      format: int32
+                                      minimum: 0
+                                      type: integer
                                     type:
                                       description: |-
                                         Type defines the restart policy when pod failures happen.
@@ -74240,6 +74300,7 @@ spec:
                                       enum:
                                       - None
                                       - RecreateRoleInstanceOnPodRestart
+                                      - RecreateRoleInstanceOnPodRestartFromCreation
                                       type: string
                                   type: object
                                   x-kubernetes-validations:
@@ -74247,6 +74308,10 @@ spec:
                                       or equal to baseDelaySeconds
                                     rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                                       || self.maxDelaySeconds >= self.baseDelaySeconds'
+                                  - message: maxGroupRestarts requires an explicit
+                                      whole-RoleInstance recreate policy
+                                    rule: '!has(self.maxGroupRestarts) || (has(self.type)
+                                      && self.type != ''None'')'
                               type: object
                             dependencies:
                               description: Dependencies of the role
@@ -75693,6 +75758,7 @@ spec:
                                   enum:
                                   - None
                                   - RecreateRoleInstanceOnPodRestart
+                                  - RecreateRoleInstanceOnPodRestartFromCreation
                                   type: string
                                 restartPolicyConfig:
                                   description: |-
@@ -75715,6 +75781,13 @@ spec:
                                       format: int32
                                       minimum: 0
                                       type: integer
+                                    maxGroupRestarts:
+                                      description: |-
+                                        MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                                        revision. Unset is unlimited; zero stops on the first eligible fault.
+                                      format: int32
+                                      minimum: 0
+                                      type: integer
                                     type:
                                       description: |-
                                         Type defines the restart policy when pod failures happen.
@@ -75722,6 +75795,7 @@ spec:
                                       enum:
                                       - None
                                       - RecreateRoleInstanceOnPodRestart
+                                      - RecreateRoleInstanceOnPodRestartFromCreation
                                       type: string
                                   type: object
                                   x-kubernetes-validations:
@@ -75729,6 +75803,10 @@ spec:
                                       or equal to baseDelaySeconds
                                     rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                                       || self.maxDelaySeconds >= self.baseDelaySeconds'
+                                  - message: maxGroupRestarts requires an explicit
+                                      whole-RoleInstance recreate policy
+                                    rule: '!has(self.maxGroupRestarts) || (has(self.type)
+                                      && self.type != ''None'')'
                                 sharedServiceSelection:
                                   description: |-
                                     SharedServiceSelection indicates the service policy of the role. When unset, a RoleInstanceSet
@@ -98110,6 +98188,7 @@ spec:
                 enum:
                 - None
                 - RecreateRoleInstanceOnPodRestart
+                - RecreateRoleInstanceOnPodRestartFromCreation
                 type: string
               restartPolicyConfig:
                 description: |-
@@ -98133,6 +98212,13 @@ spec:
                     format: int32
                     minimum: 0
                     type: integer
+                  maxGroupRestarts:
+                    description: |-
+                      MaxGroupRestarts bounds accepted whole-RoleInstance recreations per Pod-template
+                      revision. Unset is unlimited; zero stops on the first eligible fault.
+                    format: int32
+                    minimum: 0
+                    type: integer
                   type:
                     description: |-
                       Type defines the restart policy when pod failures happen.
@@ -98140,12 +98226,17 @@ spec:
                     enum:
                     - None
                     - RecreateRoleInstanceOnPodRestart
+                    - RecreateRoleInstanceOnPodRestartFromCreation
                     type: string
                 type: object
                 x-kubernetes-validations:
                 - message: maxDelaySeconds must be greater than or equal to baseDelaySeconds
                   rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                     || self.maxDelaySeconds >= self.baseDelaySeconds'
+                - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                    recreate policy
+                  rule: '!has(self.maxGroupRestarts) || (has(self.type) && self.type
+                    != ''None'')'
             required:
             - components
             type: object
@@ -98238,6 +98329,17 @@ spec:
                 description: CurrentRevision is a hash value that changes when the
                   spec is changed.
                 type: string
+              groupRestartCount:
+                description: |-
+                  GroupRestartCount is the durable number of accepted group rebuilds in
+                  GroupRestartRevision. Unlike RestartCount it never resets after a quiet period.
+                format: int32
+                minimum: 0
+                type: integer
+              groupRestartRevision:
+                description: GroupRestartRevision identifies the Pod templates (not
+                  policy, budget or size).
+                type: string
               inPlaceUpdateContainerBaselines:
                 additionalProperties:
                   additionalProperties:
@@ -98280,6 +98382,11 @@ spec:
                   RoleInstance's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
+              restartBudgetExhausted:
+                description: |-
+                  RestartBudgetExhausted suppresses creation and updates until explicit recovery
+                  or a new Pod-template revision, even if the budget is changed or removed.
+                type: boolean
               restartCount:
                 description: |-
                   RestartCount tracks the number of times the restart policy has triggered

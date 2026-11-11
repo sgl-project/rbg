@@ -54,6 +54,89 @@ The RoleInstance Controller handles Failed pods in a two-level approach:
 
 2. **Level 2 (Instance-level recreation)**: For `RestartPolicy=RecreateRoleInstanceOnPodRestart`, when a pod becomes Failed, the entire RoleInstance is recreated (all pods deleted and recreated together). This ensures Instance-level consistency for tightly-coupled multi-pod workloads.
 
+## Policy Compatibility
+
+`RecreateRoleInstanceOnPodRestart` remains unchanged for existing workloads: its unexpected-container-restart and Failed-pod handling stays readiness-gated, and it does not gain desired-member-deletion handling.
+
+`RecreateRoleInstanceOnPodRestartFromCreation` is a separate opt-in policy for RoleInstanceSet-backed roles. It preserves the ordinary-container unexpected-restart and Failed-pod triggers, but also handles those triggers before the instance first becomes Ready and recreates the instance when a desired member pod is deleted, once the RoleInstance has observed the desired generation. This policy is rejected for LeaderWorkerSet-backed roles because the vendored LWS v0.7 adapter cannot implement these additional triggers; the older policy remains supported there.
+
+## Bounded RoleInstance Recovery (phase 2)
+
+This extends the whole-instance recovery path using the circuit-breaker contract of
+[LWS KEP-820](https://github.com/kubernetes-sigs/lws/blob/cc5462087f10c3bef95e20dc452fc01c76513484/keps/820-distributed-preflight-check/README.md),
+adapted to native RoleInstanceSet/RoleInstance ownership rather than LWS ordinals
+and retained leader Pods. It does not add support to the backing LWS adapter.
+
+### API and lifetime
+
+`RestartPolicyConfig.maxGroupRestarts` is optional `*int32` with minimum zero. It
+requires an explicit whole-RI recreate policy (either the old readiness-gated policy
+or the new opt-in failure policy); `None` is rejected through schema validation.
+Role admission also rejects budgets on Deployment, StatefulSet and LeaderWorkerSet
+backends. Role configuration is propagated to the native RI template.
+
+RI status is the source of truth: `groupRestartCount`, `groupRestartRevision`, and
+`restartBudgetExhausted`. RI UID is the per-replica identity. The opaque revision
+identifies component Pod templates and Pod-affecting component metadata, not sizes,
+policy, backoff, or budget. An accepted group rebuild consumes exactly one attempt.
+Repeated/suppressed attempts and the exhaustion termination consume none. Persist
+accounting and restart tracking with optimistic locking before deleting any Pod,
+after uncached RI UID/generation and owned failure-evidence revalidation. Keep the
+budget mutation composable with additional durable bookkeeping in a single status CAS.
+
+The durable budget is independent of backoff `restartCount`, which may reset after
+a quiet period. Ready/quiet transitions, policy edits, and limit edits/removal do
+not reset budget accounting. Unsetting the limit allows unbounded recovery before
+exhaustion without discarding an existing count. Zero stops at the first eligible
+fault, not initial creation. Exhaustion is evaluated before backoff.
+
+### Exhaustion, resource release, and status
+
+Persist `restartBudgetExhausted=true`, set RI `Degraded=True` with reason
+`GroupRestartBudgetExceeded`, and force `RoleInstanceReady=False`. Suppress all
+replacement creation and updates. Then add
+`rbg.workloads.x-k8s.io/group-restart-budget-cleanup` to the COMPLETE owned group's
+Pods that can still receive it, before requesting deletion of any of them. Already
+terminating Pods cannot gain finalizers. Use owner-UID validation, optimistic
+metadata patches and UID-only deletion preconditions so concurrent kubelet status
+updates do not prevent deletion or accidentally target a same-name replacement.
+
+Retained Pod API objects preserve status and coordinate recovery, not running
+containers or resource reservations. Kubernetes 1.27+ kubelet deletion transitions
+Pods to a terminal phase; only then are scheduled CPU/memory/GPU resources released.
+Never synthesize Pod phases. Native kubelet/CRI logs are best effort, NOT guaranteed;
+external log export is required for durable diagnostics. Healthy RI replicas remain
+independent. Suppression survives process restarts and missing retained Pod objects.
+
+### Recovery and teardown
+
+Recovery is requested on the RI by the exact annotation
+`rbg.workloads.x-k8s.io/recover=true`. Remove any pre-existing annotation before the
+optimistic exhaustion status patch, so stale intent cannot automatically recover a
+newly exhausted group. Post-exhaustion recovery first removes Pod budget finalizers,
+then clears suppression/count and backoff tracking and consumes the annotation.
+A crash between these steps is retryable from persistent RI state. A changed Pod
+template similarly releases obsolete retained objects and starts a fresh budget.
+Policy or limit edits alone cannot unfreeze an exhausted RI.
+
+The RI also carries the cleanup finalizer: background deletion must not remove the
+only cleanup owner before Pod finalizers are released. On RI deletion (including
+scale-down/rollout replacement), remove only budget finalizers from Pods controlled
+by that RI UID, then remove its RI cleanup finalizer. Do not reset/charge counters,
+interpret teardown as recovery, or create a replacement. The generic status writer
+must preserve live budget fields and Degraded across stale cached writes, preserve
+external conditions and observedGeneration, and enforce Ready=False while exhausted.
+
+### Verification
+
+Unit coverage includes nil/zero/positive limits, exact counts, no quiet reset,
+idempotent retention, complete-group termination including ignored/obsolete members,
+foreign owner safety, already-deleting Pods, recovery, stale preannotations, limit
+and policy edits, revision change, teardown, optimistic-lock failures and stale
+status preservation. Focused envtest covers CRD validation and the real API-server
+retention/recovery/deletion lifecycle (without a kubelet, so no claim about actual
+terminal-phase resource release or durable logs).
+
 ## Background and Motivation
 
 The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted, UnexpectedAdmissionError, Failed).
@@ -84,15 +167,16 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 - Correctly detect and handle Failed/Evicted/UnexpectedAdmissionError Pod states
 - Delete Failed pods immediately so replacements can be created, without waiting for GC
 - Follow Kubernetes native StatefulSet pattern for fixed-name pod replacement
-- Support two-level handling: pod-level replacement (None) and Instance-level recreation (RecreateRoleInstanceOnPodRestart)
+- Preserve the existing behavior of `RecreateRoleInstanceOnPodRestart` for compatibility
+- Offer `RecreateRoleInstanceOnPodRestartFromCreation` as an opt-in policy that also covers pre-Ready failures and deletion of a desired member pod
+- Reject the new policy for LeaderWorkerSet-backed roles until their adapter can implement its semantics
 - Support DisruptionTarget condition detection (K8s 1.22+)
 
 ## Non-Goals
 
-- Do not introduce new RestartPolicy types
 - Do not handle Pod Succeeded state (normal completion) - explicitly excluded from trigger conditions
 - Do not handle Unschedulable pods (PodScheduled=False) - these pods are still active per IsPodActive and rely on K8s scheduler retry
-- Do not handle container restart - delegated to underlying workload controllers (e.g. LWS)
+- Keep the new policy's additional triggers opt-in; existing `RecreateRoleInstanceOnPodRestart` workloads retain their current behavior
 
 ## Design Proposal
 
@@ -341,23 +425,28 @@ func (c *realControl) Scale(...) (bool, error) {
 | RestartPolicy | Pod Failed Behavior |
 |--------------|---------------------|
 | `None` | Delete Failed pod → next reconcile creates replacement (pod-level) |
-| `RecreateRoleInstanceOnPodRestart` | `shouldRecreateInstance` triggers → delete ALL Instance pods → recreate all (Instance-level) |
+| `RecreateRoleInstanceOnPodRestart` | `shouldRecreateInstance` triggers → delete ALL Instance pods → recreate all (Instance-level), retaining its existing readiness and generation guards |
+| `RecreateRoleInstanceOnPodRestartFromCreation` | Same unexpected-restart and Failed-pod triggers, including before first Ready, plus desired member deletion after observed generation matches; recreate the affected instance |
 
 #### Container Restart
 
 | RestartPolicy | Container Restart Behavior |
 |--------------|---------------------------|
 | `None` | Do nothing - let container restart naturally |
-| `RecreateRoleInstanceOnPodRestart` | Handled by underlying workload controller (e.g. LWS controller), RBG controller does nothing |
+| `RecreateRoleInstanceOnPodRestart` | Existing behavior, including its readiness gate; for LeaderWorkerSet roles the LWS v0.7 controller handles the policy |
+| `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstanceSet recreates on unexpected ordinary-container restart before first Ready or after desired member deletion, and on Failed pods; unsupported for LeaderWorkerSet |
 
 #### Summary
 
 | Scenario | Handler | Action |
 |----------|---------|--------|
 | Pod Failed + `None` | RoleInstance Controller | Delete Failed pod, create replacement |
-| Pod Failed + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate entire Instance |
+| Pod Failed + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate entire Instance, preserving existing guards |
+| Pod Failed + `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstance Controller | Recreate entire Instance, including before first Ready |
+| Desired member deleted + `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstance Controller | Recreate affected Instance after desired generation is observed |
+| Container restart + `RecreateRoleInstanceOnPodRestartFromCreation` | RoleInstance Controller (RoleInstanceSet only) | Recreate affected Instance, including before first Ready |
 | Container restart + `None` | None (K8s default) | Let container restart |
-| Container restart + `RecreateRoleInstanceOnPodRestart` | LWS Controller | Recreate RoleInstance |
+| Container restart + `RecreateRoleInstanceOnPodRestart` | Existing workload behavior | Preserve current behavior |
 
 ### Test Plan
 

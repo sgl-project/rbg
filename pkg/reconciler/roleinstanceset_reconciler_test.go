@@ -607,6 +607,15 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 			wantRestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 		},
 		{
+			name: "role opting into recreate on pod failure",
+			role: func() workloadsv1alpha2.RoleSpec {
+				return wrappersv2.BuildLeaderWorkerRole("pod-failure-role").
+					WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation).
+					Obj()
+			},
+			wantRestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation,
+		},
+		{
 			name: "role configuring a type but no delays",
 			role: func() workloadsv1alpha2.RoleSpec {
 				return wrappersv2.BuildLeaderWorkerRole("type-only-role").
@@ -614,6 +623,15 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 					Obj()
 			},
 			wantRestartPolicy: workloadsv1alpha2.RestartPolicyNone,
+		},
+		{
+			name: "role configuring only a zero group restart budget",
+			role: func() workloadsv1alpha2.RoleSpec {
+				role := wrappersv2.BuildLeaderWorkerRole("budget-role").Obj()
+				role.LeaderWorkerPattern.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation, MaxGroupRestarts: ptr.To[int32](0)}
+				return role
+			},
+			wantConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestartFromCreation, BaseDelaySeconds: ptr.To(workloadsv1alpha2.DefaultBaseDelaySeconds), MaxDelaySeconds: ptr.To(workloadsv1alpha2.DefaultMaxDelaySeconds), MaxGroupRestarts: ptr.To[int32](0)},
 		},
 		{
 			name: "role configuring both delays",
@@ -680,6 +698,7 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 				assert.Equal(t, ptr.To(tt.wantConfig.Type), template.RestartPolicyConfig.Type)
 				assert.Equal(t, tt.wantConfig.BaseDelaySeconds, template.RestartPolicyConfig.BaseDelaySeconds)
 				assert.Equal(t, tt.wantConfig.MaxDelaySeconds, template.RestartPolicyConfig.MaxDelaySeconds)
+				assert.Equal(t, tt.wantConfig.MaxGroupRestarts, template.RestartPolicyConfig.MaxGroupRestarts)
 			}
 
 			// The typed assertions above can both hold while the field the apiserver

@@ -221,6 +221,11 @@ const (
 	// failed, we will recreate only one lws instance, not all lws instances.
 	// It equals to RecreateGroupOnPodRestart in lws.spec.LeaderWorkerTemplate.RestartPolicyType
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"
+
+	// RecreateRoleInstanceOnPodRestartFromCreation recreates the role instance on
+	// unexpected container restarts, Failed pods, or deleted desired member pods,
+	// including before the instance first becomes Ready. Requires RoleInstanceSet.
+	RecreateRoleInstanceOnPodRestartFromCreation RestartPolicyType = "RecreateRoleInstanceOnPodRestartFromCreation"
 )
 
 // UpdateStrategyType defines strategies for Instances in-place update.

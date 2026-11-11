@@ -57,7 +57,7 @@ func NewReconciler(mgr ctrl.Manager, bindings *synccontrol.NodeBindingStore) rec
 		scheme:                mgr.GetScheme(),
 		recorder:              recorder,
 		controllerHistory:     historyutil.NewHistory(c),
-		statusUpdater:         newStatusUpdater(c),
+		statusUpdater:         newStatusUpdater(c, mgr.GetAPIReader()),
 		revisionControl:       revisioncontrol.NewRevisionControl(),
 		syncControl:           synccontrol.New(c, mgr.GetAPIReader(), recorder, bindings),
 		revisionEqualityCache: lru.New(pkgutils.MaxRevisionEqualityCacheEntries),
@@ -101,7 +101,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	// caused by precondition failures when the object's UID becomes empty during foreground deletion.
 	if instance.DeletionTimestamp != nil {
 		r.syncControl.ClearRestarting(instance)
-		return reconcile.Result{}, nil
+		return reconcile.Result{}, r.syncControl.CleanupRestartBudget(ctx, instance)
 	}
 
 	// TODO(@yangsoon) add a gc manager to handle inActivePods
@@ -216,7 +216,7 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		if updateInstance.Status.LastRestartTime != nil {
 			newStatus.LastRestartTime = updateInstance.Status.LastRestartTime
 		}
-		return syncResult{err: podsScaleErr}
+		return syncResult{err: podsScaleErr, requeue: scaleRequeue}
 	}
 	// Restart backoff: delay not elapsed, skip Update and just requeue.
 	// Do NOT propagate the Restarting condition here. The Restarting condition
