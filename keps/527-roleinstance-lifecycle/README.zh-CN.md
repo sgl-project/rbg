@@ -14,7 +14,8 @@
   - [设计细节](#设计细节)
     - [挂载点与触发边界](#挂载点与触发边界)
     - [固定名称与常量](#固定名称与常量)
-    - [Handler Label 协作](#handler-label-协作)
+    - [信号标签协作](#信号标签协作)
+    - [信号标签向 Pod 传递](#信号标签向-pod-传递)
     - [Hook executor 服务](#hook-executor-服务)
     - [更新交互流程](#更新交互流程)
     - [恢复交互流程](#恢复交互流程)
@@ -52,10 +53,11 @@
 新协议与旧 RoleInstanceSet lifecycle 协议在 API 层共存，
 但准入保证同一个 RIS 上不会同时激活二者。
 
-四个 hook 使用相同的 Handler Label 协作方式：RI controller 在触发 hook 时写入 label marker；
+四个 hook 使用相同的信号标签协作方式：RI controller 在触发 hook 时写入 label marker；
 hook executor 观察到匹配 marker 后执行业务动作，完成、取消或决定放行后清除 marker。
 前置 hooks 阻塞实际负载操作，controller 等 marker 不再匹配后继续；
 postReady 完全异步，controller 写入 marker 后立即进入 `Running`，不等待业务处理完成。
+controller 将信号标签镜像到成员 Pod，Pod 级消费者无需访问 RI 即可观察这些信号。
 与旧协议不同，executor 不做 marker 初始登记，也不在后置 hook 完成后加回。
 
 executor 负责业务重试、退避和幂等恢复。hook marker 不参与 RI Ready 计算。
@@ -75,6 +77,7 @@ executor 负责业务重试、退避和幂等恢复。hook marker 不参与 RI R
 ### 目标
 
 - 提供 `preUpdate`、`preRecover`、`postReady`、`preDelete` 四个实例级挂载点。
+- 将 `signalLabels` 的 key 从 RI 镜像到成员 Pod，供 Pod 级消费者使用。
 - controller 在每次 hook 触发时写入 marker，executor 完成或决定放行后清除 marker。
 - 前置 hooks 的未清除 marker 阻塞实际负载操作，controller 不执行业务动作或调度业务重试。
 - `postReady` 统一覆盖创建、恢复和更新后的实例验收与业务注册，但不阻塞 phase、RI Ready 或后续操作。
@@ -103,7 +106,7 @@ executor 负责业务重试、退避和幂等恢复。hook marker 不参与 RI R
 | 参与方 | 职责 | 不承担的职责 |
 | --- | --- | --- |
 | RI controller | 维护操作、阶段、写入 marker、Pod 与 RI Ready | 不执行业务动作，不决定业务重试 |
-| RI | 保存配置、操作上下文、阶段和 Handler Label | 不作为执行进程或消息队列 |
+| RI | 保存配置、操作上下文、阶段和信号标签 | 不作为执行进程或消息队列 |
 | Hook executor | 观察阶段和 marker，执行业务并重试，完成后清除 | 不登记 marker，不修改 spec 或 phase |
 
 配置权威取决于对象所有权，而不是创建路径。RBG 管理的 RIS 在
@@ -158,7 +161,7 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | metadata 同步覆盖 marker | 运行时 marker 不属于声明式 labels |
 | 同一 hook 内共享 marker 被迟到请求清理 | 明确接受该风险；由消费者协调并保证业务幂等，不增加代次 |
 | 不同 hook 复用 marker key | 准入校验拒绝 |
-| handler key 覆盖 controller 状态 | 准入校验拒绝保留 key |
+| 信号标签 key 覆盖 controller 状态 | 准入校验拒绝保留 key |
 | 重试造成重复副作用 | executor 使用可恢复记录或业务幂等去重，不承诺恰好一次 |
 | foreground 级联或直接删除 Pod 绕过存活引擎屏障 | 准入拒绝 foreground 传播；直接删除 Pod 归入 Recovery |
 | executor 故障导致长期等待 | 暴露阶段、marker 和 executor 诊断；Alpha 不自动跳过 |
@@ -196,7 +199,7 @@ Update 内的原地更新或 Pod 重建只触发 `preUpdate`，其内部 Pod 删
 | RBG 权威 | `RoleBasedGroup.spec.roles[].lifecycle` |
 | standalone 权威 | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
 | RI 执行快照 | `RoleInstance.spec.lifecycle` |
-| hook 字段 | `labelsHandler` |
+| hook 字段 | `signalLabels` |
 | 旧 RIS 字段 | `RoleInstanceSet.spec.lifecycle` |
 | hook-state key | `rbg.workloads.x-k8s.io/role-instance-hook-state` |
 | hook-state 取值 | `PreUpdate` |
@@ -227,9 +230,9 @@ hook-state；`Running` 是 `status.phase` 的取值。`Updating`、`Recovering` 
 controller 不得推进，executor 不得执行，诊断必须暴露非法值，且不能自动清理。
 
 本文中的 `hook-state` 是上表 label key 的固定简称。marker key 和 value
-由用户通过 `labelsHandler` 配置，不是项目级常量。
+由用户通过 `signalLabels` 配置，不是项目级常量。
 
-### Handler Label 协作
+### 信号标签协作
 
 四个 hooks 使用相同的协作方向：
 
@@ -240,7 +243,7 @@ controller 不得推进，executor 不得执行，诊断必须暴露非法值，
 5. postReady 写入 state 和 marker 后立即进入 `Running`，不等待 executor；
    executor 后台完成或取消后清除 marker，controller 再清理 state。
 
-“匹配”表示 RI label 的 key/value 与 `labelsHandler` 一致。
+“匹配”表示 RI label 的 key/value 与 `signalLabels` 一致。
 前置 hooks 的多个 marker 只要仍有一个匹配，controller 就保持等待；postReady marker 不参与等待或 Ready 判断。
 未配置的 hook 不写入 marker，也不建立协作。
 
@@ -261,16 +264,16 @@ spec:
       # Role 的其他字段（如 replicas、standalonePattern）略
       lifecycle:
         preUpdate:
-          labelsHandler:
+          signalLabels:
             example.com/update-block: "true"
         preRecover:
-          labelsHandler:
+          signalLabels:
             example.com/recover-block: "true"
         postReady:
-          labelsHandler:
+          signalLabels:
             example.com/ready-notify: "true"
         preDelete:
-          labelsHandler:
+          signalLabels:
             example.com/delete-block: "true"
 ```
 
@@ -286,7 +289,7 @@ RBG reconcile 被覆盖。RIS controller 再把快照复制到
 RIS controller 按同样方式复制到每个 RI。创建路径不改变 hook 执行方式，
 只决定哪个对象拥有期望配置，以及配置如何向下传播。
 
-新协议定义独立的 hook 类型：每个 hook 只包含 `labelsHandler`，
+新协议定义独立的 hook 类型：每个 hook 只包含 `signalLabels`，
 不修改 RI Ready。
 
 新 lifecycle 协议与现有 `RoleInstanceSetSpec.lifecycle` 使用不同 API
@@ -306,13 +309,13 @@ RBG 管理的 RIS 上旧 `spec.lifecycle` 非空即视为用户配置。
 现有 `finalizersHandler` 和 `markPodNotReady` 语义。
 反之，legacy standalone RIS 路径拒绝 `preUpdate`、`preRecover` 和
 `postReady`；这三个 hook 只在新协议中生效。
-声明式配置只向下传递，`hook-state` 和运行时 marker 只写入 RI labels，不回写 RBG 或 RIS。
-`labelsHandler` 是 controller 写入及双方判断的匹配规则，不是由 executor 维护的登记配置。
-未配置 hook 表示禁用；配置了 hook 但 `labelsHandler` 缺省或为空属于配置错误，准入校验必须拒绝。
+声明式配置只向下传递，`hook-state` 和运行时 marker 写入 RI labels 并镜像到成员 Pod，不回写 RBG 或 RIS。
+`signalLabels` 是 controller 写入及双方判断的匹配规则，不是由 executor 维护的登记配置。
+未配置 hook 表示禁用；配置了 hook 但 `signalLabels` 缺省或为空属于配置错误，准入校验必须拒绝。
 前置 hooks 的多个 label 表示多个协作条件，全部不再匹配后 controller 才继续。
 普通 metadata 同步不得修改运行时 marker。
 
-`labelsHandler` 中的每个 key 和 value 都必须满足 Kubernetes label 语法。
+`signalLabels` 中的每个 key 和 value 都必须满足 Kubernetes label 语法。
 marker key 必须是合法 Kubernetes label key：可选 prefix 是不超过 253 字符的
 DNS subdomain，name 部分不超过 63 字符。marker value 必须是合法 Kubernetes
 label value，且不超过 63 字符。准入在配置被接受前拒绝非法 marker key 或
@@ -321,7 +324,7 @@ value。controller 不会为了可写而截断、改写或丢弃配置的 marker
 marker key 的作用域限定在单个 hook 挂载点内。任何一个 key 被多个已配置 hook 使用时，
 准入校验必须拒绝，包括 postReady 和 preDelete 共用 key 的情况；
 否则一个 hook 的迟到取消清理可能删除另一个 hook 的 marker。
-handler key 也不能等于固定的 hook-state key 或使用保留的
+信号标签 key 也不能等于固定的 hook-state key 或使用保留的
 `rbg.workloads.x-k8s.io/` 前缀；hook marker 本身是运行时 label，
 但不得与 controller 保留的状态 key 冲突。
 准入还拒绝与所属 RIS `spec.selector` 相关的 marker key，
@@ -349,6 +352,26 @@ label 已不存在后才移除条目。markerA 改为 markerB 后，markerA 在 
 清理前保持记录，因此重启后仍能区分协议遗留 label 与普通用户 label。
 回滚前置条件是：`hook-state` label 不存在，且 marker key 记录为空或不存在。
 
+### 信号标签向 Pod 传递
+
+对 `signalLabels` 中声明的每个 key，RI controller 都会把 RI 上对应的
+label 镜像到每个成员 Pod：RI 上存在该 key 时，controller 把相同
+key/value 写入 Pod；RI 上不存在该 key 时，controller 从 Pod 上移除；
+value 变化时同步到 Pod。路由、基于 EndpointSlice 的选择器和 sidecar 等
+Pod 级消费者因此无需 watch 或 patch RI，就能观察 hook 信号。
+
+传递规则：
+
+- 传递是单向的，只从 RI 到 Pod。RI 是唯一事实来源，Pod 上的副本由
+  controller 拥有。
+- executor 仍然只在 RI 上清除 marker；清除结果通过同一传递机制到达
+  成员 Pod。
+- 传递是仅修改 metadata 的 Pod 更新，不修改 Pod template、不生成新的
+  controller revision，也不重建 Pod。
+- controller 在每次 RI reconcile 时核对这些 key，并合并批量更新 Pod。
+- 信号标签 key 在成员 Pod 上由 controller 拥有；在 Pod template labels
+  中声明相同 key 属于配置错误，准入校验拒绝。
+
 ### Hook executor 服务
 
 executor 是业务提供的常驻服务，观察 RI 阶段和自己负责的 marker，将阶段映射为业务动作。
@@ -361,7 +384,7 @@ executor 是业务提供的常驻服务，观察 RI 阶段和自己负责的 mar
 现有 `ClusterEngineRuntimeProfile` 用于注入 initContainers、containers 和 volumes，CR 本身不是执行进程。
 复用 engineRuntime 仍需在常驻进程或适配服务中实现阶段观察、业务重试、幂等恢复和 marker 清除。
 
-RBG 不关心 marker 的消费者身份、数量或部署方式。controller 只按照 `labelsHandler` 判断 marker 是否存在，
+RBG 不关心 marker 的消费者身份、数量或部署方式。controller 只按照 `signalLabels` 判断 marker 是否存在，
 不识别消费者，也不负责消费者选主、成员聚合或执行结果仲裁。
 
 多个消费者如何协调、何时可以清除同一 hook 内共享的 marker，由业务自行决定。
@@ -615,8 +638,9 @@ controller 负责写入 hook marker，executor 负责清除自己处理的 marke
 双方只修改各自负责的 key，不整体替换 labels map。普通 RIS metadata 同步不得覆盖这些运行时标记。
 
 字段所有权明确：用户拥有上文定义的权威 lifecycle 配置；controller 拥有
-phase、`hook-state`、RI 生效快照和保留 finalizer；executor 只负责清除
-marker。该边界可由 admission 或受限代理执行。
+phase、`hook-state`、RI 生效快照、保留 finalizer 以及成员 Pod 上的
+镜像信号标签；executor 只负责清除 marker。该边界可由 admission 或
+受限代理执行。
 
 executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空间内
 `roleinstances` 的 `get`、`patch`。
@@ -631,7 +655,7 @@ executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空�
 
 旧 RIS `spec.lifecycle` 与新 lifecycle 协议使用不同 API 类型和运行协议。
 旧 `inPlaceUpdate` 与 `finalizersHandler` 仅属于旧协议。新协议只暴露
-`labelsHandler`。
+`signalLabels`。
 两套运行协议不得在同一 RIS 上同时生效，准入 webhook 强制该边界，状态 key 也必须彼此独立。
 Warmup 和容器 lifecycle hooks 继续承担各自职责，不等同于本提案的实例级 hooks。
 
@@ -641,8 +665,8 @@ Warmup 和容器 lifecycle hooks 继续承担各自职责，不等同于本提�
 standalone RIS 由 RIS 模板定义；RIS 模板保存期望快照，
 RIS controller 将其复制到 `RoleInstance.spec.lifecycle` 作为生效副本；
 新 lifecycle 协议定义独立 hook 类型，
-不复用旧结构；空 `labelsHandler` 校验失败；每个 hook 只包含
-`labelsHandler`，不门控 RI Ready。
+不复用旧结构；空 `signalLabels` 校验失败；每个 hook 只包含
+`signalLabels`，不门控 RI Ready。
 上表中的 wire 名称和 Go 常量名均已确定。
 重启恢复不新增 `step`：进入 hook 时同批写入 `hook-state`、marker
 及其 marker key 记录；
@@ -661,7 +685,7 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
 已确定的 hook 语义不得修改，新逻辑使用新 hook；有未完成操作时不得直接降级。
 
 Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS lifecycle 互斥；
-旧协议保持原有字段不变；新协议只暴露 `labelsHandler`。
+旧协议保持原有字段不变；新协议只暴露 `signalLabels`。
 
 上述设计已确定；进入 `implementable` 前需要的是完成与验证，而不是重新设计：
 
@@ -690,9 +714,12 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   以及 marker key 与完整 controller 状态 key 冲突。
 - 准入拒绝所属 RIS `spec.selector` 在 `matchLabels` 或 `matchExpressions`
   中使用的 marker key，包括仅通过 `DoesNotExist` 选择的 key。
-- 准入拒绝不符合 Kubernetes label 语法的 `labelsHandler` key/value，
+- 准入拒绝不符合 Kubernetes label 语法的 `signalLabels` key/value，
   包括 name/value 超长、prefix 语法非法、首尾字符非法或包含不支持字符。
-- 新 API 的每个 hook 只暴露 `labelsHandler`；旧 RIS 协议保留原有字段，
+- 准入拒绝在 Pod template labels 中声明的信号标签 key。
+- 信号标签从 RI 传递到成员 Pod：存在则复制、不存在则移除、value 变化
+  则同步；传递仅修改 metadata，不重建 Pod。
+- 新 API 的每个 hook 只暴露 `signalLabels`；旧 RIS 协议保留原有字段，
   并拒绝三个新 hook 字段。
 - controller 持久化并暴露 KEP-502 的 RI `status.phase`，executor 同时观察
   该 phase 和 lifecycle marker labels。
@@ -738,6 +765,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - foreground 删除准入采用 fail-closed：与 RI 创建或 preDelete 启用并发的请求，
   在 informer 缓存未同步时被拒绝或暂缓。
 - RIS metadata 同步不覆盖运行时 marker，controller 不在同一前置阶段重复写入。
+- RI 信号标签变化在不修改 revision 的情况下到达成员 Pod；RI 上清除
+  marker 会移除 Pod 上的镜像 label。
 - 连续更新、旧 postReady 任务迟到、同名 RI 重建及多执行者接管，验证 state 驱动的取消、恢复和幂等清理。
 - preDelete 的 GC 传播、零 Pod 删除，以及新旧 lifecycle 兼容性。
 - RI 保留 finalizer 的添加、preDelete 等待期间保持，以及成员 Pod 删除完成后的移除。
@@ -768,7 +797,7 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 ### 成熟度晋级标准
 
 进入 alpha 前，先解决“已确定设计与遗留问题”中的三个 implementable 前置问题，实现四个挂载点、
-controller 写入与 executor 清除的 Handler Label 协作，完成核心测试并提供 executor 接入示例。
+controller 写入与 executor 清除的信号标签协作，完成核心测试并提供 executor 接入示例。
 进入 beta 前验证真实业务、多 Pod 协调、权限、恢复和升级兼容、规模开销，完善故障诊断及运维恢复流程。
 进入 stable 需持续生产反馈并解决 beta 问题；本 KEP 不指定发布里程碑。
 

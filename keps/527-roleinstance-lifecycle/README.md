@@ -14,7 +14,8 @@
   - [Design Details](#design-details)
     - [Hooks and Trigger Boundaries](#hooks-and-trigger-boundaries)
     - [Wire Names and Constants](#wire-names-and-constants)
-    - [Handler Label Coordination](#handler-label-coordination)
+    - [Signal Label Coordination](#signal-label-coordination)
+    - [Signal Label Propagation to Pods](#signal-label-propagation-to-pods)
     - [Hook Executor Service](#hook-executor-service)
     - [Update Interaction Flow](#update-interaction-flow)
     - [Recovery Interaction Flow](#recovery-interaction-flow)
@@ -55,14 +56,16 @@ The new protocol coexists with the legacy RoleInstanceSet lifecycle protocol
 at the API level, but admission prevents both from being active on the same
 RIS.
 
-All four hooks use the same Handler Label coordination model. When a hook is
+All four hooks use the same signal-label coordination model. When a hook is
 triggered, the RI controller writes a label marker. The hook executor watches
 for matching markers, performs the required application action, and removes
 the marker when it completes, cancels, or explicitly allows the operation to
 proceed. The pre-operation hooks block the actual workload operation until
 their markers no longer match. By contrast, `postReady` is fully asynchronous:
 the controller writes its marker and immediately enters `Running` without
-waiting for application processing to finish.
+waiting for application processing to finish. The controller mirrors signal
+labels onto member Pods so Pod-level consumers can observe them without RI
+access.
 
 Unlike the legacy protocol, executors do not register markers initially or
 restore them after a post-operation hook completes. Executors own application
@@ -95,6 +98,8 @@ RBG does not need to embed application logic or create a Job for every hook.
 
 - Provide four instance-level hooks: `preUpdate`, `preRecover`, `postReady`,
   and `preDelete`.
+- Mirror `signalLabels` keys from the RI onto member Pods for Pod-level
+  consumers.
 - Have the controller write a marker whenever a hook is triggered, and have
   the executor remove it after completion or when allowing the operation.
 - Block the actual workload operation while a pre-operation marker remains,
@@ -141,7 +146,7 @@ RBG does not need to embed application logic or create a Job for every hook.
 | Participant | Owns | Does not own |
 | --- | --- | --- |
 | RI controller | Phases, marker writes, Pods, Ready | App actions, retries |
-| RI | Config, context, phase, Handler Labels | Execution and message queuing |
+| RI | Config, context, phase, Signal Labels | Execution and message queuing |
 | Executor | Watch, execute, retry, remove markers | Registration, spec, phase |
 
 Configuration authority follows object ownership rather than the creation
@@ -223,7 +228,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | Metadata overwrites markers | Exclude markers from declarative labels |
 | Stale marker cleanup within one hook | Consumers coordinate; no generations |
 | Marker keys reused by different hooks | Reject in admission |
-| Handler key overwrites controller state | Reject reserved keys in admission |
+| Signal key overwrites controller state | Reject reserved keys in admission |
 | Retry duplicates | Use recoverable records or idempotency; no exactly-once |
 | Foreground/direct deletion bypass | Reject foreground; direct is Recovery |
 | Executor outage blocks progress | Diagnostics; no automatic skip in Alpha |
@@ -271,7 +276,7 @@ The following names and values are normative:
 | RBG authority | `RoleBasedGroup.spec.roles[].lifecycle` |
 | Standalone authority | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
 | RI execution snapshot | `RoleInstance.spec.lifecycle` |
-| Hook fields | `labelsHandler` |
+| Hook fields | `signalLabels` |
 | Legacy RIS field | `RoleInstanceSet.spec.lifecycle` |
 | Hook-state key | `rbg.workloads.x-k8s.io/role-instance-hook-state` |
 | Hook-state value | `PreUpdate` |
@@ -305,10 +310,10 @@ must not advance, the executor must not execute, and diagnostics must expose
 the invalid value without automatic cleanup.
 
 `hook-state` is a defined short name for the exact label key above. Marker
-keys and values are user-configured through `labelsHandler`; they are not
+keys and values are user-configured through `signalLabels`; they are not
 project-wide constants.
 
-### Handler Label Coordination
+### Signal Label Coordination
 
 All four hooks use the same coordination direction:
 
@@ -327,7 +332,7 @@ All four hooks use the same coordination direction:
    completion or cancellation, and the controller then cleans up the state.
 
 “Matching” means that the RI label key and value equal those configured in
-`labelsHandler`. If any marker for a pre-operation hook still matches, the
+`signalLabels`. If any marker for a pre-operation hook still matches, the
 controller keeps waiting. A `postReady` marker participates in neither this
 wait nor Ready evaluation. A hook that is not configured writes no marker and
 establishes no coordination.
@@ -353,16 +358,16 @@ spec:
       # Other Role fields, such as replicas and standalonePattern, are omitted.
       lifecycle:
         preUpdate:
-          labelsHandler:
+          signalLabels:
             example.com/update-block: "true"
         preRecover:
-          labelsHandler:
+          signalLabels:
             example.com/recover-block: "true"
         postReady:
-          labelsHandler:
+          signalLabels:
             example.com/ready-notify: "true"
         preDelete:
-          labelsHandler:
+          signalLabels:
             example.com/delete-block: "true"
 ```
 
@@ -382,7 +387,7 @@ which object owns the desired configuration and how that configuration is
 propagated.
 
 The new protocol defines an independent hook type: every hook contains only
-`labelsHandler`, and no hook changes RI Ready.
+`signalLabels`, and no hook changes RI Ready.
 
 The new lifecycle protocol and the existing `RoleInstanceSetSpec.lifecycle`
 use distinct API types and runtime protocols. The legacy RIS field remains
@@ -408,18 +413,19 @@ rejects `preUpdate`, `preRecover`, and `postReady`; those three hooks are
 meaningful only through the new protocol.
 
 Declarative configuration flows only downward. `hook-state` and runtime
-markers are written only to RI labels and are never written back to RBG or
-RIS. `labelsHandler` defines the matching rules used by the controller when
+markers are written to RI labels, mirrored onto member Pods, and never
+written back to RBG or RIS. `signalLabels` defines the matching rules used
+by the controller when
 writing markers and by both parties when evaluating them; it is not
 registration state maintained by the executor.
 
 An omitted hook disables that hook. A configured hook with an omitted or
-empty `labelsHandler` is invalid and must be rejected by admission. Multiple
+empty `signalLabels` is invalid and must be rejected by admission. Multiple
 labels on a pre-operation hook represent multiple coordination conditions;
 the controller proceeds only after none of them match. Ordinary metadata
 synchronization must not modify runtime markers.
 
-Every `labelsHandler` key and value must satisfy Kubernetes label syntax.
+Every `signalLabels` key and value must satisfy Kubernetes label syntax.
 Marker keys must be valid Kubernetes label keys: an optional prefix is a
 DNS subdomain of at most 253 characters, and the name segment is at most 63
 characters. Marker values must be valid Kubernetes label values and are at
@@ -430,8 +436,8 @@ drop a configured marker to make it writable.
 Marker keys are scoped to a hook point. Admission must reject a key used by
 more than one configured hook, including `postReady` and `preDelete`, because
 delayed cancellation cleanup from one hook can otherwise remove the marker
-belonging to another hook. Handler keys must also be rejected when they equal
-the exact hook-state key or use the reserved
+belonging to another hook. Signal label keys must also be rejected when
+they equal the exact hook-state key or use the reserved
 `rbg.workloads.x-k8s.io/` prefix. Hook marker keys are runtime labels, but
 they must not collide with controller-reserved state. Admission also rejects
 a marker key used by the owning RIS `spec.selector`, whether in `matchLabels`
@@ -466,6 +472,30 @@ still distinguish protocol-owned stale labels from ordinary user labels. The
 rollback precondition is an absent `hook-state` label together with an empty
 or absent marker-key record.
 
+### Signal Label Propagation to Pods
+
+For every key declared in `signalLabels`, the RI controller mirrors the
+corresponding RI label onto every member Pod. When the RI carries the key,
+the controller writes the same key and value to the Pod; when the RI loses
+the key, the controller removes it from the Pod; when the value changes, the
+change is synced to the Pod. Pod-level consumers such as routers,
+EndpointSlice-based selectors, and sidecars can therefore observe hook
+signals without watching or patching RIs.
+
+Propagation rules:
+
+- Propagation is unidirectional from RI to Pod. The RI is the only source
+  of truth, and the Pod copies are controller-owned mirrors.
+- Executors still remove markers only on the RI; the removal reaches member
+  Pods through the same propagation.
+- Propagation is a metadata-only Pod update. It does not change the Pod
+  template, create a new controller revision, or recreate Pods.
+- The controller reconciles these keys on every RI reconciliation and
+  batches the Pod updates it issues.
+- Signal label keys are controller-owned on member Pods. Declaring the same
+  key in the Pod template labels is a configuration error and is rejected by
+  admission.
+
 ### Hook Executor Service
 
 The executor is a long-running, application-provided service that watches
@@ -487,7 +517,7 @@ marker removal.
 
 RBG is intentionally agnostic to the identity, number, and deployment model
 of marker consumers. The controller evaluates marker presence only through
-`labelsHandler`. It does not identify consumers or manage consumer leader
+`signalLabels`. It does not identify consumers or manage consumer leader
 election, membership aggregation, or result arbitration.
 
 Application owners decide how multiple consumers coordinate and when a marker
@@ -811,8 +841,9 @@ synchronization must not overwrite these runtime markers.
 
 Field ownership is explicit: users own the authoritative lifecycle
 configuration described above; the controller owns phase, `hook-state`, the
-effective RI snapshot, and the reserved finalizer; the executor only removes
-markers. Admission or a restricted proxy may enforce this boundary.
+effective RI snapshot, the reserved finalizer, and the mirrored signal labels
+on member Pods; the executor only removes markers. Admission or a restricted
+proxy may enforce this boundary.
 
 An executor that polls with GET and PATCHes markers needs `get` and `patch`
 on `roleinstances` in the target namespace. LIST/WATCH additionally requires
@@ -833,7 +864,7 @@ restoration.
 The legacy RIS `spec.lifecycle` and new lifecycle protocol use distinct API
 types and runtime protocol state. The legacy `inPlaceUpdate` and
 `finalizersHandler` fields remain part of the legacy protocol only. The new
-protocol exposes only `labelsHandler`. The two runtime protocols must
+protocol exposes only `signalLabels`. The two runtime protocols must
 not be active on the same RIS; an admission webhook enforces that boundary.
 Their state keys remain distinct. Warmup and container lifecycle hooks retain
 their own responsibilities and are not equivalent to the instance-level hooks
@@ -846,8 +877,8 @@ defines the desired configuration; for standalone RIS objects, the RIS
 template defines it. The RIS template stores the desired snapshot, and the
 RIS controller copies it into `RoleInstance.spec.lifecycle` as the effective
 copy. The new lifecycle protocol defines an independent hook type rather
-than reusing the legacy structure. Empty `labelsHandler` values fail
-validation. Every hook contains only `labelsHandler`, and no hook gates RI
+than reusing the legacy structure. Empty `signalLabels` values fail
+validation. Every hook contains only `signalLabels`, and no hook gates RI
 Ready. The wire names and Go constant names above are settled.
 
 Restart recovery adds no `step`: `hook-state`, the marker, and the
@@ -887,7 +918,7 @@ not understand the protocol must not take over an unfinished operation.
 The Alpha compatibility rule is also settled: the new lifecycle protocol
 and the legacy user-configured RIS lifecycle are mutually exclusive. The
 legacy protocol remains unchanged; the new protocol exposes only
-`labelsHandler`.
+`signalLabels`.
 
 The designs above are settled; what remains before this KEP can become
 `implementable` is completion and validation, not redesign:
@@ -924,11 +955,16 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Admission rejects marker keys used by the owning RIS `spec.selector` in
   `matchLabels` or `matchExpressions`, including keys selected only by
   `DoesNotExist`.
-- Admission rejects `labelsHandler` keys and values that are invalid
+- Admission rejects `signalLabels` keys and values that are invalid
   Kubernetes labels, including over-long names or values, invalid prefix
   syntax, invalid leading or trailing characters, and unsupported
   characters.
-- The new API exposes only `labelsHandler` on every hook. The legacy RIS
+- Admission rejects signal label keys that are declared in the Pod template
+  labels.
+- Signal labels propagate from the RI to member Pods: present keys are
+  copied, absent keys are removed, and value changes are synced; propagation
+  is metadata-only and does not recreate Pods.
+- The new API exposes only `signalLabels` on every hook. The legacy RIS
   protocol retains its existing fields and rejects the three new hook
   fields.
 - The controller persists and exposes the KEP-502 RI `status.phase`, and the
@@ -1001,6 +1037,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   informer cache is stale.
 - RIS metadata synchronization preserves runtime markers, and the controller
   does not rewrite a marker during the same pre-operation phase.
+- RI signal-label changes reach member Pods without revision changes, and
+  marker removal on the RI removes the mirrored Pod labels.
 - Consecutive updates, delayed old `postReady` tasks, recreation of an RI
   with the same name, and takeover by multiple executors, validating
   state-driven cancellation, recovery, and idempotent cleanup.
@@ -1054,7 +1092,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 
 Before Alpha, resolve the three remaining pre-implementable questions in
 "Settled Design and Remaining Questions". Implement all four hooks,
-controller-write/executor-remove Handler Label coordination; complete the
+controller-write/executor-remove signal-label coordination; complete the
 core tests and provide an executor integration example.
 
 Before Beta, validate real applications, multi-Pod coordination, permissions,
