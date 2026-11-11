@@ -73,6 +73,9 @@ func newRevision(set *workloadsv1alpha2.RoleInstanceSet, revision int64, collisi
 		cr.Annotations = make(map[string]string)
 	}
 	for key, value := range set.Annotations {
+		if key == constants.CommittedSkipOrdinalsAnnotationKey || key == constants.ExcludedOrdinalsAnnotationKey {
+			continue
+		}
 		cr.Annotations[key] = value
 	}
 	return cr, nil

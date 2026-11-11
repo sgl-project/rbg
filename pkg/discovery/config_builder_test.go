@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/yaml"
 )
 
 // TestConfigBuilder_Build tests the Build method of ConfigBuilder
@@ -36,6 +38,7 @@ func TestConfigBuilder_Build(t *testing.T) {
 	replicas1 := int32(1)
 	schema := runtime.NewScheme()
 	_ = corev1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
 
 	tests := []struct {
 		name     string
@@ -836,5 +839,149 @@ func TestConfigBuilder_buildInstances(t *testing.T) {
 
 	if port, exists := instances[0].Ports["https"]; !exists || port != 443 {
 		t.Errorf("Expected https port 443, got %v", instances[0].Ports["https"])
+	}
+}
+
+func TestConfigBuilderBuildCommittedSparseMembership(t *testing.T) {
+	sparseAddresses := []string{
+		"test-cluster-worker-0.s-test-cluster-worker",
+		"test-cluster-worker-2.s-test-cluster-worker",
+		"test-cluster-worker-4.s-test-cluster-worker",
+	}
+	denseAddresses := []string{
+		"test-cluster-worker-0.s-test-cluster-worker",
+		"test-cluster-worker-1.s-test-cluster-worker",
+		"test-cluster-worker-2.s-test-cluster-worker",
+	}
+	for _, tc := range []struct {
+		name          string
+		excluded      *string
+		missingChild  bool
+		record, owner string
+		groupLabel    *string
+		wantAddresses []string
+		wantError     string
+	}{
+		{name: "invalid exclusions preserve committed members", excluded: ptr.To("2-1"), record: "1,3", wantAddresses: sparseAddresses},
+		{name: "invalid exclusions preserve dense members", excluded: ptr.To("2-1"), wantAddresses: denseAddresses},
+		{name: "invalid exclusions without a child publish no guessed members", excluded: ptr.To("2-1"), missingChild: true},
+		{name: "committed sparse members", excluded: ptr.To("1,3"), record: "1,3", wantAddresses: sparseAddresses},
+		{name: "changed exclusions at fixed replicas", excluded: ptr.To("0,2,4"), record: "1,3", wantAddresses: sparseAddresses},
+		{name: "removed exclusions at fixed replicas", record: "1,3", wantAddresses: sparseAddresses},
+		{name: "empty exclusions at fixed replicas", excluded: ptr.To(""), record: "1,3", wantAddresses: sparseAddresses},
+		{name: "missing child plans initial sparse members", missingChild: true, excluded: ptr.To("1,3"), wantAddresses: sparseAddresses},
+		{name: "missing child without exclusions stays dense", missingChild: true, wantAddresses: denseAddresses},
+		{name: "invalid child record", record: "3-1", wantError: "invalid " + constants.CommittedSkipOrdinalsAnnotationKey},
+		{name: "mismatched owner with exclusions", excluded: ptr.To("1,3"), record: "1,3", owner: "different", wantError: "has a different controller owner"},
+		{name: "mismatched owner after exclusions removed", record: "1,3", owner: "different", wantError: "has a different controller owner"},
+		{name: "missing controller owner", record: "1,3", owner: "missing", wantError: "has a different controller owner"},
+		{name: "claimable dense orphan follows current members", excluded: ptr.To("1,3"), owner: "missing", wantAddresses: denseAddresses},
+		{name: "dense orphan with mismatched group label", excluded: ptr.To("1,3"), owner: "missing", groupLabel: ptr.To("other"), wantError: "has a different controller owner"},
+		{name: "dense orphan without group label", excluded: ptr.To("1,3"), owner: "missing", groupLabel: ptr.To(""), wantError: "has a different controller owner"},
+		{name: "dense child with foreign controller", excluded: ptr.To("1,3"), owner: "different", wantError: "has a different controller owner"},
+		{name: "sparse orphan with matching label", excluded: ptr.To("1,3"), record: "1,3", owner: "missing", wantError: "has a different controller owner"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(scheme))
+			require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+			role := workloadsv1alpha2.RoleSpec{
+				Name: "worker", Replicas: ptr.To[int32](3),
+				Annotations:  map[string]string{constants.RoleInstancePatternKey: string(constants.StatefulPattern)},
+				ServicePorts: []corev1.ServicePort{{Name: "http", Port: 8080}},
+			}
+			if tc.excluded != nil {
+				role.Annotations[constants.ExcludedOrdinalsAnnotationKey] = *tc.excluded
+			}
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default", UID: "group-uid"},
+				Spec:       workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{role}},
+			}
+			builder := fake.NewClientBuilder().WithScheme(scheme)
+			if !tc.missingChild {
+				owner := *metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+				if tc.owner == "different" {
+					owner.UID = "different-group-uid"
+				}
+				set := &workloadsv1alpha2.RoleInstanceSet{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: "test-cluster-worker", Namespace: rbg.Namespace,
+						Labels:          map[string]string{constants.GroupNameLabelKey: ptr.Deref(tc.groupLabel, rbg.Name)},
+						Annotations:     map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: tc.record},
+						OwnerReferences: []metav1.OwnerReference{owner},
+					},
+					Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To[int32](3)},
+				}
+				if tc.owner == "missing" {
+					set.OwnerReferences = nil
+				}
+				builder.WithObjects(set)
+			}
+			// No Pods or RoleInstances are needed: discovery follows the persisted target.
+			data, err := NewConfigBuilder(builder.Build(), rbg, &rbg.Spec.Roles[0]).Build()
+			if tc.wantError != "" {
+				require.ErrorContains(t, err, tc.wantError)
+				require.Nil(t, data, "invalid membership must not produce a discovery payload")
+				return
+			}
+			require.NoError(t, err)
+			var config ClusterConfig
+			require.NoError(t, yaml.UnmarshalStrict(data, &config))
+			require.Equal(t, GroupInfo{Name: rbg.Name, Size: 1, Roles: []string{"worker"}}, config.Group)
+			require.Len(t, config.Roles, 1)
+			published := config.Roles["worker"]
+			require.Equal(t, len(tc.wantAddresses), published.Size)
+			require.Len(t, published.Instances, len(tc.wantAddresses))
+			for i, address := range tc.wantAddresses {
+				require.Equal(t, Instance{Address: address, Ports: map[string]int32{"http": 8080}}, published.Instances[i])
+			}
+		})
+	}
+}
+
+func TestConfigBuilderBuildIgnoresInvalidExclusionsOnOtherBackends(t *testing.T) {
+	denseAddresses := []string{
+		"test-cluster-worker-0.s-test-cluster-worker",
+		"test-cluster-worker-1.s-test-cluster-worker",
+		"test-cluster-worker-2.s-test-cluster-worker",
+	}
+	for _, tc := range []struct {
+		name        string
+		annotations map[string]string
+	}{
+		{name: "StatefulSet backend", annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType}},
+		{name: "LeaderWorkerSet backend", annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType}},
+		{name: "stateless RoleInstanceSet", annotations: map[string]string{constants.RoleInstancePatternKey: string(constants.StatelessPattern)}},
+	} {
+		for _, excluded := range []string{"1", "2-1"} {
+			t.Run(tc.name+" with "+excluded, func(t *testing.T) {
+				scheme := runtime.NewScheme()
+				require.NoError(t, corev1.AddToScheme(scheme))
+				require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+				role := workloadsv1alpha2.RoleSpec{
+					Name: "worker", Replicas: ptr.To[int32](3),
+					Annotations:  map[string]string{constants.ExcludedOrdinalsAnnotationKey: excluded},
+					ServicePorts: []corev1.ServicePort{{Name: "http", Port: 8080}},
+				}
+				for key, value := range tc.annotations {
+					role.Annotations[key] = value
+				}
+				rbg := &workloadsv1alpha2.RoleBasedGroup{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default", UID: "group-uid"},
+					Spec:       workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{role}},
+				}
+				require.Error(t, workloadsv1alpha2.ValidateRoleExcludedOrdinals(rbg, &rbg.Spec.Roles[0]), "unsupported placement must be invalid input")
+				data, err := NewConfigBuilder(fake.NewClientBuilder().WithScheme(scheme).Build(), rbg, &rbg.Spec.Roles[0]).Build()
+				require.NoError(t, err)
+				var config ClusterConfig
+				require.NoError(t, yaml.UnmarshalStrict(data, &config))
+				published := config.Roles["worker"]
+				require.Equal(t, len(denseAddresses), published.Size)
+				require.Len(t, published.Instances, len(denseAddresses))
+				for i, address := range denseAddresses {
+					require.Equal(t, address, published.Instances[i].Address)
+				}
+			})
+		}
 	}
 }

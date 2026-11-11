@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"maps"
 	"strconv"
@@ -27,7 +28,9 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/sets"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/util/csaupgrade"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -43,6 +46,7 @@ import (
 type RoleInstanceSetReconciler struct {
 	scheme        *runtime.Scheme
 	client        client.Client
+	apiReader     client.Reader
 	gangScheduler scheduler.GangScheduler
 }
 
@@ -50,8 +54,16 @@ var _ WorkloadReconciler = &RoleInstanceSetReconciler{}
 
 func NewRoleInstanceSetReconciler(scheme *runtime.Scheme, client client.Client) *RoleInstanceSetReconciler {
 	return &RoleInstanceSetReconciler{
-		scheme: scheme,
-		client: client,
+		scheme:    scheme,
+		client:    client,
+		apiReader: client,
+	}
+}
+
+// SetAPIReader supplies uncached reads for conditional membership commitment.
+func (r *RoleInstanceSetReconciler) SetAPIReader(reader client.Reader) {
+	if reader != nil {
+		r.apiReader = reader
 	}
 }
 
@@ -85,6 +97,9 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling roleinstanceset workload")
+	if err := workloadsv1alpha2.ValidateRoleExcludedOrdinals(rbg, role); err != nil {
+		return err
+	}
 
 	rollingStrategy, err := validateRolloutStrategy(role.RolloutStrategy, int(*role.Replicas))
 	if err != nil {
@@ -94,12 +109,28 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	role.RolloutStrategy = rollingStrategy
 
 	oldRoleInstanceSet := &workloadsv1alpha2.RoleInstanceSet{}
-	err = r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldRoleInstanceSet)
+	// E may already have been removed while a sparse target is still stored.
+	// Choose the writer from an uncached read of the committed child record.
+	err = r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldRoleInstanceSet)
 	if err != nil && !apierrors.IsNotFound(err) {
 		return err
 	}
 	if err == nil {
 		if err := checkWorkloadClaimable(oldRoleInstanceSet, rbg); err != nil {
+			return err
+		}
+	}
+	// Feature roles use one conditional writer for the complete child target.
+	// They never pass through forced apply: omitting previously owned fields
+	// there could remove the committed record or reset replicas to a default.
+	if usesSelectiveScaleDown(role, oldRoleInstanceSet) {
+		return r.reconcileSelectiveMembership(ctx, rbg, role, rollingUpdateStrategy, revisionKey)
+	}
+
+	// Create and conditional merge-patch writes use rbg/Update ownership.
+	// Fold that ownership before ordinary SSA so omitted fields can be removed.
+	if oldRoleInstanceSet.ResourceVersion != "" {
+		if err := r.upgradeRoleInstanceSetOwnership(ctx, oldRoleInstanceSet); err != nil {
 			return err
 		}
 	}
@@ -119,6 +150,16 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, newRoleInstanceSet); err != nil {
 		return fmt.Errorf("convert roleInstanceSet ApplyConfig to roleInstanceSet error: %s", err.Error())
 	}
+	if oldRoleInstanceSet.ResourceVersion == "" {
+		// Create-only cannot overwrite a concurrently created sparse target.
+		if err := r.client.Create(ctx, newRoleInstanceSet, client.FieldOwner(utils.FieldManager)); err != nil {
+			return err
+		}
+		return r.upgradeRoleInstanceSetOwnership(ctx, newRoleInstanceSet)
+	}
+	// A concurrent membership commit must invalidate this ordinary update.
+	// Force apply alone could let replicas move ahead of the committed record.
+	roleInstanceSetApplyConfig.WithResourceVersion(oldRoleInstanceSet.ResourceVersion)
 
 	roleHashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)
 	revisionHashEqual := oldRoleInstanceSet.Labels[roleHashKey] == newRoleInstanceSet.Labels[roleHashKey]
@@ -136,6 +177,42 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 		return err
 	}
 
+	return nil
+}
+
+// upgradeRoleInstanceSetOwnership transfers only the controller's main-resource
+// Update ownership to Apply. It must run only on the ordinary path, after sparse
+// membership has been cleared. The helper's patch guards resourceVersion; also
+// guard UID so a same-name replacement cannot inherit the migration.
+func (r *RoleInstanceSetReconciler) upgradeRoleInstanceSetOwnership(
+	ctx context.Context, set *workloadsv1alpha2.RoleInstanceSet,
+) error {
+	patch, err := csaupgrade.UpgradeManagedFieldsPatch(set, sets.New(utils.FieldManager), utils.FieldManager)
+	if err != nil || patch == nil {
+		return err
+	}
+	var operations []map[string]interface{}
+	if err = json.Unmarshal(patch, &operations); err != nil {
+		return err
+	}
+	operations = append([]map[string]interface{}{{
+		"op": "test", "path": "/metadata/uid", "value": set.UID,
+	}}, operations...)
+	patch, err = json.Marshal(operations)
+	if err != nil {
+		return err
+	}
+	updated := set.DeepCopy()
+	if err = r.client.Patch(ctx, updated, client.RawPatch(types.JSONPatchType, patch)); err != nil {
+		return err
+	}
+	if updated.UID != set.UID {
+		return apierrors.NewConflict(workloadsv1alpha2.GroupVersion.WithResource("roleinstancesets").GroupResource(),
+			set.Name, fmt.Errorf("child identity changed during managed-fields migration"))
+	}
+	// Continue SSA with the migrated response's resource version, never the
+	// snapshot that preceded the ownership write.
+	*set = *updated
 	return nil
 }
 
@@ -244,7 +321,7 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 				WithMinReadySeconds(role.MinReadySeconds).
 				WithPodManagementPolicy(role.PodManagementPolicy),
 		).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), roleInstanceSetAnnotation)).
+		WithAnnotations(labels.Merge(filteredRoleAnnotations(role.Annotations), roleInstanceSetAnnotation)).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), roleInstanceSetLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().

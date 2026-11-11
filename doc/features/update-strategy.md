@@ -112,6 +112,14 @@ scale-down, a healthy former base instance can serve as the
 remaining surge. Pausing a rollout retains the protection; an empty overlap or a
 different target revision ends it.
 
+With selective scale-down, committed members can have gaps, and a later
+membership change can move a different member into the recorded ordinal range.
+While a RoleInstanceSet has committed gaps, completion therefore checks the whole
+current update range instead of the overlap: scale-up or a partition decrease can
+retain surge for newly eligible members, even after the original replacements
+recover. The recorded bounds are ordinals, so a replacement stays protected when a
+scale-up fills the last gap while it is in flight.
+
 ### partition
 
 Control which pods get updated (StatefulSet-style):

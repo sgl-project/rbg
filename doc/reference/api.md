@@ -276,6 +276,12 @@ replacement outside the persisted scope expands it. Pause and resume preserve
 protection. After scale-down, a former base instance may temporarily act as surge
 until an in-range replacement is ready.
 
+For a RoleInstanceSet with committed sparse membership (selective scale-down),
+membership changes can move a different member into the recorded ordinal range,
+so completion conservatively checks the entire current update range instead of
+the intersection. Scale-up or a partition decrease may then retain surge for
+newly eligible members, even after the original replacements recover.
+
 Update the RoleInstanceSet CRD together with the controller. If replacement
 intent cannot be persisted, the controller emits a Warning event and retries
 without replacing the instance; an outdated CRD may have pruned the new field.

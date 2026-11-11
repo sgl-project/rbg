@@ -273,13 +273,11 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.V(1).Info("Raised coordinated scaling targets to the gang minimum", "roles", raised)
 	}
 
-	// Step 8: Reconcile roles, do create/update actions for roles.
-	if err := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	// Step 9: Cleanup orphaned resources
-	if err := r.cleanup(ctx, rbg); err != nil {
+	// Step 8: Reconcile roles. Even a failed role must not prevent cleanup of
+	// workloads removed from the spec.
+	roleErr := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies)
+	// Step 9: Cleanup orphaned resources.
+	if err := stderrors.Join(roleErr, r.cleanup(ctx, rbg)); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -526,11 +524,17 @@ func (r *RoleBasedGroupReconciler) reconcileRoles(
 		return err
 	}
 
-	// Reconcile roles, do create/update actions for roles.
+	// Invalid exclusion input freezes only that role. Keep processing other
+	// dependency layers; admission still rejects invalid objects as a whole.
+	var invalidRolesErr error
 	for _, roleList := range sortedRoles {
 		var errs error
 
 		for _, role := range roleList {
+			if err := workloadsv1alpha2.ValidateRoleExcludedOrdinals(rbg, role); err != nil {
+				invalidRolesErr = stderrors.Join(invalidRolesErr, err)
+				continue
+			}
 			logger := log.FromContext(ctx)
 			roleCtx := log.IntoContext(ctx, logger.WithValues("role", role.Name))
 
@@ -557,7 +561,7 @@ func (r *RoleBasedGroupReconciler) reconcileRoles(
 		}
 	}
 
-	return nil
+	return invalidRolesErr
 }
 
 func (r *RoleBasedGroupReconciler) reconcileSingleRole(
@@ -679,6 +683,10 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 	// Inject GangScheduler if the reconciler supports it (GangSchedulerSetter).
 	if setter, ok := rec.(reconciler.GangSchedulerSetter); ok {
 		setter.SetGangScheduler(r.gangScheduler)
+	}
+
+	if ris, ok := rec.(*reconciler.RoleInstanceSetReconciler); ok {
+		ris.SetAPIReader(r.apiReader)
 	}
 
 	// Cache the reconciler
@@ -803,6 +811,15 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 			LastTransitionTime: metav1.Now(),
 			Reason:             "RoleNotReady",
 			Message:            "Not all role ready",
+		}
+	}
+	if err := workloadsv1alpha2.ValidateExcludedOrdinals(rbg); err != nil {
+		readyCondition.Status = metav1.ConditionFalse
+		readyCondition.Reason = "InvalidExcludedOrdinals"
+		readyCondition.Message = err.Error()
+		previous := apimeta.FindStatusCondition(oldStatus.Conditions, readyCondition.Type)
+		if previous == nil || previous.Reason != readyCondition.Reason || previous.Message != readyCondition.Message || previous.ObservedGeneration != rbg.Generation {
+			r.recorder.Event(rbg, corev1.EventTypeWarning, readyCondition.Reason, readyCondition.Message)
 		}
 	}
 	readyCondition.ObservedGeneration = rbg.Generation

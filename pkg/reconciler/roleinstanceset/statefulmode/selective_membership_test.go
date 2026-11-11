@@ -1,0 +1,526 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package statefulmode
+
+import (
+	"context"
+	"fmt"
+	"math"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+	apps "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	"sigs.k8s.io/rbgs/api/workloads/ordinals"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+)
+
+func TestSparseMembershipRecoveryAndPartition(t *testing.T) {
+	h := newRollbackTestHarness(t, "sparse-recovery", 3, 2, 0)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+	zero := h.instance(0, h.current.Name, true)
+	four := h.instance(4, h.current.Name, true)
+	// Missing desired member 2 is recovered, even though its actual ordinal is
+	// numerically equal to partition. Its position 1 keeps it on currentRevision.
+	status, err := h.control.updateStatefulInstanceSet(context.Background(), h.set, h.current, h.intermediate, 0, []*workloadsv1alpha2.RoleInstance{zero, four}, []*apps.ControllerRevision{h.current, h.intermediate})
+	require.NoError(t, err)
+	require.Equal(t, []string{"sparse-recovery-2"}, h.objects.created)
+	require.Equal(t, int32(1), status.ExpectedUpdatedReplicas)
+	currentSet, err := ApplyRevision(h.set, h.current)
+	require.NoError(t, err)
+	updateSet, err := ApplyRevision(h.set, h.intermediate)
+	require.NoError(t, err)
+	restored := newVersionedInstance(currentSet, updateSet, h.current.Name, h.intermediate.Name, 2, 1)
+	require.Equal(t, h.current.Name, getInstanceRevision(restored))
+	newest := newVersionedInstance(currentSet, updateSet, h.current.Name, h.intermediate.Name, 4, 2)
+	require.Equal(t, h.intermediate.Name, getInstanceRevision(newest))
+	require.Equal(t, "4", newest.Labels[constants.RoleInstanceIndexLabelKey])
+}
+
+func TestSparseScaleDownRetainsWarmSurvivors(t *testing.T) {
+	h := newRollbackTestHarness(t, "sparse-scale", 3, 0, 0)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+	var instances []*workloadsv1alpha2.RoleInstance
+	for i := 0; i < 5; i++ {
+		instances = append(instances, h.instance(i, h.current.Name, true))
+	}
+	h.reconcile(t, instances...)
+	h.assertDeleted(t, "sparse-scale-3", "sparse-scale-1")
+	require.Empty(t, h.objects.created, "must preserve the accepted high-ordinal survivor")
+}
+
+func TestSparseSurgeBudgetPauseAndCompletion(t *testing.T) {
+	h := newRollbackTestHarness(t, "sparse-rollout", 3, 2, 1)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+	zero := h.instance(0, h.current.Name, true)
+	two := h.instance(2, h.current.Name, true)
+	four := h.instance(4, h.current.Name, true)
+	instances := []*workloadsv1alpha2.RoleInstance{zero, two, four}
+	topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+	require.NoError(t, err)
+	require.Equal(t, 5, topo.ordinal(3))
+	require.Equal(t, []int{2}, buildUpdateTargets(instances, topo, h.intermediate.Name))
+	// Actual ordinal 4 is a base member, not free surge. Without a ready surge,
+	// maxUnavailable=0 must keep it alive.
+	h.set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstr.FromInt32(0))
+	// Use the previously computed budget (maxUnavailable=0) to avoid the existing
+	// maxSurge=0 default floor of 1, which is intentionally unchanged.
+	_, err = h.control.progressUpdate(context.Background(), h.set, &h.set.Status, h.current, h.intermediate, []*apps.ControllerRevision{h.current, h.intermediate}, instances, instances, 0, topo)
+	require.NoError(t, err)
+	h.assertDeleted(t)
+	h.set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstr.FromInt32(1))
+	surge := h.instance(5, h.intermediate.Name, true)
+	withSurge := append(make([]*workloadsv1alpha2.RoleInstance, 0, len(instances)+1), instances...)
+	withSurge = append(withSurge, surge)
+	_, err = h.control.progressUpdate(context.Background(), h.set, &h.set.Status, h.current, h.intermediate, []*apps.ControllerRevision{h.current, h.intermediate}, withSurge, withSurge, 0, topo)
+	require.NoError(t, err)
+	h.assertDeleted(t, four.Name)
+	// Pausing must preserve an existing legal surge identity without creating one.
+	h.set.Spec.UpdateStrategy.Paused = true
+	paused, err := computeTopology(h.set, withSurge, h.current.Name, h.intermediate.Name, false)
+	require.NoError(t, err)
+	require.Equal(t, 1, paused.activeSurge)
+	require.Equal(t, 5, paused.ordinal(3))
+	require.False(t, paused.inRollout)
+	// Fully updated eligible base members collapse surge, while protected 0 and 2
+	// stay at the old revision and CurrentRevision must not advance.
+	h.set.Spec.UpdateStrategy.Paused = false
+	four.Labels[apps.ControllerRevisionHashLabelKey] = h.intermediate.Name
+	done, err := computeTopology(h.set, withSurge, h.current.Name, h.intermediate.Name, false)
+	require.NoError(t, err)
+	require.Zero(t, done.activeSurge)
+	require.False(t, shouldAdvanceCurrentRevision(h.set, instances, h.intermediate.Name, done))
+}
+
+func TestSparseEarlyRollbackRetainsReplacementScope(t *testing.T) {
+	h := newRollbackTestHarness(t, "sparse-rollback", 3, 2, 1)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+	instances := []*workloadsv1alpha2.RoleInstance{h.instance(0, h.current.Name, true), h.instance(2, h.current.Name, true), h.instance(4, h.intermediate.Name, true)}
+	h.reconcile(t, instances...)
+	require.Equal(t, []string{"sparse-rollback-5"}, h.objects.created)
+	require.Empty(t, h.objects.deleted)
+	require.NoError(t, h.control.persistRolloutReplacementState(context.Background(), h.set, &h.set.Status, h.current.Name, 4))
+	// Bounds are ordinals: position 2 of [0,2,4] is recorded as [4,5).
+	require.Equal(t, int32(4), h.set.Status.RolloutReplacementState.Partition)
+	require.Equal(t, int32(5), h.set.Status.RolloutReplacementState.Replicas)
+	// Missing high ordinal 4 remains a replacement in logical position 2.
+	topo, err := computeTopologyForReconcile(h.set, append(instances[:2:2], h.instance(5, h.current.Name, true)), h.current.Name, h.current.Name)
+	require.NoError(t, err)
+	require.True(t, topo.inRollout)
+	require.Equal(t, 1, topo.activeSurge)
+}
+
+func TestSparseLargeGapsDoNotAllocateByOrdinal(t *testing.T) {
+	set := buildSet("sparse-large", 2, nil, nil)
+	set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "0-2147483645"}
+	topo, err := computeTopology(set, nil, "rev", "rev", false)
+	require.NoError(t, err)
+	require.Len(t, topo.ordinals, 2)
+	require.Equal(t, 2147483646, topo.ordinal(0))
+	require.Equal(t, 2147483647, topo.ordinal(1))
+	set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] = "0-2147483647"
+	_, err = computeTopology(set, nil, "rev", "rev", false)
+	require.Error(t, err)
+}
+
+func TestSparseSurgeWaitsForMinReadySeconds(t *testing.T) {
+	h := newRollbackTestHarness(t, "sparse-min-ready", 3, 2, 1)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+	h.set.Spec.MinReadySeconds = 30
+	instances := make([]*workloadsv1alpha2.RoleInstance, 0, 4)
+	for _, ordinal := range []int{0, 2, 4} {
+		inst := h.instance(ordinal, h.current.Name, true)
+		inst.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now().Add(-time.Minute))
+		instances = append(instances, inst)
+	}
+	surge := h.instance(5, h.intermediate.Name, true)
+	instances = append(instances, surge)
+	topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+	require.NoError(t, err)
+	_, err = h.control.progressUpdate(context.Background(), h.set, &h.set.Status, h.current, h.intermediate, []*apps.ControllerRevision{h.current, h.intermediate}, instances, instances, 30, topo)
+	require.NoError(t, err)
+	h.assertDeleted(t)
+	require.Positive(t, durationStore.Pop(getInstanceSetKey(h.set)))
+	surge.Status.Conditions[0].LastTransitionTime = metav1.NewTime(time.Now().Add(-time.Minute))
+	_, err = h.control.progressUpdate(context.Background(), h.set, &h.set.Status, h.current, h.intermediate, []*apps.ControllerRevision{h.current, h.intermediate}, instances, instances, 30, topo)
+	require.NoError(t, err)
+	h.assertDeleted(t, h.set.Name+"-4")
+}
+
+func TestSparsePausePreservesNonPrefixSurgeIdentity(t *testing.T) {
+	h := newRollbackTestHarness(t, "sparse-paused-gap", 3, 0, 2)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+	h.set.Spec.UpdateStrategy.Paused = true
+	instances := []*workloadsv1alpha2.RoleInstance{h.instance(0, h.current.Name, true), h.instance(2, h.current.Name, true), h.instance(4, h.current.Name, true), h.instance(6, h.intermediate.Name, true)}
+	topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+	require.NoError(t, err)
+	require.Equal(t, 1, topo.activeSurge)
+	require.Equal(t, 6, topo.ordinal(3))
+	_, err = h.control.updateStatefulInstanceSet(context.Background(), h.set, h.current, h.intermediate, 0, instances, []*apps.ControllerRevision{h.current, h.intermediate})
+	require.NoError(t, err)
+	require.Empty(t, h.objects.created, "pause cannot fill the missing surge ordinal 5")
+	h.assertDeleted(t)
+}
+
+func TestSparseMaxOrdinalUnhealthyOrdering(t *testing.T) {
+	instance := buildInst("max-ordinal", 2147483647, "revision", false, true)
+	count, first := countUnhealthy([]*workloadsv1alpha2.RoleInstance{instance}, nil)
+	require.Equal(t, 1, count)
+	require.Same(t, instance, first, "the largest valid ordinal must still be an OrderedReady blocker")
+}
+
+func TestSparseOrderedReadyCleanupUsesLogicalPosition(t *testing.T) {
+	h := newRollbackTestHarness(t, "sparse-ordered-cleanup", 3, 0, 0)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+	h.set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
+	// Keep every base member eligible and allow enough budget that an overly
+	// broad cleanup scope would also delete the healthy predecessors.
+	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(3))
+	zero := h.instance(0, h.current.Name, true)
+	two := h.instance(2, h.current.Name, true)
+	four := h.instance(4, h.current.Name, false)
+	instances := []*workloadsv1alpha2.RoleInstance{zero, two, four}
+	setUnhealthySince(h.set, four, time.Now().Add(-2*stableUnhealthyDuration))
+
+	topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+	require.NoError(t, err)
+	require.True(t, topo.inRollout)
+	require.Equal(t, []int{0, 2, 4}, topo.ordinals)
+	require.Equal(t, 2, topo.position(getOrdinal(four)))
+	require.Equal(t, []int{2, 1, 0}, buildUpdateTargets(instances, topo, h.intermediate.Name))
+	require.Same(t, four, orderedReadyCleanupTarget(h.set, instances, topo, h.intermediate.Name))
+	beforeZero, beforeTwo := zero.DeepCopy(), two.DeepCopy()
+	status := &workloadsv1alpha2.RoleInstanceSetStatus{CurrentReplicas: 3}
+
+	err = h.control.progressOrderedReadyUnhealthyTarget(context.Background(), h.set, status,
+		h.current, h.intermediate, []*apps.ControllerRevision{h.current, h.intermediate},
+		instances, instances, 0, topo)
+	require.NoError(t, err)
+	require.Equal(t, []string{four.Name}, h.objects.deleted, "cleanup must target only logical position 2 / actual ordinal 4")
+	require.Empty(t, h.objects.created)
+	require.Equal(t, beforeZero, zero, "member 0 must remain untouched")
+	require.Equal(t, beforeTwo, two, "member 2 must remain untouched")
+	require.Equal(t, int32(2), status.CurrentReplicas)
+	require.Zero(t, topo.partition, "the cleanup scope must not modify the original rollout topology")
+	require.Equal(t, 3, topo.endOrdinal)
+}
+
+func TestSparseEarlyRollbackGapFillingRetainsReplacementProtection(t *testing.T) {
+	for _, tc := range []struct {
+		name           string
+		replicas       int32
+		record         string
+		healthyMembers []int
+	}{
+		{name: "partially filled gaps", replicas: 4, record: "3", healthyMembers: []int{0, 1, 2}},
+		{name: "all gaps filled", replicas: 5, healthyMembers: []int{0, 1, 2, 3}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRollbackTestHarness(t, "sparse-gap-rollback", 3, 2, 1)
+			h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+			zero := h.instance(0, h.current.Name, true)
+			two := h.instance(2, h.current.Name, true)
+			four := h.instance(4, h.intermediate.Name, true)
+			surge := h.instance(5, h.current.Name, true)
+			h.reconcile(t, zero, two, four, surge)
+			h.assertDeleted(t, four.Name)
+			require.Equal(t, &workloadsv1alpha2.RolloutReplacementState{
+				UpdateRevision: h.current.Name, Partition: 4, Replicas: 5,
+			}, h.set.Status.RolloutReplacementState)
+
+			h.set.Spec.Replicas = ptr.To(tc.replicas)
+			h.set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] = tc.record
+			h.set.Generation++
+			// Recover only persisted state in a fresh controller. Position 2 is
+			// now healthy member 2; the recorded ordinal bounds still identify
+			// the missing replacement as member 4, including once no gap remains.
+			h.set = h.set.DeepCopy()
+			recorder := record.NewFakeRecorder(64)
+			h.control = &defaultStatefulInstanceSetControl{
+				instanceControl: NewStatefulInstanceControlFromManager(h.objects, recorder),
+				inplaceControl:  &fakeInplaceControl{},
+				statusUpdater:   h.updater,
+				recorder:        recorder,
+			}
+			updateExpectations.DeleteExpectations(getInstanceSetKey(h.set))
+			instances := make([]*workloadsv1alpha2.RoleInstance, 0, len(tc.healthyMembers)+2)
+			for _, ordinal := range tc.healthyMembers {
+				instances = append(instances, h.instance(ordinal, h.current.Name, true))
+			}
+			instances = append(instances, surge)
+			h.reconcile(t, instances...)
+			h.assertDeleted(t)
+			require.Equal(t, []string{four.Name}, h.objects.created)
+			require.NotNil(t, h.set.Status.RolloutReplacementState, "gap filling must not release the original replacement")
+
+			replacement := h.instance(4, h.current.Name, false)
+			replacement.Generation = 1
+			replacement.Status.ObservedGeneration = 1
+			instances = append(instances, replacement)
+			h.reconcile(t, instances...)
+			h.assertDeleted(t)
+			require.NotNil(t, h.set.Status.RolloutReplacementState)
+
+			replacement.Status.Conditions[0].Status = "True"
+			replacement.Generation++
+			h.reconcile(t, instances...)
+			h.assertDeleted(t)
+			require.NotNil(t, h.set.Status.RolloutReplacementState, "Ready from an older generation is not completion")
+
+			replacement.Status.ObservedGeneration = replacement.Generation
+			h.reconcile(t, instances...)
+			h.assertDeleted(t, surge.Name)
+			require.Nil(t, h.set.Status.RolloutReplacementState)
+		})
+	}
+}
+
+func TestSparseActivePreservesNonPrefixSurgeIdentity(t *testing.T) {
+	for _, tc := range []struct {
+		name        string
+		partition   int32
+		wantLayout  []int
+		wantCreated []string
+	}{
+		{name: "keep existing identity", partition: 2, wantLayout: []int{0, 2, 4, 6}},
+		{name: "allocate only missing slot", partition: 1, wantLayout: []int{0, 2, 4, 5, 6}, wantCreated: []string{"sparse-active-gap-5"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRollbackTestHarness(t, "sparse-active-gap", 3, tc.partition, 2)
+			h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1,3"}
+			instances := []*workloadsv1alpha2.RoleInstance{
+				h.instance(0, h.current.Name, true), h.instance(2, h.current.Name, true),
+				h.instance(4, h.current.Name, true), h.instance(6, h.intermediate.Name, true),
+			}
+			topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+			require.NoError(t, err)
+			require.Equal(t, tc.wantLayout, topo.ordinals)
+			require.Equal(t, len(tc.wantLayout)-3, topo.activeSurge)
+			require.Equal(t, len(tc.wantLayout), topo.endOrdinal)
+			_, err = h.control.updateStatefulInstanceSet(context.Background(), h.set, h.current, h.intermediate, 0,
+				instances, []*apps.ControllerRevision{h.current, h.intermediate})
+			require.NoError(t, err)
+			require.Equal(t, tc.wantCreated, h.objects.created)
+			require.Equal(t, []string{h.set.Name + "-4"}, h.objects.deleted, "ready surge 6 must fund replacement, not be condemned")
+		})
+	}
+}
+
+func TestSurgeLayoutMaterializesOnlyActiveDemand(t *testing.T) {
+	set := buildSet("large-surge-limit", 1, ptr.To(intstr.FromInt32(1000000)), ptr.To(intstr.FromInt32(0)))
+	instances := []*workloadsv1alpha2.RoleInstance{buildInst(set.Name, 0, "old", true, true)}
+	topo, err := computeTopology(set, instances, "old", "new", false)
+	require.NoError(t, err)
+	require.Equal(t, 1000000, topo.maxSurge)
+	require.Equal(t, 1, topo.activeSurge)
+	require.Equal(t, 2, len(topo.ordinals), "layout size must follow active demand, not the surge limit")
+	require.Equal(t, []int{0, 1}, topo.ordinals)
+	require.Equal(t, 2, topo.endOrdinal)
+	require.LessOrEqual(t, cap(topo.ordinals), 4, "backing storage must also follow active demand")
+}
+
+func TestSurgeLayoutNearOrdinalLimit(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		partition int32
+		paused    bool
+		wantError bool
+	}{
+		{name: "no eligible base needs no surge", partition: 2},
+		{name: "paused rollout does not allocate candidates", paused: true},
+		{name: "actual surge demand exhausts ordinal space", wantError: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			set := buildSet("limit-surge", 2, ptr.To(intstr.FromInt32(1)), ptr.To(intstr.FromInt32(0)))
+			set.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(tc.partition))
+			set.Spec.UpdateStrategy.Paused = tc.paused
+			set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "0-2147483645"}
+			instances := []*workloadsv1alpha2.RoleInstance{
+				buildInst(set.Name, 2147483646, "old", true, true),
+				buildInst(set.Name, 2147483647, "old", true, true),
+			}
+			topo, err := computeTopology(set, instances, "old", "new", false)
+			if tc.wantError {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Zero(t, topo.activeSurge)
+			require.Equal(t, []int{2147483646, 2147483647}, topo.ordinals)
+			require.Equal(t, 2, topo.endOrdinal)
+		})
+	}
+}
+
+func TestExistingSparseSurgeFiltersWithoutPrefixExpansion(t *testing.T) {
+	skips, err := ordinals.Parse("1,3")
+	require.NoError(t, err)
+	valid := buildInst("surge-filter", 6, "new", true, true)
+	terminating := buildInst("surge-filter", 5, "new", true, true)
+	withTerminating(terminating)
+	instances := []*workloadsv1alpha2.RoleInstance{
+		nil, valid, valid.DeepCopy(), terminating,
+		buildInst("surge-filter", 4, "new", true, true),  // base member
+		buildInst("surge-filter", 3, "new", true, true),  // excluded ordinal
+		buildInst("surge-filter", 5, "old", true, true),  // stale revision
+		buildInst("surge-filter", 7, "new", true, true),  // later surge, beyond the count budget
+		buildInst("surge-filter", 5, "new", true, false), // not created
+	}
+	require.Equal(t, []int{6}, existingValidSurgeOrdinals(instances, 3, 1, "new", skips))
+}
+
+func TestSparseNewSurgeSkipsUserExclusions(t *testing.T) {
+	for _, tc := range []struct {
+		name, excluded string
+		ordinal        int
+		exhausted      bool
+	}{
+		{name: "exclusions above last member", excluded: "1,3,5", ordinal: 6},
+		{name: "excluded base members stay committed", excluded: "0-5", ordinal: 6},
+		{name: "large range is not expanded", excluded: "1,3,5-2147483646", ordinal: 2147483647},
+		{name: "no allowed surge ordinal", excluded: "1,3,5-2147483647", exhausted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRollbackTestHarness(t, "surge-exclusions", 3, 2, 1)
+			h.set.Annotations = map[string]string{
+				constants.CommittedSkipOrdinalsAnnotationKey: "1,3",
+				constants.ExcludedOrdinalsAnnotationKey:      tc.excluded,
+			}
+			instances := []*workloadsv1alpha2.RoleInstance{
+				h.instance(0, h.current.Name, true), h.instance(2, h.current.Name, true), h.instance(4, h.current.Name, true),
+			}
+			topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+			if tc.exhausted {
+				require.Error(t, err)
+				require.Empty(t, h.objects.created)
+				require.Empty(t, h.objects.deleted)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, []int{0, 2, 4, tc.ordinal}, topo.ordinals)
+			_, err = h.control.updateStatefulInstanceSet(context.Background(), h.set, h.current, h.intermediate, 0,
+				instances, []*apps.ControllerRevision{h.current, h.intermediate})
+			require.NoError(t, err)
+			require.Equal(t, []string{fmt.Sprintf("%s-%d", h.set.Name, tc.ordinal)}, h.objects.created)
+			require.Empty(t, h.objects.deleted, "maxUnavailable=0 must retain the base before surge is ready")
+		})
+	}
+}
+
+func TestSparseExclusionEditsPreserveExistingSurge(t *testing.T) {
+	h := newRollbackTestHarness(t, "surge-edits", 3, 2, 1)
+	h.set.Annotations = map[string]string{
+		constants.CommittedSkipOrdinalsAnnotationKey: "1,3",
+		constants.ExcludedOrdinalsAnnotationKey:      "1,3,5,6",
+	}
+	instances := []*workloadsv1alpha2.RoleInstance{
+		h.instance(0, h.current.Name, true), h.instance(2, h.current.Name, true),
+		h.instance(4, h.current.Name, true), h.instance(6, h.intermediate.Name, true),
+	}
+	for _, paused := range []bool{true, false} {
+		h.set.Spec.UpdateStrategy.Paused = paused
+		topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+		require.NoError(t, err)
+		require.Equal(t, []int{0, 2, 4, 6}, topo.ordinals, "input edits must not retire existing replacement protection")
+	}
+}
+
+func TestDenseSurgeSurvivesExclusionRemoval(t *testing.T) {
+	h := newRollbackTestHarness(t, "dense-surge-edits", 3, 2, 1)
+	h.set.Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "3"}
+	instances := make([]*workloadsv1alpha2.RoleInstance, 0, 4)
+	instances = append(instances, h.instance(0, h.current.Name, true), h.instance(1, h.current.Name, true), h.instance(2, h.current.Name, true))
+	topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 1, 2, 4}, topo.ordinals)
+	instances = append(instances, h.instance(4, h.intermediate.Name, true))
+	delete(h.set.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	for _, paused := range []bool{true, false} {
+		h.set.Spec.UpdateStrategy.Paused = paused
+		topo, err = computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+		require.NoError(t, err)
+		require.Equal(t, []int{0, 1, 2, 4}, topo.ordinals, "clearing input must not reinterpret an existing surge identity")
+	}
+}
+
+// A replacement persisted while members were [0,2] stays protected after a
+// scale-up fills the last gap. Positions [0,2) of the dense [0,1,2] would no
+// longer include the missing replacement 2; its recorded ordinal bounds do.
+func TestReplacementScopeSurvivesLastGapFill(t *testing.T) {
+	h := newRollbackTestHarness(t, "last-gap", 2, 0, 1)
+	h.set.Annotations = map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: "1"}
+	zero := h.instance(0, h.current.Name, true)
+	two := h.instance(2, h.intermediate.Name, true)
+	surge := h.instance(3, h.current.Name, true)
+	h.reconcile(t, zero, two, surge)
+	h.assertDeleted(t, two.Name)
+	require.Equal(t, &workloadsv1alpha2.RolloutReplacementState{
+		UpdateRevision: h.current.Name, Partition: 0, Replicas: 3,
+	}, h.set.Status.RolloutReplacementState)
+
+	h.set.Spec.Replicas = ptr.To[int32](3)
+	delete(h.set.Annotations, constants.CommittedSkipOrdinalsAnnotationKey)
+	h.set.Generation++
+	updateExpectations.DeleteExpectations(getInstanceSetKey(h.set))
+	instances := make([]*workloadsv1alpha2.RoleInstance, 0, 4)
+	instances = append(instances, zero, h.instance(1, h.current.Name, true), surge)
+	h.reconcile(t, instances...)
+	h.assertDeleted(t)
+	require.Equal(t, []string{two.Name}, h.objects.created)
+	require.NotNil(t, h.set.Status.RolloutReplacementState, "filling the last gap must not release the replacement")
+
+	replacement := h.instance(2, h.current.Name, false)
+	instances = append(instances, replacement)
+	h.reconcile(t, instances...)
+	h.assertDeleted(t)
+	require.NotNil(t, h.set.Status.RolloutReplacementState)
+
+	replacement.Status.Conditions[0].Status = "True"
+	h.reconcile(t, instances...)
+	h.assertDeleted(t, surge.Name)
+	require.Nil(t, h.set.Status.RolloutReplacementState)
+}
+
+func TestReplacementStateOrdinalBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		members      []int
+		partition    int
+		lower, upper int32
+	}{
+		{name: "dense bounds equal partition and replicas", members: []int{0, 1, 2}, partition: 1, lower: 1, upper: 3},
+		{name: "dense empty update range", members: []int{0, 1, 2}, partition: 3, lower: 3, upper: 3},
+		{name: "no members", lower: 0, upper: 0},
+		{name: "sparse bounds are ordinals", members: []int{0, 2, 4}, partition: 1, lower: 2, upper: 5},
+		{name: "largest ordinal saturates the upper bound", members: []int{math.MaxInt32 - 1, math.MaxInt32}, lower: math.MaxInt32 - 1, upper: math.MaxInt32},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lower, upper := updateRangeOrdinalBounds(tc.members, tc.partition)
+			require.Equal(t, tc.lower, lower)
+			require.Equal(t, tc.upper, upper)
+			state := &workloadsv1alpha2.RolloutReplacementState{Partition: lower, Replicas: upper}
+			for position, ordinal := range tc.members {
+				require.Equal(t, position >= tc.partition, replacementStateCoversOrdinal(state, ordinal), "ordinal %d", ordinal)
+			}
+		})
+	}
+}

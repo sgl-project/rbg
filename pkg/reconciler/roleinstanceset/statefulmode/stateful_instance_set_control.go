@@ -488,8 +488,9 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	condemned := make([]*workloadsv1alpha2.RoleInstance, 0, len(instances))
 	for i := range instances {
 		ord := getOrdinal(instances[i])
-		if instanceInOrdinalRangeWithParams(instances[i], topo.startOrdinal, topo.endOrdinal, topo.reserveOrdinals) {
-			replicas[ord-topo.startOrdinal] = instances[i]
+		position := topo.position(ord)
+		if position >= topo.startOrdinal && position < topo.endOrdinal {
+			replicas[position-topo.startOrdinal] = instances[i]
 		} else if ord >= 0 {
 			condemned = append(condemned, instances[i])
 		}
@@ -497,12 +498,9 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	// Fill empty in-range slots. ord < partition uses currentRev (per
 	// newVersionedInstance), the rest get updateRev — including surge slots.
 	for ord := topo.startOrdinal; ord < topo.endOrdinal; ord++ {
-		if topo.reserveOrdinals.Has(ord) {
-			continue
-		}
 		idx := ord - topo.startOrdinal
 		if replicas[idx] == nil {
-			replicas[idx] = newVersionedInstance(currentSet, updateSet, currentRevision.Name, updateRevision.Name, ord, replicas)
+			replicas[idx] = newVersionedInstance(currentSet, updateSet, currentRevision.Name, updateRevision.Name, topo.ordinal(ord), ord)
 		}
 	}
 	sort.Sort(descendingOrdinal(condemned))
@@ -609,7 +607,8 @@ func (ssc *defaultStatefulInstanceSetControl) persistTerminatingRolloutReplaceme
 			continue
 		}
 		ordinal := getOrdinal(instance)
-		if ordinal < topo.partition || ordinal >= topo.replicas || replacementStateCoversOrdinal(status.RolloutReplacementState, ordinal) {
+		position := topo.position(ordinal)
+		if position < topo.partition || position >= topo.replicas || replacementStateCoversOrdinal(status.RolloutReplacementState, ordinal) {
 			continue
 		}
 		return ssc.persistRolloutReplacementState(ctx, set, status, updateRevision, ordinal)
@@ -617,8 +616,36 @@ func (ssc *defaultStatefulInstanceSetControl) persistTerminatingRolloutReplaceme
 	return nil
 }
 
+// replacementStateCoversOrdinal checks whether another intent write is needed.
 func replacementStateCoversOrdinal(state *workloadsv1alpha2.RolloutReplacementState, ordinal int) bool {
-	return state != nil && ordinal >= int(state.Partition) && ordinal < int(state.Replicas)
+	if state == nil {
+		return false
+	}
+	lower, upper := replacementStateBounds(state)
+	return ordinal >= lower && ordinal < upper
+}
+
+// replacementStateBounds returns the recorded [lower, upper) ordinal bounds.
+// Replicas saturates at MaxInt32 and then also covers the largest ordinal.
+func replacementStateBounds(state *workloadsv1alpha2.RolloutReplacementState) (int, int) {
+	upper := int(state.Replicas)
+	if state.Replicas == math.MaxInt32 {
+		upper++
+	}
+	return int(state.Partition), upper
+}
+
+// updateRangeOrdinalBounds returns the ordinal bounds of the update range for
+// sorted committed members. Without gaps these equal partition and replicas.
+func updateRangeOrdinalBounds(members []int, partition int) (int32, int32) {
+	lower, upper := int64(partition), int64(0)
+	if partition < len(members) {
+		lower = int64(members[partition])
+	}
+	if n := len(members); n > 0 {
+		upper = int64(members[n-1]) + 1
+	}
+	return int32(min(lower, math.MaxInt32)), int32(min(upper, math.MaxInt32))
 }
 
 // computeTopologyForReconcile derives early-rollback work from persisted status
@@ -653,7 +680,7 @@ func countUnhealthy(replicas, condemned []*workloadsv1alpha2.RoleInstance) (int,
 		}
 		if !isHealthy(replicas[i]) {
 			unhealthy++
-			if ord := getOrdinal(replicas[i]); ord < firstUnhealthyOrdinal {
+			if ord := getOrdinal(replicas[i]); firstUnhealthyInstance == nil || ord < firstUnhealthyOrdinal {
 				firstUnhealthyOrdinal = ord
 				firstUnhealthyInstance = replicas[i]
 			}
@@ -662,7 +689,7 @@ func countUnhealthy(replicas, condemned []*workloadsv1alpha2.RoleInstance) (int,
 	for i := len(condemned) - 1; i >= 0; i-- {
 		if !isHealthy(condemned[i]) {
 			unhealthy++
-			if ord := getOrdinal(condemned[i]); ord < firstUnhealthyOrdinal {
+			if ord := getOrdinal(condemned[i]); firstUnhealthyInstance == nil || ord < firstUnhealthyOrdinal {
 				firstUnhealthyOrdinal = ord
 				firstUnhealthyInstance = condemned[i]
 			}
@@ -725,7 +752,7 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 		return status, nil
 	}
 
-	availableSurge := countAvailableSurge(replicas, topo, updateRevision.Name)
+	availableSurge := countAvailableSurge(set, replicas, topo, updateRevision.Name)
 	effectiveBudget := topo.maxUnavailable + availableSurge
 	baseUnavail := ssc.collectBaseUnavailable(set, replicas, topo, minReadySeconds)
 	initialBaseUnavail := len(baseUnavail)
@@ -752,7 +779,7 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 		//     millisecond-level mislabeling cannot accumulate enough continuous
 		//     unhealthy time to satisfy it, while a genuinely broken instance
 		//     accrues quickly.
-		isSurgeSlot := getOrdinal(target) >= topo.replicas
+		isSurgeSlot := idx+topo.startOrdinal >= topo.replicas
 		isFree := isSurgeSlot || isTerminating(target) || isStablyUnhealthy(set, target)
 
 		if !isFree && initialBaseUnavail+newlyUnavail >= effectiveBudget {
@@ -789,9 +816,10 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 }
 
 // countAvailableSurge counts surge slots [replicas, endOrdinal) whose instance
-// is at updateRev AND healthy AND not terminating. Only those provide a real
-// availability buffer — stale-rev or unhealthy surge does not.
+// is at updateRev and available under minReadySeconds. Only those provide a
+// real buffer; stale, unhealthy, terminating or still-warming surge does not.
 func countAvailableSurge(
+	set *workloadsv1alpha2.RoleInstanceSet,
 	replicas []*workloadsv1alpha2.RoleInstance,
 	topo topology,
 	updateRev string,
@@ -803,9 +831,14 @@ func countAvailableSurge(
 			continue
 		}
 		inst := replicas[idx]
-		if inst != nil && isCreated(inst) && isHealthy(inst) && !isTerminating(inst) &&
-			getInstanceRevision(inst) == updateRev {
+		if inst == nil || !isCreated(inst) || getInstanceRevision(inst) != updateRev {
+			continue
+		}
+		available, wait := isInstanceRunningAndAvailable(inst, set.Spec.MinReadySeconds)
+		if available {
 			out++
+		} else if wait > 0 {
+			durationStore.Push(getInstanceSetKey(set), wait)
 		}
 	}
 	return out
@@ -942,6 +975,13 @@ func (ssc *defaultStatefulInstanceSetControl) persistRolloutReplacementState(
 	updateRevision string,
 	ordinal int,
 ) error {
+	members, err := set.CommittedOrdinals()
+	if err != nil {
+		return err
+	}
+	if memberPosition(ordinal, members) < 0 {
+		return nil
+	}
 	maxSurge, err := computeMaxSurge(set)
 	if err != nil {
 		return err
@@ -953,10 +993,13 @@ func (ssc *defaultStatefulInstanceSetControl) persistRolloutReplacementState(
 	if err != nil {
 		return err
 	}
+	// Record ordinals rather than positions: later membership changes can move
+	// a different member into a recorded position.
+	lower, upper := updateRangeOrdinalBounds(members, partition)
 	state := &workloadsv1alpha2.RolloutReplacementState{
 		UpdateRevision: updateRevision,
-		Replicas:       ptr.Deref(set.Spec.Replicas, 0),
-		Partition:      int32(partition),
+		Replicas:       upper,
+		Partition:      lower,
 	}
 	if previous := status.RolloutReplacementState; previous != nil {
 		// Only an actual additional replacement expands the persisted scope;
@@ -1095,7 +1138,7 @@ func (ssc *defaultStatefulInstanceSetControl) progressOrderedReadyUnhealthyTarge
 	}
 
 	cleanupTopo := topo
-	cleanupTopo.partition = getOrdinal(target)
+	cleanupTopo.partition = topo.position(getOrdinal(target))
 	cleanupTopo.endOrdinal = cleanupTopo.partition + 1
 	cleanupTopo.activeSurge = 0
 	_, err := ssc.progressUpdate(ctx, set, status, currentRevision, updateRevision,
