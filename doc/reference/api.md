@@ -52,7 +52,7 @@ Leader + workers per instance (for tensor parallelism):
 | Field | Description |
 |-------|-------------|
 | `size` | *int32 — total pods per instance (1 leader + size-1 workers) |
-| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
+| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `activateAfter` (default: `Ready`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
 | `restartPolicy` | RestartPolicyType — **Deprecated**, use `restartPolicyConfig`. Honoured only when `restartPolicyConfig.type` is unset |
 | `template` | PodTemplateSpec — base pod template |
 | `templateRef` | *TemplateRef — reference to roleTemplate |
@@ -66,7 +66,7 @@ Heterogeneous pod groups per instance:
 | Field | Description |
 |-------|-------------|
 | `components` | []ComponentSpec — list of component definitions |
-| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
+| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `activateAfter` (default: `Ready`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
 | `restartPolicy` | RestartPolicyType — **Deprecated**, use `restartPolicyConfig`. Honoured only when `restartPolicyConfig.type` is unset |
 
 ### ComponentSpec
@@ -125,6 +125,9 @@ Reusable pod template at RBG level:
 |-------|-------------|
 | `None` | No automatic restart |
 | `RecreateRoleInstanceOnPodRestart` | Recreate only the role instance |
+
+See [Failure Handling](../features/failure-handling.md) for native RoleInstance activation,
+the pre-Ready `Restarting` guard limit, backend support and upgrade/rollout considerations.
 
 ## ScalingAdapter
 

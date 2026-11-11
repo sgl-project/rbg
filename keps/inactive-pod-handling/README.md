@@ -5,13 +5,13 @@
 - [Goals](#goals)
 - [Non-Goals](#non-goals)
 - [Design Proposal](#design-proposal)
-    - [User Stories](#user-stories)
-    - [Risks and Mitigations](#risks-and-mitigations)
+  - [User Stories](#user-stories)
+  - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
-    - [New Detection Functions](#new-detection-functions)
-    - [RoleInstance Controller Changes](#roleinstance-controller-changes)
-    - [RestartPolicy Handling Matrix](#restartpolicy-handling-matrix)
-    - [Test Plan](#test-plan)
+  - [New Detection Functions](#new-detection-functions)
+  - [RoleInstance Controller Changes](#roleinstance-controller-changes)
+  - [RestartPolicy Handling Matrix](#restartpolicy-handling-matrix)
+  - [Test Plan](#test-plan)
 <!-- /toc -->
 
 ## Two Levels of Failed Pod Handling
@@ -32,7 +32,7 @@ This KEP addresses two distinct levels of handling when a Pod enters Failed stat
 
 | Aspect | Description |
 |--------|-------------|
-| **Trigger** | Pod enters Failed state AND restartPolicy=`RecreateRoleInstanceOnPodRestart` |
+| **Trigger** | An armed `RecreateRoleInstanceOnPodRestart` policy detects Failed phase, a desired member observed deleting, or an unexpected ordinary-container restart |
 | **Handler** | RoleInstance Controller (`instance_scale.go` → `shouldRecreateInstance`) |
 | **Behavior** | Delete ALL pods (active + inactive) → recreate entire Instance |
 | **Key point** | Maintains Instance-level consistency; only the affected Instance is recreated |
@@ -42,9 +42,9 @@ This KEP addresses two distinct levels of handling when a Pod enters Failed stat
 | Aspect | Description |
 |--------|-------------|
 | **Trigger** | Container inside Pod restarts (RestartCount increases) |
-| **Handler** | Underlying workload controller (e.g. LWS controller) |
-| **restartPolicy involved** | `RecreateRoleInstanceOnPodRestart`: LWS controller recreates RoleInstance |
-| **Key point** | RBG controller does NOT handle container restart - delegated to workload controllers |
+| **Handler** | Native RoleInstance controller; LWS controller for LeaderWorkerSet-backed roles |
+| **restartPolicy involved** | `RecreateRoleInstanceOnPodRestart`: recreate the affected native instance or LWS group |
+| **Key point** | Native RoleInstance handles ordinary-container restarts with the activation, generation/revision and in-place-update guards below. The LWS backend delegates to LWS v0.7's ungated `RecreateGroupOnPodRestart`; it does not use the native Ready gate or `activateAfter`. |
 
 ### Why Two Levels
 
@@ -52,13 +52,75 @@ The RoleInstance Controller handles Failed pods in a two-level approach:
 
 1. **Level 1 (pod-level replacement)**: For `RestartPolicy=None`, a Failed pod is deleted, then normal reconciliation detects the missing pod and creates a replacement. This is analogous to how StatefulSet handles Failed pods with ordinal identity.
 
-2. **Level 2 (Instance-level recreation)**: For `RestartPolicy=RecreateRoleInstanceOnPodRestart`, when a pod becomes Failed, the entire RoleInstance is recreated (all pods deleted and recreated together). This ensures Instance-level consistency for tightly-coupled multi-pod workloads.
+2. **Level 2 (Instance-level recreation)**: For an armed `RestartPolicy=RecreateRoleInstanceOnPodRestart`, a Failed pod can trigger recreation of the entire RoleInstance (all pods deleted and recreated together), subject to the guards below. This ensures Instance-level consistency for tightly-coupled multi-pod workloads.
+
+## Policy Compatibility
+
+There is one recreate policy, `RecreateRoleInstanceOnPodRestart`, and two orthogonal
+settings describe it:
+
+- `type` says *what* recreates the instance.
+- `restartPolicyConfig.activateAfter` says *when* those triggers are armed.
+
+The triggers are unexpected container restarts, Failed Pods, and loss of a desired member
+Pod observed while Terminating. Member loss is part of the default policy: it is not a
+separate opt-in, because a lost member that is silently replaced on its own is the failure
+mode #542 reports, and LeaderWorkerSet already behaves this way under the same policy name.
+
+`activateAfter` default is `Ready`:
+
+- `Ready` — triggers are armed once the instance has been Ready at its current generation.
+  Creation and scale-up therefore keep the protection from #348/#349, and any spec change
+  (which bumps the generation) re-arms that protection by construction.
+- `Created` — triggers are armed as soon as the instance exists, which also covers
+  failures that happen before the instance first becomes Ready. **At most one whole-instance
+  recreation before Ready is allowed due to the `Restarting` guard**, which is cleared only
+  on Ready. Repeated pre-Ready recovery is deferred to
+  [#563](https://github.com/sgl-project/rbg/issues/563).
+
+The stability fact is persisted as `status.lastReadyGeneration`, the `metadata.generation`
+at which the instance was last Ready. Gating on the live `RoleInstanceReady` condition
+instead would be unsound: status is written after scaling, so a fault flips the condition
+to False before the restart signal becomes visible, and the policy would never fire again.
+
+A member that disappears without ever being observed as Terminating is deferred to
+[#562](https://github.com/sgl-project/rbg/issues/562); NotReady alone is not a trigger and a
+NotReady timeout is deferred to [#380](https://github.com/sgl-project/rbg/issues/380).
+
+Compatibility notes:
+
+- The default policy intentionally gains the readiness latch and Terminating-member trigger;
+  existing workloads do **not** retain identical runtime behavior. `lastReadyGeneration`
+  starts at 0 and is populated on the next observed Ready. A Ready instance with an already
+  Terminating desired member at upgrade can be rebuilt on the first reconcile. An existing
+  instance stuck NotReady without a latch still needs manual deletion of the **RoleInstance**,
+  not just one Pod.
+- `activateAfter` has no CRD default and uses `omitempty`. Its getter resolves `Ready`, and
+  the adapter writes it to the RoleInstance template only when explicitly set. The latch
+  is status-only and not hashed. This avoids upgrade-only template/default materialization
+  and rollout; it does not promise unchanged runtime behavior.
+- Explicitly setting or changing `activateAfter` changes the serialized RoleInstance
+  template and can roll the role, even when setting `Ready` where previously omitted.
+  `RecreatePod` can rebuild every RoleInstance and all its Pods; `InPlaceIfPossible` updates
+  RoleInstance specs in place without Pod restarts for a policy-only change.
+- Both served APIs accept the existing policy, but only v1alpha2 can express `activateAfter`.
+  A v1alpha1 GET omits it from the response without changing persisted configuration or
+  running behavior. A v1alpha1 read-modify-write drops it and resolves to `Ready`, just as it
+  already drops backoff delays. An older writer, including a rolled-back controller, may
+  drop the field when writing an object/template; the rollback alone does not rewrite stored
+  objects. Losing the serialized field on a write can roll the role again, rebuilding all
+  Pods with `RecreatePod`. See the [upgrade review](https://github.com/sgl-project/rbg/pull/559#issuecomment-6769631451).
+- LeaderWorkerSet-backed roles keep the policy they had. They are not offered
+  `activateAfter` because their behavior is already ungated (LWS's
+  `RecreateGroupOnPodRestart` fires on `ContainerRestarted(pod) || PodDeleted(pod)`
+  without a start or Ready gate), and the vendored LWS v0.7 adapter exposes no field to
+  express the distinction.
 
 ## Background and Motivation
 
 The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted, UnexpectedAdmissionError, Failed).
 
-**Root Cause**: Native Kubernetes controllers treat Failed/Succeeded Pods as inactive and immediately create new Pods to maintain replica count. However, RBG's current implementation only triggers recreation when a Pod is deleted, lacking handling for Pods that directly enter the Failed state.
+**Original root cause**: Native Kubernetes controllers treat Failed/Succeeded Pods as inactive and create replacements to maintain replica count. RBG's original implementation lacked handling for Pods that directly entered Failed state; same-name inactive Pods blocked replacement. The design below adds Failed-Pod cleanup and extends whole-instance recovery.
 
 **Specific Issues**:
 
@@ -84,15 +146,20 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 - Correctly detect and handle Failed/Evicted/UnexpectedAdmissionError Pod states
 - Delete Failed pods immediately so replacements can be created, without waiting for GC
 - Follow Kubernetes native StatefulSet pattern for fixed-name pod replacement
-- Support two-level handling: pod-level replacement (None) and Instance-level recreation (RecreateRoleInstanceOnPodRestart)
+- Retain the existing policy enum and creation/scale-up protection with `activateAfter: Ready`
+- Add the desired-member Terminating trigger and persisted readiness latch to `RecreateRoleInstanceOnPodRestart` to recover from #542 when member termination is observed
+- Offer `restartPolicyConfig.activateAfter: Ready | Created` so pre-Ready recovery is opt-in without adding a second policy type
 - Support DisruptionTarget condition detection (K8s 1.22+)
 
 ## Non-Goals
 
-- Do not introduce new RestartPolicy types
-- Do not handle Pod Succeeded state (normal completion) - explicitly excluded from trigger conditions
-- Do not handle Unschedulable pods (PodScheduled=False) - these pods are still active per IsPodActive and rely on K8s scheduler retry
-- Do not handle container restart - delegated to underlying workload controllers (e.g. LWS)
+- Succeeded phase alone does not trigger recreation (normal completion). A desired member observed deleting can still trigger recreation regardless of phase, including Succeeded.
+- Do not add Unschedulable (PodScheduled=False) as a trigger; these Pods rely on K8s scheduler retry
+- Do not introduce new `RestartPolicy` types. New behavior is expressed as a field on
+  `RestartPolicyConfig` (`activateAfter`), so the policy enum stays two-valued and a role
+  can be described on independent axes instead of by growing the enum
+- Keep pre-Ready arming opt-in through `activateAfter: Created`; the default `Ready` keeps
+  today's protection for creation and scale-up
 
 ## Design Proposal
 
@@ -103,6 +170,7 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 > As an operator, when a Pod is evicted due to node resource shortage, I want RBG to immediately detect it and create a replacement Pod, without waiting for GC cleanup.
 
 **Expected Behavior**:
+
 - After Pod is evicted, Phase becomes Failed, status.reason="Evicted"
 - RoleInstance Controller detects Pod entering inactive state
 - Failed pod is deleted, replacement pod created on next reconcile
@@ -113,6 +181,7 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 > As an operator with `RecreateRoleInstanceOnPodRestart` policy, when a Pod enters Failed state, I want the entire RoleInstance to be recreated for consistency.
 
 **Expected Behavior**:
+
 - Pod enters Failed state (e.g., Evicted, Error)
 - `shouldRecreateInstance` detects Failed pod with RecreateRoleInstanceOnPodRestart policy
 - All pods in the affected Instance are deleted and recreated together
@@ -120,9 +189,10 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 
 #### Story 3: RestartPolicy=None Creates Replacement Pod
 
-> As an operator with default RestartPolicy (None), when a Pod enters Failed state, I want a replacement Pod created to maintain the desired replica count.
+> As an operator with explicit RestartPolicy `None`, when a Pod enters Failed state, I want a replacement Pod created to maintain the desired replica count.
 
 **Expected Behavior**:
+
 - Pod enters Failed state
 - Failed pod is deleted on next reconcile
 - Replacement pod with same name created on subsequent reconcile
@@ -132,8 +202,8 @@ The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted,
 
 | Risk | Mitigation |
 |------|------------|
-| Extended trigger conditions may cause unexpected recreation loops | Use `wasInstanceReady` check to avoid triggering during initial creation; require `Generation == ObservedGeneration` to avoid triggering during spec changes |
-| Frequent Failed Pod state transitions may increase controller load | Only react to Failed phase (terminal state), not intermediate transitions |
+| Extended trigger conditions may cause unexpected recreation loops | Default `Ready` activation uses current Ready, the generation-scoped readiness latch, or the existing recent-restart bypass; retain generation/revision guards and the `Restarting` guard |
+| Frequent Failed Pod state transitions may increase controller load | Trigger on Failed phase or observed desired-member deletion, not NotReady or other intermediate conditions alone |
 | DisruptionTarget condition depends on K8s 1.22+ | Also support traditional detection method (status.reason) to ensure backward compatibility |
 
 ## Design Details
@@ -147,7 +217,7 @@ Native K8s functions available (can be used directly):
 | Native Function | Location | Purpose |
 |----------------|----------|---------|
 | `kubecontroller.IsPodActive(pod)` | `vendor/k8s.io/kubernetes/pkg/controller/controller_utils.go` | Phase != Succeeded/Failed && DeletionTimestamp == nil |
-| `podutil.IsPodTerminal(pod)` | `vendor/k8s.io/kubernetes/pkg/api/v1/pod/util.go` | Phase == Failed || Phase == Succeeded |
+| `podutil.IsPodTerminal(pod)` | `vendor/k8s.io/kubernetes/pkg/api/v1/pod/util.go` | Phase == Failed \|\| Phase == Succeeded |
 | `kubecontroller.IsPodTerminating(pod)` | `vendor/k8s.io/kubernetes/pkg/controller/controller_utils.go` | !IsPodTerminal && DeletionTimestamp != nil |
 
 **Note**: The project already uses `kubecontroller.IsPodActive` in `pkg/reconciler/roleinstance/utils/instance_utils.go`.
@@ -246,58 +316,50 @@ func GetPodInactiveReason(pod *corev1.Pod) string {
 
 **File**: `pkg/reconciler/roleinstance/sync/instance_scale.go`
 
-**Scope**: RoleInstance Controller handles Pod Failed → replacement Pod creation. This is inherent Pod lifecycle management.
+**Scope**: Native RoleInstance Controller handles Pod Failed → replacement and the restart-policy triggers described below. LeaderWorkerSet-backed roles delegate their Pod lifecycle to LWS.
 
 #### Understanding shouldRecreateInstance
 
 The `shouldRecreateInstance` function exists to handle a special case:
 
-**When restartPolicy=`RecreateRoleInstanceOnPodRestart` AND a Pod becomes Failed**:
-- Instead of just deleting and replacing the Failed Pod, recreate the entire Instance
+**When an armed `RecreateRoleInstanceOnPodRestart` policy detects a failure**:
+
+- Instead of just replacing one Pod, recreate the entire Instance
+- Triggers include Failed phase, desired-member deletion and unexpected ordinary-container restarts
 - This maintains Instance-level consistency on Pod failures
 
-**When restartPolicy is NOT `RecreateRoleInstanceOnPodRestart`** (i.e., `None`):
+**When restartPolicy is `None`**:
+
 - Pod Failed → delete Failed pod → next reconcile creates replacement Pod
-- This is the default behavior (same as StatefulSet)
+- This pod-level replacement follows StatefulSet behavior
 
-#### Correct Implementation of shouldRecreateInstance
+#### Conceptual Outline of shouldRecreateInstance
 
-```go
-// shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
-// This applies when:
-//   - restartPolicy = RecreateRoleInstanceOnPodRestart AND any Pod is in Failed phase
-//
-// Note: This function does NOT handle container restart.
-// Container restart with RecreateRoleInstanceOnPodRestart is handled by the
-// underlying workload controller (e.g. LWS controller).
-//
-// Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion
-// and should not trigger Instance recreation.
-func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
-    if instance.Spec.RestartPolicy != workloadsv1alpha2.RoleInstanceRestartPolicyRecreateOnPodRestart {
-        return false
-    }
-    if len(pods) == 0 {
-        return false
-    }
-    if !wasInstanceReady(instance) || instance.Generation != instance.Status.ObservedGeneration {
-        return false
-    }
-    // Check if any Pod is in Failed phase (excluding pods being deleted)
-    for _, p := range pods {
-        if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
-            return true
-        }
-    }
-    return false
-}
-```
+This is an outline, not replacement source code. The current implementation lives in
+[`instance_scale.go`](../../pkg/reconciler/roleinstance/sync/instance_scale.go)
+(`restartTriggersArmed`, `shouldRecreateInstance` and `shouldRecreateInstanceGuarded`):
+
+1. Require the recreate policy, observed generation and converged current/update revisions.
+2. For default `Ready`, arm on current Ready, `lastReadyGeneration == generation`, or the
+   existing recent-restart bypass. `Created` bypasses the readiness gate, not the generation
+   or rollout guards.
+3. Skip initiation from Pods whose restart-trigger-policy annotation is exactly `Ignore`.
+   A sibling's trigger still rebuilds all Pods, including ignored ones.
+4. Check desired-member deletion (`deletionTimestamp`, irrespective of phase) and Failed
+   phase before any in-place-update exemption. Scale-in ordinals are not desired members.
+   Succeeded phase alone is not a trigger.
+5. Skip container-restart detection for a Pod with `InPlaceUpdateReady=False`. For other
+   Pods, check ordinary-container restarts against recorded in-place-update baselines.
+   Init-container and native-sidecar restarts do not count.
+6. The `Restarting` guard blocks another whole-instance recreation until Ready, including
+   with `Created` ([#563](https://github.com/sgl-project/rbg/issues/563)). Existing backoff
+   delays eligible subsequent attempts; it does not override that guard.
 
 #### How Pod Failed → Replacement Pod Works (Two Levels)
 
 The `calculateDiffsWithExpectation` function handles Pod Failed in two levels:
 
-**Level 1: Delete Failed Pods (applies to ALL RestartPolicies)**
+##### Level 1: Delete Failed Pods (applies to ALL RestartPolicies)
 
 Failed pods must be deleted first because they block replacement creation (`hasOrphanPod` detects the same-name pod still exists):
 
@@ -310,7 +372,7 @@ for _, p := range inactivePods {
 }
 ```
 
-**Level 2: Instance Recreation (only RecreateRoleInstanceOnPodRestart)**
+##### Level 2: Instance Recreation (only RecreateRoleInstanceOnPodRestart)
 
 When `shouldRecreateInstance` returns true, ALL pods (active + inactive) are deleted and recreated:
 
@@ -323,7 +385,7 @@ if shouldRecreateInstance(updateInstance, allPods) {
 }
 ```
 
-**Scale Function Ordering**: Delete is checked before Create to ensure Failed pods are removed before attempting replacement (which would be blocked by `hasOrphanPod`):
+**Scale Function Ordering**: Delete is checked before Create to ensure Failed pods are removed before attempting replacement (which would be blocked by `hasOrphanPod`). The snippets in this subsection illustrate ordering only; consult the current source for signatures, backoff and guards. Already-Terminating Pods and `NotFound` delete responses count as **handled**, blocking the Update path and preserving restart bookkeeping, but do not emit a false `SuccessfulDelete` event.
 
 ```go
 func (c *realControl) Scale(...) (bool, error) {
@@ -336,28 +398,20 @@ func (c *realControl) Scale(...) (bool, error) {
 
 ### RestartPolicy Handling Matrix
 
-#### Pod Failed
+These rows describe native RoleInstance workloads. Whole-instance actions are subject to
+activation, generation/revision, backoff and `Restarting` guards described above.
 
-| RestartPolicy | Pod Failed Behavior |
-|--------------|---------------------|
-| `None` | Delete Failed pod → next reconcile creates replacement (pod-level) |
-| `RecreateRoleInstanceOnPodRestart` | `shouldRecreateInstance` triggers → delete ALL Instance pods → recreate all (Instance-level) |
+| Scenario | `None` | `RecreateRoleInstanceOnPodRestart` |
+|----------|--------|----------------------------------|
+| Failed Pod | Delete Failed Pod, then replace individually | Recreate the affected whole Instance when armed |
+| Desired member observed Terminating (any phase) | Normal individual Pod reconciliation | Recreate the affected whole Instance when armed |
+| Unexpected ordinary-container restart | Let the container restart naturally | Recreate the affected whole Instance when armed; apply the Pod-level in-place-update exemption and baselines |
+| Before first Ready | Normal Pod reconciliation | Default `Ready` is not armed; `Created` permits at most one whole-instance recreation before Ready |
+| Succeeded phase alone, Pending or NotReady alone | No restart-policy action | No whole-instance trigger |
+| Pod annotated with exact `Ignore` | Normal Pod reconciliation | Cannot initiate recreation, but is rebuilt if a sibling triggers it |
 
-#### Container Restart
-
-| RestartPolicy | Container Restart Behavior |
-|--------------|---------------------------|
-| `None` | Do nothing - let container restart naturally |
-| `RecreateRoleInstanceOnPodRestart` | Handled by underlying workload controller (e.g. LWS controller), RBG controller does nothing |
-
-#### Summary
-
-| Scenario | Handler | Action |
-|----------|---------|--------|
-| Pod Failed + `None` | RoleInstance Controller | Delete Failed pod, create replacement |
-| Pod Failed + `RecreateRoleInstanceOnPodRestart` | RoleInstance Controller | Recreate entire Instance |
-| Container restart + `None` | None (K8s default) | Let container restart |
-| Container restart + `RecreateRoleInstanceOnPodRestart` | LWS Controller | Recreate RoleInstance |
+LeaderWorkerSet-backed roles instead use LWS v0.7's ungated `RecreateGroupOnPodRestart`
+(`ContainerRestarted` or `PodDeleted`); `activateAfter` does not change that backend.
 
 ### Test Plan
 
@@ -446,7 +500,7 @@ func GetActivePodCount(ctx context.Context, rclient client.Client, namespace, rb
 - 2026-05-09: Refactored to properly separate controller responsibilities
   - Updated KEP documentation with two-level handling approach
   - RoleInstance Controller handles both Level 1 (delete Failed pod) and Level 2 (recreate Instance)
-  - Removed `ContainerRestarted` check from `shouldRecreateInstance` (handled by LWS controller)
+  - Historically removed `ContainerRestarted` from `shouldRecreateInstance` in favor of LWS delegation; native RoleInstance now handles ordinary-container restarts itself as described above.
 
 - 2026-05-18: Updated after upstream #340 removed Pod Controller
   - Removed Pod Controller references (deprecated by upstream #340)

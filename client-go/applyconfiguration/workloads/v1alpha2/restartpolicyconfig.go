@@ -24,9 +24,10 @@ import (
 // RestartPolicyConfigApplyConfiguration represents a declarative configuration of the RestartPolicyConfig type for use
 // with apply.
 type RestartPolicyConfigApplyConfiguration struct {
-	Type             *workloadsv1alpha2.RestartPolicyType `json:"type,omitempty"`
-	BaseDelaySeconds *int32                               `json:"baseDelaySeconds,omitempty"`
-	MaxDelaySeconds  *int32                               `json:"maxDelaySeconds,omitempty"`
+	Type             *workloadsv1alpha2.RestartPolicyType          `json:"type,omitempty"`
+	ActivateAfter    *workloadsv1alpha2.RestartPolicyActivateAfter `json:"activateAfter,omitempty"`
+	BaseDelaySeconds *int32                                        `json:"baseDelaySeconds,omitempty"`
+	MaxDelaySeconds  *int32                                        `json:"maxDelaySeconds,omitempty"`
 }
 
 // RestartPolicyConfigApplyConfiguration constructs a declarative configuration of the RestartPolicyConfig type for use with
@@ -40,6 +41,14 @@ func RestartPolicyConfig() *RestartPolicyConfigApplyConfiguration {
 // If called multiple times, the Type field is set to the value of the last call.
 func (b *RestartPolicyConfigApplyConfiguration) WithType(value workloadsv1alpha2.RestartPolicyType) *RestartPolicyConfigApplyConfiguration {
 	b.Type = &value
+	return b
+}
+
+// WithActivateAfter sets the ActivateAfter field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the ActivateAfter field is set to the value of the last call.
+func (b *RestartPolicyConfigApplyConfiguration) WithActivateAfter(value workloadsv1alpha2.RestartPolicyActivateAfter) *RestartPolicyConfigApplyConfiguration {
+	b.ActivateAfter = &value
 	return b
 }
 

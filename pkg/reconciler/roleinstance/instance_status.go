@@ -192,13 +192,19 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 	if instance.Spec.ReadyPolicy == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady && podsReadyCondition != nil {
 		conditions = append(conditions, *podsReadyCondition)
 	}
-	// Determine if the instance is now Ready — used to clear the Restarting condition.
+	// Determine if the instance is now Ready — used to clear the Restarting condition
+	// and to latch the generation the instance was last stable at.
 	instanceReady := false
 	for _, c := range conditions {
 		if c.Type == workloadsv1alpha2.RoleInstanceReady && c.Status == v1.ConditionTrue {
 			instanceReady = true
 			break
 		}
+	}
+	// Latch readiness only after the target revision converges, not from old Pods.
+	// The latch keeps recovery armed if this generation later becomes NotReady.
+	if instanceReady && newStatus.UpdateRevision != "" && newStatus.CurrentRevision == newStatus.UpdateRevision {
+		newStatus.LastReadyGeneration = instance.Generation
 	}
 
 	innerConditionTypes := sets.New[workloadsv1alpha2.RoleInstanceConditionType]()
@@ -358,6 +364,7 @@ func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleI
 		newStatus.CurrentRevision != oldStatus.CurrentRevision ||
 		newStatus.UpdateRevision != oldStatus.UpdateRevision ||
 		newStatus.RestartCount != oldStatus.RestartCount ||
+		newStatus.LastReadyGeneration != oldStatus.LastReadyGeneration ||
 		inconsistentRestartTime(oldStatus.LastRestartTime, newStatus.LastRestartTime) {
 		return true
 	}
@@ -479,6 +486,7 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// reconcile intentionally modified restart tracking (via updateRestartTracking).
 		liveRestartCount := clone.Status.RestartCount
 		liveLastRestartTime := clone.Status.LastRestartTime
+		liveLastReadyGeneration := clone.Status.LastReadyGeneration
 		// Detect whether updateRestartTracking ran this reconcile. It sets
 		// LastRestartTime = metav1.Now(), producing a timestamp that differs from
 		// BOTH the informer's value AND the live API value. In contrast,
@@ -488,6 +496,12 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		restartTrackingModified := restartTrackingChanged(newStatus.LastRestartTime, instance.Status.LastRestartTime, liveLastRestartTime)
 		clone.Status = *newStatus
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
+		// The latch only advances. A stale informer snapshot must not move it back, and
+		// a generation already latched is never lost just because this reconcile did not
+		// re-observe the Ready condition.
+		if liveLastReadyGeneration > clone.Status.LastReadyGeneration {
+			clone.Status.LastReadyGeneration = liveLastReadyGeneration
+		}
 		if restartTrackingModified {
 			// updateRestartTracking ran this reconcile — trust newStatus values.
 			// This covers both increments (count goes up) and resets (count goes

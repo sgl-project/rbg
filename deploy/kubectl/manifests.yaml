@@ -32864,6 +32864,13 @@ spec:
                             RestartPolicyConfig defines the restart policy and backoff configuration.
                             Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
+                            activateAfter:
+                              description: ActivateAfter controls when the triggers
+                                of the recreate policy are armed.
+                              enum:
+                              - Ready
+                              - Created
+                              type: string
                             baseDelaySeconds:
                               default: 30
                               description: |-
@@ -34311,6 +34318,13 @@ spec:
                             RestartPolicyConfig defines the restart policy and backoff configuration.
                             Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
+                            activateAfter:
+                              description: ActivateAfter controls when the triggers
+                                of the recreate policy are armed.
+                              enum:
+                              - Ready
+                              - Created
+                              type: string
                             baseDelaySeconds:
                               default: 30
                               description: |-
@@ -74217,6 +74231,13 @@ spec:
                                     RestartPolicyConfig defines the restart policy and backoff configuration.
                                     Its type takes precedence over the deprecated RestartPolicy field.
                                   properties:
+                                    activateAfter:
+                                      description: ActivateAfter controls when the
+                                        triggers of the recreate policy are armed.
+                                      enum:
+                                      - Ready
+                                      - Created
+                                      type: string
                                     baseDelaySeconds:
                                       default: 30
                                       description: |-
@@ -75699,6 +75720,13 @@ spec:
                                     RestartPolicyConfig defines the restart policy and backoff configuration.
                                     Its type takes precedence over the deprecated RestartPolicy field.
                                   properties:
+                                    activateAfter:
+                                      description: ActivateAfter controls when the
+                                        triggers of the recreate policy are armed.
+                                      enum:
+                                      - Ready
+                                      - Created
+                                      type: string
                                     baseDelaySeconds:
                                       default: 30
                                       description: |-
@@ -98117,6 +98145,13 @@ spec:
                   all pods within the RoleInstance. Its type takes precedence over the
                   deprecated RestartPolicy field.
                 properties:
+                  activateAfter:
+                    description: ActivateAfter controls when the triggers of the recreate
+                      policy are armed.
+                    enum:
+                    - Ready
+                    - Created
+                    type: string
                   baseDelaySeconds:
                     default: 30
                     description: |-
@@ -98268,6 +98303,12 @@ spec:
                 description: LabelSelector of a RoleInstance is a label query over
                   Pods that should match the RoleInstance.
                 type: string
+              lastReadyGeneration:
+                description: |-
+                  LastReadyGeneration is the metadata.generation at which the instance was last
+                  observed Ready.
+                format: int64
+                type: integer
               lastRestartTime:
                 description: |-
                   LastRestartTime is the timestamp of the most recent restart-policy-triggered

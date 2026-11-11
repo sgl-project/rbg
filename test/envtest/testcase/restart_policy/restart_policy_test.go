@@ -23,7 +23,9 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -135,6 +137,28 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			return nil
 		}
 		return &riList.Items[0]
+	}
+
+	// Status fixtures use fresh reads on every conflict retry, just like kubelet.
+	updatePodStatus := func(key client.ObjectKey, mutate func(*corev1.Pod)) {
+		ExpectWithOffset(1, retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			pod := &corev1.Pod{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, key, pod); err != nil {
+				return err
+			}
+			mutate(pod)
+			return testutil.K8sClient.Status().Update(testutil.Ctx, pod)
+		})).Should(Succeed())
+	}
+	updateInstanceStatus := func(key client.ObjectKey, mutate func(*workloadsv1alpha2.RoleInstance)) {
+		ExpectWithOffset(1, retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			ri := &workloadsv1alpha2.RoleInstance{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, key, ri); err != nil {
+				return err
+			}
+			mutate(ri)
+			return testutil.K8sClient.Status().Update(testutil.Ctx, ri)
+		})).Should(Succeed())
 	}
 
 	// Helper: wait for RoleInstance to reach Ready condition
@@ -1223,7 +1247,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				"RestartCount should reset to 1 after long stable period (not continue from previous value)")
 		})
 
-		It("should not bypass wasInstanceReady check after stable threshold", func() {
+		It("should keep restart triggers armed after Ready flips to False", func() {
 			rbgName := "test-bypass-bound"
 			roleName := defaultRoleName
 
@@ -1289,8 +1313,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			ri.Status.LastRestartTime.Time = time.Now().Add(-11 * time.Minute)
 			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ri)).Should(Succeed())
 
-			// Make pods not Ready so wasInstanceReady returns false.
+			// Make pods not Ready so the live Ready condition flips to False.
 			// Set phase to Pending (IsRunningAndAvailable requires Phase==Running).
+			// The persisted lastReadyGeneration keeps the triggers armed anyway.
 			podList = listRolePods(rbgName, roleName)
 			for i := range podList.Items {
 				freshPod := &corev1.Pod{}
@@ -1301,7 +1326,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
 			}
 
-			// Wait for RoleInstance to become not Ready (wasInstanceReady will return false)
+			// Wait for the live Ready condition to flip; the latch stays armed.
 			Eventually(func() bool {
 				ri := getRoleInstance(rbgName, roleName)
 				if ri == nil {
@@ -1316,16 +1341,12 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			}, timeout, interval).Should(BeTrue(),
 				"RoleInstance should become not Ready after pods are set to Pending")
 
-			// Now fail one pod. With the fix:
-			//   wasInstanceReady=false, hasRecentRestart=false → shouldRecreateInstance returns false
-			//   → no recreation, survivor pod should NOT be deleted.
-			// Without the fix (permanent bypass):
-			//   wasInstanceReady=false but LastRestartTime!=nil → bypass applies
-			//   → shouldRecreateInstance returns true → recreation happens, survivor deleted.
+			// Now fail one pod. The instance was Ready at this generation before the
+			// Pods went Pending, so status.lastReadyGeneration keeps the triggers
+			// armed and the failure must recreate the whole group.
 			podList = listRolePods(rbgName, roleName)
 			Expect(podList.Items).Should(HaveLen(2))
-			survivorName := podList.Items[1].Name
-			survivorUID := podList.Items[1].UID
+			originalUIDs = getPodUIDs(podList)
 
 			freshPod = &corev1.Pod{}
 			Expect(testutil.K8sClient.Get(testutil.Ctx,
@@ -1333,16 +1354,353 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			freshPod.Status.Phase = corev1.PodFailed
 			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
 
-			// Verify the survivor pod is NOT deleted
-			Consistently(func() types.UID {
-				pod := &corev1.Pod{}
-				if err := testutil.K8sClient.Get(testutil.Ctx,
-					types.NamespacedName{Name: survivorName, Namespace: testNs}, pod); err != nil {
-					return ""
+			// Require both expected names to exist with new, nonterminating UIDs;
+			// absence during deletion is not evidence of successful replacement.
+			Eventually(func(g Gomega) {
+				for name, oldUID := range originalUIDs {
+					pod := &corev1.Pod{}
+					g.Expect(testutil.K8sClient.Get(testutil.Ctx,
+						types.NamespacedName{Name: name, Namespace: testNs}, pod)).Should(Succeed())
+					g.Expect(pod.UID).NotTo(BeEmpty())
+					g.Expect(pod.UID).NotTo(Equal(oldUID))
+					g.Expect(pod.DeletionTimestamp).To(BeNil())
 				}
-				return pod.UID
-			}, 10*time.Second, interval).Should(Equal(survivorUID),
-				"survivor pod should NOT be deleted when wasInstanceReady=false and hasRecentRestart=false")
+			}, timeout, interval).Should(Succeed(),
+				"a Ready-at-this-generation latch must keep the trigger armed after Ready flips to False")
+		})
+
+		It("should not recreate a never-Ready generation with expired restart history (#409)", func() {
+			rbgName := "test-expired-history-unarmed"
+			roleName := defaultRoleName
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(roleName).
+						WithReplicas(1).WithSize(2).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(1).WithMaxDelaySeconds(2).Obj(),
+				}).Obj()
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+			waitForPods(rbgName, roleName, 2)
+
+			// Never report Ready, even briefly. A Running ordinary-container restart
+			// is durable: unlike Failed, ordinary inactive-pod cleanup cannot consume it.
+			pods := listRolePods(rbgName, roleName)
+			original := getPodUIDs(pods)
+			Expect(original).To(HaveLen(2))
+			for i := range pods.Items {
+				updatePodStatus(client.ObjectKeyFromObject(&pods.Items[i]), func(pod *corev1.Pod) {
+					testutil.SetPodRunningAndReady(pod)
+					pod.Status.Conditions[0].Status = corev1.ConditionFalse
+					for j := range pod.Status.ContainerStatuses {
+						pod.Status.ContainerStatuses[j].Ready = false
+						pod.Status.ContainerStatuses[j].State.Running = &corev1.ContainerStateRunning{}
+					}
+				})
+			}
+			Eventually(func(g Gomega) {
+				ri := getRoleInstance(rbgName, roleName)
+				g.Expect(ri).NotTo(BeNil())
+				g.Expect(ri.Status.ObservedGeneration).To(Equal(ri.Generation))
+				g.Expect(ri.Status.CurrentRevision).NotTo(BeEmpty())
+				g.Expect(ri.Status.CurrentRevision).To(Equal(ri.Status.UpdateRevision))
+				g.Expect(ri.Status.LastReadyGeneration).To(BeNumerically("<", ri.Generation))
+				g.Expect(ri.Status.Conditions).To(ContainElement(And(
+					HaveField("Type", workloadsv1alpha2.RoleInstanceReady),
+					HaveField("Status", corev1.ConditionFalse))))
+			}, timeout, interval).Should(Succeed())
+
+			ri := getRoleInstance(rbgName, roleName)
+			riKey, riUID, generation := client.ObjectKeyFromObject(ri), ri.UID, ri.Generation
+			oldRestart := metav1.NewTime(time.Now().Add(-11 * time.Minute).Truncate(time.Second))
+			updateInstanceStatus(riKey, func(ri *workloadsv1alpha2.RoleInstance) {
+				ri.Status.RestartCount = 1
+				ri.Status.LastRestartTime = &oldRestart
+			})
+			faultKey := client.ObjectKeyFromObject(&pods.Items[0])
+			updatePodStatus(faultKey, func(pod *corev1.Pod) {
+				pod.Status.ContainerStatuses[0].RestartCount = 1
+			})
+
+			Consistently(func(g Gomega) {
+				ri := &workloadsv1alpha2.RoleInstance{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, riKey, ri)).To(Succeed())
+				g.Expect(ri.UID).To(Equal(riUID))
+				g.Expect(ri.Generation).To(Equal(generation))
+				g.Expect(ri.Status.ObservedGeneration).To(Equal(generation))
+				g.Expect(ri.Status.CurrentRevision).To(Equal(ri.Status.UpdateRevision))
+				g.Expect(ri.Status.LastReadyGeneration).To(BeNumerically("<", generation))
+				g.Expect(ri.Status.RestartCount).To(Equal(int32(1)))
+				g.Expect(ri.Status.LastRestartTime).NotTo(BeNil())
+				g.Expect(ri.Status.LastRestartTime.Time).To(BeTemporally("==", oldRestart.Time))
+				g.Expect(ri.Status.Conditions).To(ContainElement(And(
+					HaveField("Type", workloadsv1alpha2.RoleInstanceReady),
+					HaveField("Status", corev1.ConditionFalse))))
+				for name, uid := range original {
+					pod := &corev1.Pod{}
+					g.Expect(testutil.K8sClient.Get(testutil.Ctx,
+						types.NamespacedName{Namespace: testNs, Name: name}, pod)).To(Succeed())
+					g.Expect(pod.UID).To(Equal(uid))
+					g.Expect(pod.DeletionTimestamp).To(BeNil())
+					g.Expect(pod.Status.Phase).To(Equal(corev1.PodRunning))
+					if name == faultKey.Name {
+						g.Expect(pod.Status.ContainerStatuses[0].RestartCount).To(Equal(int32(1)))
+					}
+				}
+			}, 5*time.Second, interval).Should(Succeed(),
+				"expired history must not arm a generation that has never been Ready")
+		})
+
+		It("should recover a rank-rejoin deadlock after individual member repair (#542)", func() {
+			rbgName := "test-rank-rejoin-latch"
+			roleName := defaultRoleName
+			const rankRejoined corev1.PodConditionType = "test.rbg.io/rank-rejoined"
+			role := wrappersv2.BuildLeaderWorkerRole(roleName).
+				WithReplicas(1).WithSize(2).
+				WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+				WithBaseDelaySeconds(120).WithMaxDelaySeconds(120).Obj()
+			role.LeaderWorkerPattern.Template.Spec.ReadinessGates = append(
+				role.LeaderWorkerPattern.Template.Spec.ReadinessGates,
+				corev1.PodReadinessGate{ConditionType: rankRejoined})
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+			waitForPods(rbgName, roleName, 2)
+
+			// envtest has no kubelet: emulate Running containers whose application
+			// readiness gate remains closed until the replacement rank can rejoin.
+			setRankReady := func(key client.ObjectKey, ready bool) {
+				updatePodStatus(key, func(pod *corev1.Pod) {
+					testutil.SetPodRunningAndReady(pod)
+					status := corev1.ConditionTrue
+					if !ready {
+						status = corev1.ConditionFalse
+					}
+					pod.Status.Conditions[0].Status = status
+					pod.Status.Conditions = append(pod.Status.Conditions,
+						corev1.PodCondition{Type: rankRejoined, Status: status, LastTransitionTime: metav1.Now()})
+					for i := range pod.Status.ContainerStatuses {
+						pod.Status.ContainerStatuses[i].State.Running = &corev1.ContainerStateRunning{}
+					}
+				})
+			}
+			pods := listRolePods(rbgName, roleName)
+			for i := range pods.Items {
+				setRankReady(client.ObjectKeyFromObject(&pods.Items[i]), true)
+			}
+			waitForRoleInstanceReady(rbgName, roleName)
+			ri := getRoleInstance(rbgName, roleName)
+			Expect(ri).NotTo(BeNil())
+			Expect(ri.Status.LastReadyGeneration).To(Equal(ri.Generation))
+			Expect(ri.Status.RestartCount).To(BeZero())
+			riKey, riUID, generation := client.ObjectKeyFromObject(ri), ri.UID, ri.Generation
+			original := getPodUIDs(pods)
+			targetKey := client.ObjectKeyFromObject(&pods.Items[0])
+			survivorKey := client.ObjectKeyFromObject(&pods.Items[1])
+
+			// A temporary backoff fixture makes individual repair deterministic even
+			// if the watch observes a fleeting Terminating state. Once the Pod is
+			// absent there is no explicit fault, so normal missing-slot repair runs.
+			// This covers the miss window deferred to #562, NOT missing-member detection.
+			updateInstanceStatus(riKey, func(ri *workloadsv1alpha2.RoleInstance) {
+				ri.Status.RestartCount = 1
+				now := metav1.Now()
+				ri.Status.LastRestartTime = &now
+			})
+			setRankReady(survivorKey, false)
+			targetUID := pods.Items[0].UID
+			Expect(testutil.K8sClient.Delete(testutil.Ctx, &pods.Items[0],
+				client.GracePeriodSeconds(0), client.Preconditions{UID: &targetUID})).To(Succeed())
+			var repairedUID types.UID
+			Eventually(func(g Gomega) {
+				target, survivor := &corev1.Pod{}, &corev1.Pod{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, targetKey, target)).To(Succeed())
+				g.Expect(target.UID).NotTo(BeEmpty())
+				g.Expect(target.UID).NotTo(Equal(targetUID))
+				g.Expect(target.DeletionTimestamp).To(BeNil())
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, survivorKey, survivor)).To(Succeed())
+				g.Expect(survivor.UID).To(Equal(original[survivorKey.Name]))
+				g.Expect(survivor.DeletionTimestamp).To(BeNil())
+				repairedUID = target.UID
+			}, timeout, interval).Should(Succeed(), "repair must be individual, not an earlier group restart")
+			setRankReady(targetKey, false)
+
+			Eventually(func(g Gomega) {
+				ri := &workloadsv1alpha2.RoleInstance{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, riKey, ri)).To(Succeed())
+				g.Expect(ri.UID).To(Equal(riUID))
+				g.Expect(ri.Generation).To(Equal(generation))
+				g.Expect(ri.Status.ObservedGeneration).To(Equal(generation))
+				g.Expect(ri.Status.LastReadyGeneration).To(Equal(generation))
+				g.Expect(ri.Status.CurrentRevision).To(Equal(ri.Status.UpdateRevision))
+				g.Expect(ri.Status.RestartCount).To(Equal(int32(1)))
+				g.Expect(ri.Status.Conditions).To(ContainElement(And(
+					HaveField("Type", workloadsv1alpha2.RoleInstanceReady),
+					HaveField("Status", corev1.ConditionFalse))))
+				g.Expect(ri.Status.Conditions).NotTo(ContainElement(And(
+					HaveField("Type", workloadsv1alpha2.RoleInstanceRestarting),
+					HaveField("Status", corev1.ConditionTrue))))
+			}, timeout, interval).Should(Succeed())
+
+			// Expire both backoff and the recent-restart bypass. Normalize the
+			// synthetic counter to its stable-period reset value so the sole real
+			// group restart below must increment it from 0 to 1. Do not touch the
+			// spec, generation, readiness latch or Restarting guard (#563).
+			oldRestart := metav1.NewTime(time.Now().Add(-11 * time.Minute).Truncate(time.Second))
+			updateInstanceStatus(riKey, func(ri *workloadsv1alpha2.RoleInstance) {
+				ri.Status.RestartCount = 0
+				ri.Status.LastRestartTime = &oldRestart
+			})
+			// Let the history update settle before publishing the next fault, so a
+			// stale recent-restart bypass cannot be mistaken for latch recovery.
+			Consistently(func(g Gomega) {
+				ri := getRoleInstance(rbgName, roleName)
+				g.Expect(ri).NotTo(BeNil())
+				g.Expect(ri.Status.RestartCount).To(BeZero())
+				g.Expect(ri.Status.LastRestartTime).NotTo(BeNil())
+				g.Expect(ri.Status.LastRestartTime.Time).To(BeTemporally("==", oldRestart.Time))
+				g.Expect(getPodUIDs(listRolePods(rbgName, roleName))).To(Equal(map[string]types.UID{
+					targetKey.Name: repairedUID, survivorKey.Name: original[survivorKey.Name],
+				}))
+			}, 2*time.Second, interval).Should(Succeed())
+			updatePodStatus(survivorKey, func(pod *corev1.Pod) {
+				pod.Status.ContainerStatuses[0].RestartCount = 1
+			})
+			beforeRestart := map[string]types.UID{
+				targetKey.Name: repairedUID, survivorKey.Name: original[survivorKey.Name],
+			}
+			Eventually(func(g Gomega) {
+				for name, oldUID := range beforeRestart {
+					pod := &corev1.Pod{}
+					g.Expect(testutil.K8sClient.Get(testutil.Ctx,
+						types.NamespacedName{Name: name, Namespace: testNs}, pod)).To(Succeed())
+					g.Expect(pod.UID).NotTo(BeEmpty())
+					g.Expect(pod.UID).NotTo(Equal(oldUID))
+					g.Expect(pod.DeletionTimestamp).To(BeNil())
+				}
+				ri := getRoleInstance(rbgName, roleName)
+				g.Expect(ri).NotTo(BeNil())
+				g.Expect(ri.Status.RestartCount).To(Equal(int32(1)))
+				g.Expect(ri.Status.LastRestartTime).NotTo(BeNil())
+				g.Expect(ri.Status.LastRestartTime.After(oldRestart.Time)).To(BeTrue())
+			}, timeout, interval).Should(Succeed(), "the latched Ready generation must recover the whole deadlocked instance")
+
+			rotated := getPodUIDs(listRolePods(rbgName, roleName))
+			Expect(rotated).To(HaveLen(2))
+			setRankReady(targetKey, true)
+			setRankReady(survivorKey, true)
+			waitForRoleInstanceReady(rbgName, roleName)
+			Consistently(func(g Gomega) {
+				g.Expect(getPodUIDs(listRolePods(rbgName, roleName))).To(Equal(rotated))
+				ri := getRoleInstance(rbgName, roleName)
+				g.Expect(ri).NotTo(BeNil())
+				g.Expect(ri.UID).To(Equal(riUID))
+				g.Expect(ri.Generation).To(Equal(generation))
+				g.Expect(ri.Status.LastReadyGeneration).To(Equal(generation))
+				g.Expect(ri.Status.RestartCount).To(Equal(int32(1)))
+			}, 3*time.Second, interval).Should(Succeed(), "the explicit survivor fault must cause exactly one group restart")
+		})
+
+		It("rebuilds the whole instance when a desired member is deleted", func() {
+			rbgName := "test-member-deletion"
+			roleName := defaultRoleName
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(roleName).
+						WithReplicas(1).
+						WithSize(2).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(1).
+						WithMaxDelaySeconds(2).
+						Obj(),
+				}).Obj()
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			waitForPods(rbgName, roleName, 2)
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			original := getPodUIDs(listRolePods(rbgName, roleName))
+			Expect(original).Should(HaveLen(2))
+
+			podList := listRolePods(rbgName, roleName)
+			target := &podList.Items[0]
+			targetKey := client.ObjectKeyFromObject(target)
+			targetUID := target.UID
+
+			// Hold the deletion so the controller observes the member as Terminating.
+			// envtest has no kubelet, so without the finalizer the Pod object would be
+			// gone before the next reconcile and this would be the #562 case instead.
+			const holdFinalizer = "test.rbg.io/hold-member-deletion"
+			DeferCleanup(func() {
+				Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+					pod := &corev1.Pod{}
+					if err := testutil.K8sClient.Get(testutil.Ctx, targetKey, pod); err != nil {
+						return client.IgnoreNotFound(err)
+					}
+					pod.Finalizers = nil
+					return testutil.K8sClient.Update(testutil.Ctx, pod)
+				})).Should(Succeed())
+			})
+			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, targetKey, pod); err != nil {
+					return err
+				}
+				pod.Finalizers = append(pod.Finalizers, holdFinalizer)
+				return testutil.K8sClient.Update(testutil.Ctx, pod)
+			})).Should(Succeed())
+			Expect(testutil.K8sClient.Delete(testutil.Ctx, target, client.Preconditions{UID: &targetUID})).Should(Succeed())
+
+			// The Terminating member is member loss: the whole instance is rebuilt, so
+			// the surviving member is deleted and replaced as well. The held member
+			// keeps blocking its own replacement, which is why only the survivor is
+			// checked here.
+			var survivorKey client.ObjectKey
+			survivorUID := original[podList.Items[1].Name]
+			survivorKey = client.ObjectKeyFromObject(&podList.Items[1])
+
+			Eventually(func(g Gomega) {
+				pod := &corev1.Pod{}
+				g.Expect(testutil.K8sClient.Get(testutil.Ctx, survivorKey, pod)).Should(Succeed())
+				g.Expect(pod.UID).NotTo(BeEmpty())
+				g.Expect(pod.UID).NotTo(Equal(survivorUID))
+				g.Expect(pod.DeletionTimestamp).To(BeNil())
+			}, timeout, interval).Should(Succeed(),
+				"deleting one member must rebuild the surviving member too")
+
+			Eventually(func() int32 {
+				ri := getRoleInstance(rbgName, roleName)
+				if ri == nil {
+					return 0
+				}
+				return ri.Status.RestartCount
+			}, timeout, interval).Should(Equal(int32(1)))
+
+			// Release the held member; its replacement can only be created once the old
+			// Pod is gone.
+			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				pod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx, targetKey, pod); err != nil {
+					return client.IgnoreNotFound(err)
+				}
+				pod.Finalizers = nil
+				return testutil.K8sClient.Update(testutil.Ctx, pod)
+			})).Should(Succeed())
+
+			Eventually(func() bool {
+				current := getActivePods(listRolePods(rbgName, roleName))
+				if len(current) < 2 {
+					return false
+				}
+				for _, pod := range current {
+					if original[pod.Name] == pod.UID {
+						return false
+					}
+				}
+				return true
+			}, timeout, interval).Should(BeTrue(),
+				"every member must end up replaced by a new Pod incarnation")
 		})
 
 		It("should not freeze rolling update when revision mismatch occurs during backoff", func() {

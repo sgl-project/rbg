@@ -24472,6 +24472,13 @@ spec:
                                     RestartPolicyConfig defines the restart policy and backoff configuration.
                                     Its type takes precedence over the deprecated RestartPolicy field.
                                   properties:
+                                    activateAfter:
+                                      description: ActivateAfter controls when the
+                                        triggers of the recreate policy are armed.
+                                      enum:
+                                      - Ready
+                                      - Created
+                                      type: string
                                     baseDelaySeconds:
                                       default: 30
                                       description: |-
@@ -25954,6 +25961,13 @@ spec:
                                     RestartPolicyConfig defines the restart policy and backoff configuration.
                                     Its type takes precedence over the deprecated RestartPolicy field.
                                   properties:
+                                    activateAfter:
+                                      description: ActivateAfter controls when the
+                                        triggers of the recreate policy are armed.
+                                      enum:
+                                      - Ready
+                                      - Created
+                                      type: string
                                     baseDelaySeconds:
                                       default: 30
                                       description: |-

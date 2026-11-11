@@ -17,13 +17,28 @@ limitations under the License.
 package roleinstance
 
 import (
+	"context"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	apps "k8s.io/api/apps/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
+	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
+	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 )
 
 func TestInconsistentBaselines(t *testing.T) {
@@ -229,4 +244,228 @@ func TestRestartTrackingChanged(t *testing.T) {
 			assert.Equal(t, tt.expectedChanged, result)
 		})
 	}
+}
+
+// TestLastReadyGenerationIsWrittenAndMonotonic pins the two write-path rules the
+// readiness latch depends on: a latch-only change must trigger a status write, and a
+// stale informer snapshot must never move an already persisted latch backwards.
+func TestLastReadyGenerationIsWrittenAndMonotonic(t *testing.T) {
+	instance := newReadinessTestInstance()
+	instance.Status.LastReadyGeneration = 3
+	instance.Generation = 4
+	updater := &realStatusUpdater{}
+
+	// A latch advance with nothing else changed still counts as a status change.
+	assert.True(t, updater.inconsistentStatus(instance, &workloadsv1alpha2.RoleInstanceStatus{
+		ObservedGeneration:  instance.Status.ObservedGeneration,
+		LabelSelector:       instance.Status.LabelSelector,
+		CurrentRevision:     instance.Status.CurrentRevision,
+		UpdateRevision:      instance.Status.UpdateRevision,
+		RestartCount:        instance.Status.RestartCount,
+		LastRestartTime:     instance.Status.LastRestartTime,
+		LastReadyGeneration: 4,
+		ComponentStatuses:   instance.Status.ComponentStatuses,
+		Conditions:          instance.Status.Conditions,
+	}))
+
+	// The write path keeps the live latch when the computed one is older.
+	live := instance.DeepCopy()
+	live.Status.LastReadyGeneration = 4
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).WithObjects(live).Build()
+	updater = &realStatusUpdater{Client: c}
+	cached := instance.DeepCopy()
+	cached.Status.LastReadyGeneration = 3
+	computed := cached.Status.DeepCopy()
+	computed.ObservedGeneration = cached.Generation
+	computed.LastReadyGeneration = 3
+	require.NoError(t, updater.updateStatus(context.Background(), cached, computed))
+
+	current := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(live), current))
+	assert.EqualValues(t, 4, current.Status.LastReadyGeneration,
+		"a stale snapshot must not roll the latch back")
+}
+
+func TestRestartBookkeepingForAlreadyDeletingMembers(t *testing.T) {
+	for _, state := range []string{"terminating", "not found"} {
+		t.Run(state, func(t *testing.T) {
+			ctx := context.Background()
+			instance := newReadinessTestInstance()
+			instance.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+				Type:          workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				ActivateAfter: workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+			}
+			instance.Status.ObservedGeneration = instance.Generation
+			revisions := revisioncontrol.NewRevisionControl()
+			revision, err := revisions.NewRevision(instance, 1, new(int32))
+			require.NoError(t, err)
+			instance.Status.CurrentRevision = revision.Name
+			instance.Status.UpdateRevision = revision.Name
+			pods := []*v1.Pod{newReadinessTestPod(instance, "router"), newReadinessTestPod(instance, "sidecar")}
+			objects := []client.Object{instance}
+			for i, pod := range pods {
+				pod.UID = types.UID(fmt.Sprintf("old-%d", i))
+				if state == "terminating" {
+					pod.DeletionTimestamp = ptr.To(metav1.Now())
+					pod.Finalizers = []string{"test.rbg.io/hold"}
+					objects = append(objects, pod)
+				} else {
+					pod.Status.Phase = v1.PodFailed
+				}
+			}
+			c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(instance).WithObjects(objects...).Build()
+			control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+			t.Cleanup(func() { control.ClearRestarting(instance) })
+			r := &reconciler{Client: c, revisionControl: revisions, syncControl: control}
+			computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
+			result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, pods)
+			require.NoError(t, result.err)
+			require.EqualValues(t, 1, computed.RestartCount, "already absent/deleting Pods must not lose the accepted restart")
+			require.NotNil(t, computed.LastRestartTime)
+			require.True(t, slices.ContainsFunc(computed.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
+				return condition.Type == workloadsv1alpha2.RoleInstanceRestarting && condition.Status == v1.ConditionTrue
+			}))
+			require.NoError(t, (&realStatusUpdater{Client: c}).updateStatus(ctx, instance, computed))
+			live := &workloadsv1alpha2.RoleInstance{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+			require.EqualValues(t, 1, live.Status.RestartCount)
+			require.NotNil(t, live.Status.LastRestartTime)
+			require.True(t, slices.ContainsFunc(live.Status.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
+				return condition.Type == workloadsv1alpha2.RoleInstanceRestarting && condition.Status == v1.ConditionTrue
+			}))
+		})
+	}
+}
+
+func TestAuxiliaryOwnerReferencesDoNotBlockMemberRepair(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.RestartPolicy = workloadsv1alpha2.RestartPolicyNone //nolint:staticcheck // legacy policy still supported
+	for i := range instance.Spec.Components {
+		instance.Spec.Components[i].Template.Spec.Containers = []v1.Container{{Name: "main", Image: "nginx:1.27"}}
+	}
+	member := newReadinessTestPod(instance, "router")
+	member.Labels = map[string]string{constants.ComponentNameLabelKey: "router", constants.ComponentIDLabelKey: "0"}
+	activeAux := newReadinessTestPod(instance, "router")
+	activeAux.Name = "active-auxiliary"
+	activeAux.OwnerReferences[0].Controller = ptr.To(false)
+	failedAux := activeAux.DeepCopy()
+	failedAux.Name = "failed-auxiliary"
+	failedAux.Status.Phase = v1.PodFailed
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithObjects(instance, member, activeAux, failedAux).
+		WithIndex(&v1.Pod{}, fieldindex.IndexNameForOwnerRefUID, func(obj client.Object) []string {
+			keys := make([]string, 0, len(obj.GetOwnerReferences()))
+			for _, ref := range obj.GetOwnerReferences() {
+				keys = append(keys, string(ref.UID))
+			}
+			return keys
+		}).Build()
+	r := &reconciler{Client: c}
+	active, inactive, err := r.getOwnedPods(ctx, instance)
+	require.NoError(t, err)
+	require.Len(t, active, 1)
+	require.Equal(t, member.Name, active[0].Name)
+	require.Empty(t, inactive)
+	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+	revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+	handled, _, err := control.Scale(ctx, instance, revision, revision, nil, active, inactive)
+	require.NoError(t, err)
+	require.True(t, handled)
+	replacement := &v1.Pod{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(newReadinessTestPod(instance, "sidecar")), replacement))
+	require.True(t, metav1.IsControlledBy(replacement, instance))
+	for _, auxiliary := range []*v1.Pod{activeAux, failedAux} {
+		live := &v1.Pod{}
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(auxiliary), live))
+		require.Nil(t, live.DeletionTimestamp)
+	}
+}
+
+func TestReadinessLatchAcquiredAndCarriedAcrossStatusCalculations(t *testing.T) {
+	instance := newReadinessTestInstance()
+	pods := []*v1.Pod{newReadinessTestPod(instance, "router"), newReadinessTestPod(instance, "sidecar")}
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithObjects(pods[0], pods[1]).Build()
+	updater := &realStatusUpdater{Client: c}
+	unselected := &workloadsv1alpha2.RoleInstanceStatus{}
+	updater.setInstanceConditions(instance, unselected, nil)
+	require.Zero(t, unselected.LastReadyGeneration, "no selected target revision means no stability latch")
+	ready := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "r1", UpdateRevision: "r1"}
+	updater.setInstanceConditions(instance, ready, nil)
+	require.Equal(t, instance.Generation, ready.LastReadyGeneration)
+	instance.Status = *ready
+	require.NoError(t, c.Delete(context.Background(), pods[0]))
+	notReady := &workloadsv1alpha2.RoleInstanceStatus{
+		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: instance.Status.LastReadyGeneration,
+	}
+	updater.setInstanceConditions(instance, notReady, nil)
+	require.Equal(t, instance.Generation, notReady.LastReadyGeneration)
+	require.True(t, slices.ContainsFunc(notReady.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
+		return condition.Type == workloadsv1alpha2.RoleInstanceReady && condition.Status == v1.ConditionFalse
+	}))
+	instance.Generation++
+	changed := &workloadsv1alpha2.RoleInstanceStatus{
+		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: notReady.LastReadyGeneration,
+	}
+	updater.setInstanceConditions(instance, changed, nil)
+	require.Less(t, changed.LastReadyGeneration, instance.Generation, "the old latch must not arm the new generation")
+	require.NoError(t, c.Create(context.Background(), newReadinessTestPod(instance, "router")))
+	updater.setInstanceConditions(instance, changed, nil)
+	require.Equal(t, instance.Generation, changed.LastReadyGeneration, "advance only after the new spec is ready")
+}
+
+func TestReadinessLatchRequiresReadyTargetRevision(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Generation = 2
+	instance.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart}
+	instance.Status.LastReadyGeneration = 1
+	pods := []*v1.Pod{newReadinessTestPod(instance, "router"), newReadinessTestPod(instance, "sidecar")}
+	for i, pod := range pods {
+		pod.Labels = map[string]string{
+			apps.ControllerRevisionHashLabelKey: "old",
+			constants.ComponentNameLabelKey:     instance.Spec.Components[i].Name,
+			constants.ComponentIDLabelKey:       "0",
+		}
+	}
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(instance, &v1.Pod{}).WithObjects(instance, pods[0], pods[1]).Build()
+	updater := &realStatusUpdater{Client: c}
+	status := &workloadsv1alpha2.RoleInstanceStatus{
+		ObservedGeneration: instance.Generation, CurrentRevision: "old", UpdateRevision: "new", LastReadyGeneration: 1,
+	}
+	updater.calculateStatus(instance, status, nil, pods)
+	require.Equal(t, "old", status.CurrentRevision)
+	require.EqualValues(t, 1, status.LastReadyGeneration, "old-revision readiness must not arm the new generation")
+	instance.Status = *status.DeepCopy()
+
+	// Target-revision labels can converge before application readiness recovers.
+	for _, pod := range pods {
+		pod.Labels[apps.ControllerRevisionHashLabelKey] = "new"
+		require.NoError(t, c.Update(ctx, pod))
+		pod.Status.Conditions[0].Status = v1.ConditionFalse
+		require.NoError(t, c.Status().Update(ctx, pod))
+	}
+	updater.calculateStatus(instance, status, nil, pods)
+	require.Equal(t, "new", status.CurrentRevision)
+	require.EqualValues(t, 1, status.LastReadyGeneration, "revision convergence alone is not readiness")
+	instance.Status = *status.DeepCopy()
+	require.NoError(t, c.Status().Update(ctx, instance))
+	pods[0].Status.ContainerStatuses = []v1.ContainerStatus{{Name: "main", RestartCount: 1}}
+	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+	t.Cleanup(func() { control.ClearRestarting(instance) })
+	revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "new"}}
+	handled, _, err := control.Scale(ctx, instance, revision, revision, nil, pods, nil)
+	require.NoError(t, err)
+	require.False(t, handled, "the target generation has never been Ready, so its restart must not rebuild the group")
+	require.Zero(t, instance.Status.RestartCount)
+
+	for _, pod := range pods {
+		pod.Status.ContainerStatuses = nil
+		pod.Status.Conditions[0].Status = v1.ConditionTrue
+		require.NoError(t, c.Status().Update(ctx, pod))
+	}
+	updater.calculateStatus(instance, status, nil, pods)
+	require.Equal(t, instance.Generation, status.LastReadyGeneration, "latch once the target revision actually becomes Ready")
 }

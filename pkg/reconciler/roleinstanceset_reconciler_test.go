@@ -20,19 +20,28 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
+	"k8s.io/kubernetes/pkg/controller/history"
+	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statefulmode"
+	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/revision"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
@@ -607,6 +616,23 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 			wantRestartPolicy: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
 		},
 		{
+			name: "role arming the triggers before Ready",
+			role: func() workloadsv1alpha2.RoleSpec {
+				role := wrappersv2.BuildLeaderWorkerRole("activate-after-role").Obj()
+				role.LeaderWorkerPattern.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+					Type:          workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					ActivateAfter: workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+				}
+				return role
+			},
+			wantConfig: &workloadsv1alpha2.RestartPolicyConfig{
+				Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+				ActivateAfter:    workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+				BaseDelaySeconds: ptr.To(workloadsv1alpha2.DefaultBaseDelaySeconds),
+				MaxDelaySeconds:  ptr.To(workloadsv1alpha2.DefaultMaxDelaySeconds),
+			},
+		},
+		{
 			name: "role configuring a type but no delays",
 			role: func() workloadsv1alpha2.RoleSpec {
 				return wrappersv2.BuildLeaderWorkerRole("type-only-role").
@@ -680,6 +706,11 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 				assert.Equal(t, ptr.To(tt.wantConfig.Type), template.RestartPolicyConfig.Type)
 				assert.Equal(t, tt.wantConfig.BaseDelaySeconds, template.RestartPolicyConfig.BaseDelaySeconds)
 				assert.Equal(t, tt.wantConfig.MaxDelaySeconds, template.RestartPolicyConfig.MaxDelaySeconds)
+				if tt.wantConfig.ActivateAfter == "" {
+					assert.Nil(t, template.RestartPolicyConfig.ActivateAfter)
+				} else {
+					assert.Equal(t, ptr.To(tt.wantConfig.ActivateAfter), template.RestartPolicyConfig.ActivateAfter)
+				}
 			}
 
 			// The typed assertions above can both hold while the field the apiserver
@@ -693,8 +724,181 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 			_, hasConfig := keys["restartPolicyConfig"]
 			assert.Equal(t, tt.wantConfig == nil, hasString)
 			assert.Equal(t, tt.wantConfig != nil, hasConfig)
+
+			// activateAfter must never appear unless the role set it explicitly: a
+			// non-empty default written into the template would move the RoleInstanceSet
+			// revision hash and roll every existing role on upgrade.
+			rawConfig, hasConfigKey := keys["restartPolicyConfig"]
+			if tt.wantConfig == nil || tt.wantConfig.ActivateAfter == "" {
+				if hasConfigKey {
+					assert.NotContains(t, string(rawConfig), "activateAfter")
+				}
+			} else {
+				assert.Contains(t, string(rawConfig), "activateAfter")
+			}
 		})
 	}
+}
+
+// TestRoleInstanceSetReconciler_RestartPolicyUpgrade uses fixtures emitted by the
+// actual v0.9.0-alpha.3 code (fd160cc964b0e1438bead4ad7324d0a8f0bf5eac),
+// not a reconstruction using today's serializer. A temporary detached worktree ran
+// constructRoleInstanceSetApplyConfiguration, decoded its result into an RIS, and
+// called revision.NewRevisionControl().NewRevision(set, 7, &zero). Only simulated
+// apiserver metadata and status were added. Compact JSON preserves Data.Raw bytes.
+// The generator used restartPolicyUpgradeRole below and the same RBG/UID inputs.
+// Do not regenerate these fixtures with the current controller: that would hide
+// the upgrade regression this test guards against.
+func TestRoleInstanceSetReconciler_RestartPolicyUpgrade(t *testing.T) {
+	const source = "v0.9.0-alpha.3/fd160cc964b0e1438bead4ad7324d0a8f0bf5eac"
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	// Both revision implementations use the client-go global scheme's codec.
+	require.NoError(t, workloadsv1alpha2.AddToScheme(clientgoscheme.Scheme))
+
+	for _, tt := range []struct {
+		name             string
+		customComponents bool
+		backoff          bool
+	}{
+		{name: "leader-worker-legacy"},
+		{name: "leader-worker-backoff", backoff: true},
+		{name: "custom-components-legacy", customComponents: true},
+		{name: "custom-components-backoff", customComponents: true, backoff: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			data, err := os.ReadFile(filepath.Join("testdata", "restart-policy-upgrade", tt.name+".json"))
+			require.NoError(t, err)
+			var fixture struct {
+				Source   string                            `json:"source"`
+				Set      workloadsv1alpha2.RoleInstanceSet `json:"roleInstanceSet"`
+				Revision apps.ControllerRevision           `json:"controllerRevision"`
+			}
+			require.NoError(t, json.Unmarshal(data, &fixture))
+			require.Equal(t, source, fixture.Source)
+			stored, previous := &fixture.Set, &fixture.Revision
+			owner := metav1.GetControllerOf(previous)
+			require.NotNil(t, owner)
+			require.Equal(t, stored.UID, owner.UID)
+			require.Equal(t, previous.Name, stored.Status.CurrentRevision)
+			require.Equal(t, previous.Name, stored.Status.UpdateRevision)
+			require.NotContains(t, string(previous.Data.Raw), "activateAfter")
+
+			role := restartPolicyUpgradeRole(tt.customComponents, tt.backoff)
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("restart-policy-rbg", "default").
+				WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+			rbg.UID = "c657f5ab-2a83-4e85-a2d0-176e226baf76"
+			reconciler := NewRoleInstanceSetReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).Build())
+			construct := func(role *workloadsv1alpha2.RoleSpec) *workloadsv1alpha2.RoleInstanceSet {
+				config, err := reconciler.constructRoleInstanceSetApplyConfiguration(
+					context.Background(), rbg, role, nil, expectedRevisionHash, stored,
+				)
+				require.NoError(t, err)
+				// Mirror the production apply-configuration -> API-object conversion,
+				// retaining the existing object's UID, generation and revision status.
+				obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(config)
+				require.NoError(t, err)
+				set := &workloadsv1alpha2.RoleInstanceSet{}
+				require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(obj, set))
+				set.UID, set.Generation, set.ResourceVersion = stored.UID, stored.Generation, stored.ResourceVersion
+				set.Status = stored.Status
+				return set
+			}
+			set := construct(&role)
+			var serialized struct {
+				Set struct {
+					Spec struct {
+						Template json.RawMessage `json:"roleInstanceTemplate"`
+					} `json:"spec"`
+				} `json:"roleInstanceSet"`
+			}
+			require.NoError(t, json.Unmarshal(data, &serialized))
+			oldTemplate := serialized.Set.Spec.Template
+			newTemplate, err := json.Marshal(set.Spec.RoleInstanceTemplate)
+			require.NoError(t, err)
+			require.Equal(t, string(oldTemplate), string(newTemplate), "unchanged role must keep stored template bytes")
+
+			control := revision.NewRevisionControl()
+			proposed, err := control.NewRevision(set, previous.Revision+1, ptr.To(int32(0)))
+			require.NoError(t, err)
+			assert.Equal(t, previous.Data.Raw, proposed.Data.Raw, "upgrade must preserve the exact revision patch")
+			assert.Equal(t, previous.Name, proposed.Name)
+			assert.Equal(t, previous.Labels[history.ControllerRevisionHashLabel], proposed.Labels[history.ControllerRevisionHashLabel])
+			assert.True(t, history.EqualRevision(previous, proposed))
+			// This is the controllers' unchanged-revision selection predicate: the
+			// prior stored revision matches even though the proposed number is newer.
+			matches := history.FindEqualRevisions([]*apps.ControllerRevision{previous}, proposed)
+			require.Len(t, matches, 1, "unchanged role must reuse the previous revision, not create a new one")
+			assert.Same(t, previous, matches[0])
+
+			// Stateful and stateless use the same replacement patch. Exercise both
+			// public restore/equality paths against the actual prior release bytes.
+			for name, mode := range map[string]struct {
+				apply   func(*workloadsv1alpha2.RoleInstanceSet, *apps.ControllerRevision) (*workloadsv1alpha2.RoleInstanceSet, error)
+				matches func(*workloadsv1alpha2.RoleInstanceSet, *apps.ControllerRevision, *apps.ControllerRevision, *lru.Cache) bool
+			}{
+				"stateful":  {statefulmode.ApplyRevision, statefulmode.SetMatchesRevision},
+				"stateless": {control.ApplyRevision, control.SetMatchesRevision},
+			} {
+				t.Run(name, func(t *testing.T) {
+					restored, err := mode.apply(set, previous)
+					require.NoError(t, err)
+					assert.Equal(t, stored.Spec.RoleInstanceTemplate, restored.Spec.RoleInstanceTemplate)
+					assert.True(t, mode.matches(set, proposed, previous, lru.New(1)))
+
+					// A deliberate activation change must not be mistaken for an upgrade
+					// no-op (including legacy roles that must now take the config path).
+					changedRole := role.DeepCopy()
+					config := &workloadsv1alpha2.RestartPolicyConfig{Type: role.GetRestartPolicy()}
+					if raw := role.GetRawRestartPolicyConfig(); raw != nil {
+						*config = *raw
+					}
+					config.ActivateAfter = workloadsv1alpha2.RestartPolicyActivateAfterCreated
+					if tt.customComponents {
+						changedRole.CustomComponentsPattern.RestartPolicyConfig = config
+					} else {
+						changedRole.LeaderWorkerPattern.RestartPolicyConfig = config
+					}
+					changed := construct(changedRole)
+					changedTemplate, err := json.Marshal(changed.Spec.RoleInstanceTemplate)
+					require.NoError(t, err)
+					assert.NotEqual(t, string(oldTemplate), string(changedTemplate))
+					changedRevision, err := control.NewRevision(changed, previous.Revision+1, ptr.To(int32(0)))
+					require.NoError(t, err)
+					assert.NotEqual(t, previous.Data.Raw, changedRevision.Data.Raw)
+					assert.NotEqual(t, previous.Name, changedRevision.Name)
+					assert.NotEqual(t, previous.Labels[history.ControllerRevisionHashLabel], changedRevision.Labels[history.ControllerRevisionHashLabel])
+					assert.False(t, history.EqualRevision(previous, changedRevision))
+					assert.Empty(t, history.FindEqualRevisions([]*apps.ControllerRevision{previous}, changedRevision))
+					assert.False(t, mode.matches(changed, changedRevision, previous, lru.New(1)))
+				})
+			}
+		})
+	}
+}
+
+func restartPolicyUpgradeRole(customComponents, backoff bool) workloadsv1alpha2.RoleSpec {
+	builder := wrappersv2.BuildLeaderWorkerRole("inference")
+	if backoff {
+		builder = builder.WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+			WithBaseDelaySeconds(5).WithMaxDelaySeconds(50)
+	} else {
+		builder = builder.WithLegacyRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart)
+	}
+	role := builder.Obj()
+	if customComponents {
+		pattern := role.LeaderWorkerPattern
+		role.CustomComponentsPattern = &workloadsv1alpha2.CustomComponentsPattern{
+			RestartPolicy:       pattern.RestartPolicy, //nolint:staticcheck // preserve the prior release's legacy wire shape
+			RestartPolicyConfig: pattern.RestartPolicyConfig,
+			Components: []workloadsv1alpha2.InstanceComponent{{
+				Name: "worker", Size: ptr.To(int32(2)), Template: *pattern.Template,
+			}},
+		}
+		role.LeaderWorkerPattern = nil
+	}
+	return role
 }
 
 // buildRawExtension creates a runtime.RawExtension from a map
