@@ -66,8 +66,8 @@ waiting for application processing to finish.
 
 Unlike the legacy protocol, executors do not register markers initially or
 restore them after a post-operation hook completes. Executors own application
-retries, backoff, and idempotent recovery. Markers never gate the phase or
-RI Ready; applications control their own traffic ingress.
+retries, backoff, and idempotent recovery. Hook markers never participate
+in RI Ready computation.
 
 ## Motivation
 
@@ -239,6 +239,9 @@ local instance is not sufficient evidence that it is safe to exit.
 | `preRecover` | Before restoring a Pod in `Recovering` | Start Recovery |
 | `postReady` | Controlled operation is workload Ready | Already `Running` |
 | `preDelete` | Before final Pod termination | Delete Pods; finish RI |
+
+In this KEP, workload Ready means the RI satisfies its existing health
+conditions.
 
 `postReady` is neither a Pod creation notification nor a container
 `postStart`. Creating a Pod, writing the RI spec, or updating a revision is
@@ -467,8 +470,8 @@ or absent marker-key record.
 
 The executor is a long-running, application-provided service that watches
 RI phases and the markers it processes, mapping each phase to an
-application action.
-It may reuse an engineRuntime directly or run as a separate deployment.
+application action. It may reuse an engineRuntime directly or run as a
+separate deployment.
 
 If the engineRuntime exposes only application management APIs, an adapter
 service can act as the executor. The adapter watches RIs, invokes runtime
@@ -578,12 +581,6 @@ the actual Pod recovery while it remains.
 `postReady` follows the same processing rules after create, recovery, and
 update:
 
-In this KEP, workload Ready means the RI satisfies its existing health
-conditions. Hook markers never participate in RI Ready computation, and
-background `postReady` results do not change the controller's phase or
-Ready. The executor diagnoses application results, and the application
-system owns traffic ingress.
-
 ```mermaid
 sequenceDiagram
     autonumber
@@ -602,6 +599,11 @@ sequenceDiagram
     R-->>C: Running with hook-state=PostReady and no marker
     C->>R: Clean up hook-state
 ```
+
+Hook markers never participate in RI Ready computation, and background
+`postReady` results do not change the controller's phase or Ready. The
+executor diagnoses application results, and the application system owns
+traffic ingress.
 
 The controller reconstructs `postReady` progress from the combination of
 phase, `hook-state`, and marker, without adding a `step` field or private
@@ -846,8 +848,7 @@ RIS controller copies it into `RoleInstance.spec.lifecycle` as the effective
 copy. The new lifecycle protocol defines an independent hook type rather
 than reusing the legacy structure. Empty `labelsHandler` values fail
 validation. Every hook contains only `labelsHandler`, and no hook gates RI
-Ready.
-The wire names and Go constant names above are settled.
+Ready. The wire names and Go constant names above are settled.
 
 Restart recovery adds no `step`: `hook-state`, the marker, and the
 marker-key record are written together on hook entry. After a pre-operation
@@ -886,7 +887,7 @@ not understand the protocol must not take over an unfinished operation.
 The Alpha compatibility rule is also settled: the new lifecycle protocol
 and the legacy user-configured RIS lifecycle are mutually exclusive. The
 legacy protocol remains unchanged; the new protocol exposes only
-`labelsHandler` and no readiness-gating field.
+`labelsHandler`.
 
 The designs above are settled; what remains before this KEP can become
 `implementable` is completion and validation, not redesign:
@@ -943,11 +944,10 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - A pending preUpdate marker prevents Pod updates, a pending preRecover
   marker prevents Pod recovery, and a pending preDelete marker prevents Pod
   deletion.
-- A pending `postReady` marker does not prevent entry into `Running` or block
-  RI Ready.
 - `postReady` triggers only after the target completes and the workload is
   Ready; ordinary Ready fluctuations do not retrigger it.
-- Exclusion of every hook marker from RI Ready computation.
+- Hook markers never participate in RI Ready computation; a pending
+  `postReady` marker does not prevent entry into `Running`.
 - `Recovering` runs preRecover followed by asynchronous postReady. Ordinary
   Ready fluctuations in `Running` and enablement on existing RIs do not
   trigger `postReady`.
@@ -1034,8 +1034,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   fluctuations do not replay it.
 - Run postReady directly after Create reaches workload Ready, without running
   preRecover.
-- Verify that `postReady` markers do not affect RI Ready, while application
-  routing resumes according to its own traffic policy.
+- Verify that application routing resumes according to its own traffic
+  policy while background `postReady` processing is still running.
 - The controller does not terminate application Pods before `preDelete`
   completes; after release, it deletes member Pods and removes the reserved
   RI finalizer.
@@ -1055,8 +1055,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 Before Alpha, resolve the three remaining pre-implementable questions in
 "Settled Design and Remaining Questions". Implement all four hooks,
 controller-write/executor-remove Handler Label coordination; complete the
-core tests and provide an executor integration
-example.
+core tests and provide an executor integration example.
 
 Before Beta, validate real applications, multi-Pod coordination, permissions,
 recovery and upgrade compatibility, and overhead at scale. Complete
@@ -1167,11 +1166,6 @@ This feature depends on the Kubernetes API, RI controller, and hook executor;
 it does not depend on creating a Job for each invocation. Failures in engine
 management APIs, routing, or storage services used by the executor can extend
 pre-operation waits or background `postReady` processing.
-
-Lifecycle hooks do not affect RI Ready, and marker waits are independent
-of readiness.
-`postReady` does not participate in RI Ready computation and does not block
-subsequent operations.
 
 ### Scalability
 

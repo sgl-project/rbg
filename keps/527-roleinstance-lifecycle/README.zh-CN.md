@@ -58,8 +58,7 @@ hook executor 观察到匹配 marker 后执行业务动作，完成、取消或�
 postReady 完全异步，controller 写入 marker 后立即进入 `Running`，不等待业务处理完成。
 与旧协议不同，executor 不做 marker 初始登记，也不在后置 hook 完成后加回。
 
-executor 负责业务重试、退避和幂等恢复。marker 不阻塞 phase 或 RI Ready，
-流量入口由业务自行控制。
+executor 负责业务重试、退避和幂等恢复。hook marker 不参与 RI Ready 计算。
 
 ## 动机
 
@@ -175,6 +174,8 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | `preRecover` | `Recovering` 中实际恢复业务 Pod 之前 | 开始执行本轮恢复 |
 | `postReady` | 受控操作达到工作负载 Ready | 已提前进入 `Running`；清 marker 后清 state |
 | `preDelete` | RI 最终删除流程中，controller 主动终止业务 Pod 之前 | 开始删除业务 Pod 并完成 RI 删除收尾 |
+
+本文中的“工作负载 Ready”指 RI 满足原有健康条件。
 
 `postReady` 不是 Pod 对象创建通知，也不是容器 `postStart`。
 仅创建 Pod、写入 RI spec 或更新 revision 不足以触发它；controller 必须先确认本轮目标已达到工作负载 Ready。
@@ -445,10 +446,6 @@ executor 在恢复动作完成前保留 marker，controller 不执行实际 Pod 
 
 `postReady` 在创建、恢复和更新后使用相同的处理规则：
 
-本文中的“工作负载 Ready”指 RI 满足原有健康条件。hook marker 不参与
-RI Ready 计算，postReady 后台处理结果也不改变 controller 的 phase 和
-Ready；业务结果由 executor 自行诊断，流量入口由业务系统负责。
-
 ```mermaid
 sequenceDiagram
     autonumber
@@ -467,6 +464,10 @@ sequenceDiagram
     R-->>C: Running 且 hook-state=PostReady、marker 不再匹配
     C->>R: 清理 hook-state
 ```
+
+hook marker 不参与 RI Ready 计算，postReady 后台处理结果也不改变
+controller 的 phase 和 Ready；业务结果由 executor 自行诊断，流量入口
+由业务系统负责。
 
 controller 通过 phase、`hook-state` 和 marker 的组合恢复 postReady 进度，
 不新增 `step` 或 controller 私有状态。
@@ -660,8 +661,7 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
 已确定的 hook 语义不得修改，新逻辑使用新 hook；有未完成操作时不得直接降级。
 
 Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS lifecycle 互斥；
-旧协议保持原有字段不变；新协议只暴露 `labelsHandler`，不提供任何
-Ready 门控字段。
+旧协议保持原有字段不变；新协议只暴露 `labelsHandler`。
 
 上述设计已确定；进入 `implementable` 前需要的是完成与验证，而不是重新设计：
 
@@ -703,9 +703,9 @@ Ready 门控字段。
 - executor 只在阶段和 marker 匹配时处理，前置 hooks 放行后清除，postReady 后台完成或取消后清除。
 - preUpdate marker 未清除时不更新 Pod，preRecover marker 未清除时不恢复 Pod；
   preDelete marker 未清除时不删除 Pod。
-- postReady marker 未清除时仍进入 `Running`，且不阻塞 RI Ready。
 - postReady 仅在目标完成且工作负载 Ready 后触发，普通 Ready 抖动不重复触发。
-- 所有 hook marker 均不参与 RI Ready 计算。
+- 所有 hook marker 均不参与 RI Ready 计算；postReady marker 未清除时
+  仍进入 `Running`，不阻塞 RI Ready。
 - `Recovering` 中依次执行 preRecover 和异步 postReady，普通 `Running` Ready 抖动及存量启用不触发 postReady。
 - `Updating` 中 Update 合并且不重复 preUpdate，Recovery 并入当前 Update；
   `Recovering` 中 Update 进入 preUpdate，重复 Recovery 不重新进入或重复 preRecover。
@@ -757,7 +757,7 @@ Ready 门控字段。
 - 多 Pod RI 更新前摘流排空，更新达到工作负载 Ready 后异步验收、恢复 LoRA 和业务路由。
 - Recovery 在实际补齐或重建 Pod 前执行 preRecover，达到工作负载 Ready 后执行统一的 postReady，普通 Ready 抖动不重放。
 - Create 达到工作负载 Ready 后直接执行 postReady，不执行 preRecover。
-- 验证 postReady marker 不影响 RI Ready，业务路由按自身流量策略恢复。
+- 后台 postReady 尚未完成时，业务路由按自身流量策略恢复。
 - preDelete 完成前业务 Pod 不被 controller 主动终止；放行后由 controller
   删除成员 Pod 并清除保留的 RI finalizer。
 - 连续提交多个 update，验证 `Updating` 中不重复 preUpdate、旧 postReady 不阻塞新操作，以及同名 marker 的幂等处理。
@@ -842,8 +842,6 @@ executor 提供业务执行日志、失败和重试诊断。
 
 依赖 Kubernetes API、RI controller 和 hook executor，不依赖逐次创建的 Job。
 executor 依赖的引擎管理接口、路由和存储服务故障会延长前置阶段等待或 postReady 后台处理时间。
-lifecycle hooks 不影响 RI Ready，marker 等待与 readiness 无关；
-postReady 不参与 RI Ready 计算，也不阻塞后续操作。
 
 ### 可扩展性
 
