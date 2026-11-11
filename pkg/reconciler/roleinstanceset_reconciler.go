@@ -183,18 +183,23 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	// 1. construct role instance configuration
 	//
 	// The template keeps carrying the deprecated restartPolicy string unless the role
-	// configures backoff delays, which that string cannot express. Writing
-	// restartPolicyConfig unconditionally instead would rewrite the stored template of
-	// every role a v0.7.0 install created, moving the RoleInstanceSet revision hash and
-	// rolling the role on upgrade with nothing to roll to: RoleInstanceSpec's getters
-	// fold the string in and default the delays to these very values.
+	// configures backoff delays or activateAfter, which that string cannot express.
+	// Writing restartPolicyConfig unconditionally instead would rewrite the stored
+	// template of the roles that only carry the string (every role created by v0.7.0,
+	// which has no restartPolicyConfig, and any later role that never configured the
+	// block), moving the RoleInstanceSet revision hash and rolling those roles on
+	// upgrade with nothing to roll to: RoleInstanceSpec's getters fold the string in
+	// and default the delays to these very values.
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate()
-	if backoff := role.GetRawRestartBackoff(); backoff != nil &&
-		(backoff.BaseDelaySeconds != nil || backoff.MaxDelaySeconds != nil) {
+	if raw := role.GetRawRestartPolicyConfig(); raw != nil &&
+		(raw.BaseDelaySeconds != nil || raw.MaxDelaySeconds != nil || raw.ActivateAfter != "") {
 		restartPolicyApplyConfig := workloadsv1alpha2client.RestartPolicyConfig().
 			WithType(role.GetRestartPolicy()).
 			WithBaseDelaySeconds(role.GetBaseDelaySeconds()).
 			WithMaxDelaySeconds(role.GetMaxDelaySeconds())
+		if raw.ActivateAfter != "" {
+			restartPolicyApplyConfig = restartPolicyApplyConfig.WithActivateAfter(raw.ActivateAfter)
+		}
 		roleInstanceTemplateConfig.WithRestartPolicyConfig(restartPolicyApplyConfig)
 	} else {
 		roleInstanceTemplateConfig.WithRestartPolicy(role.GetRestartPolicy())
