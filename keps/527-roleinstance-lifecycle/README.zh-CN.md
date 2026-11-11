@@ -217,9 +217,11 @@ Update 内的原地更新或 Pod 重建只触发 `preUpdate`，其内部 Pod 删
 | preDelete finalizer | `rbg.workloads.x-k8s.io/role-instance-pre-delete` |
 | readiness condition | `RoleInstanceCustomReady` |
 | 旧协议 state key | `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` |
+| marker key 记录 | `rbg.workloads.x-k8s.io/role-instance-hook-marker-keys` |
 | feature gate | `RoleInstanceLifecycleHooks` |
 | state key Go 常量 | `RoleInstanceLifecycleHookStateKey` |
 | finalizer Go 常量 | `RoleInstancePreDeleteFinalizer` |
+| marker key 记录 Go 常量 | `RoleInstanceHookMarkerKeysAnnotation` |
 
 没有 lifecycle 操作进行时，hook-state label 不存在。协议不定义 `Running`
 hook-state；`Running` 是 `status.phase` 的取值。`Updating`、`Recovering` 和
@@ -331,6 +333,11 @@ marker key 的作用域限定在单个 hook 挂载点内。任何一个 key 被�
 handler key 也不能等于固定的 hook-state key 或使用保留的
 `rbg.workloads.x-k8s.io/` 前缀；hook marker 本身是运行时 label，
 但不得与 controller 保留的状态 key 冲突。
+准入还拒绝与所属 RIS `spec.selector` 相关的 marker key，
+包括 `matchLabels` 和任何 `matchExpressions` 条目中的 key，
+即使该 key 未出现在 template labels 中。写入这类 marker 可能使 RI
+不再匹配 selector，stateful RIS 的实例引用管理随后会释放该 RI 的
+owner reference。
 
 实现必须使用固定 hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state`，
@@ -342,6 +349,14 @@ controller 始终按最新的生效 lifecycle 配置判断。配置了 hook 时�
 直接检查 markerB，不再等待 markerA；如果删除 active hook，controller 视其
 为不存在，不为它执行 marker 匹配，清理遗留 runtime labels，并按已放行
 hook 的转换继续，例如 `PreUpdate` 切换到 `Updating`。这是预期的声明式语义。
+
+为了让遗留 label 清理和回滚校验可持久验证，controller 在 annotation
+`rbg.workloads.x-k8s.io/role-instance-hook-marker-keys` 中记录协议拥有的
+marker key 集合，值为逗号分隔的 key 列表，表示协议可能仍在 RI 上留有这些
+key 的 label。该记录与 marker 在同一次 metadata 写入中更新，只有确认对应
+label 已不存在后才移除条目。markerA 改为 markerB 后，markerA 在 label
+清理前保持记录，因此重启后仍能区分协议遗留 label 与普通用户 label。
+回滚前置条件是：`hook-state` label 不存在，且 marker key 记录为空或不存在。
 
 ### Ready 门控
 
@@ -361,6 +376,8 @@ hook 的转换继续，例如 `PreUpdate` 切换到 `Updating`。这是预期的
 - postReady 后台处理结果不改变 controller 的 phase 和 Ready；业务结果由 executor 自行诊断，流量准入由业务系统负责。
 
 controller 必须根据不包含本功能门控的工作负载 Ready 触发 `postReady`。
+lifecycle 门控只影响对外 readiness：按 KEP-502 的定义，外部拥有的
+readiness gate 不阻塞 phase 转换，因此该门控不会阻止 RI 进入 `Running`。
 executor 根据 postReady state 和 marker 开始后台处理，不需要等待对外 RI Ready；
 对外 RI Ready 由 controller 独立计算，与 postReady marker 互不等待。
 
@@ -534,7 +551,7 @@ controller 仍必须在 marker 放行前避免主动删除成员 Pod。
 controller 无法补充 finalizer，因此该 RI 不暴露 preDelete，
 本次删除继续且不触发该 hook；Kubernetes 不允许删除开始后新增 finalizer。
 从生效配置中删除 hook 属于普通禁用。controller 停止匹配其 marker，
-清理协议拥有的遗留运行时 labels；对 preDelete 还要在正常配置收敛中
+按 marker key 记录清理遗留运行时 labels；对 preDelete 还要在正常配置收敛中
 清理 RI 上的保留 finalizer。如果删除过程中移除 preDelete，清理
 finalizer 后删除可以继续。无论是否存在其他在途 lifecycle 操作，
 该变更都直接生效，不保留特殊的 active-hook 状态。
@@ -546,6 +563,8 @@ Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放�
 准入必须拒绝。webhook 拦截这些 DELETE 请求，检查
 `DeleteOptions.propagationPolicy`，并拒绝 `Foreground`；
 通过 owner reference 和 informer 缓存解析可达 RI。
+解析采用 fail-closed 语义：缓存尚未观察到新建 RI 或刚启用的 preDelete 时，
+webhook 无法证明删除安全，应拒绝或暂缓该请求；cache miss 不能证明删除安全。
 foreground GC 可能在 hook 放行前删除 dependent Pods。
 namespace 删除不在存活引擎保证范围内：namespace controller 可能直接删除
 成员 Pods；若保留 RI finalizer 残留，运维需要使用 break-glass 流程。
@@ -563,8 +582,10 @@ implementable。
 业务重试由 executor 负责，controller 只重试自身 API 读写和状态收敛。
 业务结果未知时，executor 必须先查询、恢复或幂等重试，再清除 marker。
 
-controller 不新增 `step` 或私有运行状态，而是通过 RI phase、`hook-state` 和 marker 的组合恢复进度。
-进入 hook 时，`hook-state` 与 marker 必须在同一次 labels 写入中设置，
+controller 不新增 `step` 或私有运行状态，而是通过 RI phase、`hook-state`、
+marker 和 marker key 记录的组合恢复进度。
+进入 hook 时，`hook-state`、marker 及其 marker key 记录必须在同一次
+metadata 写入中设置，
 不允许出现只有 state、尚未写 marker 的中间状态。
 前置 hooks 放行后不能清空 state，而要显式切换到实际操作阶段：
 
@@ -652,7 +673,8 @@ RIS controller 将其复制到 `RoleInstance.spec.lifecycle` 作为生效副本�
 `labelsHandler` 和 `markNotReady`，postReady 只包含 `labelsHandler`
 且不门控 RI Ready。
 上表中的 wire 名称和 Go 常量名均已确定。
-重启恢复不新增 `step`：进入 hook 时同批写入 `hook-state` 与 marker；
+重启恢复不新增 `step`：进入 hook 时同批写入 `hook-state`、marker
+及其 marker key 记录；
 前置 hooks 放行后切换到 `Updating`、`Recovering` 或 `Terminating`，不清空 state；
 postReady 则立即进入 `Running` 并异步收尾。
 postReady 只覆盖 Create、Update、Recovery 的受控操作，工作负载 Ready 不含 lifecycle 门控；
@@ -696,6 +718,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 四个 hooks 的触发边界，确认不存在其他生命周期挂载点。
 - 准入拒绝新 lifecycle 协议与用户配置的旧 RIS lifecycle 共存，
   以及 marker key 与完整 controller 状态 key 冲突。
+- 准入拒绝所属 RIS `spec.selector` 在 `matchLabels` 或 `matchExpressions`
+  中使用的 marker key，包括仅通过 `DoesNotExist` 选择的 key。
 - 准入拒绝不符合 Kubernetes label 语法的 `labelsHandler` key/value，
   包括 name/value 超长、prefix 语法非法、首尾字符非法或包含不支持字符。
 - 新 API 的前置 hooks 只暴露 `labelsHandler` 和 `markNotReady`，
@@ -724,9 +748,11 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 多 marker 条件、空 handler 和非法 marker key 的准入失败
   （不同 hooks 共用 key，或与 controller 管理 label 冲突）、
   重启恢复和未配置 hooks 的行为；controller 不识别消费者身份。
-- `hook-state` 与 marker 同批写入；前置 hooks 清 marker 后切换到实际操作 state，
+- `hook-state`、marker 与 marker key 记录同批写入；前置 hooks 清 marker 后切换到实际操作 state，
   重启后不会重复执行已放行 hook；postReady 先进入 `Running` 再异步清理 state。
 - markerA 改为 markerB 后直接按最新配置判断，不迁移或清理旧 marker。
+- marker key 记录与 marker 同批写入、跨重启保留，仅在对应 label 移除后清空；
+  回滚前置条件是 `hook-state` label 不存在且记录为空。
 - 删除 active hook 后按“不存在”语义处理：controller 不为它执行 marker
   匹配，清理遗留 runtime labels，并按已放行 hook 的转换继续。
 - 启用 `markNotReady` 时必须存在 `RoleInstanceCustomReady` readinessGate。
@@ -742,6 +768,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 前置 executor 延迟启动时 marker 保持匹配，controller 持续等待；executor 不需要首次登记。
 - 前置业务多次失败后自行退避成功，期间 controller 不推进受阻操作。
 - controller／executor 重启、watch 重连、PATCH 冲突和业务成功但 marker 清除失败。
+- foreground 删除准入采用 fail-closed：与 RI 创建或 preDelete 启用并发的请求，
+  在 informer 缓存未同步时被拒绝或暂缓。
 - RIS metadata 同步不覆盖运行时 marker，controller 不在同一前置阶段重复写入。
 - 连续更新、旧 postReady 任务迟到、同名 RI 重建及多执行者接管，验证 state 驱动的取消、恢复和幂等清理。
 - preDelete 的 GC 传播、零 Pod 删除，以及新旧 lifecycle 和 Ready 门控兼容性。
@@ -792,7 +820,8 @@ executor 不需要初始登记 marker。
 新的生命周期逻辑通过新 hook 表达。
 
 不兼容降级前，应先在理解该协议的 controller 仍管理 RI 时禁用 hooks。
-等待所有 RI 稳定、没有 `hook-state` 和 marker，并且没有残留保留的
+等待所有 RI 稳定、没有 `hook-state` label 和遗留 marker
+（通过 marker key 记录验证），并且没有残留保留的
 preDelete RI finalizer 后，再替换 controller。
 替换前必须验证上述条件；否则应保留兼容 controller，由其完成操作并清理 finalizer。
 手工清除 labels、门控或 finalizers 不是受支持的回滚方法。

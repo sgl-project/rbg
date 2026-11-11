@@ -288,11 +288,13 @@ The following names and values are normative:
 | Phase value | `Recovering` |
 | Phase value | `Terminating` |
 | preDelete finalizer | `rbg.workloads.x-k8s.io/role-instance-pre-delete` |
+| Marker-key record | `rbg.workloads.x-k8s.io/role-instance-hook-marker-keys` |
 | Readiness condition | `RoleInstanceCustomReady` |
 | Legacy state key | `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` |
 | Feature gate | `RoleInstanceLifecycleHooks` |
 | State-key Go constant | `RoleInstanceLifecycleHookStateKey` |
 | Finalizer Go constant | `RoleInstancePreDeleteFinalizer` |
+| Marker-key Go constant | `RoleInstanceHookMarkerKeysAnnotation` |
 
 The hook-state label is absent when no lifecycle operation is active. The
 protocol does not define a `Running` hook-state value; `Running` is a
@@ -312,8 +314,8 @@ project-wide constants.
 All four hooks use the same coordination direction:
 
 1. After determining the current operation, the controller sets
-   `hook-state` and the corresponding marker in the same RI labels
-   write.
+   `hook-state`, the corresponding marker, and its marker-key record in the
+   same RI metadata write.
 2. The executor starts the application action when it observes a matching
    `hook-state` and marker.
 3. For a pre-operation hook, the executor removes the marker after success or
@@ -439,7 +441,12 @@ delayed cancellation cleanup from one hook can otherwise remove the marker
 belonging to another hook. Handler keys must also be rejected when they equal
 the exact hook-state key or use the reserved
 `rbg.workloads.x-k8s.io/` prefix. Hook marker keys are runtime labels, but
-they must not collide with controller-reserved state.
+they must not collide with controller-reserved state. Admission also rejects
+a marker key used by the owning RIS `spec.selector`, whether in `matchLabels`
+or in any `matchExpressions` entry, even when the key is absent from template
+labels. Writing such a marker can make an RI stop matching the selector, and
+the stateful RIS instance-reference logic then releases the RI's owner
+reference.
 
 The implementation must use the exact hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state` and must not reuse the
@@ -455,6 +462,17 @@ controller treats it as absent, stops matching its marker, removes its stale
 runtime labels, and follows the same transition as a released hook; for
 example, `PreUpdate` advances to `Updating`. This is the intended declarative
 semantics.
+
+To make stale-label cleanup and rollback verification durable, the controller
+records the marker keys owned by the protocol in the annotation
+`rbg.workloads.x-k8s.io/role-instance-hook-marker-keys`, a comma-separated
+list of keys whose labels the protocol may still have written. The record is
+updated in the same metadata write as the marker, and a key is removed only
+after the corresponding label is confirmed absent. After markerA changes to
+markerB, markerA stays recorded until its label is cleaned, so a restart can
+still distinguish protocol-owned stale labels from ordinary user labels. The
+rollback precondition is an absent `hook-state` label together with an empty
+or absent marker-key record.
 
 ### Ready Gating
 
@@ -488,10 +506,13 @@ resources and other controllers.
   system owns traffic admission.
 
 The controller must trigger `postReady` from workload Ready as computed
-without the lifecycle gate. The executor starts background processing from
-the `postReady` state and marker without waiting for externally observed RI
-Ready. The controller computes externally observed RI Ready independently,
-so neither side waits for the other.
+without the lifecycle gate. The lifecycle gate changes externally observed
+readiness only: as defined by KEP-502, externally owned readiness gates do
+not gate phase transitions, so the gate never prevents the RI from entering
+`Running`. The executor starts background processing from the `postReady`
+state and marker without waiting for externally observed RI Ready. The
+controller computes externally observed RI Ready independently, so neither
+side waits for the other.
 
 ### Hook Executor Service
 
@@ -698,7 +719,8 @@ finalizer, so the hook is never exposed on that RI and its deletion
 continues without `preDelete`; Kubernetes does not allow a new finalizer to
 be added after deletion has begun. Removing a hook from the effective
 configuration is a normal disable: the controller stops matching its markers,
-removes stale runtime labels owned by the protocol, and, for `preDelete`,
+removes stale runtime labels identified through the marker-key record, and,
+for `preDelete`,
 removes the reserved RI finalizer as part of configuration convergence. If
 `preDelete` is removed while deletion is in progress, removing the finalizer
 lets deletion continue. The change applies whether or not another lifecycle
@@ -713,9 +735,12 @@ deletion paths. Foreground cascading deletion must be rejected by admission
 for RBGSet, RBG, RIS, or RI deletion requests that can reach an RI with
 `preDelete` configured. The webhook intercepts those DELETE requests, checks
 `DeleteOptions.propagationPolicy`, and rejects `Foreground`; it resolves
-reachable RIs through owner references and cached informers. Foreground GC may
-delete dependent Pods before the hook is released. Namespace teardown is
-outside the live-engine guarantee:
+reachable RIs through owner references and cached informers. Resolution is
+fail-closed: when the cache has not yet observed a newly created RI or a
+recently enabled `preDelete`, the webhook cannot prove the deletion is safe
+and rejects or defers the request. A cache miss must not establish that
+deletion is safe. Foreground GC may delete dependent Pods before the hook is
+released. Namespace teardown is outside the live-engine guarantee:
 the namespace controller may delete member Pods directly, and an operator must
 use the break-glass procedure if a reserved RI finalizer remains. A direct
 external Pod deletion cannot be undone by clearing its deletionTimestamp. That
@@ -738,9 +763,10 @@ removing a marker.
 
 The controller adds neither a `step` field nor private runtime state. It
 reconstructs progress from the combination of RI phase, `hook-state`,
-and marker. On hook entry, `hook-state` and the marker must be set in
-the same labels write. An intermediate state with the state present but the
-marker not yet written is not allowed.
+marker, and the marker-key record. On hook entry, `hook-state`, the marker,
+and its marker-key record must be set in the same metadata write. An
+intermediate state with the state present but the marker not yet written is
+not allowed.
 
 After a pre-operation hook is released, the controller must not clear its
 state. It explicitly transitions to the actual operation phase:
@@ -869,8 +895,9 @@ validation. Pre-operation hooks contain `labelsHandler` and `markNotReady`,
 while `postReady` contains only `labelsHandler` and does not gate RI Ready.
 The wire names and Go constant names above are settled.
 
-Restart recovery adds no `step`: `hook-state` and the marker are written
-together on hook entry. After a pre-operation hook is released, the state
+Restart recovery adds no `step`: `hook-state`, the marker, and the
+marker-key record are written together on hook entry. After a pre-operation
+hook is released, the state
 transitions to `Updating`, `Recovering`, or `Terminating` rather than being
 cleared. `postReady` enters `Running` immediately and finishes
 asynchronously.
@@ -938,6 +965,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Admission rejects a new lifecycle protocol together with a legacy
   user-configured RIS lifecycle, and rejects marker keys that collide with
   the fully qualified controller state key.
+- Admission rejects marker keys used by the owning RIS `spec.selector` in
+  `matchLabels` or `matchExpressions`, including keys selected only by
+  `DoesNotExist`.
 - Admission rejects `labelsHandler` keys and values that are invalid
   Kubernetes labels, including over-long names or values, invalid prefix
   syntax, invalid leading or trailing characters, and unsupported
@@ -983,12 +1013,17 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   illegal marker keys (keys shared between hooks or colliding with
   controller-managed labels), restart recovery, behavior with no configured
   hooks, and controller agnosticism to consumer identity.
-- `hook-state` and marker writes occur together. After a pre-operation
-  marker is removed, the controller transitions to the actual operation
+- `hook-state`, marker, and marker-key-record writes occur together. After a
+  pre-operation marker is removed, the controller transitions to the actual
+  operation
   state, and a restart does not repeat the released hook. `postReady` enters
   `Running` before asynchronous state cleanup.
 - A change from markerA to markerB immediately uses the latest configuration
-  without migrating or removing the old marker.
+  without migrating or removing the old marker; the old key remains recorded
+  until its label is cleaned.
+- The marker-key record is written with the marker, retained across
+  restarts, and cleared only after the corresponding label is removed; the
+  rollback precondition is an absent `hook-state` label and an empty record.
 - Removing an active hook uses absence semantics: the controller performs no
   marker matching for it, removes its stale runtime labels, and follows the
   released-hook transition.
@@ -1012,6 +1047,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   operation.
 - Controller and executor restarts, watch reconnections, PATCH conflicts,
   and successful application actions followed by marker-removal failures.
+- Foreground-deletion admission is fail-closed: requests that race RI
+  creation or `preDelete` enablement are rejected or deferred while the
+  informer cache is stale.
 - RIS metadata synchronization preserves runtime markers, and the controller
   does not rewrite a marker during the same pre-operation phase.
 - Consecutive updates, delayed old `postReady` tasks, recreation of an RI
@@ -1101,8 +1139,9 @@ New lifecycle behavior is expressed through a new hook.
 
 Before an incompatible downgrade, disable the hooks while a controller that
 understands the protocol still owns the RIs. Wait until every RI is stable,
-has no `hook-state` or marker, and has no reserved `preDelete` RI
-finalizer remaining. Replace the controller only after those conditions are
+has no `hook-state` label or remaining marker (verified through the
+marker-key record), and has no reserved `preDelete` RI finalizer remaining.
+Replace the controller only after those conditions are
 verified; otherwise, retain a compatible controller to finish operations and
 remove finalizers. Clearing labels, gates, or finalizers manually is not a
 supported rollback.
