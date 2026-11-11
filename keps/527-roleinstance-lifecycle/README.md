@@ -15,7 +15,6 @@
     - [Hooks and Trigger Boundaries](#hooks-and-trigger-boundaries)
     - [Wire Names and Constants](#wire-names-and-constants)
     - [Handler Label Coordination](#handler-label-coordination)
-    - [Ready Gating](#ready-gating)
     - [Hook Executor Service](#hook-executor-service)
     - [Update Interaction Flow](#update-interaction-flow)
     - [Recovery Interaction Flow](#recovery-interaction-flow)
@@ -67,8 +66,8 @@ waiting for application processing to finish.
 
 Unlike the legacy protocol, executors do not register markers initially or
 restore them after a post-operation hook completes. Executors own application
-retries, backoff, and idempotent recovery. Pre-operation hooks may configure
-`markNotReady`; `postReady` markers gate neither the phase nor RI Ready.
+retries, backoff, and idempotent recovery. Markers never gate the phase or
+RI Ready; applications control their own traffic ingress.
 
 ## Motivation
 
@@ -104,8 +103,6 @@ RBG does not need to embed application logic or create a Job for every hook.
 - Use `postReady` uniformly for instance validation and application
   registration after create, recovery, and update, without blocking the
   phase, RI Ready, or subsequent operations.
-- Provide configurable RI Ready gating for pre-operation hooks, distinguishing
-  workload health from readiness during an operation.
 - Preserve the legacy RIS lifecycle protocol while adding the new RoleInstance
   lifecycle protocol.
 - Preserve existing behavior for workloads that do not configure lifecycle
@@ -129,6 +126,8 @@ RBG does not need to embed application logic or create a Job for every hook.
   dedicated execution Pod for each hook.
 - Defining a generic request/result protocol, or making the RI controller
   manage application attempt counts or backoff.
+- Providing a readiness-gating field or changing RI Ready; applications
+  control their own traffic ingress.
 - Providing automatic failure-ignore or explicit skip policies for
   pre-operation hooks in the initial release; `postReady` is an asynchronous
   notification.
@@ -213,8 +212,8 @@ local instance is not sufficient evidence that it is safe to exit.
 - If a pre-operation executor is unavailable or continues to fail, its marker
   remains and the controller keeps waiting while exposing diagnostics. A
   `postReady` executor failure does not block the controller state machine.
-- RI Ready gating does not automatically change Pod Ready, EndpointSlice, or
-  an external router. Applications must explicitly integrate traffic control.
+- Hooks do not change RI Ready, Pod Ready, EndpointSlice, or an external
+  router; applications explicitly integrate traffic control.
 
 ### Risks and Mitigations
 
@@ -226,7 +225,6 @@ local instance is not sufficient evidence that it is safe to exit.
 | Marker keys reused by different hooks | Reject in admission |
 | Handler key overwrites controller state | Reject reserved keys in admission |
 | Retry duplicates | Use recoverable records or idempotency; no exactly-once |
-| Ready/postReady circular wait | Exclude postReady from RI Ready |
 | Foreground/direct deletion bypass | Reject foreground; direct is Recovery |
 | Executor outage blocks progress | Diagnostics; no automatic skip in Alpha |
 | Broad metadata permissions | Limit scope; use admission/proxy for fields |
@@ -270,8 +268,7 @@ The following names and values are normative:
 | RBG authority | `RoleBasedGroup.spec.roles[].lifecycle` |
 | Standalone authority | `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` |
 | RI execution snapshot | `RoleInstance.spec.lifecycle` |
-| Pre-operation hook fields | `labelsHandler`, `markNotReady` |
-| postReady field | `labelsHandler` |
+| Hook fields | `labelsHandler` |
 | Legacy RIS field | `RoleInstanceSet.spec.lifecycle` |
 | Hook-state key | `rbg.workloads.x-k8s.io/role-instance-hook-state` |
 | Hook-state value | `PreUpdate` |
@@ -289,7 +286,6 @@ The following names and values are normative:
 | Phase value | `Terminating` |
 | preDelete finalizer | `rbg.workloads.x-k8s.io/role-instance-pre-delete` |
 | Marker-key record | `rbg.workloads.x-k8s.io/role-instance-hook-marker-keys` |
-| Readiness condition | `RoleInstanceCustomReady` |
 | Legacy state key | `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` |
 | Feature gate | `RoleInstanceLifecycleHooks` |
 | State-key Go constant | `RoleInstanceLifecycleHookStateKey` |
@@ -356,18 +352,15 @@ spec:
         preUpdate:
           labelsHandler:
             example.com/update-block: "true"
-          markNotReady: true
         preRecover:
           labelsHandler:
             example.com/recover-block: "true"
-          markNotReady: true
         postReady:
           labelsHandler:
             example.com/ready-notify: "true"
         preDelete:
           labelsHandler:
             example.com/delete-block: "true"
-          markNotReady: true
 ```
 
 The configuration hierarchy is settled. For an RBG-managed RIS,
@@ -385,9 +378,8 @@ way. The creation path does not change hook execution; it only determines
 which object owns the desired configuration and how that configuration is
 propagated.
 
-The new protocol defines an independent hook type: pre-operation hooks contain
-`labelsHandler` and `markNotReady`, while `postReady` contains only
-`labelsHandler`.
+The new protocol defines an independent hook type: every hook contains only
+`labelsHandler`, and no hook changes RI Ready.
 
 The new lifecycle protocol and the existing `RoleInstanceSetSpec.lifecycle`
 use distinct API types and runtime protocols. The legacy RIS field remains
@@ -432,9 +424,6 @@ most 63 characters. Admission rejects invalid marker keys or values before
 configuration is accepted. The controller does not truncate, rewrite, or
 drop a configured marker to make it writable.
 
-Because `postReady` is asynchronous and does not gate RI Ready, its type
-contains only `labelsHandler` and does not expose `markNotReady`.
-
 Marker keys are scoped to a hook point. Admission must reject a key used by
 more than one configured hook, including `postReady` and `preDelete`, because
 delayed cancellation cleanup from one hook can otherwise remove the marker
@@ -473,46 +462,6 @@ markerB, markerA stays recorded until its label is cleaned, so a restart can
 still distinguish protocol-owned stale labels from ordinary user labels. The
 rollback precondition is an absent `hook-state` label together with an empty
 or absent marker-key record.
-
-### Ready Gating
-
-In this section, “workload Ready” means that the RI satisfies its existing
-health conditions, excluding the lifecycle Ready gate introduced here.
-“Externally observed RI Ready” is the final Ready state seen by parent
-resources and other controllers.
-
-- `preUpdate.markNotReady`, `preRecover.markNotReady`, and
-  `preDelete.markNotReady` control whether entering the corresponding
-  pre-operation phase marks the RI NotReady.
-- This gate reuses the existing `RoleInstanceCustomReady` condition. The RI's
-  `spec.readinessGates` must include `RoleInstanceCustomReady`; otherwise,
-  the existing readiness helper returns immediately and the gate has no
-  effect. Implementations must satisfy this prerequisite whenever
-  `markNotReady` is enabled rather than merely writing the condition without
-  registering the readiness gate.
-- A NotReady gate established during Update or Recovery remains until that
-  operation enters `Running`, not merely until the preUpdate or preRecover
-  marker is removed.
-- A NotReady gate established by `preDelete.markNotReady` remains until
-  the RI object is deleted; it is not restored merely because the delete
-  marker has been released.
-- `postReady` exposes no Ready-gating field, and its marker does
-  not participate in RI Ready computation.
-- After the workload becomes Ready, the controller writes the `postReady`
-  state and marker, immediately enters `Running`, and computes RI Ready from
-  the existing health conditions and pre-operation gates.
-- Background `postReady` results do not change the controller's phase or
-  Ready. The executor diagnoses application results, and the application
-  system owns traffic admission.
-
-The controller must trigger `postReady` from workload Ready as computed
-without the lifecycle gate. The lifecycle gate changes externally observed
-readiness only: as defined by KEP-502, externally owned readiness gates do
-not gate phase transitions, so the gate never prevents the RI from entering
-`Running`. The executor starts background processing from the `postReady`
-state and marker without waiting for externally observed RI Ready. The
-controller computes externally observed RI Ready independently, so neither
-side waits for the other.
 
 ### Hook Executor Service
 
@@ -557,7 +506,7 @@ sequenceDiagram
     participant E as Hook executor
     C->>R: Record the update target
     C->>R: Write hook-state=PreUpdate and update-block=true
-    C->>R: Set phase=Updating and establish the NotReady gate
+    C->>R: Set phase=Updating
     R-->>E: Observe preUpdate with a matching marker
     loop While the phase is valid and preUpdate has not succeeded
         E->>E: Remove from routing and drain; retry with backoff on failure
@@ -570,13 +519,13 @@ sequenceDiagram
     P-->>C: Update target complete and workload Ready
     alt postReady is configured
         C->>R: Write hook-state=PostReady and ready-notify=true
-        C->>R: Set phase=Running and lift the update gate
+        C->>R: Set phase=Running
         R-->>E: Observe postReady with a matching marker
         E->>E: Validate, restore config, and register routes
         E->>R: Remove ready-notify after completion or cancellation
         C->>R: Clean up hook-state
     else postReady is omitted
-        C->>R: Set phase=Running, lift gate, and clear state
+        C->>R: Set phase=Running and clear state
     end
 ```
 
@@ -601,7 +550,7 @@ sequenceDiagram
     participant E as Hook executor
     C->>C: Confirm that Recovery is required within the same RI UID
     C->>R: Write hook-state=PreRecover and recover-block=true
-    C->>R: Set phase=Recovering and establish the NotReady gate
+    C->>R: Set phase=Recovering
     R-->>E: Observe preRecover with a matching marker
     E->>E: Clean stale routes, prepare replacement resources, or hand off caches
     E->>R: Remove recover-block after success
@@ -611,11 +560,11 @@ sequenceDiagram
     P-->>C: Recovery target complete and workload Ready
     alt postReady is configured
         C->>R: Write hook-state=PostReady and ready-notify=true
-        C->>R: Set phase=Running and lift the recovery gate
+        C->>R: Set phase=Running
         E->>R: Remove ready-notify after completion or cancellation
         C->>R: Clean up hook-state
     else postReady is omitted
-        C->>R: Set phase=Running, lift gate, and clear state
+        C->>R: Set phase=Running and clear state
     end
 ```
 
@@ -629,6 +578,12 @@ the actual Pod recovery while it remains.
 `postReady` follows the same processing rules after create, recovery, and
 update:
 
+In this KEP, workload Ready means the RI satisfies its existing health
+conditions. Hook markers never participate in RI Ready computation, and
+background `postReady` results do not change the controller's phase or
+Ready. The executor diagnoses application results, and the application
+system owns traffic ingress.
+
 ```mermaid
 sequenceDiagram
     autonumber
@@ -636,7 +591,7 @@ sequenceDiagram
     participant R as RI object
     participant E as Hook executor
     C->>C: Confirm that the create, recovery, or update target is complete
-    C->>C: Wait for workload Ready, excluding lifecycle gates
+    C->>C: Wait for workload Ready
     C->>R: Write hook-state=PostReady and the ready marker together
     C->>R: Set phase=Running and compute RI Ready
     R-->>E: Observe postReady with a matching marker
@@ -676,7 +631,7 @@ sequenceDiagram
     participant E as Hook executor
     R-->>C: Observe deletion intent; finalizer keeps the RI present
     C->>R: Write hook-state=PreDelete and delete-block=true
-    C->>R: Set phase=Terminating and establish the NotReady gate
+    C->>R: Set phase=Terminating
     R-->>E: Observe preDelete with a matching marker
     loop While the phase is valid and preDelete has not succeeded
         E->>P: Drain traffic and hand off resources; retry on failure
@@ -827,8 +782,8 @@ deletion is in progress.
 The `postReady` completion condition is deliberately simple: when a controlled
 operation reaches workload Ready and `postReady` is configured, write the state
 and marker and immediately enter `Running`. If `postReady` is omitted, enter
-`Running`, release the operation gate, and clear `hook-state` without
-writing a marker. If the previous marker still exists, rewriting
+`Running` and clear `hook-state` without writing a marker. If the previous
+marker still exists, rewriting
 it does not change its value. `hook-state` has moved from the new
 operation's pre-operation phase to `postReady`, so the executor processes the
 latest phase.
@@ -876,8 +831,7 @@ restoration.
 The legacy RIS `spec.lifecycle` and new lifecycle protocol use distinct API
 types and runtime protocol state. The legacy `inPlaceUpdate` and
 `finalizersHandler` fields remain part of the legacy protocol only. The new
-protocol exposes only `labelsHandler` and, for pre-operation hooks,
-`markNotReady`. The two runtime protocols must
+protocol exposes only `labelsHandler`. The two runtime protocols must
 not be active on the same RIS; an admission webhook enforces that boundary.
 Their state keys remain distinct. Warmup and container lifecycle hooks retain
 their own responsibilities and are not equivalent to the instance-level hooks
@@ -891,8 +845,8 @@ template defines it. The RIS template stores the desired snapshot, and the
 RIS controller copies it into `RoleInstance.spec.lifecycle` as the effective
 copy. The new lifecycle protocol defines an independent hook type rather
 than reusing the legacy structure. Empty `labelsHandler` values fail
-validation. Pre-operation hooks contain `labelsHandler` and `markNotReady`,
-while `postReady` contains only `labelsHandler` and does not gate RI Ready.
+validation. Every hook contains only `labelsHandler`, and no hook gates RI
+Ready.
 The wire names and Go constant names above are settled.
 
 Restart recovery adds no `step`: `hook-state`, the marker, and the
@@ -903,7 +857,8 @@ cleared. `postReady` enters `Running` immediately and finishes
 asynchronously.
 
 `postReady` covers only controlled Create, Update, and Recovery operations.
-Workload Ready excludes lifecycle gates. Neither ordinary Ready fluctuations
+Workload Ready means the RI's existing health conditions. Neither ordinary
+Ready fluctuations
 nor enabling the feature on an existing `Running` RI replays the hook.
 
 The continuous-operation rules are also settled. Update merges subsequent
@@ -930,8 +885,8 @@ not understand the protocol must not take over an unfinished operation.
 
 The Alpha compatibility rule is also settled: the new lifecycle protocol
 and the legacy user-configured RIS lifecycle are mutually exclusive. The
-legacy protocol remains unchanged; the new protocol does not expose
-`inPlaceUpdate`, `finalizersHandler`, or the legacy `markPodNotReady` field.
+legacy protocol remains unchanged; the new protocol exposes only
+`labelsHandler` and no readiness-gating field.
 
 The designs above are settled; what remains before this KEP can become
 `implementable` is completion and validation, not redesign:
@@ -972,9 +927,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   Kubernetes labels, including over-long names or values, invalid prefix
   syntax, invalid leading or trailing characters, and unsupported
   characters.
-- The new API exposes only `labelsHandler` and `markNotReady` on
-  pre-operation hooks, and only `labelsHandler` on `postReady`. The legacy
-  RIS protocol retains its existing fields and rejects the three new hook
+- The new API exposes only `labelsHandler` on every hook. The legacy RIS
+  protocol retains its existing fields and rejects the three new hook
   fields.
 - The controller persists and exposes the KEP-502 RI `status.phase`, and the
   executor observes it together with the lifecycle marker labels.
@@ -993,10 +947,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   RI Ready.
 - `postReady` triggers only after the target completes and the workload is
   Ready; ordinary Ready fluctuations do not retrigger it.
-- Establishment and release timing for pre-operation `markNotReady`, and
-  exclusion of `postReady` from RI Ready computation.
-- `preDelete.markNotReady` remains NotReady until the RI object is
-  deleted, including after the delete marker is released.
+- Exclusion of every hook marker from RI Ready computation.
 - `Recovering` runs preRecover followed by asynchronous postReady. Ordinary
   Ready fluctuations in `Running` and enablement on existing RIs do not
   trigger `postReady`.
@@ -1027,13 +978,11 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - Removing an active hook uses absence semantics: the controller performs no
   marker matching for it, removes its stale runtime labels, and follows the
   released-hook transition.
-- Enabling `markNotReady` requires the `RoleInstanceCustomReady` readiness
-  gate.
 - Repeated controlled operations reaching workload Ready idempotently write
   the same `postReady` marker without generations. Delayed cleanup can
   remove a newer marker, and consumers own coordination of that risk.
 - When `postReady` is omitted, an Update or Recovery that reaches workload
-  Ready enters `Running`, releases its gate, and clears `hook-state`
+  Ready enters `Running` and clears `hook-state`
   without writing a marker.
 - Disabling a hook stops future invocations and, on the next reconciliation,
   stops marker matching even if an operation is unfinished.
@@ -1056,7 +1005,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   with the same name, and takeover by multiple executors, validating
   state-driven cancellation, recovery, and idempotent cleanup.
 - GC propagation for `preDelete`, deletion with zero Pods, and compatibility
-  between old and new lifecycle protocols and Ready gates.
+  between old and new lifecycle protocols.
 - Reserved RI finalizer addition, retention while `preDelete` is pending, and
   removal after member Pod deletion is complete.
 - New RIs are created with the reserved finalizer; existing enablement adds
@@ -1085,9 +1034,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   fluctuations do not replay it.
 - Run postReady directly after Create reaches workload Ready, without running
   preRecover.
-- Toggle pre-operation RI Ready gating and verify that `postReady` markers do
-  not affect RI Ready, while application routing resumes according to its
-  own traffic policy.
+- Verify that `postReady` markers do not affect RI Ready, while application
+  routing resumes according to its own traffic policy.
 - The controller does not terminate application Pods before `preDelete`
   completes; after release, it deletes member Pods and removes the reserved
   RI finalizer.
@@ -1106,8 +1054,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 
 Before Alpha, resolve the three remaining pre-implementable questions in
 "Settled Design and Remaining Questions". Implement all four hooks,
-controller-write/executor-remove Handler Label coordination, and configurable
-Ready gating; complete the core tests and provide an executor integration
+controller-write/executor-remove Handler Label coordination; complete the
+core tests and provide an executor integration
 example.
 
 Before Beta, validate real applications, multi-Pod coordination, permissions,
@@ -1143,7 +1091,7 @@ has no `hook-state` label or remaining marker (verified through the
 marker-key record), and has no reserved `preDelete` RI finalizer remaining.
 Replace the controller only after those conditions are
 verified; otherwise, retain a compatible controller to finish operations and
-remove finalizers. Clearing labels, gates, or finalizers manually is not a
+remove finalizers. Clearing labels or finalizers manually is not a
 supported rollback.
 
 ### Version Skew Strategy
@@ -1188,10 +1136,10 @@ or configuration deletion is not a substitute for that convergence.
 ### Rollout, Upgrade, and Rollback Planning
 
 The main risks are repeated marker writes by the controller, removal of new
-markers by old executors, circular waits involving Ready, and indefinitely
-stalled deletion. Validation must cover controller/executor version
-compatibility, the impact of gating on higher-level rollout budgets, and the
-handoff between the old and new protocols.
+markers by old executors, and indefinitely stalled deletion. Validation must
+cover controller/executor version compatibility, the impact of pre-operation
+waits on higher-level rollout budgets, and the handoff between the old and
+new protocols.
 
 Testing will cover upgrade → downgrade → upgrade. This proposal does not
 remove the existing RIS lifecycle API.
@@ -1208,7 +1156,7 @@ required. Avoid writing to the RI on every application failure to prevent
 high-frequency API writes.
 
 Planned metrics include phase wait duration by operation type, executor
-availability, application retries and failures, Ready-gate duration, and
+availability, application retries and failures, and
 update/deletion latency. Application execution time and controller
 convergence latency are measured separately. This KEP does not define an
 unvalidated numeric SLO.
@@ -1220,8 +1168,8 @@ it does not depend on creating a Job for each invocation. Failures in engine
 management APIs, routing, or storage services used by the executor can extend
 pre-operation waits or background `postReady` processing.
 
-Whether pre-operation hooks affect RI Ready depends on the gate
-configuration, but disabling the gate must not bypass marker waits.
+Lifecycle hooks do not affect RI Ready, and marker waits are independent
+of readiness.
 `postReady` does not participate in RI Ready computation and does not block
 subsequent operations.
 
@@ -1250,9 +1198,8 @@ failures, and large numbers of instances waiting for hooks to complete.
 - The application action succeeded but the operation did not advance: check
   whether the marker PATCH succeeded, whether the phase is still valid, and
   whether other markers have been removed.
-- RI is NotReady: distinguish workload health failures, existing readiness
-  gates, and the lifecycle gate. Check for an incorrect wait on externally
-  observed Ready.
+- RI is NotReady: check workload health and any existing readiness gates;
+  lifecycle hooks do not change RI Ready.
 - A new update has not started: check whether the RI is still `Updating`;
   `postReady` must not block it.
 - Deletion is waiting: distinguish `preDelete`, Pod deletion, and other
@@ -1266,8 +1213,8 @@ emergency procedure for an executor that is permanently unavailable is an
 explicit operator break-glass action: stop new operations, verify that the
 executor can no longer run and that its application action is no longer
 required, record the decision, and remove only the exact blocking marker key.
-The controller then advances normally. Do not modify the phase, gate,
-reserved RI finalizer, or member Pods directly. This procedure is not a
+The controller then advances normally. Do not modify the phase, reserved RI
+finalizer, or member Pods directly. This procedure is not a
 routine rollback or a substitute for restoring an executor.
 
 ## Implementation History
@@ -1289,9 +1236,8 @@ routine rollback or a substitute for restoring an executor.
   generations. Delayed side effects require executor idempotency and
   application-side fencing.
 - Persistent pre-operation failures can block update, recovery, or deletion
-  indefinitely, and enabling the gate can leave the RI NotReady. Persistent
-  `postReady` failures affect neither phase nor RI Ready and therefore need
-  separate application alerts.
+  indefinitely. Persistent `postReady` failures affect neither phase nor
+  RI Ready and therefore need separate application alerts.
 
 ## Alternatives
 
