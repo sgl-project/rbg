@@ -1,12 +1,16 @@
 ---
 name: rbg-conventions
-description: Development and code-review conventions for the RBG (RoleBasedGroup) operator, distilled from past PR reviews. Use when adding or changing API fields or CRDs (v1alpha1/v1alpha2), defaults, validation, webhooks or conversion; when changing what the controller renders or writes (RoleInstanceSet or pod templates, labels, annotations, env, status, revision hashes); when touching the Helm chart, manifests, RBAC or codegen; when writing tests or KEPs; and when reviewing an RBG pull request or judging merge readiness.
+description: Development and code-review conventions for the RBG (RoleBasedGroup) operator, distilled from past PR reviews, with kubectl checks to verify them on a cluster. Use when adding or changing API fields or CRDs (v1alpha1/v1alpha2), defaults, validation, webhooks or conversion; when changing what the controller renders or writes (RoleInstanceSet or pod templates, labels, annotations, env, status, revision hashes); when touching the Helm chart, manifests, RBAC or codegen; when writing tests or KEPs; when verifying that an upgrade or binary swap leaves workloads untouched; and when reviewing an RBG pull request or judging merge readiness.
+license: Apache-2.0
+compatibility: Agent-neutral (Agent Skills format). The verification scripts need bash, kubectl and jq; the cluster cases need a namespace you own and, for controller cases, a cluster where no other RBG controller runs.
 ---
 
 # RBG development and review conventions
 
 Every rule here was missed at least once in a past RBG review. Before writing or reviewing code in
-an area, read the matching file in `references/`.
+an area, read the matching file in `references/`. The `scripts/` directory has checks that prove
+the most important rules on a cluster. Each one is described, with its last verified result, in
+[verification-cases.md](references/verification-cases.md).
 
 ## Facts that are easy to get wrong
 
@@ -28,10 +32,10 @@ an area, read the matching file in `references/`.
 
 ## Golden rules
 
-1. **A controller upgrade changes nothing for objects that don't use the new feature.** Rendered
-   templates and revision hashes stay identical, no Pod restarts, no Service rewrites. The only
-   exception is a deliberate one-hop migration that maintainers agreed to, that is documented, and
-   that is recorded in `test/e2e/upgrade/profile.go`. See
+1. **A controller upgrade changes nothing for objects that don't use the new feature.** No new
+   revisions, no Pod restarts or in-place updates, no Service rewrites. The only exception is a
+   deliberate one-hop migration that maintainers agreed to, that is documented, and that is
+   recorded in `test/e2e/upgrade/profile.go`. See
    [upgrade-compatibility.md](references/upgrade-compatibility.md).
 2. **A new optional field under an already-stored parent is a `*T` with `omitempty` and no schema
    default.** Apply defaults in Go getters. Write the field into templates only when the user set
@@ -70,8 +74,9 @@ an area, read the matching file in `references/`.
 - [ ] CEL rules are bounded.
 - [ ] Unknown values fail validation instead of being ignored.
 - [ ] Conversion doesn't materialize defaults, and a v1alpha2 → v1alpha1 → v1alpha2 round trip
-      leaves the stored object unchanged. Test it; today v1alpha1 → v1alpha2 materializes
-      `restartPolicyConfig`.
+      leaves the stored object unchanged (`scripts/v1alpha1-roundtrip.sh`). On `main` today it
+      doesn't: accepted writes rewrite every role and lose configured backoff delays, and
+      customComponentsPattern roles are rejected outright (VC-5).
 - [ ] `make manifests generate` has been run, the chart and kubectl manifests are updated, and new
       verbs have RBAC markers.
 - [ ] The docs (`README.md` and `README-zh_CN.md`) and the release note describe what happens to
@@ -82,6 +87,9 @@ an area, read the matching file in `references/`.
 - [ ] For RBGs that don't use the change, nothing new appears in `spec.roleInstanceTemplate` or in
       pod templates (fields, labels, env, sidecars, injected scheduling fields), and Services are
       unchanged. Never stamp existing templates; stamp Pods when they are created.
+- [ ] Rollout checks compare RoleInstanceSet revisions and Pod `controller-revision-hash` labels,
+      not only Pod UIDs. Metadata-only template changes are applied in place, and role hashes
+      don't cover rendering (VC-3).
 - [ ] Unset fields keep their old interpretation.
 - [ ] No rendering from live referenced objects that are neither watched nor hashed.
 - [ ] Fields rendered through SSA applyconfigurations have no second writer, and new status fields
@@ -91,9 +99,12 @@ an area, read the matching file in `references/`.
 - [ ] Every new input is watched. `RBGPredicate` only enqueues RBG spec changes.
 - [ ] Unrelated roles stay isolated (dependency order still applies), there is no new periodic
       requeue, and events fire only on transitions.
-- [ ] Upgrade safety is shown by a hash comparison (unit test or envtest), a binary swap, or
-      `make test-e2e-upgrade` pointed at your build: `RBGS_TO_REPO`/`RBGS_TO_TAG`, plus
-      `RBGS_CRD_UPGRADE_REPO` if the CRD upgrader changed.
+- [ ] Upgrade safety is shown in one of these ways:
+  - a hash comparison in a unit test or envtest
+  - a binary swap checked with `scripts/rbg-snapshot.sh` and `scripts/rbg-compare.sh`
+    (see [verification-cases.md](references/verification-cases.md))
+  - `make test-e2e-upgrade` pointed at your build with `RBGS_TO_REPO`/`RBGS_TO_TAG`, plus
+    `RBGS_CRD_UPGRADE_REPO` if the CRD upgrader changed
 
 ### Chart, manifests and release plumbing
 
@@ -125,10 +136,15 @@ an area, read the matching file in `references/`.
 | [controller-patterns.md](references/controller-patterns.md) | reconciler write paths, SSA and managedFields, preconditions, requeues, events, adoption, watches, cache |
 | [build-test-release.md](references/build-test-release.md) | codegen, Helm chart, manifests, RBAC, make targets and CI, test expectations, commits and PRs |
 | [review-playbook.md](references/review-playbook.md) | reviewing a PR or KEP, judging merge readiness, posting comments |
+| [verification-cases.md](references/verification-cases.md) | proving a rule on a real cluster or a local API server: the cases, how to run the scripts safely, and what each one last showed |
 
 ## Maintaining this skill
 
+- The skill lives in `.agents/skills/` so that agents other than one vendor's find it. The root
+  `AGENTS.md` points here for agents that don't load skills. Keep the text free of
+  agent-specific tool names.
 - Add a rule only when it applies beyond one PR, and cite that PR (`#NNN`) as evidence.
 - Point to files and functions on `main`, not line numbers, and re-check the pointers when code
   moves.
+- When you rerun a verification case, update its "Last verified" entry.
 - Keep this file short. Detail belongs in `references/`.

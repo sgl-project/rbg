@@ -52,7 +52,7 @@
 - **Every requeue needs a logged reason and a bounded backoff** (#508).
 - **Show that the load is unchanged versus `main`.** Compare reconcile counts and API calls at the
   defaults (`--kube-api-qps=20`, `--max-concurrent-reconciles=10`). Back scale claims with
-  `test/stress`; the `stress-test` skill automates that.
+  `test/stress`; the stress-test skill in `.claude/skills/stress-test/` automates that.
 
 ## Events
 
@@ -102,3 +102,8 @@
   - Don't treat a DELETE event from a filtered watch as proof of deletion; the object may only have
     left the filter.
   - Use a live read (API reader) before acting on absence.
+- **Don't type-assert informers.** `statefulmode` asserts that the RoleInstanceSet and RoleInstance
+  informers are `SharedIndexInformer`s. With a namespace-restricted cache (`DefaultNamespaces`)
+  controller-runtime returns a `multiNamespaceInformer`, and the manager panics at startup
+  (observed while running VC-2). A "watch only these namespaces" option needs that fixed first.
+  Field selectors keep plain informers.

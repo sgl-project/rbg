@@ -64,7 +64,17 @@
   `GetRawRestartPolicyType`. Converting v1alpha1 to v1alpha2 still materializes
   `restartPolicyConfig`, so writes made through v1alpha1 change the stored shape; see
   `upgrade-compatibility.md`. Test the full v1alpha2 → v1alpha1 → v1alpha2 round trip for any new
-  field.
+  field with `scripts/v1alpha1-roundtrip.sh`.
+- **Know what a v1alpha1 round trip does on `main` today** (measured, VC-5 in
+  [verification-cases.md](verification-cases.md)). When the API server accepts a no-op read and
+  write through v1alpha1, the write:
+  - adds the `role-workload-type` annotation to every role, so every role hash changes
+  - replaces the deprecated `restartPolicy` string with a defaulted `restartPolicyConfig`
+  - resets configured backoff delays to the defaults, because v1alpha1 has no field for them
+
+  For customComponentsPattern roles the write is rejected instead: the converted object fails
+  v1alpha1 validation, so v1alpha1 clients can't update those RBGs at all. Don't claim a lossless
+  round trip for new work until VC-5 passes.
 - **Every served version needs a working conversion.** A version served with `strategy: None` breaks
   as soon as the schemas diverge (#548).
 - **Immutability checks must account for converted writes** (#473).

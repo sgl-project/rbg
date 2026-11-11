@@ -19,15 +19,17 @@ this way is a blocker.
 | Level | Built by | Hashed input | Effect of a new hash |
 |---|---|---|---|
 | RoleBasedGroup | `NewRevision` → `getRBGPatch` (`pkg/utils/revision_utils.go`) | typed `spec.roles` + `spec.roleTemplates`, replicas stripped | new RBG ControllerRevision |
-| Role | `GetRolesRevisionHash` (same file) | fnv32a of each role's JSON plus the referenced roleTemplate's `template` | rewrites the `rbg.workloads.x-k8s.io/role-revision-<role>` label on the workload's metadata (not on the pod template). On the deprecated StatefulSet path, a hash change alone is treated as the start of a rolling update (partition reset, may add `maxSurge` replicas) even when the pod template is unchanged |
+| Role | `GetRolesRevisionHash` (same file) | fnv32a of each role's JSON plus the referenced roleTemplate's `template` | rewrites the `rbg.workloads.x-k8s.io/role-revision-<role>` label on the workload's metadata (not on the pod template). On the RoleInstanceSet path that alone rolls nothing (VC-4). On the deprecated StatefulSet path, a hash change alone is treated as the start of a rolling update (partition reset, may add `maxSurge` replicas) even when the pod template is unchanged |
 | RoleInstanceSet | `getPatch` (`roleinstanceset/statelessmode/revision/revision.go`, `statefulmode/stateful_instance_set_helper.go`) | `spec.roleInstanceTemplate` only | new update revision; RoleInstances roll to it according to the update strategy and partition |
-| RoleInstance | `buildPatch` (`pkg/reconciler/roleinstance/revision/instance_revision.go`) | `spec.components` minus `size` | Pods recreated or updated in place |
+| RoleInstance | `buildPatch` (`pkg/reconciler/roleinstance/revision/instance_revision.go`) | `spec.components` minus `size` | Pods recreated, or updated in place when only metadata changed: then UIDs and restart counts stay and only `controller-revision-hash` moves (VC-3) |
 | Deprecated Deployment / StatefulSet / LWS | native controllers | pod template | native rollout |
 
 The RoleInstanceSet template is rendered from the role on every reconcile by
 `constructRoleInstanceSetApplyConfiguration` (`pkg/reconciler/roleinstanceset_reconciler.go`). It is
 assembled fresh by each controller release, so a release that renders different bytes for an
-unchanged role rolls that role.
+unchanged role rolls that role. The role hash does not show this, because it covers only the RBG
+spec: a rendering change appears only as new RoleInstanceSet revisions (VC-3 in
+[verification-cases.md](verification-cases.md)).
 
 Only `spec.roleInstanceTemplate` enters the RoleInstanceSet revision. The RoleInstanceSet's own
 labels, annotations, replicas and update strategy don't. Everything injected into the nested pod
@@ -112,11 +114,16 @@ more.
    defaults are not materialized. The other direction, v1alpha1 to v1alpha2, still materializes
    `restartPolicyConfig` for leader/worker and custom-components roles, and the API server then
    defaults the delays inside it.
-   - The upgrade suite tolerates this only because its v1alpha1 round-trip fixtures are reconciled
-     into LeaderWorkerSets (`foldRestartPolicyShape` in `snapshot.go`).
-   - On the RoleInstanceSet path the same flip would change the rendered template and roll the
-     role.
-   - For any new field, test the full v1alpha2 → v1alpha1 → v1alpha2 round trip.
+   - Measured (VC-5): a no-op v1alpha1 read and write of a leader/worker role on the
+     RoleInstanceSet path moves the RoleInstanceSet to a new revision and updates every
+     RoleInstance. In envtest that update was in place, and no recorded Pod field changed.
+   - Every accepted round trip also adds an annotation to every role, and it resets configured
+     backoff delays to the defaults. For customComponentsPattern roles the write is rejected
+     outright. See VC-5 in [verification-cases.md](verification-cases.md).
+   - The upgrade suite tolerates the flip only because its v1alpha1 round-trip fixtures are
+     reconciled into LeaderWorkerSets (`foldRestartPolicyShape` in `snapshot.go`).
+   - For any new field, test the full v1alpha2 → v1alpha1 → v1alpha2 round trip
+     (`scripts/v1alpha1-roundtrip.sh`).
 6. **Guard with a test.** `test/e2e/upgrade/specs.go` asserts that the deprecated string was not
    rewritten and that `restartPolicyConfig` is still nil on objects that never had it.
 
@@ -159,8 +166,15 @@ more.
 2. **envtest.** Install the new CRDs over objects created in the old shape, then read them back. This
    is how CRD defaults applied on read and conversion changes show up.
 3. **Binary swap on a cluster.** Run `main` with one RBG per pattern (standalone, leader/worker, custom
-   components) and per deprecated workload type, then switch the controller image to your build. Pod
-   UIDs, restart counts, owner generations and ControllerRevision names must all stay the same.
+   components) and per deprecated workload type, then switch the controller image to your build.
+   - Pod UIDs, restart counts, owner generations and ControllerRevision names must all stay the
+     same.
+   - So must the RoleInstanceSet revisions and the Pods' `controller-revision-hash` labels.
+     Metadata-only template changes are applied in place, and UIDs alone would miss them (VC-3).
+   - `scripts/rbg-fixtures.sh`, `scripts/rbg-snapshot.sh` and `scripts/rbg-compare.sh` automate
+     this for the RoleInstanceSet paths. The deprecated workload types need their own fixtures or
+     `make test-e2e-upgrade`. See [verification-cases.md](verification-cases.md) for the procedure
+     and its safety rules.
 4. **`make test-e2e-upgrade`.** This standalone suite needs a cluster with no rbgs install; it
    installs the from-release itself and deletes the CRDs on teardown.
    - `RBGS_FROM_GIT_TAG` picks the hop: `v0.7.0` (default) or `v0.8.0`.

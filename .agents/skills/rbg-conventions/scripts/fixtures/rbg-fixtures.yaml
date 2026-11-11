@@ -1,0 +1,151 @@
+# Fixtures for verification cases VC-2 to VC-5 (see references/verification-cases.md).
+# One RoleBasedGroup per rendering path on the RoleInstanceSet workload. rbg-fixtures.sh replaces
+# __IMAGE__ with any image that has `sh` and `sleep` and applies the file to a namespace it owns.
+# Resource requests are tiny so the set fits on any cluster.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: fx-standalone
+spec:
+  roles:
+    - name: server
+      replicas: 2
+      # VC-4 removes this label and expects it to disappear from the RoleInstanceSet.
+      labels:
+        rbg-conventions/remove-me: "true"
+      standalonePattern:
+        template:
+          spec:
+            terminationGracePeriodSeconds: 1
+            containers:
+              - name: main
+                image: __IMAGE__
+                command: ["sh", "-c", "sleep 2147483647"]
+                resources:
+                  requests: {cpu: 10m, memory: 16Mi}
+---
+# leaderWorkerPattern in the shape v0.7.0 stored it: the deprecated restartPolicy string.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: fx-lwp-legacy
+spec:
+  roles:
+    - name: engine
+      replicas: 1
+      leaderWorkerPattern:
+        size: 2
+        restartPolicy: RecreateRoleInstanceOnPodRestart
+        template:
+          spec:
+            terminationGracePeriodSeconds: 1
+            containers:
+              - name: main
+                image: __IMAGE__
+                command: ["sh", "-c", "sleep 2147483647"]
+                resources:
+                  requests: {cpu: 10m, memory: 16Mi}
+---
+# leaderWorkerPattern with no restart policy at all; the Go getters resolve the default.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: fx-lwp-default
+spec:
+  roles:
+    - name: engine
+      replicas: 1
+      leaderWorkerPattern:
+        size: 2
+        template:
+          spec:
+            terminationGracePeriodSeconds: 1
+            containers:
+              - name: main
+                image: __IMAGE__
+                command: ["sh", "-c", "sleep 2147483647"]
+                resources:
+                  requests: {cpu: 10m, memory: 16Mi}
+---
+# leaderWorkerPattern with configured backoff: the only shape that renders restartPolicyConfig into
+# the RoleInstanceSet template.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: fx-lwp-backoff
+spec:
+  roles:
+    - name: engine
+      replicas: 1
+      leaderWorkerPattern:
+        size: 2
+        restartPolicyConfig:
+          type: RecreateRoleInstanceOnPodRestart
+          baseDelaySeconds: 10
+        template:
+          spec:
+            terminationGracePeriodSeconds: 1
+            containers:
+              - name: main
+                image: __IMAGE__
+                command: ["sh", "-c", "sleep 2147483647"]
+                resources:
+                  requests: {cpu: 10m, memory: 16Mi}
+---
+# customComponentsPattern with two components and no restart policy.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: fx-components
+spec:
+  roles:
+    - name: engine
+      replicas: 1
+      customComponentsPattern:
+        components:
+          - name: router
+            size: 1
+            template:
+              spec:
+                terminationGracePeriodSeconds: 1
+                containers:
+                  - name: main
+                    image: __IMAGE__
+                    command: ["sh", "-c", "sleep 2147483647"]
+                    resources:
+                      requests: {cpu: 10m, memory: 16Mi}
+          - name: worker
+            size: 1
+            template:
+              spec:
+                terminationGracePeriodSeconds: 1
+                containers:
+                  - name: main
+                    image: __IMAGE__
+                    command: ["sh", "-c", "sleep 2147483647"]
+                    resources:
+                      requests: {cpu: 10m, memory: 16Mi}
+---
+# roleTemplates + templateRef: the referenced template is part of the role hash.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: fx-template-ref
+spec:
+  roleTemplates:
+    - name: base
+      template:
+        spec:
+          terminationGracePeriodSeconds: 1
+          containers:
+            - name: main
+              image: __IMAGE__
+              command: ["sh", "-c", "sleep 2147483647"]
+              resources:
+                requests: {cpu: 10m, memory: 16Mi}
+  roles:
+    - name: server
+      replicas: 1
+      standalonePattern:
+        templateRef:
+          name: base
