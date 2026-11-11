@@ -51,9 +51,6 @@ func buildV1a1RBG(name string) *workloadsv1alpha1.RoleBasedGroup {
 }
 
 var _ = Describe("v1alpha1 request path through the conversion chain", Ordered, func() {
-	BeforeAll(func() {
-		testutil.CreateNamespace(gateNamespace)
-	})
 
 	It("rejects a new deprecated use submitted via v1alpha1 (conversion -> v1alpha2 gate)", func() {
 		rbg := buildV1a1RBG("gate-reject")
@@ -112,12 +109,6 @@ var _ = Describe("v1alpha1 request path through the conversion chain", Ordered, 
 const gateNamespace = "v1a1-gate-test"
 
 var _ = Describe("v1alpha1 wire contract", Ordered, func() {
-	BeforeAll(func() {
-		// The namespace may already exist from the first Describe's BeforeAll.
-		_ = testutil.K8sClient.Create(testutil.Ctx, &corev1.Namespace{
-			ObjectMeta: metav1.ObjectMeta{Name: gateNamespace},
-		})
-	})
 
 	BeforeEach(func() {
 		testutil.GateWarnings.Reset()
@@ -155,20 +146,25 @@ var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 			"a v1alpha2 write must not carry a v1alpha1 deprecation warning")
 	})
 
-	It("rejects a v1alpha1 create that omits the workload field", func() {
-		// The v1alpha1 CRD requires workload.apiVersion to match an
-		// apiVersion pattern; an empty string fails schema validation
-		// before any admission webhook runs. This pins that the v1alpha1
-		// path cannot silently default to a deprecated workload type
-		// now that the v1alpha1 admission webhooks are removed.
+	It("rejects a v1alpha1 create with a present-but-empty workload", func() {
+		// A Go zero-value WorkloadSpec marshals as
+		// workload:{"apiVersion":"","kind":""} — the key is present with
+		// empty values, not omitted. The CRD schema requires apiVersion
+		// to match an apiVersion pattern, so schema validation rejects
+		// the empty string before any admission webhook. A genuinely
+		// absent key (kubectl-style YAML) would trigger the CRD top-level
+		// default of apps/v1 StatefulSet, which the v1alpha2 gate then
+		// rejects as a new use; that path is not covered in-repo.
 		rbg := &workloadsv1alpha1.RoleBasedGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: "warn-defaulted", Namespace: gateNamespace},
 			Spec: workloadsv1alpha1.RoleBasedGroupSpec{
 				Roles: []workloadsv1alpha1.RoleSpec{{
 					Name:     "worker",
 					Replicas: ptr.To(int32(1)),
-					// Workload field omitted: schema validation rejects
-					// the empty apiVersion (pattern mismatch).
+					// Zero-value workload: present with empty apiVersion
+					// and kind; schema validation catches the pattern
+					// mismatch.
+					Workload: workloadsv1alpha1.WorkloadSpec{},
 					TemplateSource: workloadsv1alpha1.TemplateSource{
 						Template: &corev1.PodTemplateSpec{
 							Spec: corev1.PodSpec{
@@ -184,11 +180,12 @@ var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 		Expect(err.Error()).To(ContainSubstring("workload.apiVersion"))
 	})
 
-	// Grandfathering (same-type update) and type-exact switch (StatefulSet ->
-	// Deployment) through the v1alpha1 conversion chain are covered by the
-	// deprecation suite (test/envtest/testcase/deprecation/), which seeds
-	// grandfathered objects before installing the gate. In this suite the gate
-	// is already active, so the mutating webhook defaults every create to
-	// RoleInstanceSet, making pre-gate grandfathering infeasible without the
-	// two-phase setup.
+	// v1alpha1-path grandfathering (same-type update through the conversion
+	// chain) and type-exact switch (StatefulSet -> Deployment) have no in-repo
+	// coverage: the v1alpha2 deprecation suite covers them only through the
+	// v1alpha2 API, not via v1alpha1 conversion. In this suite the gate is
+	// already active, so the mutating webhook defaults every create to
+	// RoleInstanceSet; testing grandfathering would require the two-phase
+	// (seed-then-gate) setup, which belongs in the deprecation suite's
+	// architecture. Track as a follow-up before 0.10.0 if needed.
 })

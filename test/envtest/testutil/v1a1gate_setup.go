@@ -265,19 +265,6 @@ func (r *GateWarningRecorder) HandleWarningHeader(code int, agent string, text s
 	r.warnings = append(r.warnings, text)
 }
 
-// Containing returns every recorded warning containing substr.
-func (r *GateWarningRecorder) Containing(substr string) []string {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	var out []string
-	for _, warning := range r.warnings {
-		if strings.Contains(warning, substr) {
-			out = append(out, warning)
-		}
-	}
-	return out
-}
-
 // All returns a copy of every recorded warning.
 func (r *GateWarningRecorder) All() []string {
 	r.mu.Lock()
