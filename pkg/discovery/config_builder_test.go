@@ -938,3 +938,50 @@ func TestConfigBuilderBuildCommittedSparseMembership(t *testing.T) {
 		})
 	}
 }
+
+func TestConfigBuilderBuildIgnoresInvalidExclusionsOnOtherBackends(t *testing.T) {
+	denseAddresses := []string{
+		"test-cluster-worker-0.s-test-cluster-worker",
+		"test-cluster-worker-1.s-test-cluster-worker",
+		"test-cluster-worker-2.s-test-cluster-worker",
+	}
+	for _, tc := range []struct {
+		name        string
+		annotations map[string]string
+	}{
+		{name: "StatefulSet backend", annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType}},
+		{name: "LeaderWorkerSet backend", annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType}},
+		{name: "stateless RoleInstanceSet", annotations: map[string]string{constants.RoleInstancePatternKey: string(constants.StatelessPattern)}},
+	} {
+		for _, excluded := range []string{"1", "2-1"} {
+			t.Run(tc.name+" with "+excluded, func(t *testing.T) {
+				scheme := runtime.NewScheme()
+				require.NoError(t, corev1.AddToScheme(scheme))
+				require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+				role := workloadsv1alpha2.RoleSpec{
+					Name: "worker", Replicas: ptr.To[int32](3),
+					Annotations:  map[string]string{constants.ExcludedOrdinalsAnnotationKey: excluded},
+					ServicePorts: []corev1.ServicePort{{Name: "http", Port: 8080}},
+				}
+				for key, value := range tc.annotations {
+					role.Annotations[key] = value
+				}
+				rbg := &workloadsv1alpha2.RoleBasedGroup{
+					ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default", UID: "group-uid"},
+					Spec:       workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{role}},
+				}
+				require.Error(t, workloadsv1alpha2.ValidateRoleExcludedOrdinals(rbg, &rbg.Spec.Roles[0]), "unsupported placement must be invalid input")
+				data, err := NewConfigBuilder(fake.NewClientBuilder().WithScheme(scheme).Build(), rbg, &rbg.Spec.Roles[0]).Build()
+				require.NoError(t, err)
+				var config ClusterConfig
+				require.NoError(t, yaml.UnmarshalStrict(data, &config))
+				published := config.Roles["worker"]
+				require.Equal(t, len(denseAddresses), published.Size)
+				require.Len(t, published.Instances, len(denseAddresses))
+				for i, address := range denseAddresses {
+					require.Equal(t, address, published.Instances[i].Address)
+				}
+			})
+		}
+	}
+}

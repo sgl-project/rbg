@@ -76,8 +76,10 @@ as `"1,3,8-10"`. Duplicates and overlaps are normalized; input order is not prio
   cause. If invalid input bypasses admission, reconciliation reports a Warning
   event and a failed Ready condition. Updates to the offending role stop without
   a default-order fallback; other roles and cleanup of removed workloads continue.
-  Discovery retains that role's committed target, or publishes no members if the
-  invalid role has never created a child.
+  For a native Stateful RIS role, discovery retains its committed target, or
+  publishes no members if the role has never created a child. Other backends and
+  stateless roles keep publishing their dense members, because the annotation
+  never affects their membership.
 
 For example, changing replicas from five to three and exclusions to `"1,3"`
 together preserves `[0,2,4]`. Exclusions can contain more or fewer members than

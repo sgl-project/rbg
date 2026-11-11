@@ -240,13 +240,12 @@ func semanticallyEqualConfigmap(old, new *corev1.ConfigMap) (bool, string) {
 // input. Before initial child creation it uses the same initial planner.
 func (b *ConfigBuilder) memberOrdinals(role *workloadsv1alpha2.RoleSpec) ([]int, error) {
 	dense := func() ([]int, error) { return (ordinals.Ranges{}).Members(int(*role.Replicas)) }
-	invalidInput := workloadsv1alpha2.ValidateRoleExcludedOrdinals(b.rbg, role) != nil
-	if invalidInput && role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
-		return nil, nil
-	}
+	// The annotation never changes membership on other backends or stateless
+	// roles, even when it is invalid there.
 	if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType || !workloadsv1alpha2.IsStatefulRole(role) {
 		return dense()
 	}
+	invalidInput := workloadsv1alpha2.ValidateRoleExcludedOrdinals(b.rbg, role) != nil
 	set := &workloadsv1alpha2.RoleInstanceSet{}
 	err := b.client.Get(context.TODO(), client.ObjectKey{Namespace: b.rbg.Namespace, Name: b.rbg.GetWorkloadName(role)}, set)
 	_, present := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]
