@@ -97,7 +97,7 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling roleinstanceset workload")
-	if err := workloadsv1alpha2.ValidateExcludedOrdinals(rbg); err != nil {
+	if err := workloadsv1alpha2.ValidateRoleExcludedOrdinals(rbg, role); err != nil {
 		return err
 	}
 

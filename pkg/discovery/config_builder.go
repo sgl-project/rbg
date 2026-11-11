@@ -240,6 +240,10 @@ func semanticallyEqualConfigmap(old, new *corev1.ConfigMap) (bool, string) {
 // input. Before initial child creation it uses the same initial planner.
 func (b *ConfigBuilder) memberOrdinals(role *workloadsv1alpha2.RoleSpec) ([]int, error) {
 	dense := func() ([]int, error) { return (ordinals.Ranges{}).Members(int(*role.Replicas)) }
+	invalidInput := workloadsv1alpha2.ValidateRoleExcludedOrdinals(b.rbg, role) != nil
+	if invalidInput && role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+		return nil, nil
+	}
 	if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType || !workloadsv1alpha2.IsStatefulRole(role) {
 		return dense()
 	}
@@ -247,6 +251,11 @@ func (b *ConfigBuilder) memberOrdinals(role *workloadsv1alpha2.RoleSpec) ([]int,
 	err := b.client.Get(context.TODO(), client.ObjectKey{Namespace: b.rbg.Namespace, Name: b.rbg.GetWorkloadName(role)}, set)
 	_, present := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]
 	if apierrors.IsNotFound(err) {
+		// Never plan new membership from invalid input. Existing roles below
+		// keep publishing their committed target until the input is repaired.
+		if invalidInput {
+			return nil, nil
+		}
 		if !present {
 			return dense()
 		}
@@ -259,7 +268,7 @@ func (b *ConfigBuilder) memberOrdinals(role *workloadsv1alpha2.RoleSpec) ([]int,
 	if err != nil {
 		return nil, err
 	}
-	if present || set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] != "" {
+	if invalidInput || present || set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] != "" {
 		owner := metav1.GetControllerOf(set)
 		// Discovery runs before role reconciliation. Allow the same dense
 		// orphan that the selective writer can claim, without adopting it here.

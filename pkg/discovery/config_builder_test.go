@@ -862,6 +862,9 @@ func TestConfigBuilderBuildCommittedSparseMembership(t *testing.T) {
 		wantAddresses []string
 		wantError     string
 	}{
+		{name: "invalid exclusions preserve committed members", excluded: ptr.To("2-1"), record: "1,3", wantAddresses: sparseAddresses},
+		{name: "invalid exclusions preserve dense members", excluded: ptr.To("2-1"), wantAddresses: denseAddresses},
+		{name: "invalid exclusions without a child publish no guessed members", excluded: ptr.To("2-1"), missingChild: true},
 		{name: "committed sparse members", excluded: ptr.To("1,3"), record: "1,3", wantAddresses: sparseAddresses},
 		{name: "changed exclusions at fixed replicas", excluded: ptr.To("0,2,4"), record: "1,3", wantAddresses: sparseAddresses},
 		{name: "removed exclusions at fixed replicas", record: "1,3", wantAddresses: sparseAddresses},
@@ -927,7 +930,7 @@ func TestConfigBuilderBuildCommittedSparseMembership(t *testing.T) {
 			require.Equal(t, GroupInfo{Name: rbg.Name, Size: 1, Roles: []string{"worker"}}, config.Group)
 			require.Len(t, config.Roles, 1)
 			published := config.Roles["worker"]
-			require.Equal(t, 3, published.Size)
+			require.Equal(t, len(tc.wantAddresses), published.Size)
 			require.Len(t, published.Instances, len(tc.wantAddresses))
 			for i, address := range tc.wantAddresses {
 				require.Equal(t, Instance{Address: address, Ports: map[string]int32{"http": 8080}}, published.Instances[i])

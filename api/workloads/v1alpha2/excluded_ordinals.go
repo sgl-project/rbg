@@ -32,6 +32,24 @@ func ValidateExcludedOrdinals(rbg *RoleBasedGroup) error {
 	return validateExcludedOrdinals(rbg, isRBGSetManaged(rbg))
 }
 
+// ValidateRoleExcludedOrdinals scopes the reconciliation backstop to one role.
+// Admission still validates the complete object. Preserve the original role
+// index in errors and retain the parent's managed-placement restriction.
+func ValidateRoleExcludedOrdinals(rbg *RoleBasedGroup, role *RoleSpec) error {
+	index := 0
+	for i := range rbg.Spec.Roles {
+		if rbg.Spec.Roles[i].Name == role.Name {
+			index = i
+			break
+		}
+	}
+	errs := validateExcludedOrdinalsRole(role, field.NewPath("spec", "roles").Index(index), isRBGSetManaged(rbg))
+	if len(errs) == 0 {
+		return nil
+	}
+	return apierrors.NewInvalid(GroupVersion.WithKind("RoleBasedGroup").GroupKind(), rbg.Name, errs)
+}
+
 func isRBGSetManaged(rbg *RoleBasedGroup) bool {
 	for _, owner := range rbg.OwnerReferences {
 		gv, err := schema.ParseGroupVersion(owner.APIVersion)
@@ -51,28 +69,33 @@ func validateExcludedOrdinals(rbg *RoleBasedGroup, managed bool) error {
 }
 
 func validateExcludedOrdinalsRoles(roles []RoleSpec, path *field.Path, managed bool) field.ErrorList {
-	var errs field.ErrorList
+	errs := make(field.ErrorList, 0, len(roles))
 	for i := range roles {
-		role := &roles[i]
-		annotations := path.Index(i).Child("annotations")
-		if _, ok := role.Annotations[constants.CommittedSkipOrdinalsAnnotationKey]; ok {
-			errs = append(errs, field.Forbidden(annotations.Key(constants.CommittedSkipOrdinalsAnnotationKey), "reserved for controller-managed child RIS membership"))
-		}
-		value, ok := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]
-		if !ok {
-			continue
-		}
-		key := annotations.Key(constants.ExcludedOrdinalsAnnotationKey)
-		if managed {
-			errs = append(errs, field.Forbidden(key, "not supported on RBGSet templates or RBGSet-managed RBGs"))
-		}
-		pattern := role.Annotations[constants.RoleInstancePatternKey]
-		if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType || (pattern != "" && pattern != string(constants.StatefulPattern)) {
-			errs = append(errs, field.Forbidden(key, "requires the native Stateful RoleInstanceSet backend"))
-		}
-		if _, err := ordinals.Parse(value); err != nil {
-			errs = append(errs, field.Invalid(key, value, err.Error()))
-		}
+		errs = append(errs, validateExcludedOrdinalsRole(&roles[i], path.Index(i), managed)...)
+	}
+	return errs
+}
+
+func validateExcludedOrdinalsRole(role *RoleSpec, path *field.Path, managed bool) field.ErrorList {
+	var errs field.ErrorList
+	annotations := path.Child("annotations")
+	if _, ok := role.Annotations[constants.CommittedSkipOrdinalsAnnotationKey]; ok {
+		errs = append(errs, field.Forbidden(annotations.Key(constants.CommittedSkipOrdinalsAnnotationKey), "reserved for controller-managed child RIS membership"))
+	}
+	value, ok := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]
+	if !ok {
+		return errs
+	}
+	key := annotations.Key(constants.ExcludedOrdinalsAnnotationKey)
+	if managed {
+		errs = append(errs, field.Forbidden(key, "not supported on RBGSet templates or RBGSet-managed RBGs"))
+	}
+	pattern := role.Annotations[constants.RoleInstancePatternKey]
+	if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType || (pattern != "" && pattern != string(constants.StatefulPattern)) {
+		errs = append(errs, field.Forbidden(key, "requires the native Stateful RoleInstanceSet backend"))
+	}
+	if _, err := ordinals.Parse(value); err != nil {
+		errs = append(errs, field.Invalid(key, value, err.Error()))
 	}
 	return errs
 }

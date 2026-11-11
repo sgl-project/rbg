@@ -94,7 +94,7 @@ func (r *RoleInstanceSetReconciler) readSelectiveParent(ctx context.Context, obs
 	if parent.UID != observed.UID || parent.Generation != observed.Generation || parent.DeletionTimestamp != nil {
 		return nil, apierrors.NewConflict(workloadsv1alpha2.GroupVersion.WithResource("rolebasedgroups").GroupResource(), observed.Name, fmt.Errorf("role configuration changed before membership commitment"))
 	}
-	if err := workloadsv1alpha2.ValidateExcludedOrdinals(parent); err != nil {
+	if err := workloadsv1alpha2.ValidateRoleExcludedOrdinals(parent, role); err != nil {
 		return nil, err
 	}
 	if pattern := role.Annotations[constants.RoleInstancePatternKey]; pattern != "" && pattern != string(constants.StatefulPattern) {

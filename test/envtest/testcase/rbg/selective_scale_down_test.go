@@ -251,16 +251,26 @@ var _ = Describe("Stateful selective scale-down", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
-	It("reports invalid bypassed input and never falls back to default scale-down", func() {
+	It("isolates invalid bypassed input while reconciling other roles and cleaning removed roles", func() {
 		role := wrappers.BuildStandaloneRole("worker").WithReplicas(3).Obj()
-		group := wrappers.BuildBasicRoleBasedGroup("invalid", namespace).WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+		healthy := wrappers.BuildStandaloneRole("healthy").WithReplicas(1).Obj()
+		removed := wrappers.BuildStandaloneRole("obsolete").WithReplicas(1).Obj()
+		group := wrappers.BuildBasicRoleBasedGroup("invalid", namespace).WithRoles([]workloadsv1alpha2.RoleSpec{role, healthy, removed}).Obj()
 		Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
 		key := client.ObjectKeyFromObject(group)
-		Eventually(func() int { return len(instances(group.Name)) }, timeout, interval).Should(Equal(3))
+		setKey := client.ObjectKey{Namespace: namespace, Name: group.GetWorkloadName(&role)}
+		healthyKey := client.ObjectKey{Namespace: namespace, Name: group.GetWorkloadName(&healthy)}
+		removedKey := client.ObjectKey{Namespace: namespace, Name: group.GetWorkloadName(&removed)}
+		Eventually(func() int { return len(instances(group.Name)) }, timeout, interval).Should(Equal(5))
 		original := instances(group.Name)
 		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) {
+			g.Spec.Roles = g.Spec.Roles[:2]
 			g.Spec.Roles[0].Replicas = ptr.To[int32](2)
 			g.Spec.Roles[0].Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "2-1"}
+			g.Spec.Roles[1].Replicas = ptr.To[int32](2)
+			g.Spec.Roles[1].Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1"}
+			fresh := wrappers.BuildStandaloneRole("fresh").WithReplicas(1).Obj()
+			g.Spec.Roles = append(g.Spec.Roles, fresh)
 		})
 		Eventually(func() string {
 			latest := &workloadsv1alpha2.RoleBasedGroup{}
@@ -273,10 +283,64 @@ var _ = Describe("Stateful selective scale-down", func() {
 			}
 			return condition.Reason
 		}, timeout, interval).Should(Equal("InvalidExcludedOrdinals"))
-		Consistently(func() map[string]types.UID { return instances(group.Name) }, time.Second, interval).Should(Equal(original))
-		set := &workloadsv1alpha2.RoleInstanceSet{}
-		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKey{Namespace: namespace, Name: group.GetWorkloadName(&role)}, set)).To(Succeed())
-		Expect(*set.Spec.Replicas).To(Equal(int32(3)))
+		Eventually(func() []int { return getMembers(healthyKey) }, timeout, interval).Should(Equal([]int{0, 2}))
+		freshKey := client.ObjectKey{Namespace: namespace, Name: group.Name + "-fresh"}
+		Eventually(func() []int { return getMembers(freshKey) }, timeout, interval).Should(Equal([]int{0}))
+		Eventually(func() bool {
+			return apierrors.IsNotFound(testutil.K8sClient.Get(testutil.Ctx, removedKey, &workloadsv1alpha2.RoleInstanceSet{}))
+		}, timeout, interval).Should(BeTrue())
+		Consistently(func(g Gomega) {
+			g.Expect(getMembers(setKey)).To(Equal([]int{0, 1, 2}))
+			for _, ordinal := range []int{0, 1, 2} {
+				name := fmt.Sprintf("%s-%d", setKey.Name, ordinal)
+				g.Expect(instances(group.Name)[name]).To(Equal(original[name]))
+			}
+		}, time.Second, interval).Should(Succeed())
+		Eventually(func(g Gomega) {
+			cm := &corev1.ConfigMap{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, cm)).To(Succeed())
+			var config discovery.ClusterConfig
+			g.Expect(yaml.UnmarshalStrict([]byte(cm.Data["config.yaml"]), &config)).To(Succeed())
+			g.Expect(config.Roles["worker"].Size).To(Equal(3), "invalid input must retain committed discovery")
+			g.Expect(config.Roles["healthy"].Size).To(Equal(2))
+			g.Expect(config.Roles).NotTo(HaveKey("obsolete"))
+			g.Expect(config.Roles["fresh"].Size).To(Equal(1))
+		}, timeout, interval).Should(Succeed())
+	})
+
+	It("does not create an invalid initial role and recovers after its input is fixed", func() {
+		invalid := wrappers.BuildStandaloneRole("invalid").WithReplicas(2).Obj()
+		invalid.Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "2-1"}
+		valid := wrappers.BuildStandaloneRole("valid").WithReplicas(1).Obj()
+		group := wrappers.BuildBasicRoleBasedGroup("initial-invalid", namespace).WithRoles([]workloadsv1alpha2.RoleSpec{invalid, valid}).Obj()
+		Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
+		key := client.ObjectKeyFromObject(group)
+		invalidKey := client.ObjectKey{Namespace: namespace, Name: group.GetWorkloadName(&invalid)}
+		validKey := client.ObjectKey{Namespace: namespace, Name: group.GetWorkloadName(&valid)}
+		Eventually(func() []int { return getMembers(validKey) }, timeout, interval).Should(Equal([]int{0}))
+		Consistently(func() bool {
+			return apierrors.IsNotFound(testutil.K8sClient.Get(testutil.Ctx, invalidKey, &workloadsv1alpha2.RoleInstanceSet{}))
+		}, time.Second, interval).Should(BeTrue())
+		Eventually(func(g Gomega) {
+			cm := &corev1.ConfigMap{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, cm)).To(Succeed())
+			var config discovery.ClusterConfig
+			g.Expect(yaml.UnmarshalStrict([]byte(cm.Data["config.yaml"]), &config)).To(Succeed())
+			g.Expect(config.Roles["invalid"].Size).To(BeZero())
+			g.Expect(config.Roles["valid"].Size).To(Equal(1))
+		}, timeout, interval).Should(Succeed())
+		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) {
+			g.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = "1"
+		})
+		Eventually(func() []int { return getMembers(invalidKey) }, timeout, interval).Should(Equal([]int{0, 2}))
+		Eventually(func(g Gomega) {
+			latest := &workloadsv1alpha2.RoleBasedGroup{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, latest)).To(Succeed())
+			condition := apimeta.FindStatusCondition(latest.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady))
+			g.Expect(condition).NotTo(BeNil())
+			g.Expect(condition.ObservedGeneration).To(Equal(latest.Generation))
+			g.Expect(condition.Reason).NotTo(Equal("InvalidExcludedOrdinals"))
+		}, timeout, interval).Should(Succeed())
 	})
 
 	It("creates initial sparse members and recovers a missing member at its committed ordinal", func() {

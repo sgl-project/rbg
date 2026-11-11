@@ -152,3 +152,15 @@ func TestExcludedOrdinalsAdmissionOwnerTransitions(t *testing.T) {
 		})
 	}
 }
+
+func TestRoleExcludedOrdinalsValidationIsIsolated(t *testing.T) {
+	group := &RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Name: "group"}, Spec: RoleBasedGroupSpec{Roles: []RoleSpec{
+		{Name: "invalid", Annotations: map[string]string{constants.ExcludedOrdinalsAnnotationKey: "2-1"}},
+		{Name: "valid", Annotations: map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1"}},
+	}}}
+	require.Error(t, ValidateExcludedOrdinals(group))
+	require.NoError(t, ValidateRoleExcludedOrdinals(group, &group.Spec.Roles[1]))
+	require.ErrorContains(t, ValidateRoleExcludedOrdinals(group, &group.Spec.Roles[0]), "spec.roles[0]")
+	group.OwnerReferences = []metav1.OwnerReference{{APIVersion: GroupVersion.String(), Kind: "RoleBasedGroupSet", Name: "set", UID: "set-uid"}}
+	require.ErrorContains(t, ValidateRoleExcludedOrdinals(group, &group.Spec.Roles[1]), "spec.roles[1]")
+}
