@@ -57,7 +57,8 @@
 hook executor 观察到匹配 marker 后执行业务动作，完成、取消或决定放行后清除 marker。
 前置 hooks 阻塞实际负载操作，controller 等 marker 不再匹配后继续；
 postReady 完全异步，controller 写入 marker 后立即进入 `Running`，不等待业务处理完成。
-controller 将信号标签镜像到成员 Pod，Pod 级消费者无需访问 RI 即可观察这些信号。
+controller 把 RI 上的运行时信号标签镜像到成员 Pod，Pod 级消费者无需访问
+RI 即可观察这些信号。
 与旧协议不同，executor 不做 marker 初始登记，也不在后置 hook 完成后加回。
 
 executor 负责业务重试、退避和幂等恢复。hook marker 不参与 RI Ready 计算。
@@ -77,7 +78,8 @@ executor 负责业务重试、退避和幂等恢复。hook marker 不参与 RI R
 ### 目标
 
 - 提供 `preUpdate`、`preRecover`、`postReady`、`preDelete` 四个实例级挂载点。
-- 将 `signalLabels` 的 key 从 RI 镜像到成员 Pod，供 Pod 级消费者使用。
+- 将 `signalLabels` key 对应的运行时 label 从 RI 镜像到成员 Pod，供
+  Pod 级消费者使用。
 - controller 在每次 hook 触发时写入 marker，executor 完成或决定放行后清除 marker。
 - 前置 hooks 的未清除 marker 阻塞实际负载操作，controller 不执行业务动作或调度业务重试。
 - `postReady` 统一覆盖创建、恢复和更新后的实例验收与业务注册，但不阻塞 phase、RI Ready 或后续操作。
@@ -159,6 +161,7 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | --- | --- |
 | 前置 marker 被重复写入 | 只在阶段转换时写入，等待期间不补回 |
 | metadata 同步覆盖 marker | 运行时 marker 不属于声明式 labels |
+| Pod 镜像被外部覆盖 | controller 在每次 RI reconcile 重新同步镜像 |
 | 同一 hook 内共享 marker 被迟到请求清理 | 明确接受该风险；由消费者协调并保证业务幂等，不增加代次 |
 | 不同 hook 复用 marker key | 准入校验拒绝 |
 | 信号标签 key 覆盖 controller 状态 | 准入校验拒绝保留 key |
@@ -348,8 +351,9 @@ hook 的转换继续，例如 `PreUpdate` 切换到 `Updating`。这是预期的
 `rbg.workloads.x-k8s.io/role-instance-hook-marker-keys` 中记录协议拥有的
 marker key 集合，值为逗号分隔的 key 列表，表示协议可能仍在 RI 上留有这些
 key 的 label。该记录与 marker 在同一次 metadata 写入中更新，只有确认对应
-label 已不存在后才移除条目。markerA 改为 markerB 后，markerA 在 label
-清理前保持记录，因此重启后仍能区分协议遗留 label 与普通用户 label。
+RI label 及其 Pod 镜像均已不存在后才移除条目。markerA 改为 markerB 后，
+markerA 在 label 和 Pod 镜像清理前保持记录，因此重启后仍能区分协议遗留
+label 与普通用户 label。
 回滚前置条件是：`hook-state` label 不存在，且 marker key 记录为空或不存在。
 
 ### 信号标签向 Pod 传递
@@ -364,8 +368,11 @@ Pod 级消费者因此无需 watch 或 patch RI，就能观察 hook 信号。
 
 - 传递是单向的，只从 RI 到 Pod。RI 是唯一事实来源，Pod 上的副本由
   controller 拥有。
+- 仅镜像 `signalLabels` 的 key；`hook-state` 只保留在 RI 上。
 - executor 仍然只在 RI 上清除 marker；清除结果通过同一传递机制到达
   成员 Pod。
+- 当某个信号 key 不再出现在生效配置中时，controller 仍会按 marker key
+  记录清理其遗留 RI label 和 Pod 镜像。
 - 传递是仅修改 metadata 的 Pod 更新，不修改 Pod template、不生成新的
   controller revision，也不重建 Pod。
 - controller 在每次 RI reconcile 时核对这些 key，并合并批量更新 Pod。
@@ -546,7 +553,7 @@ controller 仍必须在 marker 放行前避免主动删除成员 Pod。
 controller 无法补充 finalizer，因此该 RI 不暴露 preDelete，
 本次删除继续且不触发该 hook；Kubernetes 不允许删除开始后新增 finalizer。
 从生效配置中删除 hook 属于普通禁用。controller 停止匹配其 marker，
-按 marker key 记录清理遗留运行时 labels；对 preDelete 还要在正常配置收敛中
+按 marker key 记录清理遗留运行时 labels 及其 Pod 镜像；对 preDelete 还要在正常配置收敛中
 清理 RI 上的保留 finalizer。如果删除过程中移除 preDelete，清理
 finalizer 后删除可以继续。无论是否存在其他在途 lifecycle 操作，
 该变更都直接生效，不保留特殊的 active-hook 状态。
@@ -740,13 +747,15 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   允许修正错误镜像并替换尚未 Ready 的成员，但不触发 preUpdate 或 preRecover；
   `Terminating` 中在 reconcile 开头跳过二者。
 - Delete 抢占 Update、Recovery 和后台 postReady，新操作不等待旧 postReady。
-- 多 marker 条件、空 handler 和非法 marker key 的准入失败
+- 多 marker 条件、空 `signalLabels` 和非法 marker key 的准入失败
   （不同 hooks 共用 key，或与 controller 管理 label 冲突）、
   重启恢复和未配置 hooks 的行为；controller 不识别消费者身份。
 - `hook-state`、marker 与 marker key 记录同批写入；前置 hooks 清 marker 后切换到实际操作 state，
   重启后不会重复执行已放行 hook；postReady 先进入 `Running` 再异步清理 state。
-- markerA 改为 markerB 后直接按最新配置判断，不迁移或清理旧 marker。
-- marker key 记录与 marker 同批写入、跨重启保留，仅在对应 label 移除后清空；
+- markerA 改为 markerB 后直接按最新配置判断，不迁移或清理旧 marker；
+  旧 key 在 label 和 Pod 镜像清理前保持记录。
+- marker key 记录与 marker 同批写入、跨重启保留，仅在对应 label 及其
+  Pod 镜像移除后清空；
   回滚前置条件是 `hook-state` label 不存在且记录为空。
 - 删除 active hook 后按“不存在”语义处理：controller 不为它执行 marker
   匹配，清理遗留 runtime labels，并按已放行 hook 的转换继续。
@@ -776,7 +785,7 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   在内所有受影响祖先的 foreground 删除，并明确 namespace 删除不提供存活引擎保证。
 - Update 和 Recovery 内部替换 Pod 时不执行 preDelete，也不使用成员 Pod finalizer。
 - 禁用 hook 后，下一次 reconcile 起停止 marker 匹配，
-  清理遗留运行时 labels 和 RI 上的保留 finalizer，
+  清理遗留运行时 labels、其 Pod 镜像和 RI 上的保留 finalizer，
   即使其他 lifecycle 操作尚未完成。
 - 紧急 break-glass 只移除精确匹配的阻塞 marker，controller 正常推进，
   不直接修改 phase、finalizer 或 Pod。
@@ -787,6 +796,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - Recovery 在实际补齐或重建 Pod 前执行 preRecover，达到工作负载 Ready 后执行统一的 postReady，普通 Ready 抖动不重放。
 - Create 达到工作负载 Ready 后直接执行 postReady，不执行 preRecover。
 - 后台 postReady 尚未完成时，业务路由按自身流量策略恢复。
+- 验证 Pod 级消费者能观察镜像信号标签，并在更新开始前停止向成员 Pod
+  分发流量。
 - preDelete 完成前业务 Pod 不被 controller 主动终止；放行后由 controller
   删除成员 Pod 并清除保留的 RI finalizer。
 - 连续提交多个 update，验证 `Updating` 中不重复 preUpdate、旧 postReady 不阻塞新操作，以及同名 marker 的幂等处理。
@@ -816,7 +827,7 @@ executor 不需要初始登记 marker。
 新的生命周期逻辑通过新 hook 表达。
 
 不兼容降级前，应先在理解该协议的 controller 仍管理 RI 时禁用 hooks。
-等待所有 RI 稳定、没有 `hook-state` label 和遗留 marker
+等待所有 RI 稳定、没有 `hook-state` label、遗留 marker 和 Pod 镜像
 （通过 marker key 记录验证），并且没有残留保留的
 preDelete RI finalizer 后，再替换 controller。
 替换前必须验证上述条件；否则应保留兼容 controller，由其完成操作并清理 finalizer。
@@ -882,6 +893,8 @@ executor 需要限制观察范围、连接数、轮询频率和业务退避，�
 
 - `preUpdate`、`preRecover` 或 `preDelete` 仍有 marker：检查 executor 是否在线、是否有权限，以及业务日志中的失败原因。
 - `postReady` 仍有 marker：检查实例验收、动态配置或业务注册是否完成，不要手动清除 marker 伪报成功。
+- Pod 信号 label 缺失或过期：controller 在下次 RI reconcile 同步；检查
+  controller 健康和近期 Pod 更新。
 - controller 反复写入同一 marker：检查操作上下文是否正确保存，避免把阶段转换变成 reconcile 持续同步。
 - 业务成功但未推进：检查 marker PATCH 是否成功、当前阶段是否仍有效，以及其他 marker 是否已清除。
 - RI NotReady：检查工作负载健康和既有 readiness gates；lifecycle hooks 不修改 RI Ready。

@@ -63,9 +63,9 @@ the marker when it completes, cancels, or explicitly allows the operation to
 proceed. The pre-operation hooks block the actual workload operation until
 their markers no longer match. By contrast, `postReady` is fully asynchronous:
 the controller writes its marker and immediately enters `Running` without
-waiting for application processing to finish. The controller mirrors signal
-labels onto member Pods so Pod-level consumers can observe them without RI
-access.
+waiting for application processing to finish. The controller mirrors the
+runtime signal labels onto member Pods so Pod-level consumers can observe
+them without RI access.
 
 Unlike the legacy protocol, executors do not register markers initially or
 restore them after a post-operation hook completes. Executors own application
@@ -98,8 +98,8 @@ RBG does not need to embed application logic or create a Job for every hook.
 
 - Provide four instance-level hooks: `preUpdate`, `preRecover`, `postReady`,
   and `preDelete`.
-- Mirror `signalLabels` keys from the RI onto member Pods for Pod-level
-  consumers.
+- Mirror the runtime labels of `signalLabels` keys from the RI onto member
+  Pods for Pod-level consumers.
 - Have the controller write a marker whenever a hook is triggered, and have
   the executor remove it after completion or when allowing the operation.
 - Block the actual workload operation while a pre-operation marker remains,
@@ -226,6 +226,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | --- | --- |
 | Repeated marker writes | Write on phase entry only |
 | Metadata overwrites markers | Exclude markers from declarative labels |
+| Pod mirrors overwritten externally | Re-sync mirrors each RI reconcile |
 | Stale marker cleanup within one hook | Consumers coordinate; no generations |
 | Marker keys reused by different hooks | Reject in admission |
 | Signal key overwrites controller state | Reject reserved keys in admission |
@@ -466,8 +467,9 @@ records the marker keys owned by the protocol in the annotation
 `rbg.workloads.x-k8s.io/role-instance-hook-marker-keys`, a comma-separated
 list of keys whose labels the protocol may still have written. The record is
 updated in the same metadata write as the marker, and a key is removed only
-after the corresponding label is confirmed absent. After markerA changes to
-markerB, markerA stays recorded until its label is cleaned, so a restart can
+after the corresponding RI label and its Pod mirrors are confirmed absent.
+After markerA changes to markerB, markerA stays recorded until its label and
+Pod mirrors are cleaned, so a restart can
 still distinguish protocol-owned stale labels from ordinary user labels. The
 rollback precondition is an absent `hook-state` label together with an empty
 or absent marker-key record.
@@ -486,8 +488,12 @@ Propagation rules:
 
 - Propagation is unidirectional from RI to Pod. The RI is the only source
   of truth, and the Pod copies are controller-owned mirrors.
+- Only `signalLabels` keys are mirrored; `hook-state` remains on the RI.
 - Executors still remove markers only on the RI; the removal reaches member
   Pods through the same propagation.
+- When a signal key is no longer declared in the effective configuration,
+  the controller still removes its stale RI label and Pod mirrors identified
+  through the marker-key record.
 - Propagation is a metadata-only Pod update. It does not change the Pod
   template, create a new controller revision, or recreate Pods.
 - The controller reconciles these keys on every RI reconciliation and
@@ -706,7 +712,8 @@ finalizer, so the hook is never exposed on that RI and its deletion
 continues without `preDelete`; Kubernetes does not allow a new finalizer to
 be added after deletion has begun. Removing a hook from the effective
 configuration is a normal disable: the controller stops matching its markers,
-removes stale runtime labels identified through the marker-key record, and,
+removes stale runtime labels and their Pod mirrors identified through the
+marker-key record, and,
 for `preDelete`,
 removes the reserved RI finalizer as part of configuration convergence. If
 `preDelete` is removed while deletion is in progress, removing the finalizer
@@ -996,7 +1003,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   start of reconciliation.
 - Delete preempts Update, Recovery, and background postReady; new operations
   do not wait for an old `postReady`.
-- Multiple marker conditions, admission rejection of empty handlers and
+- Multiple marker conditions, admission rejection of empty `signalLabels` and
   illegal marker keys (keys shared between hooks or colliding with
   controller-managed labels), restart recovery, behavior with no configured
   hooks, and controller agnosticism to consumer identity.
@@ -1007,9 +1014,10 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   `Running` before asynchronous state cleanup.
 - A change from markerA to markerB immediately uses the latest configuration
   without migrating or removing the old marker; the old key remains recorded
-  until its label is cleaned.
+  until its label and Pod mirrors are cleaned.
 - The marker-key record is written with the marker, retained across
-  restarts, and cleared only after the corresponding label is removed; the
+  restarts, and cleared only after the corresponding label and its Pod
+  mirrors are removed; the
   rollback precondition is an absent `hook-state` label and an empty record.
 - Removing an active hook uses absence semantics: the controller performs no
   marker matching for it, removes its stale runtime labels, and follows the
@@ -1074,6 +1082,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   preRecover.
 - Verify that application routing resumes according to its own traffic
   policy while background `postReady` processing is still running.
+- Verify that Pod-level consumers observe mirrored signal labels and stop
+  routing to member Pods before the update starts.
 - The controller does not terminate application Pods before `preDelete`
   completes; after release, it deletes member Pods and removes the reserved
   RI finalizer.
@@ -1124,8 +1134,9 @@ New lifecycle behavior is expressed through a new hook.
 
 Before an incompatible downgrade, disable the hooks while a controller that
 understands the protocol still owns the RIs. Wait until every RI is stable,
-has no `hook-state` label or remaining marker (verified through the
-marker-key record), and has no reserved `preDelete` RI finalizer remaining.
+has no `hook-state` label, remaining marker, or Pod mirror (verified
+through the marker-key record), and has no reserved `preDelete` RI finalizer
+remaining.
 Replace the controller only after those conditions are
 verified; otherwise, retain a compatible controller to finish operations and
 remove finalizers. Clearing labels or finalizers manually is not a
@@ -1224,6 +1235,8 @@ failures, and large numbers of instances waiting for hooks to complete.
 - A `postReady` marker remains: check instance validation, dynamic
   configuration, and application registration. Do not report success by
   manually removing the marker.
+- A Pod signal label is missing or stale: the controller re-syncs it on the
+  next RI reconciliation; check controller health and recent Pod updates.
 - The controller repeatedly writes the same marker: verify that operation
   context is persisted correctly and that a phase transition has not been
   implemented as continuous reconciliation.
