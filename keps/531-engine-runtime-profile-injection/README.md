@@ -586,8 +586,12 @@ The precondition is explicit. A target that sets neither `command` nor
 `args` falls to the image ENTRYPOINT/CMD. An args-only target's argv starts
 at the image ENTRYPOINT. Neither shape has an authored `command` for
 `/command/0` to prepend to, and creating one is always a render error (the
-entrypoint-merge rule above), attributed to the profile. Such consumers take
-their wrap, if any, from role-side patches, where the author knows the shape. A consumer whose
+entrypoint-merge rule above), on either side: the rule binds role-side
+patches equally. No patch of either side can wrap such a target. The wrap
+channels are exactly two. A role-declared args-only or bare target can be
+wrapped by editing its template directly (the role author owns the shape).
+A profile-declared args-only or bare target has no wrap channel at all: the
+publisher ships a command-setting variant if a wrap is needed. A consumer whose
 process is itself a shell script (`command: [sh, -c, "<script>"]`) is
 opaque: `sh -c "<script>" --flag` makes the flag the inner shell's `$0`,
 never reaching the engine. Engine flags for such consumers come from
@@ -1388,6 +1392,13 @@ grants, and their mitigations:
 
 ### Upgrade / Downgrade Drills
 
+- The chart two-pass upgrade: `helm upgrade` with `--set
+  crdUpgrade.enabled=false` swapping only the controller image and rendering
+  identically to main (the new-controller/old-CRD row), then the default
+  settings applying the new CRD without restarting the controller; a
+  controller-only rollback between the passes landing in the old/old row;
+  the dangerous old-controller/new-CRD row never traversed across the
+  sequence.
 - A strict write against the pre-upgrade CRD schema rejected as an unknown
   field; a non-strict write pruned to an unscoped reference resolving to the
   default component set, including the pruning shape that surfaces: the pruned
@@ -1474,27 +1485,56 @@ renderer). Every scenario below is a combination of their versions.
 |---|---|---|
 | old | old | main, exactly. |
 | new | old | Unscoped references only: `profileName`-only references render identically to main. New fields cannot be stored: a strict client is rejected with `unknown field`, the correct outcome; a non-strict client has `component` silently pruned and stores an active **unscoped** reference, the same hazard and mechanism as the CRD rollback in the Downgrade section below. Where the pruned reference's default set intersects a surviving component-scoped reference of the same profile, scope ownership turns the silent change into a render error, the one pruning shape that surfaces. |
-| old | new | Fields are storable but ignored: a `component: worker` reference silently degrades to the pattern's default component set (the injection moves from worker to leader), and the new patch fields on both sides are stored but never fire. **The most dangerous combination**: this is where a controller-only rollback lands. |
+| old | new | Fields are storable but ignored: a `component: worker` reference silently degrades to the pattern's default component set (the injection moves from worker to leader), and the new patch fields on both sides are stored but never fire. **The most dangerous combination**: this is where a controller-only rollback lands after the CRD upgrade (Upgrade below). |
 | new | new | Full semantics. |
 
-**Upgrade: controller first, CRD second.** The order is chosen so the
-documented dangerous row (old controller, new CRD: fields stored but silently
-ignored) is never traversed on the way up. It is reachable only through a
-controller-only rollback, described below. During the window (new controller, old CRD)
-every reference renders exactly as on main (Compatibility Guarantees #1). The
-new fields cannot be stored, a strict client is rejected with `unknown field`
-at write time, and the render never sees them. A non-strict client has the
-new fields silently pruned, so users must not write the new fields through
-non-strict paths during the window; doing so stores an active unscoped
-reference (the new-controller/old-CRD row above). The immutability admission
-is live from the controller swap (it binds on pre-existing CERP fields),
-while the persisted reference tracking lands with the CRD (Version skew
+**Upgrade: controller first, CRD second.** The two pieces are swapped in a
+fixed order: the controller image first, the CRD second. The order is chosen
+so the documented dangerous row (old controller, new CRD: fields stored but
+silently ignored) is never traversed on the way up. It is reachable only
+through a controller-only rollback, described below.
+
+**The chart's default order is the reverse.** The CRD upgrader Job runs as a
+`pre-upgrade` hook (`deploy/helm/rbgs/templates/crd-upgrade/crd-upgrade.yaml`),
+enabled by default in `values.yaml`. A plain `helm upgrade` therefore
+replaces the CRD before the new controller is running and traverses the
+dangerous row. Upgrading through the chart takes two passes:
+
+1. **Pass one swaps the controller only.** Run `helm upgrade` with `--set
+   crdUpgrade.enabled=false`. The cluster lands in the new-controller/old-CRD
+   window row, where every reference renders exactly as on main
+   (Compatibility Guarantees #1). The new fields cannot be stored: a strict
+   client is rejected with `unknown field` at write time, and the render never
+   sees them. A non-strict client has the new fields silently pruned, so users
+   must not write the new fields through non-strict paths during the window.
+   Doing so stores an active unscoped reference (the window row's pruning
+   hazard, shared with the CRD rollback below).
+2. **Pass two swaps the CRD only.** Run `helm upgrade` again with the default
+   settings. The controller image is unchanged from pass one, so Helm does not
+   restart it; the only change is the CRD replacement, applied while the new
+   controller is running. The cluster lands in the new-controller/new-CRD row
+   with full semantics.
+
+**Rollback inside the sequence.** Between the passes, rolling the controller
+image back lands in the old-controller/old-CRD row, which renders as main and
+is safe. After pass two, rollback follows the Downgrade procedure below. A
+bare controller-only rollback at that point traverses the dangerous row; the
+Downgrade depths exist to avoid exactly that.
+
+**What goes live when.** The immutability admission is live from the
+controller swap in pass one (it binds on pre-existing CERP fields). The
+persisted reference tracking lands with the CRD in pass two (Version skew
 below). Adoption is per-workload (`component` or `targetContainers`), never
-cluster-wide, and begins only once the CRD is upgraded. The CERP webhook
-entry ships as a release artifact (chart / `config/webhook/manifests.yaml`)
-applied at install time; the controller image never creates or restores it,
-so re-enabling admission after an entry removal means re-applying the
-configuration, not rolling the image forward alone.
+cluster-wide, and begins only after pass two.
+
+**Chart follow-up.** A chart sequencing change that defers the CRD hook until
+the new controller is ready would make the two passes unnecessary; it is an
+implementation-PR follow-up, not part of this KEP's contract. The CERP
+webhook entry ships as a release artifact (chart /
+`config/webhook/manifests.yaml`) applied at install time; the controller
+image never creates or restores it, so re-enabling admission after an entry
+removal means re-applying the configuration, not rolling the image forward
+alone.
 
 **Downgrade.** Running pods are untouched: the render rewrites the workload
 template on every reconcile, but the difference reaches pods only through the
