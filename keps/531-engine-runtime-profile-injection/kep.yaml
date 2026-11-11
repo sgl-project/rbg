@@ -1,0 +1,25 @@
+title: Engine Runtime Profile Injection
+kep-number: 531
+authors:
+  - "@vicoooo26"
+status: provisional
+creation-date: 2026-10-26
+reviewers:
+  - "@diw-zw"
+  - "@cheyang"
+approvers:
+  - "@diw-zw"
+  - "@cheyang"
+
+stage: alpha
+
+latest-milestone: "v0.9.0"
+
+see-also:
+  - "https://github.com/sgl-project/rbg/issues/531"
+
+milestone:
+  alpha: "v0.9.0"
+
+feature-gates: []
+disable-supported: true
