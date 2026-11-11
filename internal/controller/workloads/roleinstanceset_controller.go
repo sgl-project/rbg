@@ -120,7 +120,7 @@ func (r *RoleInstanceSetReconciler) validateCommittedMembership(ctx context.Cont
 	updated := set.DeepCopy()
 	conditions := updated.Status.Conditions[:0]
 	for _, condition := range updated.Status.Conditions {
-		if condition.Type == v1alpha2.RoleInstanceSetConditionFailedScale && (validationErr != nil || condition.Reason == invalidCommittedOrdinalsReason) {
+		if condition.Type == v1alpha2.RoleInstanceSetConditionFailedScale && condition.Reason == invalidCommittedOrdinalsReason {
 			if validationErr != nil && condition.Reason == invalidCommittedOrdinalsReason && condition.Status == corev1.ConditionTrue && condition.Message == validationErr.Error() {
 				return validationErr
 			}

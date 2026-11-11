@@ -35,39 +35,47 @@ import (
 )
 
 func TestInvalidCommittedRecordBlocksCleanupAndReportsStatus(t *testing.T) {
-	for _, value := range []string{"3-1", "1,,3", "2147483648", "0-2147483647"} {
-		t.Run(value, func(t *testing.T) {
-			ctx := context.Background()
-			scheme := newTestScheme()
-			set := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{Name: "set", Namespace: "default", UID: "set-uid", Annotations: map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: value}}, Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To[int32](3), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}}}, Status: workloadsv1alpha2.RoleInstanceSetStatus{Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{Type: workloadsv1alpha2.RoleInstanceSetConditionFailedScale, Status: corev1.ConditionTrue, Reason: "PreviousFailure"}}}}
-			instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{Name: "set-random", Namespace: set.Namespace, UID: "instance-uid", Labels: map[string]string{"app": "test"}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet"))}}}
-			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(set).WithObjects(set, instance).Build()
-			recorder := record.NewFakeRecorder(2)
-			r := &RoleInstanceSetReconciler{client: c, recorder: recorder}
-			_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: set.Namespace, Name: set.Name}})
-			require.Error(t, err)
-			actual := &workloadsv1alpha2.RoleInstanceSet{}
-			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(set), actual))
-			require.Equal(t, int32(3), *actual.Spec.Replicas)
-			require.Len(t, actual.Status.Conditions, 1)
-			require.Equal(t, "InvalidCommittedOrdinals", actual.Status.Conditions[0].Reason)
-			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), &workloadsv1alpha2.RoleInstance{}), "invalid membership must stop before deleting a stale-pattern instance")
-			select {
-			case event := <-recorder.Events:
-				require.Contains(t, event, "Warning InvalidCommittedOrdinals")
-			default:
-				t.Fatal("missing warning event")
-			}
-			actual.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] = "1"
-			require.NoError(t, c.Update(ctx, actual))
-			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(set), actual))
-			require.NoError(t, r.validateCommittedMembership(ctx, actual))
-			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(set), actual))
-			require.Empty(t, actual.Status.Conditions)
-			members, err := actual.CommittedOrdinals()
-			require.NoError(t, err)
-			require.Equal(t, []int{0, 2, 3}, members)
-		})
+	for _, previousReason := range []string{"PreviousFailure", ""} {
+		for _, value := range []string{"3-1", "1,,3", "2147483648", "0-2147483647"} {
+			t.Run(previousReason+"/"+value, func(t *testing.T) {
+				ctx := context.Background()
+				scheme := newTestScheme()
+				set := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{Name: "set", Namespace: "default", UID: "set-uid", Annotations: map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: value}}, Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To[int32](3), Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}}}, Status: workloadsv1alpha2.RoleInstanceSetStatus{Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{Type: workloadsv1alpha2.RoleInstanceSetConditionFailedScale, Status: corev1.ConditionTrue, Reason: previousReason}}}}
+				instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{Name: "set-random", Namespace: set.Namespace, UID: "instance-uid", Labels: map[string]string{"app": "test"}, OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet"))}}}
+				c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(set).WithObjects(set, instance).Build()
+				recorder := record.NewFakeRecorder(2)
+				r := &RoleInstanceSetReconciler{client: c, recorder: recorder}
+				_, err := r.Reconcile(ctx, reconcile.Request{NamespacedName: types.NamespacedName{Namespace: set.Namespace, Name: set.Name}})
+				require.Error(t, err)
+				actual := &workloadsv1alpha2.RoleInstanceSet{}
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(set), actual))
+				require.Equal(t, int32(3), *actual.Spec.Replicas)
+				require.Len(t, actual.Status.Conditions, 2)
+				require.Equal(t, previousReason, actual.Status.Conditions[0].Reason)
+				require.Equal(t, invalidCommittedOrdinalsReason, actual.Status.Conditions[1].Reason)
+				version := actual.ResourceVersion
+				require.Error(t, r.validateCommittedMembership(ctx, actual))
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(set), actual))
+				require.Equal(t, version, actual.ResourceVersion, "repeated validation must not rewrite unchanged conditions")
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), &workloadsv1alpha2.RoleInstance{}), "invalid membership must stop before deleting a stale-pattern instance")
+				select {
+				case event := <-recorder.Events:
+					require.Contains(t, event, "Warning InvalidCommittedOrdinals")
+				default:
+					t.Fatal("missing warning event")
+				}
+				actual.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] = "1"
+				require.NoError(t, c.Update(ctx, actual))
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(set), actual))
+				require.NoError(t, r.validateCommittedMembership(ctx, actual))
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(set), actual))
+				require.Len(t, actual.Status.Conditions, 1)
+				require.Equal(t, previousReason, actual.Status.Conditions[0].Reason)
+				members, err := actual.CommittedOrdinals()
+				require.NoError(t, err)
+				require.Equal(t, []int{0, 2, 3}, members)
+			})
+		}
 	}
 }
 
