@@ -74,8 +74,10 @@ as `"1,3,8-10"`. Duplicates and overlaps are normalized; input order is not prio
 - Missing or unhealthy instances are recovered at their committed ordinals.
 - Admission rejects invalid values and unsupported locations with a field and
   cause. If invalid input bypasses admission, reconciliation reports a Warning
-  event and a failed Ready condition and blocks scaling without a default-order
-  fallback.
+  event and a failed Ready condition. Updates to the offending role stop without
+  a default-order fallback; other roles and cleanup of removed workloads continue.
+  Discovery retains that role's committed target, or publishes no members if the
+  invalid role has never created a child.
 
 For example, changing replicas from five to three and exclusions to `"1,3"`
 together preserves `[0,2,4]`. Exclusions can contain more or fewer members than
@@ -89,6 +91,19 @@ and `partition: 2`, 0 and 2 keep the old revision and 4 is eligible for upgrade.
 Changing only exclusions does not move this scope, change template revisions,
 or trigger a rollout. Template rollback preserves the current exclusion input
 and committed membership.
+
+New rollout surge slots also skip the current exclusions, including ordinals
+above the last committed member. For members `[0,2,4]`, E=`"1,3,5"`, and one
+surge slot, the new surge uses 6. The conditional writer mirrors E onto child
+RIS metadata for this allocation; this input copy is separate from committed
+membership and stays out of revisions and RI/Pod templates. Editing or removing
+E preserves already-created surge identities until normal rollout completion,
+subject to the configured surge count budget.
+
+Discovery intentionally publishes the committed target immediately: selected
+members leave the discovery ConfigMap before their instances finish retiring.
+This is an early-drain signal, not a guarantee that consumers have stopped
+traffic or that the old instances have exited.
 
 ## Disablement and downgrade
 
@@ -109,3 +124,57 @@ An old controller must not run against sparse RIS objects. Before downgrade,
 remove the role input, scale out over the gaps until every child RIS has an
 empty internal record, and wait for reconciliation to finish. All active
 controller replicas must understand the feature before exclusions are used.
+
+## Recover a corrupt committed record
+
+An unparseable `committed-skip-ordinals` record stops membership reconciliation
+and reports `InvalidCommittedOrdinals`. Removing E from the role does not repair
+the record. There is no automatic dense fallback: dropping the record can
+change desired identities and retire higher members.
+
+This is an exceptional operator repair. Stop concurrent replica and template
+edits for the role, save the RBG/RIS/RoleInstance state, and establish the intended
+membership from a trusted previous committed target. Do not infer it solely
+from live instances: some may be missing, terminating, or surge instances.
+Check associated Pod/PVC ownership before changing membership.
+
+The following example assumes role 0 is `worker`, the verified target has three
+members `[0,2,4]`, and the corrupted annotation still exists. Use the appropriate
+namespace on every command. First remove E from the role if it is present:
+
+```sh
+kubectl get rbg selective-scaling -o yaml > rbg-before-repair.yaml
+kubectl patch rbg selective-scaling --type=json -p='[
+  {"op":"test","path":"/spec/roles/0/name","value":"worker"},
+  {"op":"remove","path":"/spec/roles/0/annotations/rbg.workloads.x-k8s.io~1excluded-ordinals"}
+]'
+kubectl get ris selective-scaling-worker -o json > ris-before-repair.json
+kubectl get ri -l rbg.workloads.x-k8s.io/group-name=selective-scaling -o yaml > instances-before-repair.yaml
+```
+
+Restore the verified record using UID, resourceVersion, and replica preconditions:
+
+```sh
+jq --arg record '1,3' --argjson replicas 3 '[
+  {op:"test",path:"/metadata/uid",value:.metadata.uid},
+  {op:"test",path:"/metadata/resourceVersion",value:.metadata.resourceVersion},
+  {op:"test",path:"/spec/replicas",value:$replicas},
+  (if $record == "" then
+    {op:"remove",path:"/metadata/annotations/rbg.workloads.x-k8s.io~1committed-skip-ordinals"}
+   else
+    {op:"replace",path:"/metadata/annotations/rbg.workloads.x-k8s.io~1committed-skip-ordinals",value:$record}
+   end)
+]' ris-before-repair.json > membership-repair.json
+kubectl patch ris selective-scaling-worker --type=json --patch-file=membership-repair.json
+```
+
+Use `--arg record ''` only when the verified intended target is dense
+`[0,1,...,replicas-1]` and retirement of any higher instances is understood and
+approved. This deletes the corrupt annotation with E absent, allowing ordinary
+reconciliation to resume. Never use deletion as a generic sparse-record repair.
+
+If a precondition fails, reread the objects and reassess the target; do not
+remove the guards or replay a stale patch. Controllers resume immediately after
+the repair. Verify committed membership, survivor identities and discovery
+addresses, and confirm that the `InvalidCommittedOrdinals` condition clears.
+Unrelated FailedScale conditions are retained.

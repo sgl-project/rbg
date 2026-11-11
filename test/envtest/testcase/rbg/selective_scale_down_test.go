@@ -17,6 +17,7 @@ limitations under the License.
 package rbg
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -342,6 +343,105 @@ var _ = Describe("Stateful selective scale-down", func() {
 			g.Expect(condition.Reason).NotTo(Equal("InvalidExcludedOrdinals"))
 		}, timeout, interval).Should(Succeed())
 	})
+
+	DescribeTable("recovers a corrupt record only after an explicit guarded operator repair", func(sparse bool) {
+		role := wrappers.BuildStandaloneRole("worker").WithReplicas(3).Obj()
+		members := []int{0, 1, 2}
+		record := ""
+		if sparse {
+			role.Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1,3"}
+			members, record = []int{0, 2, 4}, "1,3"
+		}
+		group := wrappers.BuildBasicRoleBasedGroup("repair", namespace).WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+		Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
+		key := client.ObjectKeyFromObject(group)
+		setKey := client.ObjectKey{Namespace: namespace, Name: group.GetWorkloadName(&role)}
+		Eventually(func() []int { return getMembers(setKey) }, timeout, interval).Should(Equal(members))
+		Eventually(func() int { return len(instances(group.Name)) }, timeout, interval).Should(Equal(3))
+		original := instances(group.Name)
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			set := &workloadsv1alpha2.RoleInstanceSet{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, setKey, set); err != nil {
+				return err
+			}
+			before := set.DeepCopy()
+			if set.Annotations == nil {
+				set.Annotations = map[string]string{}
+			}
+			set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] = "3-1"
+			return testutil.K8sClient.Patch(testutil.Ctx, set, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+		})).To(Succeed())
+		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) {
+			delete(g.Spec.Roles[0].Annotations, constants.ExcludedOrdinalsAnnotationKey)
+		})
+		Eventually(func() bool {
+			set := &workloadsv1alpha2.RoleInstanceSet{}
+			if testutil.K8sClient.Get(testutil.Ctx, setKey, set) != nil {
+				return false
+			}
+			for _, condition := range set.Status.Conditions {
+				if condition.Type == workloadsv1alpha2.RoleInstanceSetConditionFailedScale && condition.Reason == "InvalidCommittedOrdinals" {
+					return true
+				}
+			}
+			return false
+		}, timeout, interval).Should(BeTrue())
+		Consistently(func() map[string]types.UID { return instances(group.Name) }, time.Second, interval).Should(Equal(original))
+		// The runbook's guards must fail closed without changing the corrupt record.
+		for _, guard := range []map[string]interface{}{
+			{"op": "test", "path": "/metadata/uid", "value": "wrong-uid"},
+			{"op": "test", "path": "/metadata/resourceVersion", "value": "stale"},
+			{"op": "test", "path": "/spec/replicas", "value": 4},
+		} {
+			set := &workloadsv1alpha2.RoleInstanceSet{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, set)).To(Succeed())
+			raw, err := json.Marshal([]map[string]interface{}{guard, {"op": "remove", "path": "/metadata/annotations/rbg.workloads.x-k8s.io~1committed-skip-ordinals"}})
+			Expect(err).NotTo(HaveOccurred())
+			Expect(testutil.K8sClient.Patch(testutil.Ctx, set, client.RawPatch(types.JSONPatchType, raw))).NotTo(Succeed())
+			Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, set)).To(Succeed())
+			Expect(set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey]).To(Equal("3-1"))
+		}
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			set := &workloadsv1alpha2.RoleInstanceSet{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, setKey, set); err != nil {
+				return err
+			}
+			repair := map[string]interface{}{"op": "remove", "path": "/metadata/annotations/rbg.workloads.x-k8s.io~1committed-skip-ordinals"}
+			if sparse {
+				repair["op"], repair["value"] = "replace", record
+			}
+			raw, err := json.Marshal([]map[string]interface{}{
+				{"op": "test", "path": "/metadata/uid", "value": set.UID},
+				{"op": "test", "path": "/metadata/resourceVersion", "value": set.ResourceVersion},
+				{"op": "test", "path": "/spec/replicas", "value": 3},
+				repair,
+			})
+			if err != nil {
+				return err
+			}
+			return testutil.K8sClient.Patch(testutil.Ctx, set, client.RawPatch(types.JSONPatchType, raw))
+		})).To(Succeed())
+		Eventually(func(g Gomega) {
+			set := &workloadsv1alpha2.RoleInstanceSet{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, set)).To(Succeed())
+			g.Expect(getMembers(setKey)).To(Equal(members))
+			g.Expect(set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey]).To(Equal(record))
+			g.Expect(set.Annotations).NotTo(HaveKey(constants.ExcludedOrdinalsAnnotationKey))
+			for _, condition := range set.Status.Conditions {
+				g.Expect(condition.Reason).NotTo(Equal("InvalidCommittedOrdinals"))
+			}
+			g.Expect(instances(group.Name)).To(Equal(original))
+			cm := &corev1.ConfigMap{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, cm)).To(Succeed())
+			var config discovery.ClusterConfig
+			g.Expect(yaml.UnmarshalStrict([]byte(cm.Data["config.yaml"]), &config)).To(Succeed())
+			addresses := make([]discovery.Instance, 0, len(members))
+			for _, ordinal := range members {
+				addresses = append(addresses, discovery.Instance{Address: fmt.Sprintf("%s-%d.s-%s", setKey.Name, ordinal, setKey.Name)})
+			}
+			g.Expect(config.Roles["worker"].Instances).To(Equal(addresses))
+		}, timeout, interval).Should(Succeed())
+	}, Entry("restore a verified sparse target", true), Entry("remove the record for a verified dense target", false))
 
 	It("creates initial sparse members and recovers a missing member at its committed ordinal", func() {
 		role := wrappers.BuildStandaloneRole("worker").WithReplicas(3).Obj()
