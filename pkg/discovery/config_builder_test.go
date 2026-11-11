@@ -858,6 +858,7 @@ func TestConfigBuilderBuildCommittedSparseMembership(t *testing.T) {
 		excluded      *string
 		missingChild  bool
 		record, owner string
+		groupLabel    *string
 		wantAddresses []string
 		wantError     string
 	}{
@@ -871,6 +872,11 @@ func TestConfigBuilderBuildCommittedSparseMembership(t *testing.T) {
 		{name: "mismatched owner with exclusions", excluded: ptr.To("1,3"), record: "1,3", owner: "different", wantError: "has a different controller owner"},
 		{name: "mismatched owner after exclusions removed", record: "1,3", owner: "different", wantError: "has a different controller owner"},
 		{name: "missing controller owner", record: "1,3", owner: "missing", wantError: "has a different controller owner"},
+		{name: "claimable dense orphan follows current members", excluded: ptr.To("1,3"), owner: "missing", wantAddresses: denseAddresses},
+		{name: "dense orphan with mismatched group label", excluded: ptr.To("1,3"), owner: "missing", groupLabel: ptr.To("other"), wantError: "has a different controller owner"},
+		{name: "dense orphan without group label", excluded: ptr.To("1,3"), owner: "missing", groupLabel: ptr.To(""), wantError: "has a different controller owner"},
+		{name: "dense child with foreign controller", excluded: ptr.To("1,3"), owner: "different", wantError: "has a different controller owner"},
+		{name: "sparse orphan with matching label", excluded: ptr.To("1,3"), record: "1,3", owner: "missing", wantError: "has a different controller owner"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			scheme := runtime.NewScheme()
@@ -897,6 +903,7 @@ func TestConfigBuilderBuildCommittedSparseMembership(t *testing.T) {
 				set := &workloadsv1alpha2.RoleInstanceSet{
 					ObjectMeta: metav1.ObjectMeta{
 						Name: "test-cluster-worker", Namespace: rbg.Namespace,
+						Labels:          map[string]string{constants.GroupNameLabelKey: ptr.Deref(tc.groupLabel, rbg.Name)},
 						Annotations:     map[string]string{constants.CommittedSkipOrdinalsAnnotationKey: tc.record},
 						OwnerReferences: []metav1.OwnerReference{owner},
 					},

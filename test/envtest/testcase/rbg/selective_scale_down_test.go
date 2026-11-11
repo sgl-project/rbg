@@ -37,8 +37,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
 	wrappers "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
+	"sigs.k8s.io/yaml"
 )
 
 var _ = Describe("Stateful selective scale-down", func() {
@@ -165,6 +167,89 @@ var _ = Describe("Stateful selective scale-down", func() {
 			Expect(instances(group.Name)[name]).To(Equal(original[name]))
 		}
 	}, Entry("standalone", false), Entry("leader and all workers", true))
+
+	It("adopts a dense orphan through refined discovery after recreating its RBG", func() {
+		role := wrappers.BuildStandaloneRole("worker").WithReplicas(5).Obj()
+		group := wrappers.BuildBasicRoleBasedGroup("orphan", namespace).WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+		Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
+		key := client.ObjectKeyFromObject(group)
+		setKey := client.ObjectKey{Namespace: namespace, Name: group.GetWorkloadName(&role)}
+		Eventually(func() int { return len(instances(group.Name)) }, timeout, interval).Should(Equal(5))
+		original := instances(group.Name)
+		dense := &workloadsv1alpha2.RoleInstanceSet{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, dense)).To(Succeed())
+		Expect(dense.Annotations[constants.CommittedSkipOrdinalsAnnotationKey]).To(BeEmpty())
+		oldUID := group.UID
+		Expect(testutil.K8sClient.Delete(testutil.Ctx, group)).To(Succeed())
+		Eventually(func() bool {
+			return apierrors.IsNotFound(testutil.K8sClient.Get(testutil.Ctx, key, &workloadsv1alpha2.RoleBasedGroup{}))
+		}, timeout, interval).Should(BeTrue())
+		// Envtest has no garbage collector. After the parent is gone, model its
+		// orphan policy by removing only references to that parent's UID.
+		orphan := func(obj client.Object) {
+			refs := obj.GetOwnerReferences()
+			kept := make([]metav1.OwnerReference, 0, len(refs))
+			for _, ref := range refs {
+				if ref.UID != oldUID {
+					kept = append(kept, ref)
+				}
+			}
+			before := obj.DeepCopyObject().(client.Object)
+			obj.SetOwnerReferences(kept)
+			Expect(testutil.K8sClient.Patch(testutil.Ctx, obj, client.MergeFrom(before))).To(Succeed())
+		}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, dense)).To(Succeed())
+		orphan(dense)
+		services := &corev1.ServiceList{}
+		Expect(testutil.K8sClient.List(testutil.Ctx, services, client.InNamespace(namespace))).To(Succeed())
+		for i := range services.Items {
+			orphan(&services.Items[i])
+		}
+		configMap := &corev1.ConfigMap{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, key, configMap)).To(Succeed())
+		orphan(configMap)
+		revisions := &apps.ControllerRevisionList{}
+		Expect(testutil.K8sClient.List(testutil.Ctx, revisions, client.InNamespace(namespace))).To(Succeed())
+		for i := range revisions.Items {
+			orphan(&revisions.Items[i])
+		}
+		role.Replicas = ptr.To[int32](3)
+		role.Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1,3"}
+		group = wrappers.BuildBasicRoleBasedGroup("orphan", namespace).WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+		Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
+		Expect(group.UID).NotTo(Equal(oldUID))
+		Eventually(func(g Gomega) {
+			adopted := &workloadsv1alpha2.RoleInstanceSet{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, adopted)).To(Succeed())
+			g.Expect(adopted.UID).To(Equal(dense.UID))
+			owner := metav1.GetControllerOf(adopted)
+			g.Expect(owner).NotTo(BeNil())
+			g.Expect(owner.UID).To(Equal(group.UID))
+			g.Expect(getMembers(setKey)).To(Equal([]int{0, 2, 4}))
+		}, timeout, interval).Should(Succeed())
+		Eventually(func() []string { return names(instances(group.Name)) }, timeout, interval).Should(Equal([]string{setKey.Name + "-0", setKey.Name + "-2", setKey.Name + "-4"}))
+		for _, ordinal := range []int{0, 2, 4} {
+			name := fmt.Sprintf("%s-%d", setKey.Name, ordinal)
+			Expect(instances(group.Name)[name]).To(Equal(original[name]))
+		}
+		Eventually(func(g Gomega) {
+			latest := &workloadsv1alpha2.RoleBasedGroup{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, latest)).To(Succeed())
+			g.Expect(latest.GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			cm := &corev1.ConfigMap{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, cm)).To(Succeed())
+			owner := metav1.GetControllerOf(cm)
+			g.Expect(owner).NotTo(BeNil())
+			g.Expect(owner.UID).To(Equal(group.UID))
+			var config discovery.ClusterConfig
+			g.Expect(yaml.UnmarshalStrict([]byte(cm.Data["config.yaml"]), &config)).To(Succeed())
+			g.Expect(config.Roles["worker"].Instances).To(Equal([]discovery.Instance{
+				{Address: setKey.Name + "-0.s-" + setKey.Name},
+				{Address: setKey.Name + "-2.s-" + setKey.Name},
+				{Address: setKey.Name + "-4.s-" + setKey.Name},
+			}))
+		}, timeout, interval).Should(Succeed())
+	})
 
 	It("reports invalid bypassed input and never falls back to default scale-down", func() {
 		role := wrappers.BuildStandaloneRole("worker").WithReplicas(3).Obj()

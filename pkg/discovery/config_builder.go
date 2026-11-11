@@ -260,7 +260,14 @@ func (b *ConfigBuilder) memberOrdinals(role *workloadsv1alpha2.RoleSpec) ([]int,
 		return nil, err
 	}
 	if present || set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] != "" {
-		if owner := metav1.GetControllerOf(set); owner == nil || owner.UID != b.rbg.UID {
+		owner := metav1.GetControllerOf(set)
+		// Discovery runs before role reconciliation. Allow the same dense
+		// orphan that the selective writer can claim, without adopting it here.
+		// Sparse membership must never be inherited from an ownerless child.
+		denseOrphan := owner == nil &&
+			set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] == "" &&
+			set.Labels[constants.GroupNameLabelKey] == b.rbg.Name
+		if !denseOrphan && (owner == nil || owner.UID != b.rbg.UID) {
 			return nil, fmt.Errorf("discovery RIS %s has a different controller owner", set.Name)
 		}
 		return set.CommittedOrdinals()
