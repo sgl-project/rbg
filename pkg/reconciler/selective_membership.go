@@ -164,7 +164,13 @@ func (r *RoleInstanceSetReconciler) buildSelectiveTarget(ctx context.Context, pa
 	if desired.Annotations == nil {
 		desired.Annotations = map[string]string{}
 	}
-	delete(desired.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	// Mirror the current input only on the RIS so new rollout surge slots can
+	// avoid exclusions beyond the last committed member. Templates stay clean.
+	if value, present := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]; present {
+		desired.Annotations[constants.ExcludedOrdinalsAnnotationKey] = value
+	} else {
+		delete(desired.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	}
 	if record != "" {
 		desired.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] = record
 	} else {
@@ -203,7 +209,9 @@ func mergeSelectiveTarget(old, desired *workloadsv1alpha2.RoleInstanceSet, recor
 	for key, value := range desired.Annotations {
 		updated.Annotations[key] = value
 	}
-	delete(updated.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	if _, present := desired.Annotations[constants.ExcludedOrdinalsAnnotationKey]; !present {
+		delete(updated.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	}
 	if record == "" {
 		delete(updated.Annotations, constants.CommittedSkipOrdinalsAnnotationKey)
 	}

@@ -465,6 +465,12 @@ Isolation requirements:
   and the direct merge of `role.Annotations`.
 - Do not copy the user key into RIS results or propagate it into RI or Pod
   templates.
+- Separately mirror current E onto child RIS metadata for new rollout surge
+  allocation. This mirror is not M and must not reinterpret base membership.
+  New surge ordinals skip E, including exclusions above the last base member.
+  Preserve existing surge identities when E changes or is removed, subject to
+  the surge count budget and normal rollout completion. Keep the mirror out of
+  revision snapshots and RI/Pod templates.
 - Feature template synchronization uses the conditional writer and must not
   overwrite or remove committed membership independently. Ordinary forced SSA
   must not run on that path; transitions to or from it must preserve the target

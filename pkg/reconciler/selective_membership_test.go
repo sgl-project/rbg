@@ -111,7 +111,7 @@ func TestSelectiveMembershipCommitsCountAndRecordTogether(t *testing.T) {
 	members, err := actual.CommittedOrdinals()
 	require.NoError(t, err)
 	require.Equal(t, []int{1, 3, 4}, members)
-	require.NotContains(t, actual.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	require.Equal(t, "0,2", actual.Annotations[constants.ExcludedOrdinalsAnnotationKey])
 	// Clearing input and repeating normal sync cannot clear or reinterpret M.
 	delete(latest.Spec.Roles[0].Annotations, constants.ExcludedOrdinalsAnnotationKey)
 	require.NoError(t, c.Update(ctx, latest))

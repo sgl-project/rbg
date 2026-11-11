@@ -88,7 +88,9 @@ var SystemManagedRoleAnnotations = map[string]struct{}{
 }
 
 const (
-	// ExcludedOrdinalsAnnotationKey is user input for stateful scaling only.
+	// ExcludedOrdinalsAnnotationKey is user input for Stateful scaling. The
+	// controller mirrors it onto the child RIS for new surge allocation only;
+	// it is excluded from RoleInstance/Pod templates and revision snapshots.
 	ExcludedOrdinalsAnnotationKey = RBGPrefix + "excluded-ordinals"
 	// CommittedSkipOrdinalsAnnotationKey is controller-owned membership on a child RIS.
 	CommittedSkipOrdinalsAnnotationKey = RBGPrefix + "committed-skip-ordinals"

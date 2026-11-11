@@ -390,9 +390,10 @@ func countHealthyOldInBase(
 	return count
 }
 
-// existingValidSurgeOrdinals identifies observed surge within the configured
-// allowed-position window without materializing that window. Current-revision,
-// created, nonterminating instances retain their identities, even across holes.
+// existingValidSurgeOrdinals identifies created, nonterminating update-revision
+// surge without expanding a candidate window. Exclusions can put a valid surge
+// arbitrarily far above the base. Retain observed identities even after E is
+// edited or removed, with the count still bounded by maxSurge.
 func existingValidSurgeOrdinals(
 	instances []*workloadsv1alpha2.RoleInstance,
 	replicas, maxSurge int,
@@ -409,17 +410,18 @@ func existingValidSurgeOrdinals(
 		}
 		ordinal := getOrdinal(inst)
 		position, allowed := skips.Position(ordinal)
-		if allowed && position >= replicas && int64(position) < int64(replicas)+int64(maxSurge) {
+		if allowed && position >= replicas {
 			existing.Insert(ordinal)
 		}
 	}
-	return sets.List(existing)
+	result := sets.List(existing)
+	return result[:min(len(result), maxSurge)]
 }
 
 // materializeSurge keeps selected existing identities before allocating only
 // the additional slots needed. The sorted layout is compact regardless of the
 // configured maximum or the size of ordinal gaps.
-func (t *topology) materializeSurge(skips ordinals.Ranges, existing []int) error {
+func (t *topology) materializeSurge(skips, exclusions ordinals.Ranges, existing []int) error {
 	if t.activeSurge == 0 {
 		return nil
 	}
@@ -433,7 +435,7 @@ func (t *topology) materializeSurge(skips ordinals.Ranges, existing []int) error
 		next = t.ordinals[t.replicas-1] + 1
 	}
 	for len(surge) < t.activeSurge {
-		ordinal, err := skips.Next(next)
+		ordinal, err := nextSurgeOrdinal(skips, exclusions, next)
 		if err != nil {
 			return err
 		}
@@ -516,6 +518,24 @@ func hasStaleBaseInstance(
 		}
 	}
 	return false
+}
+
+// nextSurgeOrdinal jumps exclusion intervals without materializing their union.
+func nextSurgeOrdinal(skips, exclusions ordinals.Ranges, start int) (int, error) {
+	for {
+		candidate, err := skips.Next(start)
+		if err != nil {
+			return 0, err
+		}
+		next, err := exclusions.Next(candidate)
+		if err != nil {
+			return 0, err
+		}
+		if next == candidate {
+			return candidate, nil
+		}
+		start = next
+	}
 }
 
 // rolloutReplacementStateActive conservatively checks the whole current update
@@ -623,11 +643,15 @@ func computeTopology(
 	if maxSurge == 0 || !updatePending {
 		return t, nil
 	}
+	exclusions, err := ordinals.Parse(set.Annotations[constants.ExcludedOrdinalsAnnotationKey])
+	if err != nil {
+		return t, fmt.Errorf("invalid surge exclusions: %w", err)
+	}
 	existing := existingValidSurgeOrdinals(instances, t.replicas, maxSurge, updateRevision, skips)
 	// Pause preserves observed identities only; it never allocates new slots.
 	if !t.inRollout {
 		t.activeSurge = len(existing)
-		err = t.materializeSurge(skips, existing)
+		err = t.materializeSurge(skips, exclusions, existing)
 		return t, err
 	}
 
@@ -638,7 +662,7 @@ func computeTopology(
 		active = max(active, len(existing))
 	}
 	t.activeSurge = min(active, maxSurge)
-	err = t.materializeSurge(skips, existing)
+	err = t.materializeSurge(skips, exclusions, existing)
 	return t, err
 }
 

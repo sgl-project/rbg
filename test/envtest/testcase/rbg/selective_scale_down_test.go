@@ -414,9 +414,9 @@ var _ = Describe("Stateful selective scale-down", func() {
 		Eventually(func() []int { return getMembers(setKey) }, timeout, interval).Should(Equal([]int{0, 2, 3}))
 	})
 
-	It("pauses and resumes a sparse canary using a ready surge before retiring a base member", func() {
+	It("keeps surge off excluded ordinals and preserves its identity across pause and input edits", func() {
 		role := wrappers.BuildStandaloneRole("worker").WithReplicas(3).Obj()
-		role.Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1,3"}
+		role.Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1,3,5"}
 		role.RolloutStrategy.RollingUpdate = &workloadsv1alpha2.RollingUpdate{Type: workloadsv1alpha2.RecreatePodUpdateStrategyType, Partition: ptr.To(intstr.FromInt32(2)), MaxSurge: ptr.To(intstr.FromInt32(1)), MaxUnavailable: ptr.To(intstr.FromInt32(0))}
 		group := wrappers.BuildBasicRoleBasedGroup("canary", namespace).WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
 		Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
@@ -474,7 +474,7 @@ var _ = Describe("Stateful selective scale-down", func() {
 		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) {
 			g.Spec.Roles[0].StandalonePattern.Template.Spec.Containers[0].Image = "nginx:2.0"
 		})
-		Eventually(func() bool { _, exists := instances(group.Name)[setKey.Name+"-5"]; return exists }, timeout, interval).Should(BeTrue())
+		Eventually(func() bool { _, exists := instances(group.Name)[setKey.Name+"-6"]; return exists }, timeout, interval).Should(BeTrue())
 		Consistently(func() types.UID { return instances(group.Name)[setKey.Name+"-4"] }, time.Second, interval).Should(Equal(original[setKey.Name+"-4"]))
 		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) { g.Spec.Roles[0].RolloutStrategy.RollingUpdate.Paused = true })
 		Eventually(func() bool {
@@ -486,7 +486,20 @@ var _ = Describe("Stateful selective scale-down", func() {
 		}, timeout, interval).Should(BeTrue())
 		Expect(markPodsReady()).To(Succeed())
 		Consistently(func() types.UID { return instances(group.Name)[setKey.Name+"-4"] }, time.Second, interval).Should(Equal(original[setKey.Name+"-4"]))
-		Expect(instances(group.Name)).To(HaveKey(setKey.Name + "-5"))
+		Expect(instances(group.Name)).To(HaveKey(setKey.Name + "-6"))
+		Expect(instances(group.Name)).NotTo(HaveKey(setKey.Name + "-5"))
+		surgeUID := instances(group.Name)[setKey.Name+"-6"]
+		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) {
+			g.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = "1,3,5,6"
+		})
+		Eventually(func() string {
+			current := &workloadsv1alpha2.RoleInstanceSet{}
+			if testutil.K8sClient.Get(testutil.Ctx, setKey, current) != nil {
+				return ""
+			}
+			return current.Annotations[constants.ExcludedOrdinalsAnnotationKey]
+		}, timeout, interval).Should(Equal("1,3,5,6"))
+		Consistently(func() types.UID { return instances(group.Name)[setKey.Name+"-6"] }, time.Second, interval).Should(Equal(surgeUID))
 		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) {
 			g.Spec.Roles[0].RolloutStrategy.RollingUpdate.Paused = false
 		})

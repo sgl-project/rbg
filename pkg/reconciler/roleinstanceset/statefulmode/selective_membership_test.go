@@ -18,6 +18,7 @@ package statefulmode
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -377,8 +378,82 @@ func TestExistingSparseSurgeFiltersWithoutPrefixExpansion(t *testing.T) {
 		buildInst("surge-filter", 4, "new", true, true),  // base member
 		buildInst("surge-filter", 3, "new", true, true),  // excluded ordinal
 		buildInst("surge-filter", 5, "old", true, true),  // stale revision
-		buildInst("surge-filter", 7, "new", true, true),  // outside maxSurge window
+		buildInst("surge-filter", 7, "new", true, true),  // later surge, beyond the count budget
 		buildInst("surge-filter", 5, "new", true, false), // not created
 	}
-	require.Equal(t, []int{6}, existingValidSurgeOrdinals(instances, 3, 2, "new", skips))
+	require.Equal(t, []int{6}, existingValidSurgeOrdinals(instances, 3, 1, "new", skips))
+}
+
+func TestSparseNewSurgeSkipsUserExclusions(t *testing.T) {
+	for _, tc := range []struct {
+		name, excluded string
+		ordinal        int
+		exhausted      bool
+	}{
+		{name: "exclusions above last member", excluded: "1,3,5", ordinal: 6},
+		{name: "excluded base members stay committed", excluded: "0-5", ordinal: 6},
+		{name: "large range is not expanded", excluded: "1,3,5-2147483646", ordinal: 2147483647},
+		{name: "no allowed surge ordinal", excluded: "1,3,5-2147483647", exhausted: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newRollbackTestHarness(t, "surge-exclusions", 3, 2, 1)
+			h.set.Annotations = map[string]string{
+				constants.CommittedSkipOrdinalsAnnotationKey: "1,3",
+				constants.ExcludedOrdinalsAnnotationKey:      tc.excluded,
+			}
+			instances := []*workloadsv1alpha2.RoleInstance{
+				h.instance(0, h.current.Name, true), h.instance(2, h.current.Name, true), h.instance(4, h.current.Name, true),
+			}
+			topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+			if tc.exhausted {
+				require.Error(t, err)
+				require.Empty(t, h.objects.created)
+				require.Empty(t, h.objects.deleted)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, []int{0, 2, 4, tc.ordinal}, topo.ordinals)
+			_, err = h.control.updateStatefulInstanceSet(context.Background(), h.set, h.current, h.intermediate, 0,
+				instances, []*apps.ControllerRevision{h.current, h.intermediate})
+			require.NoError(t, err)
+			require.Equal(t, []string{fmt.Sprintf("%s-%d", h.set.Name, tc.ordinal)}, h.objects.created)
+			require.Empty(t, h.objects.deleted, "maxUnavailable=0 must retain the base before surge is ready")
+		})
+	}
+}
+
+func TestSparseExclusionEditsPreserveExistingSurge(t *testing.T) {
+	h := newRollbackTestHarness(t, "surge-edits", 3, 2, 1)
+	h.set.Annotations = map[string]string{
+		constants.CommittedSkipOrdinalsAnnotationKey: "1,3",
+		constants.ExcludedOrdinalsAnnotationKey:      "1,3,5,6",
+	}
+	instances := []*workloadsv1alpha2.RoleInstance{
+		h.instance(0, h.current.Name, true), h.instance(2, h.current.Name, true),
+		h.instance(4, h.current.Name, true), h.instance(6, h.intermediate.Name, true),
+	}
+	for _, paused := range []bool{true, false} {
+		h.set.Spec.UpdateStrategy.Paused = paused
+		topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+		require.NoError(t, err)
+		require.Equal(t, []int{0, 2, 4, 6}, topo.ordinals, "input edits must not retire existing replacement protection")
+	}
+}
+
+func TestDenseSurgeSurvivesExclusionRemoval(t *testing.T) {
+	h := newRollbackTestHarness(t, "dense-surge-edits", 3, 2, 1)
+	h.set.Annotations = map[string]string{constants.ExcludedOrdinalsAnnotationKey: "3"}
+	instances := make([]*workloadsv1alpha2.RoleInstance, 0, 4)
+	instances = append(instances, h.instance(0, h.current.Name, true), h.instance(1, h.current.Name, true), h.instance(2, h.current.Name, true))
+	topo, err := computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+	require.NoError(t, err)
+	require.Equal(t, []int{0, 1, 2, 4}, topo.ordinals)
+	instances = append(instances, h.instance(4, h.intermediate.Name, true))
+	delete(h.set.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	for _, paused := range []bool{true, false} {
+		h.set.Spec.UpdateStrategy.Paused = paused
+		topo, err = computeTopology(h.set, instances, h.current.Name, h.intermediate.Name, false)
+		require.NoError(t, err)
+		require.Equal(t, []int{0, 1, 2, 4}, topo.ordinals, "clearing input must not reinterpret an existing surge identity")
+	}
 }

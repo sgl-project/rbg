@@ -245,7 +245,7 @@ func TestConditionalMembershipWithLegacyApplyOwnership(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, []int{0, 2, 4}, members)
 	require.Equal(t, "keep", committed.Annotations["example.org/external"])
-	require.NotContains(t, committed.Annotations, constants.ExcludedOrdinalsAnnotationKey)
+	require.Equal(t, "1,3", committed.Annotations[constants.ExcludedOrdinalsAnnotationKey])
 	// The writer intentionally leaves the observed parent snapshot untouched;
 	// refresh it before the test submits the next spec edit.
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(parent), parent))
@@ -255,17 +255,22 @@ func TestConditionalMembershipWithLegacyApplyOwnership(t *testing.T) {
 		parent.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = value
 		require.NoError(t, c.Update(ctx, parent))
 		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(parent), parent))
+		expectedVersion = get().ResourceVersion
 		wrapped.writes = nil
 		wrapped.sawApply = false
 		require.NoError(t, sync())
 		require.False(t, wrapped.sawApply)
-		require.Empty(t, wrapped.writes, "unchanged child target must not be rewritten")
+		assertConditionalMembershipWrite(t, wrapped.writes, expectedVersion, 3, "1,3")
 		current := get()
 		currentMembers, err := current.CommittedOrdinals()
 		require.NoError(t, err)
 		require.Equal(t, []int{0, 2, 4}, currentMembers)
 		require.Equal(t, int32(3), *current.Spec.Replicas)
-		require.Equal(t, committed.ResourceVersion, current.ResourceVersion)
+		require.Equal(t, value, current.Annotations[constants.ExcludedOrdinalsAnnotationKey])
+		committed = current
+		wrapped.writes = nil
+		require.NoError(t, sync())
+		require.Empty(t, wrapped.writes, "unchanged membership and surge input must not be rewritten")
 	}
 	// Unrelated child-level lifecycle controls must survive parent synchronization.
 	committed.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceSetLifecycle{PreDelete: &workloadsv1alpha2.RoleInstanceSetLifecycleHook{LabelsHandler: map[string]string{"example.org/drain": "hold"}}}
