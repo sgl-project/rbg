@@ -192,10 +192,13 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 	var scaleRequeue time.Duration
 	scaling, scaleRequeue, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 	if podsScaleErr != nil {
-		scaleReason := classifyPodOperationError("Create", podsScaleErr)
-		r.emitOperationFailureEvent(instance, workloadsv1alpha2.RoleInstanceFailedScale, scaleReason, podsScaleErr)
+		// KEP-502: single operation attempts are Warning Events; the current blocker
+		// fact is carried by the Progressing condition. FailedScale/FailedUpdate are
+		// no longer written, and stale legacy entries are dropped by setInstanceConditions.
+		scaleReason := r.stableBlockerReason(instance, classifyPodOperationError("Create", podsScaleErr))
+		r.emitOperationFailureEvent(instance, scaleReason, podsScaleErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-			Type:               workloadsv1alpha2.RoleInstanceFailedScale,
+			Type:               workloadsv1alpha2.RoleInstanceProgressing,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             scaleReason,
@@ -239,10 +242,10 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 
 	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods)
 	if podsUpdateErr != nil {
-		updateReason := classifyPodOperationError("Update", podsUpdateErr)
-		r.emitOperationFailureEvent(instance, workloadsv1alpha2.RoleInstanceFailedUpdate, updateReason, podsUpdateErr)
+		updateReason := r.stableBlockerReason(instance, classifyPodOperationError("Update", podsUpdateErr))
+		r.emitOperationFailureEvent(instance, updateReason, podsUpdateErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-			Type:               workloadsv1alpha2.RoleInstanceFailedUpdate,
+			Type:               workloadsv1alpha2.RoleInstanceProgressing,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             updateReason,
@@ -395,13 +398,31 @@ func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newSta
 // operation. Events are diagnostic history: the current blocker fact stays in the
 // Progressing condition. The event is emitted only when the failure message changes,
 // so repeated identical failures do not drain the object's event budget.
-func (r *reconciler) emitOperationFailureEvent(instance *workloadsv1alpha2.RoleInstance, conditionType workloadsv1alpha2.RoleInstanceConditionType, reason string, err error) {
+func (r *reconciler) emitOperationFailureEvent(instance *workloadsv1alpha2.RoleInstance, reason string, err error) {
 	for _, condition := range instance.Status.Conditions {
-		if condition.Type == conditionType && condition.Message == err.Error() {
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Message == err.Error() {
 			return
 		}
 	}
 	r.recorder.Eventf(instance, v1.EventTypeWarning, reason, "%v", err)
+}
+
+// stableBlockerReason keeps a previously confirmed blocker family when a new error
+// cannot be classified: an unclassifiable error does not establish that the confirmed
+// blocker no longer holds, so the family is retained until a fresh observation clears
+// or replaces it.
+func (r *reconciler) stableBlockerReason(instance *workloadsv1alpha2.RoleInstance, reason string) string {
+	if reason != workloadsv1alpha2.ReasonPodOperationUnclassified {
+		return reason
+	}
+	for _, condition := range instance.Status.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue &&
+			condition.Reason != "" && condition.Reason != workloadsv1alpha2.ReasonPodOperationUnclassified &&
+			condition.Reason != workloadsv1alpha2.ReasonInstanceConverged {
+			return condition.Reason
+		}
+	}
+	return reason
 }
 
 func handleCrash(ctx context.Context, additionalHandlers ...func(interface{})) {

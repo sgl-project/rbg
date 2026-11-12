@@ -19,6 +19,7 @@ package workloads
 import (
 	"testing"
 
+	stderrors "errors"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
@@ -46,39 +47,53 @@ func readyRoleStatuses() []workloadsv1alpha2.RoleStatus {
 	}
 }
 
-func risCondition(reason string, status corev1.ConditionStatus) workloadsv1alpha2.RoleInstanceSetCondition {
-	return workloadsv1alpha2.RoleInstanceSetCondition{
-		Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: status, Reason: reason,
+func observation(reason string, status corev1.ConditionStatus, revision string) risObservation {
+	return risObservation{
+		exists:        true,
+		revisionLabel: revision,
+		progressing: &workloadsv1alpha2.RoleInstanceSetCondition{
+			Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: status, Reason: reason,
+		},
 	}
+}
+
+func convergedObservations() map[string]risObservation {
+	return map[string]risObservation{
+		"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+		"decode":  observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+	}
+}
+
+func expectedRevisions() map[string]string {
+	return map[string]string{"prefill": "hash", "decode": "hash"}
 }
 
 func TestComputeRBGProgressingCondition(t *testing.T) {
 	cases := []struct {
-		name           string
-		rbg            *workloadsv1alpha2.RoleBasedGroup
-		roleStatuses   []workloadsv1alpha2.RoleStatus
-		risProgressing map[string]workloadsv1alpha2.RoleInstanceSetCondition
-		gangWaiting    bool
-		depsNotReady   []string
-		wantReason     string
-		wantStatus     metav1.ConditionStatus
+		name         string
+		rbg          *workloadsv1alpha2.RoleBasedGroup
+		roleStatuses []workloadsv1alpha2.RoleStatus
+		observations map[string]risObservation
+		expected     map[string]string
+		gangWaiting  bool
+		depsNotReady []string
+		wantReason   string
+		wantStatus   metav1.ConditionStatus
 	}{
 		{
-			name:         "converged",
+			name:         "converged from own target",
 			rbg:          newProgressingRBG(),
 			roleStatuses: readyRoleStatuses(),
-			risProgressing: map[string]workloadsv1alpha2.RoleInstanceSetCondition{
-				"prefill": risCondition(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse),
-				"decode":  risCondition(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse),
-			},
-			wantReason: workloadconstants.ProgressingReasonConverged,
-			wantStatus: metav1.ConditionFalse,
+			observations: convergedObservations(),
+			expected:     expectedRevisions(),
+			wantReason:   workloadconstants.ProgressingReasonConverged,
+			wantStatus:   metav1.ConditionFalse,
 		},
 		{
 			name: "gang waiting outranks activity",
 			rbg:  newProgressingRBG(),
-			risProgressing: map[string]workloadsv1alpha2.RoleInstanceSetCondition{
-				"prefill": risCondition(workloadconstants.ProgressingReasonRoleInstanceUpdated, corev1.ConditionTrue),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonRoleInstanceUpdated, corev1.ConditionTrue, "hash"),
 			},
 			gangWaiting: true,
 			wantReason:  workloadconstants.ProgressingReasonWaitingForGang,
@@ -94,8 +109,8 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 		{
 			name: "ris family blocker aggregates",
 			rbg:  newProgressingRBG(),
-			risProgressing: map[string]workloadsv1alpha2.RoleInstanceSetCondition{
-				"decode": risCondition(workloadconstants.ProgressingReasonWaitingForQuota, corev1.ConditionTrue),
+			observations: map[string]risObservation{
+				"decode": observation(workloadconstants.ProgressingReasonWaitingForQuota, corev1.ConditionTrue, "hash"),
 			},
 			wantReason: workloadconstants.ProgressingReasonWaitingForQuota,
 			wantStatus: metav1.ConditionTrue,
@@ -103,32 +118,76 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 		{
 			name: "creating from ris outranks role instance set updated",
 			rbg:  newProgressingRBG(),
-			risProgressing: map[string]workloadsv1alpha2.RoleInstanceSetCondition{
-				"prefill": risCondition(workloadconstants.ProgressingReasonRoleInstanceSetUpdated, corev1.ConditionTrue),
-				"decode":  risCondition(workloadconstants.ProgressingReasonCreating, corev1.ConditionTrue),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonRoleInstanceSetUpdated, corev1.ConditionTrue, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonCreating, corev1.ConditionTrue, "hash"),
 			},
 			wantReason: workloadconstants.ProgressingReasonCreating,
 			wantStatus: metav1.ConditionTrue,
 		},
 		{
-			name: "update and scale aggregate into role instance set updated",
+			name: "missing child without evidence maps to creating",
 			rbg:  newProgressingRBG(),
-			risProgressing: map[string]workloadsv1alpha2.RoleInstanceSetCondition{
-				"prefill": risCondition(workloadconstants.ProgressingReasonScalingUp, corev1.ConditionTrue),
-				"decode":  risCondition(workloadconstants.ProgressingReasonRoleInstanceUpdated, corev1.ConditionTrue),
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "prefill", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2},
+				{Name: "decode", Replicas: 0, ReadyReplicas: 0, UpdatedReplicas: 0},
 			},
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+				"decode":  {exists: false},
+			},
+			wantReason: workloadconstants.ProgressingReasonCreating,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
+			name: "missing child with evidence maps to recovering",
+			rbg:  newProgressingRBG(),
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "prefill", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2},
+				{Name: "decode", Replicas: 2, ReadyReplicas: 0, UpdatedReplicas: 0},
+			},
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+				"decode":  {exists: false},
+			},
+			wantReason: workloadconstants.ProgressingReasonRecovering,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
+			name:         "revision mismatch keeps progressing",
+			rbg:          newProgressingRBG(),
+			roleStatuses: readyRoleStatuses(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "old"),
+				"decode":  observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+			},
+			expected:   expectedRevisions(),
 			wantReason: workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
 			wantStatus: metav1.ConditionTrue,
 		},
 		{
-			name: "recovering outranks role instance set updated",
+			name: "coordinated gap stays progressing despite child converged",
 			rbg:  newProgressingRBG(),
-			risProgressing: map[string]workloadsv1alpha2.RoleInstanceSetCondition{
-				"prefill": risCondition(workloadconstants.ProgressingReasonRecovering, corev1.ConditionTrue),
-				"decode":  risCondition(workloadconstants.ProgressingReasonRoleInstanceSetUpdated, corev1.ConditionTrue),
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "prefill", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 1},
+				{Name: "decode", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2},
 			},
-			wantReason: workloadconstants.ProgressingReasonRecovering,
-			wantStatus: metav1.ConditionTrue,
+			observations: convergedObservations(),
+			expected:     expectedRevisions(),
+			wantReason:   workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
+			wantStatus:   metav1.ConditionTrue,
+		},
+		{
+			name: "role partition respected for completion",
+			rbg:  newProgressingRBG(),
+			roleStatuses: []workloadsv1alpha2.RoleStatus{
+				{Name: "prefill", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2},
+				{Name: "decode", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 1},
+			},
+			observations: convergedObservations(),
+			expected:     expectedRevisions(),
+			wantReason:   workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
+			wantStatus:   metav1.ConditionTrue,
 		},
 		{
 			name: "roles not ready when no workflow remains",
@@ -137,9 +196,9 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 				{Name: "prefill", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2},
 				{Name: "decode", Replicas: 2, ReadyReplicas: 1, UpdatedReplicas: 2},
 			},
-			risProgressing: map[string]workloadsv1alpha2.RoleInstanceSetCondition{
-				"prefill": risCondition(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse),
-				"decode":  risCondition(workloadconstants.ProgressingReasonInstancesNotReady, corev1.ConditionTrue),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonInstancesNotReady, corev1.ConditionTrue, "hash"),
 			},
 			wantReason: workloadconstants.ProgressingReasonRolesNotReady,
 			wantStatus: metav1.ConditionTrue,
@@ -147,7 +206,7 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeRBGProgressingCondition(tc.rbg, tc.roleStatuses, tc.risProgressing, tc.gangWaiting, tc.depsNotReady)
+			got := computeRBGProgressingCondition(tc.rbg, tc.roleStatuses, tc.observations, tc.expected, tc.gangWaiting, tc.depsNotReady)
 			if got.Reason != tc.wantReason || got.Status != tc.wantStatus {
 				t.Fatalf("got status=%s reason=%s message=%s, want status=%s reason=%s", got.Status, got.Reason, got.Message, tc.wantStatus, tc.wantReason)
 			}
@@ -161,7 +220,6 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 func TestUnreadyDependencies(t *testing.T) {
 	rbg := newProgressingRBG()
 	rbg.Spec.Roles[1].Dependencies = []string{"prefill"}
-	// decode waits for prefill; prefill is not ready.
 	notReady := unreadyDependencies(rbg, []workloadsv1alpha2.RoleStatus{
 		{Name: "prefill", Replicas: 2, ReadyReplicas: 1},
 		{Name: "decode", Replicas: 2, ReadyReplicas: 2},
@@ -188,5 +246,21 @@ func TestAllRolesUseRoleInstanceSet(t *testing.T) {
 	}
 	if allRolesUseRoleInstanceSet(rbg) {
 		t.Fatal("mixed backend must not enable the new condition model")
+	}
+}
+
+func TestClassifyGangIncompatibility(t *testing.T) {
+	cases := []struct {
+		message string
+		want    string
+	}{
+		{"the installed Volcano version does not support this feature", workloadconstants.ProgressingReasonSchedulerUnsupported},
+		{"unsupported subGroupPolicy", workloadconstants.ProgressingReasonSchedulerUnsupported},
+		{"gang minReplicas above replicas", workloadconstants.ProgressingReasonIncompatibleGangConfig},
+	}
+	for _, tc := range cases {
+		if got := classifyGangIncompatibility(stderrors.New(tc.message)); got != tc.want {
+			t.Fatalf("classifyGangIncompatibility(%q) = %s, want %s", tc.message, got, tc.want)
+		}
 	}
 }

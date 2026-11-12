@@ -28,6 +28,8 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleBasedGroupValidator implements admission.CustomValidator for RoleBasedGroup.
@@ -50,6 +52,32 @@ type RoleBasedGroupValidator struct {
 
 var _ admission.CustomValidator = &RoleBasedGroupValidator{}
 
+// validateRBGStaticSpec checks the deterministic local spec errors that KEP-502
+// assigns to admission: the gang-scheduling annotation mutual exclusion, role
+// templates, and template references. The controller re-runs these checks as
+// defense in depth and reports persisted violations through Progressing.
+func validateRBGStaticSpec(rbg *RoleBasedGroup) []error {
+	var errs []error
+	if rbg.Annotations[constants.GangSchedulingAnnotationKey] == "true" &&
+		rbg.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] == "true" {
+		errs = append(errs, fmt.Errorf(
+			"annotations %q and %q cannot be set simultaneously on the same RoleBasedGroup; "+
+				"use %q for group-level gang scheduling, or set %q per role via role.Annotations",
+			constants.GangSchedulingAnnotationKey,
+			constants.RoleInstanceGangSchedulingAnnotationKey,
+			constants.GangSchedulingAnnotationKey,
+			constants.RoleInstanceGangSchedulingAnnotationKey,
+		))
+	}
+	if err := ValidateRoleTemplates(rbg); err != nil {
+		errs = append(errs, fmt.Errorf("invalid role templates: %w", err))
+	}
+	if err := ValidateRoleTemplateReferences(rbg); err != nil {
+		errs = append(errs, fmt.Errorf("invalid template references: %w", err))
+	}
+	return errs
+}
+
 // ValidateCreate validates a RoleBasedGroup on creation.
 func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	rbg, ok := obj.(*RoleBasedGroup)
@@ -71,6 +99,7 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	if err := ValidateRoleDependencies(rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	allErrs = append(allErrs, validateRBGStaticSpec(rbg)...)
 	if v.EnableDeprecatedWorkloadTypes {
 		// A RoleBasedGroupSet controller replaces deleted children by re-creating
 		// them from its own template. Those children are not new user-facing uses:
@@ -208,6 +237,7 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	if err := ValidateRoleDependencies(rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	allErrs = append(allErrs, validateRBGStaticSpec(rbg)...)
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}

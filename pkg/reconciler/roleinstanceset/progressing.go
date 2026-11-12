@@ -74,11 +74,19 @@ func ClassifySetOperationError(err error) string {
 	}
 }
 
+// SetBlocker carries a blocker fact observed by this controller's own operations.
+type SetBlocker struct {
+	Reason  string
+	Message string
+}
+
 // ApplySetProgressingCondition computes the RIS Progressing condition and merges it into
 // newStatus. RIS reports lower-level blockers by reading the RI Progressing condition
-// and mapping reason families, without parsing messages.
+// and mapping reason families, without parsing messages. A blocker Progressing
+// condition already present in newStatus carries this controller's own operation
+// failure; it is replaced here by the finalized condition.
 func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {
-	condition := ComputeSetProgressingCondition(set, newStatus, instances)
+	condition := ComputeSetProgressingCondition(set, newStatus, instances, extractOwnSetBlocker(newStatus))
 	condition.LastTransitionTime = preserveTransitionTime(set.Status.Conditions, condition.Status)
 	for i := range newStatus.Conditions {
 		if newStatus.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetProgressing {
@@ -92,7 +100,7 @@ func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newSta
 // ComputeSetProgressingCondition builds the RIS Progressing condition. Blockers outrank
 // activity reasons; activity precedence is Creating, Recovering, RoleInstanceUpdated,
 // and ScalingUp / ScalingDown; child readiness applies only when no workflow remains.
-func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) workloadsv1alpha2.RoleInstanceSetCondition {
+func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance, ownBlocker *SetBlocker) workloadsv1alpha2.RoleInstanceSetCondition {
 	condition := workloadsv1alpha2.RoleInstanceSetCondition{
 		Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
 		Status:             v1.ConditionTrue,
@@ -100,7 +108,7 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 		ObservedGeneration: set.Generation,
 	}
 
-	if reason, message := currentSetBlocker(newStatus, instances); reason != "" {
+	if reason, message := currentSetBlocker(ownBlocker, instances); reason != "" {
 		condition.Reason = reason
 		condition.Message = message
 		return condition
@@ -147,23 +155,27 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	return condition
 }
 
-// currentSetBlocker selects the current blocker reason: a confirmed family from this
-// reconcile's own failure conditions, or a family mapped from RI Progressing conditions.
-// A confirmed blocker family is never replaced by an unclassified error.
-func currentSetBlocker(newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) (string, string) {
-	candidates := map[string]string{}
+// extractOwnSetBlocker returns the blocker recorded by this controller's own
+// operations as a Progressing condition in newStatus, if any.
+func extractOwnSetBlocker(newStatus *workloadsv1alpha2.RoleInstanceSetStatus) *SetBlocker {
 	for _, condition := range newStatus.Conditions {
-		switch condition.Type {
-		case workloadsv1alpha2.RoleInstanceSetConditionFailedScale, workloadsv1alpha2.RoleInstanceSetConditionFailedUpdate:
-			// A confirmed specific family from this controller's own operations
-			// competes in the same priority order as child facts.
-			if condition.Status == v1.ConditionTrue && condition.Reason != "" &&
-				condition.Reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
-				if _, exists := candidates[condition.Reason]; !exists {
-					candidates[condition.Reason] = condition.Message
-				}
-			}
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
+			condition.Status == v1.ConditionTrue && condition.Reason != "" &&
+			condition.Reason != workloadconstants.ProgressingReasonConverged {
+			return &SetBlocker{Reason: condition.Reason, Message: condition.Message}
 		}
+	}
+	return nil
+}
+
+// currentSetBlocker selects the current blocker reason: a confirmed family from this
+// controller's own operations, or a family mapped from RI Progressing conditions.
+// A confirmed blocker family is never replaced by an unclassified error.
+func currentSetBlocker(ownBlocker *SetBlocker, instances []*workloadsv1alpha2.RoleInstance) (string, string) {
+	candidates := map[string]string{}
+	if ownBlocker != nil && ownBlocker.Reason != "" &&
+		ownBlocker.Reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
+		candidates[ownBlocker.Reason] = ownBlocker.Message
 	}
 
 	for _, instance := range instances {
@@ -185,13 +197,8 @@ func currentSetBlocker(newStatus *workloadsv1alpha2.RoleInstanceSetStatus, insta
 		}
 	}
 	// An unclassified own error is reported only when no specific family is confirmed.
-	for _, condition := range newStatus.Conditions {
-		switch condition.Type {
-		case workloadsv1alpha2.RoleInstanceSetConditionFailedScale, workloadsv1alpha2.RoleInstanceSetConditionFailedUpdate:
-			if condition.Status == v1.ConditionTrue {
-				return condition.Reason, condition.Message
-			}
-		}
+	if ownBlocker != nil && ownBlocker.Reason != "" {
+		return ownBlocker.Reason, ownBlocker.Message
 	}
 	return "", ""
 }

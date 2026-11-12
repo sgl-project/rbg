@@ -27,6 +27,7 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -272,7 +273,17 @@ func (ssc *defaultStatefulInstanceSetControl) performUpdate(
 	}
 
 	// Apply the KEP-502 Progressing condition before the status write; instances are
-	// needed to map lower-level blockers and recovery facts.
+	// needed to map lower-level blockers and recovery facts. A failure from this
+	// controller's own operations is classified and carried as the blocker.
+	if getStatusErr != nil && currentStatus != nil {
+		currentStatus.Conditions = append(currentStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
+			Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             setprogressing.ClassifySetOperationError(getStatusErr),
+			Message:            getStatusErr.Error(),
+		})
+	}
 	setprogressing.ApplySetProgressingCondition(set, currentStatus, instances)
 
 	// make sure to update the latest status even if there is an error with non-nil currentStatus

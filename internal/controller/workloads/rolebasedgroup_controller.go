@@ -65,6 +65,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	instancesync "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
+	setprogressing "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	gangcommon "sigs.k8s.io/rbgs/pkg/scheduler/common"
@@ -225,7 +226,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Step 4: Construct role statuses
-	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg)
+	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expectedRolesRevisionHash)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -258,7 +259,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if gangErr != nil {
-		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, workloadconstants.ProgressingReasonIncompatibleGangConfig, gangErr.Error()); reportErr != nil {
+		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, classifyGangIncompatibility(gangErr), gangErr.Error()); reportErr != nil {
 			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for incompatible gang config")
 		}
 		// A gang configuration the current RBG cannot satisfy is not transient: only a
@@ -285,6 +286,14 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Step 8: Reconcile roles. Even a failed role must not prevent cleanup of
 	// workloads removed from the spec.
 	roleErr := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies)
+	// KEP-502: this controller's own CR-operation errors are classified and reported
+	// as blockers with observedGeneration, so a failed role reconcile is visible in
+	// status instead of only in the error return.
+	if roleErr != nil {
+		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, setprogressing.ClassifySetOperationError(roleErr), roleErr.Error()); reportErr != nil {
+			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for role reconcile failure")
+		}
+	}
 	// Step 9: Cleanup orphaned resources.
 	if err := stderrors.Join(roleErr, r.cleanup(ctx, rbg)); err != nil {
 		return ctrl.Result{}, err
@@ -706,6 +715,7 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
+	expectedRolesRevisionHash map[string]string,
 ) ([]workloadsv1alpha2.RoleStatus, error) {
 	roleStatuses := make([]workloadsv1alpha2.RoleStatus, 0, len(rbg.Spec.Roles))
 
@@ -737,7 +747,7 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	}
 
 	// Always update the RBG status via SSA patch.
-	if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
+	if err := r.updateRBGStatus(ctx, rbg, roleStatuses, expectedRolesRevisionHash); err != nil {
 		r.recorder.Eventf(
 			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
 			"Failed to update status for %s: %v", rbg.Name, err,
@@ -782,6 +792,7 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus,
+	expectedRolesRevisionHash map[string]string,
 ) error {
 	// Capture current status before mutation to avoid unnecessary SSA patches.
 	// Since constructAndUpdateRoleStatuses now calls this on every reconcile,
@@ -838,9 +849,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 
 	// Record the KEP-502 Progressing condition before the unchanged-status check so
 	// condition-only changes still produce an SSA patch.
-	if err := r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, r.observeGangWaiting(ctx, rbg)); err != nil {
-		log.FromContext(ctx).V(2).Info("Skip RBG Progressing update: RIS observation failed", "error", err)
-	}
+	r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash, r.observeGangWaiting(ctx, rbg))
 
 	// update role status
 	for i := range roleStatuses {

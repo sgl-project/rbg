@@ -593,6 +593,7 @@ type RoleStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="PROGRESSING",type="string",JSONPath=".status.conditions[?(@.type=='Progressing')].reason",description="Current progress or blocker reason"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:shortName={rbg}
 

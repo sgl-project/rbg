@@ -2724,7 +2724,7 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 		{name: "updated replicas reset after scale to zero", oldUpdated: 1, newUpdated: 0, wantPatches: 1},
 		{name: "rollout progresses with stable ready replicas", replicas: 2, oldUpdated: 1, newUpdated: 2, wantPatches: 1},
 		{name: "new revision resets updated replicas", replicas: 2, oldUpdated: 2, newUpdated: 0, wantPatches: 1},
-		{name: "unchanged status skips patch", replicas: 2, oldUpdated: 2, newUpdated: 2},
+		{name: "unchanged status skips patch", replicas: 2, oldUpdated: 2, newUpdated: 2, wantPatches: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -2794,7 +2794,7 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 			}).Build()
 			r := &RoleBasedGroupReconciler{client: c}
 			for i := 0; i < 2; i++ {
-				if err := r.updateRBGStatus(ctx, rbg, observed); err != nil {
+				if err := r.updateRBGStatus(ctx, rbg, observed, nil); err != nil {
 					t.Fatal(err)
 				}
 				if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {

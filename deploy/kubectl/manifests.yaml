@@ -25436,6 +25436,10 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: READY
       type: string
+    - description: Current progress or blocker reason
+      jsonPath: .status.conditions[?(@.type=='Progressing')].reason
+      name: PROGRESSING
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: AGE
       type: date
@@ -98394,6 +98398,10 @@ spec:
       jsonPath: .status.replicas
       name: TOTAL
       type: integer
+    - description: Current progress or blocker reason
+      jsonPath: .status.conditions[?(@.type=='Progressing')].reason
+      name: PROGRESSING
+      type: string
     - description: CreationTimestamp is a timestamp representing the server time when
         this object was created. It is not guaranteed to be set in happens-before
         order across separate operations. Clients may not set this value. It is represented
