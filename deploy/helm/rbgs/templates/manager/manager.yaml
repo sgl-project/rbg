@@ -79,6 +79,18 @@ spec:
               containerPort: {{ $pprof.containerPort | default 6060 }}
               protocol: TCP
           {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8081
+            initialDelaySeconds: 15
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: 8081
+            initialDelaySeconds: 5
+            periodSeconds: 10
           resources:
             {{- toYaml .Values.controller.resources | nindent 12 }}
       {{- with .Values.controller.nodeSelector }}
