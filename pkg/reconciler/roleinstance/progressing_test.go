@@ -116,7 +116,7 @@ func TestComputeInstanceProgressingCondition(t *testing.T) {
 			Reason:  workloadsv1alpha2.ReasonPodCreateQuotaExceeded,
 			Message: "exceeded quota",
 		}}
-		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseUpdating, true, conditions)
+		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseUpdating, true, conditions, "")
 		if got.Status != corev1.ConditionTrue || got.Reason != workloadsv1alpha2.ReasonPodCreateQuotaExceeded {
 			t.Fatalf("got %+v", got)
 		}
@@ -126,23 +126,106 @@ func TestComputeInstanceProgressingCondition(t *testing.T) {
 	})
 
 	t.Run("activity from phase", func(t *testing.T) {
-		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseRecovering, false, nil)
+		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseRecovering, false, nil, "")
 		if got.Reason != workloadsv1alpha2.ReasonInstanceRecovering {
 			t.Fatalf("got %+v", got)
 		}
 	})
 
 	t.Run("converged", func(t *testing.T) {
-		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseRunning, true, nil)
+		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseRunning, true, nil, "")
 		if got.Status != corev1.ConditionFalse || got.Reason != workloadsv1alpha2.ReasonInstanceConverged {
 			t.Fatalf("got %+v", got)
 		}
 	})
 
 	t.Run("pods not ready without workflow", func(t *testing.T) {
-		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseRunning, false, nil)
+		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseRunning, false, nil, "")
 		if got.Status != corev1.ConditionTrue || got.Reason != workloadsv1alpha2.ReasonInstancePodsNotReady {
 			t.Fatalf("got %+v", got)
+		}
+	})
+
+	t.Run("unschedulable pods report insufficient resources", func(t *testing.T) {
+		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseCreating, false, nil,
+			"Pod ri-0 is unschedulable: 3 Insufficient cpu")
+		if got.Status != corev1.ConditionTrue || got.Reason != workloadsv1alpha2.ReasonInstanceInsufficientResources {
+			t.Fatalf("got %+v", got)
+		}
+		if got.Message != "Pod ri-0 is unschedulable: 3 Insufficient cpu" {
+			t.Fatalf("message = %q", got.Message)
+		}
+		if got.ObservedGeneration != 3 {
+			t.Fatalf("observedGeneration = %d", got.ObservedGeneration)
+		}
+	})
+
+	t.Run("specific blocker outranks insufficient resources", func(t *testing.T) {
+		conditions := []workloadsv1alpha2.RoleInstanceCondition{{
+			Type:    workloadsv1alpha2.RoleInstanceProgressing,
+			Status:  corev1.ConditionTrue,
+			Reason:  workloadsv1alpha2.ReasonPodCreateQuotaExceeded,
+			Message: "exceeded quota",
+		}}
+		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseCreating, false, conditions,
+			"Pod ri-0 is unschedulable")
+		if got.Status != corev1.ConditionTrue || got.Reason != workloadsv1alpha2.ReasonPodCreateQuotaExceeded {
+			t.Fatalf("got %+v", got)
+		}
+	})
+
+	t.Run("unclassified error does not replace insufficient resources", func(t *testing.T) {
+		conditions := []workloadsv1alpha2.RoleInstanceCondition{{
+			Type:    workloadsv1alpha2.RoleInstanceProgressing,
+			Status:  corev1.ConditionTrue,
+			Reason:  workloadsv1alpha2.ReasonPodOperationUnclassified,
+			Message: "boom",
+		}}
+		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseCreating, false, conditions,
+			"Pod ri-0 is unschedulable")
+		if got.Status != corev1.ConditionTrue || got.Reason != workloadsv1alpha2.ReasonInstanceInsufficientResources {
+			t.Fatalf("got %+v", got)
+		}
+	})
+}
+
+func TestInsufficientResourcesMessage(t *testing.T) {
+	unschedulable := func(name, message string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{
+				Type:    corev1.PodScheduled,
+				Status:  corev1.ConditionFalse,
+				Reason:  corev1.PodReasonUnschedulable,
+				Message: message,
+			}}},
+		}
+	}
+
+	t.Run("no pods", func(t *testing.T) {
+		if got := insufficientResourcesMessage(nil); got != "" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("pending pod without unschedulable condition is not a blocker", func(t *testing.T) {
+		pending := &corev1.Pod{Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{
+			Type:   corev1.PodScheduled,
+			Status: corev1.ConditionFalse,
+		}}}}
+		if got := insufficientResourcesMessage([]*corev1.Pod{pending}); got != "" {
+			t.Fatalf("got %q", got)
+		}
+	})
+
+	t.Run("unschedulable pods are described", func(t *testing.T) {
+		pods := []*corev1.Pod{
+			unschedulable("ri-0", "0/2 nodes are available: 2 Insufficient cpu."),
+			unschedulable("ri-1", ""),
+		}
+		want := "Pod ri-0 is unschedulable: 0/2 nodes are available: 2 Insufficient cpu.; Pod ri-1 is unschedulable"
+		if got := insufficientResourcesMessage(pods); got != want {
+			t.Fatalf("got %q, want %q", got, want)
 		}
 	})
 }

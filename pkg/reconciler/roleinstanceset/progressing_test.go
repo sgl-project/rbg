@@ -218,6 +218,28 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			wantStatus: corev1.ConditionTrue,
 		},
 		{
+			name: "ri insufficient resources maps to waiting for resources",
+			set:  newTestSet(3),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+			},
+			instances: []*workloadsv1alpha2.RoleInstance{{
+				ObjectMeta: metav1.ObjectMeta{Generation: 7},
+				Status: workloadsv1alpha2.RoleInstanceStatus{
+					Phase: workloadsv1alpha2.RoleInstancePhaseRunning,
+					Conditions: []workloadsv1alpha2.RoleInstanceCondition{{
+						Type:               workloadsv1alpha2.RoleInstanceProgressing,
+						Status:             corev1.ConditionTrue,
+						Reason:             workloadsv1alpha2.ReasonInstanceInsufficientResources,
+						Message:            "Pod ri-0 is unschedulable: 3 Insufficient cpu",
+						ObservedGeneration: 7,
+					}},
+				},
+			}},
+			wantReason: workloadconstants.ProgressingReasonWaitingForResources,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
 			name: "no workflow and instances not ready",
 			set:  newTestSet(3),
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{

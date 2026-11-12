@@ -177,11 +177,11 @@ func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInst
 			}
 		}
 	}
-	r.setInstanceConditions(instance, newStatus, conditions)
+	r.setInstanceConditions(instance, newStatus, conditions, pods)
 }
 
 func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
-	newInnerConditions []workloadsv1alpha2.RoleInstanceCondition) {
+	newInnerConditions []workloadsv1alpha2.RoleInstanceCondition, pods []*v1.Pod) {
 	conditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(instance.Status.Conditions)+1)
 	for _, condition := range newInnerConditions {
 		// The blocker Progressing condition from this reconcile is finalized below;
@@ -222,7 +222,7 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 		newStatus.LastReadyGeneration = instance.Generation
 	}
 
-	progressing := computeInstanceProgressingCondition(instance, newStatus.Phase, instanceReady, newInnerConditions)
+	progressing := computeInstanceProgressingCondition(instance, newStatus.Phase, instanceReady, newInnerConditions, insufficientResourcesMessage(pods))
 	progressing.LastTransitionTime = preserveConditionTransitionTime(
 		instance.Status.Conditions, workloadsv1alpha2.RoleInstanceProgressing, progressing.Status)
 	conditions = append(conditions, progressing)

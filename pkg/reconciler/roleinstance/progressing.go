@@ -17,6 +17,7 @@ limitations under the License.
 package roleinstance
 
 import (
+	"fmt"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
@@ -168,11 +169,28 @@ func instanceProgressingActivityReason(phase workloadsv1alpha2.RoleInstancePhase
 // computeInstanceProgressingCondition builds the RI Progressing condition. Phase and
 // the blocker reason stay independent: for example a quota-blocked Pod recreation
 // keeps Progressing=True with the blocker reason while the phase is Updating.
+// resourcesMessage is non-empty when a required Pod is confirmed unschedulable.
 func computeInstanceProgressingCondition(instance *workloadsv1alpha2.RoleInstance, phase workloadsv1alpha2.RoleInstancePhase,
-	instanceReady bool, newInnerConditions []workloadsv1alpha2.RoleInstanceCondition) workloadsv1alpha2.RoleInstanceCondition {
+	instanceReady bool, newInnerConditions []workloadsv1alpha2.RoleInstanceCondition, resourcesMessage string) workloadsv1alpha2.RoleInstanceCondition {
 	if blocker := instanceProgressingBlocker(newInnerConditions); blocker != nil {
-		progressing := *blocker
-		progressing.ObservedGeneration = instance.Generation
+		// A confirmed blocker family is never replaced by an unclassifiable error.
+		// Unschedulable Pods confirm the resources family, which outranks
+		// Unclassified in the KEP-502 blocker precedence.
+		if blocker.Reason != workloadsv1alpha2.ReasonPodOperationUnclassified || resourcesMessage == "" {
+			progressing := *blocker
+			progressing.ObservedGeneration = instance.Generation
+			return progressing
+		}
+	}
+	if resourcesMessage != "" {
+		progressing := workloadsv1alpha2.RoleInstanceCondition{
+			Type:               workloadsv1alpha2.RoleInstanceProgressing,
+			Status:             v1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             workloadsv1alpha2.ReasonInstanceInsufficientResources,
+			Message:            resourcesMessage,
+			ObservedGeneration: instance.Generation,
+		}
 		return progressing
 	}
 
@@ -206,4 +224,26 @@ func preserveConditionTransitionTime(live []workloadsv1alpha2.RoleInstanceCondit
 		}
 	}
 	return metav1.Now()
+}
+
+// insufficientResourcesMessage returns a current-blocker message when a required Pod
+// is confirmed unschedulable, or "" when no resources blocker holds. The fact is
+// observed at the lowest layer that can see it: the Pod's PodScheduled condition.
+// A Pending Pod without an Unschedulable condition is an incomplete observation and
+// must not be guessed as a resources blocker.
+func insufficientResourcesMessage(pods []*v1.Pod) string {
+	var details []string
+	for _, pod := range pods {
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == v1.PodScheduled && condition.Status == v1.ConditionFalse &&
+				condition.Reason == v1.PodReasonUnschedulable {
+				detail := fmt.Sprintf("Pod %s is unschedulable", pod.Name)
+				if condition.Message != "" {
+					detail = fmt.Sprintf("%s: %s", detail, condition.Message)
+				}
+				details = append(details, detail)
+			}
+		}
+	}
+	return strings.Join(details, "; ")
 }
