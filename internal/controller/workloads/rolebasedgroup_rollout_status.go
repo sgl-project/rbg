@@ -180,29 +180,35 @@ func (r *RoleBasedGroupReconciler) leaderWorkerSetRolloutComplete(
 		lws.Status.ReadyReplicas != desired || lws.Status.UpdatedReplicas != desired {
 		return false, nil
 	}
-	// LWS has no observedGeneration (including on its conditions). Use the revision
-	// hash the LWS controller actually persisted, rather than recomputing it.
 	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
 		MatchLabels: map[string]string{lwsv1.SetNameLabelKey: lws.Name},
 	})
 	if err != nil {
 		return false, err
 	}
-	revisions, err := lwsrevision.ListRevisions(ctx, rolloutRevisionReader{Client: r.client, reader: r.apiReader}, lws, selector)
+	revisionReader := rolloutRevisionReader{Client: r.client, reader: r.apiReader}
+	revisions, err := lwsrevision.ListRevisions(ctx, revisionReader, lws, selector)
 	if err != nil {
 		return false, err
 	}
-	var hash string
-	var highest int64
+	var highest *appsv1.ControllerRevision
 	for _, rev := range revisions {
-		if rev.Revision >= highest {
-			highest = rev.Revision
-			hash = rev.Labels[lwsv1.RevisionKey]
+		if highest == nil || rev.Revision >= highest.Revision {
+			highest = rev
 		}
 	}
-	if hash == "" {
+	if highest == nil || highest.Labels[lwsv1.RevisionKey] == "" {
 		return false, nil
 	}
+	// LWS has no observedGeneration: require current revision data before trusting its persisted legacy key.
+	expected, err := lwsrevision.NewRevision(ctx, revisionReader, lws, "")
+	if err != nil {
+		return false, err
+	}
+	if !lwsrevision.EqualRevision(expected, highest) {
+		return false, nil
+	}
+	hash := highest.Labels[lwsv1.RevisionKey]
 	leader := &appsv1.StatefulSet{}
 	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(lws), leader); err != nil {
 		return false, client.IgnoreNotFound(err)

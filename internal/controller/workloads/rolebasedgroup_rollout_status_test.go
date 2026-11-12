@@ -319,7 +319,8 @@ func TestLeaderWorkerSetRolloutChecksTargetRevisionChain(t *testing.T) {
 				for _, obj := range objects[1:3] {
 					obj.GetLabels()[lwsv1.RevisionKey] = revision.Labels[lwsv1.RevisionKey]
 				}
-				objects[4].GetLabels()[lwsv1.RevisionKey] = revision.Labels[lwsv1.RevisionKey]
+				revision.UID = objects[4].GetUID()
+				objects[4] = revision
 				objects = append(objects[:3], objects[4:]...)
 			}
 			c := fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).WithObjects(objects...).Build()
@@ -331,6 +332,125 @@ func TestLeaderWorkerSetRolloutChecksTargetRevisionChain(t *testing.T) {
 			revisions := &appsv1.ControllerRevisionList{}
 			require.NoError(t, c.List(context.Background(), revisions))
 			assert.Len(t, revisions.Items, 1)
+		})
+	}
+}
+
+func TestLeaderWorkerSetRolloutWaitsForPersistedLiveRevision(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		change func(*lwsv1.LeaderWorkerSet)
+	}{
+		{name: "leader template", change: func(lws *lwsv1.LeaderWorkerSet) {
+			lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.Containers[0].Image = "test:v2"
+		}},
+		{name: "worker template", change: func(lws *lwsv1.LeaderWorkerSet) {
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate.Spec.Containers[0].Image = "test:v2"
+		}},
+		{name: "network config", change: func(lws *lwsv1.LeaderWorkerSet) {
+			lws.Spec.NetworkConfig = &lwsv1.NetworkConfig{SubdomainPolicy: ptr.To(lwsv1.SubdomainUniquePerReplica)}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx := context.Background()
+			rbg, objects := rolloutTestFixture(t, "LeaderWorkerSet")
+			lws := objects[0].(*lwsv1.LeaderWorkerSet)
+			lws.Spec.LeaderWorkerTemplate.LeaderTemplate = &corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "leader", Image: "test:v1"}},
+			}}
+			lws.Spec.LeaderWorkerTemplate.WorkerTemplate = corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "worker", Image: "test:v1"}},
+			}}
+			objects[4].GetLabels()[lwsv1.RevisionKey] = "legacy-revision-key"
+			objects = seedUpgradeWorkloadStatus(t, lws, objects)
+			rbg.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: "2"}
+			rbg.Status.ObservedGeneration = rbg.Generation
+			rbg.Status.ObservedRolloutRequest = "1"
+			rbg.Status.Conditions = []metav1.Condition{
+				{Type: string(workloadsv1alpha2.RoleBasedGroupReady), Status: metav1.ConditionTrue, ObservedGeneration: rbg.Generation},
+				{Type: string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress), Status: metav1.ConditionTrue, ObservedGeneration: rbg.Generation},
+			}
+			c := fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).WithObjects(append(objects, rbg)...).
+				WithStatusSubresource(rbg).Build()
+			r := &RoleBasedGroupReconciler{client: c, apiReader: c}
+			expected := map[string]string{"role": "target"}
+			check := func(wantComplete bool, wantAck string) {
+				t.Helper()
+				complete, err := r.roleWorkloadRolloutComplete(ctx, rbg, &rbg.Spec.Roles[0], "target")
+				require.NoError(t, err)
+				assert.Equal(t, wantComplete, complete)
+				require.NoError(t, r.finalizeRolloutStatus(ctx, rbg, expected))
+				got := &workloadsv1alpha2.RoleBasedGroup{}
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(rbg), got))
+				assert.Equal(t, wantAck, got.Status.ObservedRolloutRequest)
+				assert.Equal(t, wantComplete, apimeta.IsStatusConditionFalse(got.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
+				assert.Equal(t, wantComplete, groupSetChildReady(got), "the set must retain the availability slot until the live target completes")
+			}
+
+			liveRevision, err := lwsrevision.NewRevision(ctx, c, lws, "")
+			require.NoError(t, err)
+			require.NotEqual(t, "legacy-revision-key", liveRevision.Labels[lwsv1.RevisionKey])
+			require.True(t, lwsrevision.EqualRevision(liveRevision, objects[4].(*appsv1.ControllerRevision)))
+			complete, err := r.roleWorkloadRolloutComplete(ctx, rbg, &rbg.Spec.Roles[0], "target")
+			require.NoError(t, err)
+			require.True(t, complete, "matching persisted data must accept the legacy revision key")
+
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(lws), lws))
+			test.change(lws)
+			lws.Generation++
+			require.NoError(t, c.Update(ctx, lws))
+			for pass := 0; pass < 3; pass++ {
+				check(false, "1")
+			}
+			revisions := &appsv1.ControllerRevisionList{}
+			require.NoError(t, c.List(ctx, revisions))
+			require.Len(t, revisions.Items, 1, "the barrier must not persist the live revision itself")
+
+			target, err := lwsrevision.NewRevision(ctx, c, lws, "")
+			require.NoError(t, err)
+			require.False(t, lwsrevision.EqualRevision(target, objects[4].(*appsv1.ControllerRevision)))
+			require.NoError(t, c.Create(ctx, target))
+			check(false, "1")
+			objects[1].(*appsv1.StatefulSet).Spec.Template = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
+			objects[2].(*corev1.Pod).Spec = *lws.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.DeepCopy()
+			objects[3].(*appsv1.StatefulSet).Spec.Template = *lws.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+			for _, dependent := range objects[1:4] {
+				dependent.GetLabels()[lwsv1.RevisionKey] = target.Labels[lwsv1.RevisionKey]
+				require.NoError(t, c.Update(ctx, dependent))
+			}
+			check(true, "2")
+			require.NoError(t, c.List(ctx, revisions))
+			assert.Len(t, revisions.Items, 2)
+		})
+	}
+}
+
+func TestLeaderWorkerSetRolloutChecksHighestRevisionData(t *testing.T) {
+	for _, test := range []string{"missing revision", "missing key", "foreign revision", "mismatched data with matching key", "newer mismatched revision"} {
+		t.Run(test, func(t *testing.T) {
+			rbg, objects := rolloutTestFixture(t, "LeaderWorkerSet")
+			revision := objects[4].(*appsv1.ControllerRevision)
+			switch test {
+			case "missing revision":
+				objects = objects[:4]
+			case "missing key":
+				delete(revision.Labels, lwsv1.RevisionKey)
+			case "foreign revision":
+				revision.OwnerReferences[0].UID = "another-lws"
+			case "mismatched data with matching key":
+				revision.Data.Raw = []byte(`{"spec":{"leaderWorkerTemplate":{"size":3}}}`)
+			case "newer mismatched revision":
+				newer := revision.DeepCopy()
+				newer.Name = "newer-revision"
+				newer.Revision++
+				newer.Data.Raw = []byte(`{"spec":{"leaderWorkerTemplate":{"size":3}}}`)
+				objects = append(objects, newer)
+			}
+			c := fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).WithObjects(objects...).Build()
+			r := &RoleBasedGroupReconciler{client: c, apiReader: c}
+			complete, err := r.roleWorkloadRolloutComplete(context.Background(), rbg, &rbg.Spec.Roles[0], "target")
+			require.NoError(t, err)
+			assert.False(t, complete)
 		})
 	}
 }
@@ -627,8 +747,10 @@ func seedUpgradeWorkloadStatus(t *testing.T, workload client.Object, objects []c
 		}
 	case *lwsv1.LeaderWorkerSet:
 		obj.Status = objects[0].(*lwsv1.LeaderWorkerSet).Status
-		revision, err := lwsrevision.NewRevision(context.Background(), fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).Build(), obj, "")
+		revision, err := lwsrevision.NewRevision(context.Background(), fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).Build(), obj, objects[4].GetLabels()[lwsv1.RevisionKey])
 		require.NoError(t, err)
+		revision.UID = objects[4].GetUID()
+		objects[4] = revision
 		for _, dependent := range objects[1:] {
 			dependent.GetLabels()[lwsv1.RevisionKey] = revision.Labels[lwsv1.RevisionKey]
 		}
