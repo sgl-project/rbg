@@ -62,8 +62,8 @@ more.
 
 1. **Hash inputs change.** The controller renders a different template for an unchanged role. For
    example, the RoleInstanceSet template gained `restartPolicyConfig` in v0.8.0 next to the old
-   `restartPolicy` string. The controller writes the new field only when a role sets backoff delays;
-   see the worked example below.
+   `restartPolicy` string. The controller writes the new field only when a role sets backoff delays
+   or `activateAfter`; see the worked example below.
 2. **A new CRD default.** The API server applies structural defaults
    [when reading from etcd](https://kubernetes.io/docs/tasks/extend-kubernetes/custom-resources/custom-resource-definitions/#defaulting)
    to any field whose parent object is present. The controller then sees a changed spec that nobody
@@ -83,7 +83,7 @@ more.
 
 | Change | Result | Do instead |
 |---|---|---|
-| New optional `*T` field with `json:"x,omitempty"`, left unset | No change | This is the pattern |
+| New optional field that `omitempty` drops when unset (`*T`, or a string, slice or map whose empty value means unset), left unset | No change | This is the pattern |
 | New field without `omitempty`, or a non-pointer struct (encodes as `{}` even with `omitempty`), under an already-stored parent | Drift. Absorbed at upgrade, then new hashes for every affected role at the next revision | Pointer + `omitempty` |
 | `+kubebuilder:default` on a new field whose parent exists in stored objects | Changes every such object, on read. Defaults nested under an absent optional parent are not materialized | No schema default; default in a Go getter |
 | Controller renders new content into `spec.roleInstanceTemplate` (fields, labels, annotations, env, sidecars, injected scheduling fields) for every role | New RoleInstanceSet revision; instances roll | Render it only when the user set it |
@@ -96,19 +96,25 @@ more.
 
 1. **API shape.** The new parent is a pointer: `RestartPolicyConfig *RestartPolicyConfig` with
    `json:"restartPolicyConfig,omitempty"` and `+optional`. The deprecated `RestartPolicy` string stays
-   "for wire compatibility with v0.7.0" behind a `Deprecated:` comment. Fields *inside* the new
-   struct can be value types and carry `+kubebuilder:default` markers, because those defaults only
-   apply once a user sets the parent.
+   "for wire compatibility with v0.7.0" behind a `Deprecated:` comment.
+   - Fields that ship together with the new struct can be value types and carry
+     `+kubebuilder:default` markers, because those defaults only apply once a user sets the parent.
+   - That stops being true once the struct exists in stored objects. `activateAfter`, added to
+     `RestartPolicyConfig` later (#559), has no schema default: "a CRD default would materialize
+     on every existing role that already has a restartPolicyConfig block, rewriting its serialized
+     template and rolling the role on upgrade" (its field comment). It is a string with
+     `omitempty`, and its default is resolved in a getter.
 2. **Defaults in Go, not in storage.** `GetRestartPolicyConfig`, `GetBaseDelaySeconds` and
    `GetMaxDelaySeconds` (`api/workloads/v1alpha2/helper.go`) fold in the deprecated string and default
-   missing values at the point of use.
-3. **Raw getters.** `GetRawRestartPolicyType` and `GetRawRestartBackoff` return only what the user set,
-   so callers can tell "configured" from "inherits the default".
+   missing values at the point of use. `RestartPolicyConfig.GetActivateAfter` does the same for
+   `activateAfter`.
+3. **Raw getters.** `GetRawRestartPolicyType` and `GetRawRestartPolicyConfig` return only what the
+   user set, so callers can tell "configured" from "inherits the default".
 4. **Render only when set.** `constructRoleInstanceSetApplyConfiguration` writes `restartPolicyConfig`
-   into the RoleInstanceSet template only when the role configures backoff delays. Otherwise it keeps
-   writing the deprecated string. Writing it unconditionally "would rewrite the stored template of
-   every role a v0.7.0 install created, moving the RoleInstanceSet revision hash and rolling the role
-   on upgrade" (comment in that function).
+   into the RoleInstanceSet template only when the role configures backoff delays or
+   `activateAfter`. Otherwise it keeps writing the deprecated string. Writing it unconditionally
+   "would rewrite the stored template of the roles that only carry the string ..., moving the
+   RoleInstanceSet revision hash and rolling those roles on upgrade" (comment in that function).
 5. **Conversion, where it is only partly done.** Converting v1alpha2 to v1alpha1
    (`api/workloads/v1alpha1/rolebasedgroup_conversion.go`) uses `GetRawRestartPolicyType`, so
    defaults are not materialized. The other direction, v1alpha1 to v1alpha2, still materializes
@@ -124,8 +130,15 @@ more.
      reconciled into LeaderWorkerSets (`foldRestartPolicyShape` in `snapshot.go`).
    - For any new field, test the full v1alpha2 → v1alpha1 → v1alpha2 round trip
      (`scripts/v1alpha1-roundtrip.sh`).
-6. **Guard with a test.** `test/e2e/upgrade/specs.go` asserts that the deprecated string was not
-   rewritten and that `restartPolicyConfig` is still nil on objects that never had it.
+6. **Guard with tests.**
+   - `TestRoleInstanceSetReconciler_RestartPolicyUpgrade` (`pkg/reconciler/roleinstanceset_reconciler_test.go`)
+     renders today's RoleInstanceSet for the restart-policy shapes earlier releases stored. It
+     requires the template bytes, the revision patch, the revision name and the hash label to
+     equal the fixtures in `pkg/reconciler/testdata/restart-policy-upgrade/`.
+   - Those fixtures were emitted by the released v0.9.0-alpha.3 code. Never regenerate such
+     fixtures with the current controller: that would hide the regression they guard against.
+   - `test/e2e/upgrade/specs.go` asserts that the deprecated string was not rewritten and that
+     `restartPolicyConfig` is still nil on objects that never had it.
 
 ## Related compatibility rules
 
@@ -163,6 +176,8 @@ more.
 1. **Unit test.** Build fixtures in the previous release's stored shape and compare
    `NewRevision` / `GetRolesRevisionHash` and the rendered RoleInstanceSet template between `main`
    and your branch. They must be byte-identical for objects that don't use the feature.
+   `TestRoleInstanceSetReconciler_RestartPolicyUpgrade` is the model: its fixtures come from the
+   released code, not from today's serializer.
 2. **envtest.** Install the new CRDs over objects created in the old shape, then read them back. This
    is how CRD defaults applied on read and conversion changes show up.
 3. **Binary swap on a cluster.** Run `main` with one RBG per pattern (standalone, leader/worker, custom

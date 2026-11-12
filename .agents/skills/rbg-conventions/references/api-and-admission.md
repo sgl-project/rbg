@@ -17,11 +17,15 @@
 
 ## Adding or changing a field
 
-- **A new optional field under a parent that existing objects already store** is a pointer with
-  `omitempty` and `+optional`, and has no schema default; default it in a Go getter. Fields nested
-  inside a *new* optional struct may be value types or carry defaults, because nothing materializes
-  until a user sets the parent. Required fields need a case-by-case upgrade design. See
-  `upgrade-compatibility.md`.
+- **A new optional field under a parent that existing objects already store** is `+optional` with
+  `omitempty`, and has no schema default; default it in a Go getter.
+  - Its type is a `*T`, or a string, slice or map whose empty value means unset (like
+    `activateAfter`).
+  - Fields that ship together with a *new* optional struct may be value types or carry defaults,
+    because nothing materializes until a user sets the parent.
+  - Required fields need a case-by-case upgrade design.
+
+  See `upgrade-compatibility.md`.
 - **Keep the API minimal.** Add a field only when a real consumer makes a decision with it. Adding a
   field later is compatible; removing one is not (#528). The same goes for conditions, phases and
   states: don't add entities nobody needs yet.

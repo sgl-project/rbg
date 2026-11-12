@@ -37,9 +37,10 @@ the most important rules on a cluster. Each one is described, with its last veri
    deliberate one-hop migration that maintainers agreed to, that is documented, and that is
    recorded in `test/e2e/upgrade/profile.go`. See
    [upgrade-compatibility.md](references/upgrade-compatibility.md).
-2. **A new optional field under an already-stored parent is a `*T` with `omitempty` and no schema
-   default.** Apply defaults in Go getters. Write the field into templates only when the user set
-   it.
+2. **A new optional field under an already-stored parent is dropped by `omitempty` when unset and
+   has no schema default.** Use a `*T`, or a string, slice or map whose empty value means unset;
+   never a non-pointer struct. Apply defaults in Go getters. Write the field into templates only
+   when the user set it.
 3. **Never reinterpret an unset field for existing objects** unless it is a recorded migration as
    in rule 1. New behavior is opt-in, and tightening goes warn first, then deny.
 4. **Never tighten validation that stored objects may already violate.**
@@ -62,14 +63,16 @@ the most important rules on a cluster. Each one is described, with its last veri
 
 ### Adding or changing an API field
 
-- [ ] The field is in v1alpha2 only. If its parent is already stored, it is `*T` +
-      `json:"x,omitempty"` + `+optional`.
-- [ ] No `+kubebuilder:default` on a field whose parent already exists in stored objects. The API
-      server applies defaults on read. Defaults inside a brand-new optional struct are fine.
+- [ ] The field is in v1alpha2 only. If its parent is already stored, it is `+optional` with
+      `omitempty`, and its type is a `*T`, or a string, slice or map whose empty value means unset.
+- [ ] No `+kubebuilder:default` on a field whose parent already exists in stored objects, even
+      inside an optional struct that some objects already set. The API server applies defaults on
+      read. Defaults that ship together with a brand-new optional struct are fine.
 - [ ] The default lives in a Go getter. Add a `GetRaw*` getter if callers must tell "set" from
       "defaulted".
 - [ ] When the field is unset, existing objects render byte-identical templates and keep their
-      revision hashes. Prove it with a test.
+      revision hashes. Prove it with a test against fixtures emitted by the released code, like
+      `TestRoleInstanceSetReconciler_RestartPolicyUpgrade`.
 - [ ] New validation can't reject objects that are already stored.
 - [ ] CEL rules are bounded.
 - [ ] Unknown values fail validation instead of being ignored.
