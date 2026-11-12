@@ -29,8 +29,8 @@ spec:
       name: AGE
       type: date
     deprecated: true
-    deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroupSet is deprecated;
-      use workloads.x-k8s.io/v1alpha2 RoleBasedGroupSet
+    deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroupSet is deprecated
+      and will be removed in 0.10.0; use workloads.x-k8s.io/v1alpha2 RoleBasedGroupSet
     name: v1alpha1
     schema:
       openAPIV3Schema:

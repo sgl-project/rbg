@@ -64,7 +64,7 @@ type RoleBasedGroupSetStatus struct {
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.readyReplicas",description="ready replicas"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:shortName={rbgs}
-// +kubebuilder:deprecatedversion:warning="workloads.x-k8s.io/v1alpha1 RoleBasedGroupSet is deprecated; use workloads.x-k8s.io/v1alpha2 RoleBasedGroupSet"
+// +kubebuilder:deprecatedversion:warning="workloads.x-k8s.io/v1alpha1 RoleBasedGroupSet is deprecated and will be removed in 0.10.0; use workloads.x-k8s.io/v1alpha2 RoleBasedGroupSet"
 
 // RoleBasedGroupSet is the Schema for the rolebasedgroupsets API.
 type RoleBasedGroupSet struct {
