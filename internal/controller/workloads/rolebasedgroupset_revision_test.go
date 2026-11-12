@@ -18,6 +18,7 @@ package workloads
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"maps"
@@ -1025,6 +1026,73 @@ func revisionTestMarkReady(t *testing.T, r *RoleBasedGroupSetReconciler, child *
 		Type: string(workloadsv1alpha2.RoleBasedGroupReady), Status: metav1.ConditionTrue, ObservedGeneration: child.Generation,
 	}}
 	require.NoError(t, r.client.Status().Update(context.Background(), child))
+}
+
+func TestGroupSetLegacyRevisionUpgradeConvergesOnce(t *testing.T) {
+	for _, strategy := range []workloadsv1alpha2.GroupUpdateStrategyType{workloadsv1alpha2.RecreateStrategyType, workloadsv1alpha2.InPlaceUpdateStrategyType} {
+		t.Run(string(strategy), func(t *testing.T) {
+			ctx := context.Background()
+			set := revisionTestRollingSet(2, &groupSetRevision{template: revisionTestTemplate(nil)})
+			set.Spec.RolloutStrategy.Type = strategy
+			set.Spec.RolloutStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+			set.Spec.GroupTemplate.Annotations = map[string]string{constants.ConversionV1alpha1CoordinationAnnotationKey: "[]"}
+			// Older snapshots included conversion bookkeeping in the revision identity.
+			data, err := canonicalGroupSetTemplateJSON(&set.Spec.GroupTemplate)
+			require.NoError(t, err)
+			hash := sha256.Sum256(append([]byte(string(set.UID)+"\x00"), data...))
+			old := &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{
+				Name: fmt.Sprintf("rbgs-%x", hash[:24]), Namespace: set.Namespace, UID: "legacy-revision",
+				Labels:          map[string]string{constants.GroupSetNameLabelKey: set.Name},
+				OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroupSet"))},
+			}, Data: runtime.RawExtension{Raw: data}, Revision: 1}
+			set.Status.CurrentRevision, set.Status.UpdateRevision = old.Name, old.Name
+			legacy := &groupSetRevision{name: old.Name, template: &set.Spec.GroupTemplate}
+			first, second := revisionTestReadyChild(set, 0, legacy), revisionTestReadyChild(set, 1, legacy)
+			r, writes := revisionTestRollingReconciler(t, set, old, first, second)
+			step := func() {
+				_, err := r.reconcileRollingGroupSet(ctx, client.ObjectKeyFromObject(set))
+				require.NoError(t, err)
+			}
+			step()
+			require.Equal(t, []string{"test-1"}, *writes)
+			upper := revisionTestGetChild(t, r, set, 1)
+			require.NotEqual(t, old.Name, upper.Labels[constants.GroupSetRevisionLabelKey])
+			for pass := 0; pass < 3; pass++ {
+				step()
+			}
+			require.Equal(t, []string{"test-1"}, *writes, "migration must hold the budget until acknowledgement")
+			revisionTestMarkReady(t, r, upper)
+			step()
+			require.Equal(t, []string{"test-1", "test-0"}, *writes)
+			revisionTestMarkReady(t, r, revisionTestGetChild(t, r, set, 0))
+			for pass := 0; pass < 5; pass++ {
+				step()
+			}
+			assert.Equal(t, []string{"test-1", "test-0"}, *writes)
+			for index, before := range []*workloadsv1alpha2.RoleBasedGroup{first, second} {
+				after := revisionTestGetChild(t, r, set, index)
+				assert.Equal(t, before.UID, after.UID)
+				assert.Equal(t, before.Spec, after.Spec)
+				assert.Equal(t, "1", after.Status.ObservedRolloutRequest)
+				assert.Equal(t, "1", after.Annotations[constants.RolloutRequestAnnotationKey])
+			}
+			final := &workloadsv1alpha2.RoleBasedGroupSet{}
+			require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), final))
+			assert.Equal(t, final.Status.UpdateRevision, final.Status.CurrentRevision)
+			assert.Equal(t, int32(2), final.Status.ReadyReplicas)
+			rolling := meta.FindStatusCondition(final.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupSetRolling))
+			require.NotNil(t, rolling)
+			assert.Equal(t, "RolloutComplete", rolling.Reason)
+			assert.Equal(t, metav1.ConditionFalse, rolling.Status)
+			storedOld := &appsv1.ControllerRevision{}
+			require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(old), storedOld))
+			assert.Equal(t, old.UID, storedOld.UID)
+			assert.Equal(t, old.Data, storedOld.Data)
+			revisions := &appsv1.ControllerRevisionList{}
+			require.NoError(t, r.client.List(ctx, revisions))
+			assert.Len(t, revisions.Items, 2, "only the normalized replacement revision may be added")
+		})
+	}
 }
 
 func TestSyncRollingGroupSet_InPlaceUpdateBudgetAndOrder(t *testing.T) {
