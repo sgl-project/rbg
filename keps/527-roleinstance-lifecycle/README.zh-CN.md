@@ -161,7 +161,8 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | --- | --- |
 | 前置 marker 被重复写入 | 只在阶段转换时写入，等待期间不补回 |
 | metadata 同步覆盖 marker | 运行时 marker 不属于声明式 labels |
-| Pod 镜像被外部覆盖 | controller 在每次 RI reconcile 重新同步镜像 |
+| Pod 镜像被外部覆盖 | 每次 RI reconcile 重新同步；RI 是权威来源 |
+| 操作中删除 hook 配置 | 屏障被跳过；由运维确认删除时机 |
 | 同一 hook 内共享 marker 被迟到请求清理 | 明确接受该风险；由消费者协调并保证业务幂等，不增加代次 |
 | 不同 hook 复用 marker key | 准入校验拒绝 |
 | 信号标签 key 覆盖 controller 状态 | 准入校验拒绝保留 key |
@@ -334,7 +335,13 @@ marker key 的作用域限定在单个 hook 挂载点内。任何一个 key 被�
 包括 `matchLabels` 和任何 `matchExpressions` 条目中的 key，
 即使该 key 未出现在 template labels 中。写入这类 marker 可能使 RI
 不再匹配 selector，stateful RIS 的实例引用管理随后会释放该 RI 的
-owner reference。
+owner reference。反过来，准入也拒绝在所属 RIS selector 中使用
+hook-state key 等 controller 保留 key：controller 自身的运行时写入
+会使 RI 反复匹配和不匹配。
+唯一性校验同样覆盖配置代际：只要受该配置管理的任一 RI 仍记录某个
+信号 key，该 key 不得被重新分配给另一个 hook，避免已退役的 executor
+清掉现在属于其他 hook 的 marker，例如把 pending postReady 的 key
+重新分配给 preDelete。
 
 实现必须使用固定 hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state`，
@@ -354,7 +361,8 @@ key 的 label。该记录与 marker 在同一次 metadata 写入中更新，只�
 RI label 及其 Pod 镜像均已不存在后才移除条目。markerA 改为 markerB 后，
 markerA 在 label 和 Pod 镜像清理前保持记录，因此重启后仍能区分协议遗留
 label 与普通用户 label。
-回滚前置条件是：`hook-state` label 不存在，且 marker key 记录为空或不存在。
+回滚前置条件是：`hook-state` label 不存在、marker key 记录为空或不存在，
+且没有保留的 preDelete finalizer 残留。
 
 ### 信号标签向 Pod 传递
 
@@ -376,6 +384,9 @@ Pod 级消费者因此无需 watch 或 patch RI，就能观察 hook 信号。
 - 传递是仅修改 metadata 的 Pod 更新，不修改 Pod template、不生成新的
   controller revision，也不重建 Pod。
 - controller 在每次 RI reconcile 时核对这些 key，并合并批量更新 Pod。
+- 镜像不可信。任何有 Pod 更新权限的对象都能在下一次 reconcile 同步前
+  写入或清除这些 key，因此 RI 是唯一权威来源；安全相关的消费者必须
+  回验 RI，不能只信镜像。
 - 信号标签 key 在成员 Pod 上由 controller 拥有；在 Pod template labels
   中声明相同 key 属于配置错误，准入校验拒绝。
 
@@ -561,13 +572,12 @@ Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放�
 不触发 preDelete；成员 Pod 不需要 lifecycle finalizer。
 
 受支持的删除路径是 controller 发起的删除和默认 background 级联。
-对可能到达启用 preDelete RI 的 RBGSet、RBG、RIS 或 RI foreground 删除请求，
-准入必须拒绝。webhook 拦截这些 DELETE 请求，检查
-`DeleteOptions.propagationPolicy`，并拒绝 `Foreground`；
-通过 owner reference 和 informer 缓存解析可达 RI。
-解析采用 fail-closed 语义：缓存尚未观察到新建 RI 或刚启用的 preDelete 时，
-webhook 无法证明删除安全，应拒绝或暂缓该请求；cache miss 不能证明删除安全。
-foreground GC 可能在 hook 放行前删除 dependent Pods。
+`RoleInstanceLifecycleHooks` 开启期间，准入拒绝 RBGSet、RBG、RIS 和 RI
+所有使用 `Foreground` 传播的删除请求。webhook 检查
+`DeleteOptions.propagationPolicy`，且不依赖 informer 缓存：cache miss
+和成功 lookup 都无法证明没有可达 RI 启用 preDelete，因为新建 RI 或刚启用
+的 hook 可能已提交而 watch 事件尚未到达。客户端可以改用 background
+传播重试。foreground GC 可能在 hook 放行前删除 dependent Pods。
 namespace 删除不在存活引擎保证范围内：namespace controller 可能直接删除
 成员 Pods；若保留 RI finalizer 残留，运维需要使用 break-glass 流程。
 外部直接删除 Pod 后 deletionTimestamp 无法撤销，该路径仍属于 Recovery，
@@ -575,11 +585,13 @@ namespace 删除不在存活引擎保证范围内：namespace controller 可能�
 
 ### 执行恢复与并发约束
 
-phase 模型来自 KEP-502，当前对应 PR #528。RI 的 `Creating`、`Running`、
+phase 模型来自 KEP-502，现已合入。RI 的 `Creating`、`Running`、
 `Updating`、`Recovering`、`Terminating` 持久化在
 `RoleInstance.status.phase`，executor 同时观察 `status.phase` 和 RI lifecycle
 labels。KEP-502 的 schema 与持久化规则被接受前，本 KEP 不能进入
-implementable。
+implementable。已合入的 KEP-502 文本仍引用早期提案中的 `markPodNotReady`
+lifecycle 门控；本 KEP 不定义任何 Ready 门控机制，需要 KEP-502 后续
+修订删除这些引用后才能实现。
 
 业务重试由 executor 负责，controller 只重试自身 API 读写和状态收敛。
 业务结果未知时，executor 必须先查询、恢复或幂等重试，再清除 marker。
@@ -642,11 +654,12 @@ hook-state 已从新一轮前置阶段变为 PostReady，executor 据此处理�
 ### 权限与字段所有权
 
 controller 负责写入 hook marker，executor 负责清除自己处理的 marker。
-双方只修改各自负责的 key，不整体替换 labels map。普通 RIS metadata 同步不得覆盖这些运行时标记。
+双方只修改各自负责的 key，不整体替换 labels map。普通 RIS metadata 同步不得覆盖这些运行时标记和 marker key 记录。
 
 字段所有权明确：用户拥有上文定义的权威 lifecycle 配置；controller 拥有
-phase、`hook-state`、RI 生效快照、保留 finalizer 以及成员 Pod 上的
-镜像信号标签；executor 只负责清除 marker。该边界可由 admission 或
+phase、`hook-state`、RI 生效快照、marker key 记录、保留 finalizer 以及
+成员 Pod 上的镜像信号标签；executor 只负责清除 marker。用户、metadata
+同步和 executor 都不得写 marker key 记录。该边界可由 admission 或
 受限代理执行。
 
 executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空间内
@@ -696,7 +709,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 
 上述设计已确定；进入 `implementable` 前需要的是完成与验证，而不是重新设计：
 
-1. KEP-502 的 `RoleInstance.status.phase` schema 被接受，以及 Alpha 后
+1. KEP-502 的 `RoleInstance.status.phase` schema 被接受，后续修订删除
+   其遗留的 `markPodNotReady` 引用，以及 Alpha 后
    standalone RIS lifecycle 用户的迁移路径。
 2. 明确授权与诊断细则、版本支持矩阵和存量接管实施流程。
 3. 验证已确定的 preDelete 屏障：保留 RI finalizer 时的默认
@@ -718,7 +732,11 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 
 - 四个 hooks 的触发边界，确认不存在其他生命周期挂载点。
 - 准入拒绝新 lifecycle 协议与用户配置的旧 RIS lifecycle 共存，
-  以及 marker key 与完整 controller 状态 key 冲突。
+  以及 marker key 与 controller 状态 key 冲突或使用保留的
+  `rbg.workloads.x-k8s.io/` 前缀。
+- 准入拒绝所属 RIS selector 使用 controller 保留 key，并拒绝在受影响 RI
+  仍记录某个信号 key 时将其重新分配给另一个 hook，使已退役的
+  `postReady` 执行者无法清除 `preDelete` marker。
 - 准入拒绝所属 RIS `spec.selector` 在 `matchLabels` 或 `matchExpressions`
   中使用的 marker key，包括仅通过 `DoesNotExist` 选择的 key。
 - 准入拒绝不符合 Kubernetes label 语法的 `signalLabels` key/value，
@@ -756,7 +774,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   旧 key 在 label 和 Pod 镜像清理前保持记录。
 - marker key 记录与 marker 同批写入、跨重启保留，仅在对应 label 及其
   Pod 镜像移除后清空；
-  回滚前置条件是 `hook-state` label 不存在且记录为空。
+  回滚前置条件是 `hook-state` label 不存在、记录为空且没有保留的
+  preDelete finalizer。
 - 删除 active hook 后按“不存在”语义处理：controller 不为它执行 marker
   匹配，清理遗留 runtime labels，并按已放行 hook 的转换继续。
 - 连续受控操作达到工作负载 Ready 时，同名 postReady marker 幂等写入，不引入操作代次；
@@ -771,8 +790,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 前置 executor 延迟启动时 marker 保持匹配，controller 持续等待；executor 不需要首次登记。
 - 前置业务多次失败后自行退避成功，期间 controller 不推进受阻操作。
 - controller／executor 重启、watch 重连、PATCH 冲突和业务成功但 marker 清除失败。
-- foreground 删除准入采用 fail-closed：与 RI 创建或 preDelete 启用并发的请求，
-  在 informer 缓存未同步时被拒绝或暂缓。
+- feature gate 开启期间，RBGSet、RBG、RIS 和 RI 的 foreground 删除均被拒绝，
+  包括与 RI 创建或 preDelete 启用并发的请求。
 - RIS metadata 同步不覆盖运行时 marker，controller 不在同一前置阶段重复写入。
 - RI 信号标签变化在不修改 revision 的情况下到达成员 Pod；RI 上清除
   marker 会移除 Pod 上的镜像 label。
@@ -848,11 +867,16 @@ controller 与 executor 必须约定阶段位置、阶段值和 marker 方向。
 feature gate 为 `RoleInstanceLifecycleHooks`。先部署支持该阶段协议的
 executor 并授予必要权限，再开启该 gate。该 gate 默认关闭；
 关闭期间拒绝新协议字段，旧 RIS lifecycle 协议保持现有行为。
+gate 边界：开启 gate 不会回溯校验存量对象，但互斥规则作用于后续每次
+写入，已同时携带新旧配置的对象必须在下一次更新前修正。gate 关闭期间，
+controller 不写入也不匹配新协议运行时 labels；存量 `hook-state`、
+marker 和 marker key 记录保留给兼容 controller 收尾。旧 `inPlaceUpdate`
+hook 在公布弃用版本前继续支持 standalone RIS 用户。
 关闭或重新启用功能时，执行中的 marker 和未完成阶段保持不变；
 不理解当前协议的版本不接管未完成操作。
 preDelete 需要确认 executor 在业务 Pod 删除前可用，并验证所支持删除路径的屏障。
-foreground 级联删除不是受支持路径；可能到达启用 preDelete RI 时，准入必须拒绝。
-该准入范围包括 RBGSet、RBG、RIS 和 RI 删除入口。
+foreground 级联删除不是受支持路径。gate 开启期间，RBGSet、RBG、RIS 和
+RI 删除入口的 Foreground 传播一律被准入拒绝。
 执行不兼容回滚时，应先禁用 hook 配置，再移除兼容 controller。
 只有 RI 已稳定且兼容 controller 已清理全部保留的 preDelete RI finalizer 后，
 禁用才算完成；feature gate 或配置删除不能替代该收敛过程。
@@ -862,7 +886,7 @@ KEP metadata 中的 `disable-supported` 描述 feature gate 回退，
 
 ### 发布、升级与回滚规划
 
-主要风险是 controller 重复写入 marker、旧 executor 清除新 marker、Ready 循环等待和删除持续等待。
+主要风险是 controller 重复写入 marker、旧 executor 清除新 marker 和删除持续等待。
 需要验证 controller 与 executor 版本兼容、前置等待对上层发布预算的影响，
 以及新旧协议交接。
 计划覆盖“升级 → 降级 → 升级”，本提案不移除现有 RIS lifecycle API。
@@ -885,9 +909,12 @@ executor 依赖的引擎管理接口、路由和存储服务故障会延长前�
 
 ### 可扩展性
 
-主要新增开销是阶段和 marker 写入、executor 观察连接及业务重试，不创建逐次执行的 Job／Pod。
+主要新增开销是阶段和 marker 写入、信号标签镜像扇出（每次信号转换 1 次
+RI 写入加每个成员 Pod 各 1 次写入，且每次 reconcile 重新核对）、executor
+观察连接及业务重试，不创建逐次执行的 Job／Pod。
 executor 需要限制观察范围、连接数、轮询频率和业务退避，避免多 sidecar 全量 watch RI。
-规模测试覆盖集中创建、发布、故障恢复、executor 故障及大量等待 hook 完成的实例。
+规模测试覆盖集中创建、发布、故障恢复、executor 故障、多 Pod 实例的镜像
+扇出及大量等待 hook 完成的实例。
 
 ### 故障排查
 
@@ -919,6 +946,9 @@ Alpha 不提供自动忽略失败策略。executor 永久不可用时，唯一�
 - controller 和 executor 都能修改 marker，必须严格区分写入与清除的所有权，并保存操作进度。
 - 无独立结果协议，controller 不能单靠 marker 判断具体业务错误，诊断依赖 executor。
 - 同名 marker 与固定 state 不区分业务代次，迟到副作用需要 executor 幂等和业务侧 fencing。
+- 操作中删除 hook 配置会跳过其剩余屏障。preDelete 的放行是单向的——
+  删除开始后无法重新添加 finalizer——运维必须先确认该 hook 不再需要
+  再删除配置。
 - 前置持续失败可能长期阻塞更新、恢复或删除；
   postReady 持续失败不影响 phase 和 RI Ready，需要独立的业务告警。
 

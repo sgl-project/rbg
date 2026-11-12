@@ -226,7 +226,8 @@ local instance is not sufficient evidence that it is safe to exit.
 | --- | --- |
 | Repeated marker writes | Write on phase entry only |
 | Metadata overwrites markers | Exclude markers from declarative labels |
-| Pod mirrors overwritten externally | Re-sync mirrors each RI reconcile |
+| Mirrors overwritten externally | RI is authoritative; re-sync per reconcile |
+| Active hook removed mid-operation | Barrier skipped; operator confirms |
 | Stale marker cleanup within one hook | Consumers coordinate; no generations |
 | Marker keys reused by different hooks | Reject in admission |
 | Signal key overwrites controller state | Reject reserved keys in admission |
@@ -445,7 +446,14 @@ a marker key used by the owning RIS `spec.selector`, whether in `matchLabels`
 or in any `matchExpressions` entry, even when the key is absent from template
 labels. Writing such a marker can make an RI stop matching the selector, and
 the stateful RIS instance-reference logic then releases the RI's owner
-reference.
+reference. Conversely, admission rejects an owning RIS selector that uses a
+controller-reserved key such as the hook-state key: the controller's own
+runtime writes would repeatedly match and unmatch the RI.
+The uniqueness check also spans configuration generations: a signal key may
+not be reassigned from one hook to another while any RI governed by the
+configuration still records that key, so a retired executor cannot remove a
+marker that now belongs to a different hook, such as a pending `postReady`
+key reassigned to `preDelete`.
 
 The implementation must use the exact hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state` and must not reuse the
@@ -471,8 +479,8 @@ after the corresponding RI label and its Pod mirrors are confirmed absent.
 After markerA changes to markerB, markerA stays recorded until its label and
 Pod mirrors are cleaned, so a restart can
 still distinguish protocol-owned stale labels from ordinary user labels. The
-rollback precondition is an absent `hook-state` label together with an empty
-or absent marker-key record.
+rollback precondition is an absent `hook-state` label, an empty or absent
+marker-key record, and no reserved `preDelete` finalizer remaining.
 
 ### Signal Label Propagation to Pods
 
@@ -498,6 +506,10 @@ Propagation rules:
   template, create a new controller revision, or recreate Pods.
 - The controller reconciles these keys on every RI reconciliation and
   batches the Pod updates it issues.
+- Mirrors are not authenticated. Any actor with Pod update permission can
+  write or clear these keys until the next reconciliation re-syncs them, so
+  the RI is the only authoritative source; safety-relevant consumers must
+  verify the RI rather than trust a mirror alone.
 - Signal label keys are controller-owned on member Pods. Declaring the same
   key in the Pod template labels is a configuration error and is rejected by
   admission.
@@ -725,16 +737,15 @@ replacement after the corresponding pre-operation hook is released, without
 triggering `preDelete`. No member Pod requires a lifecycle finalizer.
 
 Controller-initiated deletion and default background cascade are the supported
-deletion paths. Foreground cascading deletion must be rejected by admission
-for RBGSet, RBG, RIS, or RI deletion requests that can reach an RI with
-`preDelete` configured. The webhook intercepts those DELETE requests, checks
-`DeleteOptions.propagationPolicy`, and rejects `Foreground`; it resolves
-reachable RIs through owner references and cached informers. Resolution is
-fail-closed: when the cache has not yet observed a newly created RI or a
-recently enabled `preDelete`, the webhook cannot prove the deletion is safe
-and rejects or defers the request. A cache miss must not establish that
-deletion is safe. Foreground GC may delete dependent Pods before the hook is
-released. Namespace teardown is outside the live-engine guarantee:
+deletion paths. While `RoleInstanceLifecycleHooks` is enabled, admission
+rejects every `Foreground` propagation for RBGSet, RBG, RIS, and RI deletion
+requests. The webhook checks `DeleteOptions.propagationPolicy` and does not
+depend on informer caches: neither a cache miss nor a successful lookup can
+prove that no reachable RI has `preDelete` in effect, because RI creation or
+hook enablement may have committed before its watch event arrived. The client
+may retry with background propagation. Foreground GC may delete dependent
+Pods before the hook is released. Namespace teardown is outside the
+live-engine guarantee:
 the namespace controller may delete member Pods directly, and an operator must
 use the break-glass procedure if a reserved RI finalizer remains. A direct
 external Pod deletion cannot be undone by clearing its deletionTimestamp. That
@@ -743,12 +754,15 @@ live-engine barrier.
 
 ### Restart Recovery and Concurrency Constraints
 
-The phase model is defined by KEP-502, currently proposed in PR #528. RI
+The phase model is defined by KEP-502, now merged. RI
 phases are persisted in `RoleInstance.status.phase` as `Creating`, `Running`,
 `Updating`, `Recovering`, and `Terminating`. The executor observes
 `status.phase` together with the RI lifecycle labels. KEP-527 cannot become
 implementable until the KEP-502 schema and phase persistence rules are
-accepted.
+accepted. The merged KEP-502 text still references the `markPodNotReady`
+lifecycle gate from an earlier revision of this proposal; this KEP defines
+no readiness-gating mechanism, so a KEP-502 follow-up amendment must remove
+those references before implementation.
 
 The executor owns application retries. The controller retries only its own
 API reads and writes and status convergence. If an application result is
@@ -848,9 +862,10 @@ synchronization must not overwrite these runtime markers.
 
 Field ownership is explicit: users own the authoritative lifecycle
 configuration described above; the controller owns phase, `hook-state`, the
-effective RI snapshot, the reserved finalizer, and the mirrored signal labels
-on member Pods; the executor only removes markers. Admission or a restricted
-proxy may enforce this boundary.
+effective RI snapshot, the marker-key record, the reserved finalizer, and the
+mirrored signal labels on member Pods; the executor only removes markers.
+Users, metadata synchronization, and executors must not write the
+marker-key record. Admission or a restricted proxy may enforce this boundary.
 
 An executor that polls with GET and PATCHes markers needs `get` and `patch`
 on `roleinstances` in the target namespace. LIST/WATCH additionally requires
@@ -930,8 +945,9 @@ legacy protocol remains unchanged; the new protocol exposes only
 The designs above are settled; what remains before this KEP can become
 `implementable` is completion and validation, not redesign:
 
-1. Acceptance of the KEP-502 `RoleInstance.status.phase` schema and the
-   post-Alpha migration path for standalone RIS lifecycle users.
+1. Acceptance of the KEP-502 `RoleInstance.status.phase` schema, the
+   follow-up amendment removing its stale `markPodNotReady` references, and
+   the post-Alpha migration path for standalone RIS lifecycle users.
 2. Finalize authorization and diagnostics details, the version support
    matrix, and the procedure for adopting existing resources.
 3. Validate the settled preDelete barrier: default background GC behavior
@@ -958,7 +974,12 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   hooks exist.
 - Admission rejects a new lifecycle protocol together with a legacy
   user-configured RIS lifecycle, and rejects marker keys that collide with
-  the fully qualified controller state key.
+  the controller state key or use the reserved
+  `rbg.workloads.x-k8s.io/` prefix.
+- Admission rejects an owning RIS selector that uses a controller-reserved
+  key, and rejects reassigning a signal key to a different hook while any
+  affected RI still records it, so a retired `postReady` execution cannot
+  remove a `preDelete` marker.
 - Admission rejects marker keys used by the owning RIS `spec.selector` in
   `matchLabels` or `matchExpressions`, including keys selected only by
   `DoesNotExist`.
@@ -1018,7 +1039,8 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - The marker-key record is written with the marker, retained across
   restarts, and cleared only after the corresponding label and its Pod
   mirrors are removed; the
-  rollback precondition is an absent `hook-state` label and an empty record.
+  rollback precondition is an absent `hook-state` label, an empty record,
+  and no reserved `preDelete` finalizer.
 - Removing an active hook uses absence semantics: the controller performs no
   marker matching for it, removes its stale runtime labels, and follows the
   released-hook transition.
@@ -1040,9 +1062,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   operation.
 - Controller and executor restarts, watch reconnections, PATCH conflicts,
   and successful application actions followed by marker-removal failures.
-- Foreground-deletion admission is fail-closed: requests that race RI
-  creation or `preDelete` enablement are rejected or deferred while the
-  informer cache is stale.
+- Foreground deletion is rejected for RBGSet, RBG, RIS, and RI while the
+  feature gate is enabled, including requests that race RI creation or
+  `preDelete` enablement.
 - RIS metadata synchronization preserves runtime markers, and the controller
   does not rewrite a marker during the same pre-operation phase.
 - RI signal-label changes reach member Pods without revision changes, and
@@ -1164,14 +1186,23 @@ the gate. The gate defaults to false. While it is disabled, the new protocol
 fields are rejected and the legacy RIS lifecycle protocol retains its existing
 behavior.
 
+Gate edges: enabling the gate does not retroactively validate existing
+objects, but the mutual-exclusion rule applies to every subsequent write, so
+an object that already carries both the legacy and new configurations must
+be corrected before its next update. With the gate disabled, the controller
+neither writes nor matches new-protocol runtime labels; existing
+`hook-state`, markers, and the marker-key record remain for a compatible
+controller to finish. The legacy `inPlaceUpdate` hook remains supported for
+standalone RIS users until a deprecation release is announced.
+
 Disabling or re-enabling the feature leaves in-flight markers and unfinished
 phases intact. A version that does not understand the current protocol does
 not take over an unfinished operation. `preDelete` requires an
 executor that is available before application Pod deletion and validation of
 the barrier across all supported deletion paths.
-Foreground cascading deletion is not a supported path and must be rejected by
-admission for RBGSet, RBG, RIS, or RI deletion when it can reach an RI with
-`preDelete` configured.
+Foreground cascading deletion is not a supported path. While the feature gate
+is enabled, admission rejects `Foreground` propagation at every RBGSet, RBG,
+RIS, and RI deletion entry.
 
 The `disable-supported` metadata field describes feature-gate rollback, not
 stable-boundary removal of individual hook configuration.
@@ -1218,14 +1249,16 @@ pre-operation waits or background `postReady` processing.
 
 ### Scalability
 
-The main additional costs are phase and marker writes, executor watch
-connections, and application retries. No per-invocation Job or Pod is
-created. Executors must bound their watch scope, connection counts, polling
-rates, and application backoff to prevent multiple sidecars from watching all
-RIs.
+The main additional costs are phase and marker writes, signal-label mirror
+fan-out (one RI write plus one write per member Pod per signal transition,
+re-checked on every reconciliation), executor watch connections, and
+application retries. No per-invocation Job or Pod is created. Executors must
+bound their watch scope, connection counts, polling rates, and application
+backoff to prevent multiple sidecars from watching all RIs.
 
 Scale testing will cover mass creation, rollouts, failure recovery, executor
-failures, and large numbers of instances waiting for hooks to complete.
+failures, mirror fan-out on multi-Pod instances, and large numbers of
+instances waiting for hooks to complete.
 
 ### Troubleshooting
 
@@ -1280,6 +1313,10 @@ routine rollback or a substitute for restoring an executor.
 - Identical marker names and fixed states do not distinguish application
   generations. Delayed side effects require executor idempotency and
   application-side fencing.
+- Removing an active hook configuration mid-operation skips its remaining
+  barrier. The `preDelete` release is one-way — the finalizer cannot be
+  re-added once deletion has begun — so operators must confirm the hook is
+  no longer required before removing it.
 - Persistent pre-operation failures can block update, recovery, or deletion
   indefinitely. Persistent `postReady` failures affect neither phase nor
   RI Ready and therefore need separate application alerts.
