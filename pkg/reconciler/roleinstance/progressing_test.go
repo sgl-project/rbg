@@ -47,9 +47,15 @@ func TestNextRoleInstancePhase(t *testing.T) {
 		{"target change during creating with superseded pods stays creating", workloadsv1alpha2.RoleInstancePhaseCreating,
 			roleInstancePhaseFacts{updateActive: true, podsPresent: true, readySatisfied: true},
 			workloadsv1alpha2.RoleInstancePhaseCreating},
-		{"absent phase with pending update stays creating", "",
+		{"absent phase with pending update initializes updating", "",
 			roleInstancePhaseFacts{updateActive: true, podsPresent: true, readySatisfied: true},
-			workloadsv1alpha2.RoleInstancePhaseCreating},
+			workloadsv1alpha2.RoleInstancePhaseUpdating},
+		{"absent established phase with missing pods initializes recovering", "",
+			roleInstancePhaseFacts{previouslyEstablished: true, podsPresent: false},
+			workloadsv1alpha2.RoleInstancePhaseRecovering},
+		{"absent established phase stays running on readiness drop", "",
+			roleInstancePhaseFacts{previouslyEstablished: true, podsPresent: true, readySatisfied: false},
+			workloadsv1alpha2.RoleInstancePhaseRunning},
 		{"absent and incomplete enters creating", "", incomplete, workloadsv1alpha2.RoleInstancePhaseCreating},
 		{"absent and complete enters running", "", complete, workloadsv1alpha2.RoleInstancePhaseRunning},
 		{"running enters updating", workloadsv1alpha2.RoleInstancePhaseRunning, updating, workloadsv1alpha2.RoleInstancePhaseUpdating},
@@ -187,6 +193,51 @@ func TestComputeInstanceProgressingCondition(t *testing.T) {
 			t.Fatalf("got %+v", got)
 		}
 	})
+}
+
+func TestStableBlockerReason(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Generation: 2},
+	}
+	progressing := func(reason string, observedGeneration int64) []workloadsv1alpha2.RoleInstanceCondition {
+		return []workloadsv1alpha2.RoleInstanceCondition{{
+			Type:               workloadsv1alpha2.RoleInstanceProgressing,
+			Status:             corev1.ConditionTrue,
+			Reason:             reason,
+			ObservedGeneration: observedGeneration,
+		}}
+	}
+	r := &reconciler{}
+
+	// A confirmed blocker family for the current target is retained.
+	instance.Status.Conditions = progressing(workloadsv1alpha2.ReasonPodCreateQuotaExceeded, 2)
+	if got := r.stableBlockerReason(instance, workloadsv1alpha2.ReasonPodOperationUnclassified); got != workloadsv1alpha2.ReasonPodCreateQuotaExceeded {
+		t.Fatalf("confirmed blocker family must be retained, got %s", got)
+	}
+
+	// Activity reasons are not blockers and must not replace an unclassified error.
+	instance.Status.Conditions = progressing(workloadsv1alpha2.ReasonInstanceUpdating, 2)
+	if got := r.stableBlockerReason(instance, workloadsv1alpha2.ReasonPodOperationUnclassified); got != workloadsv1alpha2.ReasonPodOperationUnclassified {
+		t.Fatalf("activity reason must not be retained, got %s", got)
+	}
+
+	// A child-readiness reason is not a blocker either.
+	instance.Status.Conditions = progressing(workloadsv1alpha2.ReasonInstancePodsNotReady, 2)
+	if got := r.stableBlockerReason(instance, workloadsv1alpha2.ReasonPodOperationUnclassified); got != workloadsv1alpha2.ReasonPodOperationUnclassified {
+		t.Fatalf("child-readiness reason must not be retained, got %s", got)
+	}
+
+	// A stale condition does not describe the current target.
+	instance.Status.Conditions = progressing(workloadsv1alpha2.ReasonPodCreateQuotaExceeded, 1)
+	if got := r.stableBlockerReason(instance, workloadsv1alpha2.ReasonPodOperationUnclassified); got != workloadsv1alpha2.ReasonPodOperationUnclassified {
+		t.Fatalf("stale blocker must not be retained, got %s", got)
+	}
+
+	// A specific new error is not rewritten.
+	instance.Status.Conditions = progressing(workloadsv1alpha2.ReasonPodCreateQuotaExceeded, 2)
+	if got := r.stableBlockerReason(instance, workloadsv1alpha2.ReasonPodCreateForbidden); got != workloadsv1alpha2.ReasonPodCreateForbidden {
+		t.Fatalf("specific new error must win, got %s", got)
+	}
 }
 
 func TestInsufficientResourcesMessage(t *testing.T) {

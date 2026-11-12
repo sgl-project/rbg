@@ -87,21 +87,25 @@ type SetBlocker struct {
 // condition already present in newStatus carries this controller's own operation
 // failure; it is replaced here by the finalized condition.
 func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {
-	condition := ComputeSetProgressingCondition(set, newStatus, instances, extractOwnSetBlocker(newStatus))
+	condition := ComputeSetProgressingCondition(set, newStatus, instances, extractOwnSetBlocker(newStatus), priorSetBlocker(set))
 	condition.LastTransitionTime = preserveTransitionTime(set.Status.Conditions, condition.Status)
-	for i := range newStatus.Conditions {
-		if newStatus.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetProgressing {
-			newStatus.Conditions[i] = condition
-			return
+	// A scale failure and an update failure in the same reconcile can both append a
+	// raw Progressing blocker. Remove every raw entry so exactly one finalized
+	// condition is persisted; duplicate type keys would make readers pick a stale
+	// or lower-priority fact.
+	conditions := make([]workloadsv1alpha2.RoleInstanceSetCondition, 0, len(newStatus.Conditions)+1)
+	for _, existing := range newStatus.Conditions {
+		if existing.Type != workloadsv1alpha2.RoleInstanceSetProgressing {
+			conditions = append(conditions, existing)
 		}
 	}
-	newStatus.Conditions = append(newStatus.Conditions, condition)
+	newStatus.Conditions = append(conditions, condition)
 }
 
 // ComputeSetProgressingCondition builds the RIS Progressing condition. Blockers outrank
 // activity reasons; activity precedence is Creating, Recovering, RoleInstanceUpdated,
 // and ScalingUp / ScalingDown; child readiness applies only when no workflow remains.
-func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance, ownBlocker *SetBlocker) workloadsv1alpha2.RoleInstanceSetCondition {
+func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance, ownBlocker, priorBlocker *SetBlocker) workloadsv1alpha2.RoleInstanceSetCondition {
 	condition := workloadsv1alpha2.RoleInstanceSetCondition{
 		Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
 		Status:             v1.ConditionTrue,
@@ -109,7 +113,7 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 		ObservedGeneration: set.Generation,
 	}
 
-	if reason, message := currentSetBlocker(ownBlocker, instances); reason != "" {
+	if reason, message := currentSetBlocker(ownBlocker, priorBlocker, instances); reason != "" {
 		condition.Reason = reason
 		condition.Message = message
 		return condition
@@ -180,23 +184,42 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	return condition
 }
 
-// setEstablished reports whether the RoleInstanceSet has established the instances
-// of a previous target. Freshly published revisions are not evidence: both modes
-// initialize CurrentRevision before any RoleInstance exists, and instances appearing
-// during initial creation do not turn the remaining work into a scale-up.
+// setEstablishmentReasons are Progressing reasons that prove the set previously got
+// past initial establishment. Blocker reasons are excluded: a blocked fresh set is not
+// established, and Creating explicitly denies establishment.
+var setEstablishmentReasons = map[string]bool{
+	workloadconstants.ProgressingReasonConverged:           true,
+	workloadconstants.ProgressingReasonPaused:              true,
+	workloadconstants.ProgressingReasonInstancesNotReady:   true,
+	workloadconstants.ProgressingReasonScalingUp:           true,
+	workloadconstants.ProgressingReasonScalingDown:         true,
+	workloadconstants.ProgressingReasonRoleInstanceUpdated: true,
+	workloadconstants.ProgressingReasonRecovering:          true,
+}
+
+// setEstablished reports whether the RoleInstanceSet has established the instances of
+// a previous target. Freshly published revisions are not evidence: both modes
+// initialize CurrentRevision before any RoleInstance exists, and a ready subset during
+// OrderedReady initial creation is not establishment.
 func setEstablished(set *workloadsv1alpha2.RoleInstanceSet) bool {
-	if set.Status.Replicas > 0 && set.Status.ReadyReplicas == set.Status.Replicas &&
-		set.Status.UpdatedReplicas == set.Status.Replicas {
-		return true
-	}
 	for _, condition := range set.Status.Conditions {
-		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
-			condition.Status == v1.ConditionFalse &&
-			condition.Reason == workloadconstants.ProgressingReasonConverged {
+		if condition.Type != workloadsv1alpha2.RoleInstanceSetProgressing {
+			continue
+		}
+		switch {
+		case condition.Reason == workloadconstants.ProgressingReasonCreating:
+			// The controller is still establishing this set.
+			return false
+		case setEstablishmentReasons[condition.Reason]:
 			return true
 		}
 	}
-	return false
+	// Legacy fallback for sets written before this condition existed: every instance
+	// of a previous target was updated to the previously expected scope and ready.
+	// During initial creation UpdatedReplicas stays below ExpectedUpdatedReplicas, so
+	// a partially created set does not qualify.
+	return set.Status.Replicas > 0 && set.Status.ReadyReplicas == set.Status.Replicas &&
+		set.Status.UpdatedReplicas == set.Status.ExpectedUpdatedReplicas
 }
 
 // establishedInstanceMissing reports whether an established set lost instances it
@@ -208,27 +231,78 @@ func establishedInstanceMissing(set *workloadsv1alpha2.RoleInstanceSet, newStatu
 		newStatus.Replicas < target && set.Status.Replicas >= target
 }
 
-// extractOwnSetBlocker returns the blocker recorded by this controller's own
-// operations as a Progressing condition in newStatus, if any.
+// extractOwnSetBlocker returns the highest-priority blocker recorded by this
+// controller's own operations as Progressing conditions in newStatus. Scale and
+// update failures can both be recorded in one reconcile; they compete through the
+// documented family precedence instead of the append order.
 func extractOwnSetBlocker(newStatus *workloadsv1alpha2.RoleInstanceSetStatus) *SetBlocker {
+	candidates := map[string]string{}
 	for _, condition := range newStatus.Conditions {
-		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
-			condition.Status == v1.ConditionTrue && condition.Reason != "" &&
-			condition.Reason != workloadconstants.ProgressingReasonConverged {
-			return &SetBlocker{Reason: condition.Reason, Message: condition.Message}
+		if condition.Type != workloadsv1alpha2.RoleInstanceSetProgressing ||
+			condition.Status != v1.ConditionTrue || condition.Reason == "" {
+			continue
+		}
+		if isSetBlockerFamily(condition.Reason) {
+			if _, exists := candidates[condition.Reason]; !exists {
+				candidates[condition.Reason] = condition.Message
+			}
+		}
+	}
+	for _, family := range familyPriority {
+		if message, ok := candidates[family]; ok {
+			return &SetBlocker{Reason: family, Message: message}
 		}
 	}
 	return nil
 }
 
+// isSetBlockerFamily reports whether the reason is a current-blocker family reason.
+func isSetBlockerFamily(reason string) bool {
+	for _, family := range familyPriority {
+		if family == reason {
+			return true
+		}
+	}
+	return false
+}
+
+// priorSetBlocker returns the previously persisted current-generation specific blocker
+// family for this controller's own operations, if any. It is used to keep a confirmed
+// family when a later same-generation failure cannot be classified.
+func priorSetBlocker(set *workloadsv1alpha2.RoleInstanceSet) *SetBlocker {
+	for _, condition := range set.Status.Conditions {
+		if condition.Type != workloadsv1alpha2.RoleInstanceSetProgressing ||
+			condition.Status != v1.ConditionTrue ||
+			condition.ObservedGeneration != set.Generation ||
+			condition.Reason == workloadconstants.ProgressingReasonUnclassifiedBlocker ||
+			!isSetBlockerFamily(condition.Reason) {
+			continue
+		}
+		return &SetBlocker{Reason: condition.Reason, Message: condition.Message}
+	}
+	return nil
+}
+
 // currentSetBlocker selects the current blocker reason: a confirmed family from this
-// controller's own operations, or a family mapped from RI Progressing conditions.
-// A confirmed blocker family is never replaced by an unclassified error.
-func currentSetBlocker(ownBlocker *SetBlocker, instances []*workloadsv1alpha2.RoleInstance) (string, string) {
+// controller's own operations, a family mapped from RI Progressing conditions, or a
+// prior own-operation family retained when the new failure is unclassified. A
+// confirmed blocker family is never replaced by an unclassified error.
+func currentSetBlocker(ownBlocker, priorBlocker *SetBlocker, instances []*workloadsv1alpha2.RoleInstance) (string, string) {
 	candidates := map[string]string{}
 	if ownBlocker != nil && ownBlocker.Reason != "" &&
 		ownBlocker.Reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
 		candidates[ownBlocker.Reason] = ownBlocker.Message
+	}
+	if ownBlocker != nil && ownBlocker.Reason == workloadconstants.ProgressingReasonUnclassifiedBlocker &&
+		priorBlocker != nil && priorBlocker.Reason != "" &&
+		priorBlocker.Reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
+		// The prior family stays when the new failure cannot be classified; a fresh
+		// successful observation of the current target clears it, and an
+		// unclassifiable error does not establish that the confirmed family no
+		// longer holds.
+		if _, exists := candidates[priorBlocker.Reason]; !exists {
+			candidates[priorBlocker.Reason] = priorBlocker.Message
+		}
 	}
 
 	for _, instance := range instances {

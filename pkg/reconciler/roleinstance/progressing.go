@@ -41,6 +41,31 @@ type roleInstancePhaseFacts struct {
 
 	// readySatisfied reports controller-observed readiness per readyPolicy.
 	readySatisfied bool
+
+	// previouslyEstablished reports that the instance previously confirmed
+	// completion of an earlier target (the LastReadyGeneration latch). It only
+	// matters when the persisted phase is absent, to initialize an upgraded object
+	// from confirmed workflow facts instead of defaulting to initial creation.
+	previouslyEstablished bool
+}
+
+// instanceBlockerReasons are the RI Progressing reasons that report a confirmed
+// current-blocker family. Activity reasons (Creating, Updating, Recovering) and the
+// child-readiness reason (PodsNotReady) are not blockers and must never be retained in
+// place of a newly unclassifiable error.
+var instanceBlockerReasons = map[string]bool{
+	workloadsv1alpha2.ReasonPodCreateForbidden:            true,
+	workloadsv1alpha2.ReasonPodUpdateForbidden:            true,
+	workloadsv1alpha2.ReasonPodAdmissionRejected:          true,
+	workloadsv1alpha2.ReasonPodCreateQuotaExceeded:        true,
+	workloadsv1alpha2.ReasonPodUpdateQuotaExceeded:        true,
+	workloadsv1alpha2.ReasonInstanceInsufficientResources: true,
+}
+
+// isInstanceBlockerReason reports whether the reason is a confirmed current-blocker
+// family reason. PodOperationUnclassified is excluded: it is not a confirmed family.
+func isInstanceBlockerReason(reason string) bool {
+	return instanceBlockerReasons[reason]
 }
 
 // nextRoleInstancePhase implements the allowed phase edges from KEP-502:
@@ -53,10 +78,32 @@ type roleInstancePhaseFacts struct {
 //     controller-observed readiness complete;
 //   - an update target identified while recovery continues moves to Updating;
 //   - deletion is not a phase: the reconciler returns before status writes once the
-//     instance has a deletionTimestamp, and clients use the deletionTimestamp.
+//     instance has a deletionTimestamp, and clients use the deletionTimestamp;
+//   - an absent phase initializes from confirmed workflow facts: an update target is
+//     Updating, a previously established instance with missing Pods is Recovering,
+//     and only a genuinely new instance starts at Creating.
 func nextRoleInstancePhase(current workloadsv1alpha2.RoleInstancePhase, facts roleInstancePhaseFacts) workloadsv1alpha2.RoleInstancePhase {
 	switch current {
-	case workloadsv1alpha2.RoleInstancePhaseCreating, "":
+	case "":
+		switch {
+		case facts.updateActive:
+			// A fresh instance cannot have a pending update before its first status
+			// write: its initial revision is current. An absent phase with an active
+			// update is therefore an existing object initialized mid-update.
+			return workloadsv1alpha2.RoleInstancePhaseUpdating
+		case facts.previouslyEstablished:
+			if !facts.podsPresent {
+				return workloadsv1alpha2.RoleInstancePhaseRecovering
+			}
+			// The instance confirmed completion of an earlier target; a readiness
+			// drop alone does not demote it back to Creating.
+			return workloadsv1alpha2.RoleInstancePhaseRunning
+		case facts.podsPresent && facts.readySatisfied:
+			return workloadsv1alpha2.RoleInstancePhaseRunning
+		default:
+			return workloadsv1alpha2.RoleInstancePhaseCreating
+		}
+	case workloadsv1alpha2.RoleInstancePhaseCreating:
 		// The current creation target must have taken effect before Creating exits:
 		// pods left over from a superseded target do not prove the new target is
 		// established, so a target change during Create convergence folds into
