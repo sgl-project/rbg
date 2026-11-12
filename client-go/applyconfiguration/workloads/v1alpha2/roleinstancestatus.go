@@ -26,6 +26,7 @@ import (
 // with apply.
 type RoleInstanceStatusApplyConfiguration struct {
 	ObservedGeneration              *int64                                                          `json:"observedGeneration,omitempty"`
+	Phase                           *workloadsv1alpha2.RoleInstancePhase                            `json:"phase,omitempty"`
 	Conditions                      []RoleInstanceConditionApplyConfiguration                       `json:"conditions,omitempty"`
 	ComponentStatuses               []RoleInstanceComponentStatusApplyConfiguration                 `json:"componentStatuses,omitempty"`
 	LabelSelector                   *string                                                         `json:"labelSelector,omitempty"`
@@ -49,6 +50,14 @@ func RoleInstanceStatus() *RoleInstanceStatusApplyConfiguration {
 // If called multiple times, the ObservedGeneration field is set to the value of the last call.
 func (b *RoleInstanceStatusApplyConfiguration) WithObservedGeneration(value int64) *RoleInstanceStatusApplyConfiguration {
 	b.ObservedGeneration = &value
+	return b
+}
+
+// WithPhase sets the Phase field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Phase field is set to the value of the last call.
+func (b *RoleInstanceStatusApplyConfiguration) WithPhase(value workloadsv1alpha2.RoleInstancePhase) *RoleInstanceStatusApplyConfiguration {
+	b.Phase = &value
 	return b
 }
 

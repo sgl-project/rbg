@@ -380,7 +380,11 @@ var _ = Describe("Stateful selective scale-down", func() {
 				return false
 			}
 			for _, condition := range set.Status.Conditions {
-				if condition.Type == workloadsv1alpha2.RoleInstanceSetConditionFailedScale && condition.Reason == "InvalidCommittedOrdinals" {
+				// KEP-502 reports the configuration-family blocker through the
+				// Progressing condition instead of the legacy FailedScale marker.
+				if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
+					condition.Status == corev1.ConditionTrue &&
+					condition.Reason == constants.ProgressingReasonInvalidSpec {
 					return true
 				}
 			}
@@ -429,6 +433,7 @@ var _ = Describe("Stateful selective scale-down", func() {
 			g.Expect(set.Annotations).NotTo(HaveKey(constants.ExcludedOrdinalsAnnotationKey))
 			for _, condition := range set.Status.Conditions {
 				g.Expect(condition.Reason).NotTo(Equal("InvalidCommittedOrdinals"))
+				g.Expect(condition.Reason).NotTo(Equal(constants.ProgressingReasonInvalidSpec))
 			}
 			g.Expect(instances(group.Name)).To(Equal(original))
 			cm := &corev1.ConfigMap{}
