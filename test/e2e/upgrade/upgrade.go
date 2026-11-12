@@ -70,25 +70,38 @@ func clientObjectKey(name string) client.ObjectKey { return client.ObjectKey{Nam
 // would carry the old paths forward as inert keys and silently install chart
 // defaults instead of the images under test.
 func runHelmUpgrade(f *framework.Framework) {
+	runHelmUpgradeWith(f)
+}
+
+// runHelmUpgradeWith upgrades the release in place with additional --set
+// overrides appended after the standard ones. The KEP-531 drills use it for
+// the chart's two-pass upgrade order: pass one adds crdUpgrade.enabled=false
+// so only the controller image moves; pass two passes no override and lets
+// the pre-upgrade hook apply the CRDs (KEP-531 Upgrade: controller first,
+// CRD second).
+func runHelmUpgradeWith(f *framework.Framework, extraSets ...string) {
 	before, err := managerPodNames(f)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not list the controller pods before upgrading")
 
-	args := []string{
+	args := make([]string, 0, 20+len(imagePullSecretSets())+len(extraSets))
+	args = append(args,
 		"upgrade", helmRelease(), chartPath(),
 		"--namespace", controllerNamespace(),
-		"--set", "controller.image.repository=" + toRepo(),
-		"--set", "controller.image.tag=" + toTag(),
+		"--set", "controller.image.repository="+toRepo(),
+		"--set", "controller.image.tag="+toTag(),
 		"--set", "controller.image.pullPolicy=IfNotPresent",
-		"--set", "crdUpgrade.image.repository=" + crdUpgradeRepo(),
-		"--set", "crdUpgrade.image.tag=" + crdUpgradeTag(),
+		"--set", "crdUpgrade.image.repository="+crdUpgradeRepo(),
+		"--set", "crdUpgrade.image.tag="+crdUpgradeTag(),
 		"--set", "crdUpgrade.image.pullPolicy=IfNotPresent",
 		// Not a chart default. It is set because the from-release install sets it, as
 		// the other e2e workflows do: omitting it here would make the hop turn a
 		// feature off, and every assertion in this suite reads what the interval
 		// changed as something the upgrade did.
 		"--set", "controller.features.portAllocator.enabled=true",
-		"--wait", "--timeout", helmTimeout(),
-	}
+	)
+	args = append(args, imagePullSecretSets()...)
+	args = append(args, extraSets...)
+	args = append(args, "--wait", "--timeout", helmTimeout())
 
 	ginkgo.By("running helm " + strings.Join(args, " "))
 	out, err := exec.Command("helm", args...).CombinedOutput()
@@ -130,12 +143,22 @@ func runHelmUpgrade(f *framework.Framework) {
 //  5. Conversion actually round-trips. A caBundle that is present but wrong is a
 //     real failure mode that step 3 cannot see, because it only checks the field
 //     is non-empty.
+//
+// marker selects the new-CRD-bundle evidence for step 1. The release-tag suite
+// reads it from the from-release profile; the KEP-531 drill suite supplies its
+// own, so it is a parameter rather than a fromProfile() call in here.
 func waitForUpgradeReady(f *framework.Framework, conversionProbeName string) {
+	waitForUpgradeReadyFor(f, conversionProbeName, fromProfile().newBundleMarker)
+}
+
+func waitForUpgradeReadyFor(
+	f *framework.Framework, conversionProbeName string, marker bundleMarker,
+) {
 	ginkgo.By("waiting for the new CRD bundle to be applied")
-	waitCRDsUpgraded(f)
+	waitCRDsUpgraded(f, marker)
 
 	ginkgo.By("waiting for the controller to roll out onto the image under test")
-	waitControllerRolledOut(f)
+	waitControllerRolledOut(f, toTag())
 
 	ginkgo.By("waiting for the conversion webhook caBundle to be repopulated")
 	waitCRDConversionCABundle(f)
@@ -150,18 +173,21 @@ func waitForUpgradeReady(f *framework.Framework, conversionProbeName string) {
 	waitConversionActuallyWorks(f, conversionProbeName)
 }
 
-// waitCRDsUpgraded uses the from-release profile's marker for the new bundle:
-// preflight proved it was absent beforehand, so its appearance can only come from
-// this upgrade.
-func waitCRDsUpgraded(f *framework.Framework) {
-	marker := fromProfile().newBundleMarker
+// waitCRDsUpgraded blocks until the marker for the new bundle appears. Callers
+// preflight-proved it was absent beforehand, so its appearance can only come
+// from this upgrade.
+func waitCRDsUpgraded(f *framework.Framework, marker bundleMarker) {
 	gomega.Eventually(func() (bool, error) {
 		return marker.present(f)
 	}, gateTimeout, gateInterval).Should(gomega.BeTrue(),
 		"%s never appeared, so the crd-upgrade hook did not apply the new CRD bundle", marker.description)
 }
 
-func waitControllerRolledOut(f *framework.Framework) {
+// waitControllerRolledOut requires the Deployment to be fully rolled out AND to
+// run the image under test. tag selects that image: the release-tag suite waits
+// for toTag(); the KEP-531 drills additionally wait for a rolled-back image
+// during the admission-disabled window.
+func waitControllerRolledOut(f *framework.Framework, tag string) {
 	ns := controllerNamespace()
 	gomega.Eventually(func(g gomega.Gomega) {
 		deploy, err := f.Clientset.AppsV1().Deployments(ns).Get(f.Ctx, managerDeploymentName, metav1.GetOptions{})
@@ -169,7 +195,7 @@ func waitControllerRolledOut(f *framework.Framework) {
 
 		image, found := managerImage(deploy)
 		g.Expect(found).To(gomega.BeTrue(), "no controller container found in %s/%s", ns, managerDeploymentName)
-		g.Expect(image).To(gomega.HaveSuffix(":"+toTag()),
+		g.Expect(image).To(gomega.HaveSuffix(":"+tag),
 			"controller still runs %q; the upgrade did not replace the image", image)
 
 		g.Expect(deploy.Status.ObservedGeneration).To(gomega.BeNumerically(">=", deploy.Generation),
@@ -284,7 +310,7 @@ func restartController(f *framework.Framework, conversionProbeName string) {
 		}
 	}, gateTimeout, gateInterval).Should(gomega.Succeed())
 
-	waitControllerRolledOut(f)
+	waitControllerRolledOut(f, toTag())
 	// The new process mints its certificate and patches the webhook configs again
 	// on startup, and until it has, every RBG write is rejected.
 	waitValidatingWebhookCABundle(f)
