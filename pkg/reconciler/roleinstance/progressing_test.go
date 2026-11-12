@@ -42,6 +42,14 @@ func TestNextRoleInstancePhase(t *testing.T) {
 		{"creation incomplete stays creating", workloadsv1alpha2.RoleInstancePhaseCreating, incomplete, workloadsv1alpha2.RoleInstancePhaseCreating},
 		// Target changes during Create convergence fold into Create: no direct edge to Updating/Recovering.
 		{"target change during creating folds", workloadsv1alpha2.RoleInstancePhaseCreating, updating, workloadsv1alpha2.RoleInstancePhaseCreating},
+		// Pods left over from a superseded target must not let Creating exit to
+		// Running before the current target has taken effect.
+		{"target change during creating with superseded pods stays creating", workloadsv1alpha2.RoleInstancePhaseCreating,
+			roleInstancePhaseFacts{updateActive: true, podsPresent: true, readySatisfied: true},
+			workloadsv1alpha2.RoleInstancePhaseCreating},
+		{"absent phase with pending update stays creating", "",
+			roleInstancePhaseFacts{updateActive: true, podsPresent: true, readySatisfied: true},
+			workloadsv1alpha2.RoleInstancePhaseCreating},
 		{"absent and incomplete enters creating", "", incomplete, workloadsv1alpha2.RoleInstancePhaseCreating},
 		{"absent and complete enters running", "", complete, workloadsv1alpha2.RoleInstancePhaseRunning},
 		{"running enters updating", workloadsv1alpha2.RoleInstancePhaseRunning, updating, workloadsv1alpha2.RoleInstancePhaseUpdating},

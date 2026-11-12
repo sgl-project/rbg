@@ -57,15 +57,105 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 		wantStatus corev1.ConditionStatus
 	}{
 		{
-			name:       "initial establishment with nothing created",
-			set:        newTestSet(3),
-			newStatus:  &workloadsv1alpha2.RoleInstanceSetStatus{},
+			name: "initial establishment reports creating even though revisions exist",
+			// Both modes publish CurrentRevision / UpdateRevision on the first
+			// status write, before any RoleInstance exists; a non-empty revision
+			// alone must not turn initial creation into scaling.
+			set: newTestSet(3),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				CurrentRevision: "rev", UpdateRevision: "rev",
+			},
 			wantReason: workloadconstants.ProgressingReasonCreating,
 			wantStatus: corev1.ConditionTrue,
 		},
 		{
-			name: "scale up creating third instance reports scaling",
+			name: "partially created initial establishment stays creating",
 			set:  newTestSet(3),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, CurrentRevision: "rev", UpdateRevision: "rev",
+			},
+			wantReason: workloadconstants.ProgressingReasonCreating,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "converged zero replica set scaling up reports scaling",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionFalse,
+					Reason: workloadconstants.ProgressingReasonConverged,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				CurrentRevision: "rev", UpdateRevision: "rev",
+			},
+			wantReason: workloadconstants.ProgressingReasonScalingUp,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "zero replica target is never creating",
+			set:  newTestSet(0),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				CurrentRevision: "rev", UpdateRevision: "rev",
+			},
+			wantReason: workloadconstants.ProgressingReasonConverged,
+			wantStatus: corev1.ConditionFalse,
+		},
+		{
+			name: "paused update with no other workflow reports paused",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Spec.UpdateStrategy.Paused = true
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "old", UpdateRevision: "new",
+				UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
+			},
+			wantReason: workloadconstants.ProgressingReasonPaused,
+			wantStatus: corev1.ConditionFalse,
+		},
+		{
+			name: "paused update with outstanding scale up stays scaling",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Spec.UpdateStrategy.Paused = true
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, CurrentRevision: "old", UpdateRevision: "new",
+				UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
+			},
+			wantReason: workloadconstants.ProgressingReasonScalingUp,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "paused update with recovering instance stays recovering",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Spec.UpdateStrategy.Paused = true
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "old", UpdateRevision: "new",
+				UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
+			},
+			instances: []*workloadsv1alpha2.RoleInstance{
+				instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseRecovering),
+			},
+			wantReason: workloadconstants.ProgressingReasonRecovering,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "scale up creating third instance reports scaling",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+				return set
+			}(),
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
 				Replicas: 2, UpdatedReplicas: 2, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 2,
 			},
@@ -98,6 +188,19 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			},
 			instances: []*workloadsv1alpha2.RoleInstance{
 				instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseRecovering),
+			},
+			wantReason: workloadconstants.ProgressingReasonRecovering,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "established set with missing instance reports recovering",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 3, 3, 3
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, UpdatedReplicas: 2, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
 			},
 			wantReason: workloadconstants.ProgressingReasonRecovering,
 			wantStatus: corev1.ConditionTrue,

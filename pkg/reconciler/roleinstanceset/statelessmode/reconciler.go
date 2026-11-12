@@ -238,7 +238,7 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 		// fact is carried by the Progressing condition. FailedScale/FailedUpdate are
 		// no longer written; wholesale status replacement removes stale entries.
 		scaleReason := setprogressing.ClassifySetOperationError(scaleErr)
-		r.emitOperationFailureEvent(set, scaleReason, scaleErr)
+		setprogressing.EmitOperationFailureEvent(r.recorder, set, scaleReason, scaleErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
 			Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
 			Status:             v1.ConditionTrue,
@@ -255,7 +255,7 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 	updateErr = r.syncControl.Update(updateSet, currentRevision, updateRevision, revisions, filteredInstances)
 	if updateErr != nil {
 		updateReason := setprogressing.ClassifySetOperationError(updateErr)
-		r.emitOperationFailureEvent(set, updateReason, updateErr)
+		setprogressing.EmitOperationFailureEvent(r.recorder, set, updateReason, updateErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
 			Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
 			Status:             v1.ConditionTrue,
@@ -269,18 +269,6 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 	}
 
 	return err
-}
-
-// emitOperationFailureEvent emits an edge-triggered Warning Event for a failed
-// RoleInstanceSet operation. Events are diagnostic history; the current blocker fact
-// stays in the Progressing condition.
-func (r *ReconcileInstanceSet) emitOperationFailureEvent(set *workloadsv1alpha2.RoleInstanceSet, reason string, err error) {
-	for _, condition := range set.Status.Conditions {
-		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing && condition.Message == err.Error() {
-			return
-		}
-	}
-	r.recorder.Eventf(set, v1.EventTypeWarning, reason, "%v", err)
 }
 
 func (r *ReconcileInstanceSet) getActiveRevisions(set *workloadsv1alpha2.RoleInstanceSet, revisions []*apps.ControllerRevision) (

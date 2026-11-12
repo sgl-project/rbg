@@ -276,11 +276,13 @@ func (ssc *defaultStatefulInstanceSetControl) performUpdate(
 	// needed to map lower-level blockers and recovery facts. A failure from this
 	// controller's own operations is classified and carried as the blocker.
 	if getStatusErr != nil && currentStatus != nil {
+		scaleReason := setprogressing.ClassifySetOperationError(getStatusErr)
+		setprogressing.EmitOperationFailureEvent(ssc.recorder, set, scaleReason, getStatusErr)
 		currentStatus.Conditions = append(currentStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
 			Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
 			Status:             corev1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
-			Reason:             setprogressing.ClassifySetOperationError(getStatusErr),
+			Reason:             scaleReason,
 			Message:            getStatusErr.Error(),
 		})
 	}
