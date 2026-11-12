@@ -30,7 +30,8 @@ NOTE: compatibility for existing deprecated workload types is ENABLED
 (controller.deprecatedWorkloadTypes.enabled=true).
 Existing roles keep their own deprecated workload type and continue to reconcile,
 while new uses — including switching between deprecated types — are rejected.
-v1alpha1 writes return a deprecation warning.
+Every v1alpha1 request returns a deprecation warning; v1alpha1
+will be removed in 0.10.0.
 {{- if .Release.IsInstall }}
 For a new installation, prefer controller.deprecatedWorkloadTypes.enabled=false.
 {{- else }}

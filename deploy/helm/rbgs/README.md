@@ -23,8 +23,9 @@ CRD upgrade Job into your Kubernetes cluster.
 ## Deprecated workload types
 
 The `Deployment`, `StatefulSet`, and `LeaderWorkerSet` workload types are deprecated in favour of
-`RoleInstanceSet`, which is the default in `v1alpha2`. `v1alpha1` writes return a warning and new uses
-of these workload types are rejected in `0.9.0`.
+`RoleInstanceSet`, which is the default in `v1alpha2`. Every `v1alpha1` request returns a
+deprecation warning; `v1alpha1` will be removed in `0.10.0`. New uses of these workload types are
+rejected in `0.9.0`.
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
@@ -71,8 +72,8 @@ Rejected writes include:
 - introducing a deprecated workload type through a new RoleBasedGroupSet template role;
 - while the value is false, updating or re-applying an object that still uses a deprecated workload type.
 
-Every `v1alpha1` write also returns an admission warning that `v1alpha1` is
-deprecated and will be removed in `0.10.0`.
+Every `v1alpha1` request returns a CRD deprecation warning; `v1alpha1` will be removed in
+`0.10.0`.
 
 The project migration guide (manual role inventory, per-role rollout, rollback procedure, and
 storage-version migration) is tracked in [sgl-project/rbg#454](https://github.com/sgl-project/rbg/issues/454).
