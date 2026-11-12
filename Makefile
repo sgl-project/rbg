@@ -161,6 +161,27 @@ test-e2e-upgrade: ## Run the upgrade-compatibility e2e suite (RBGS_FROM_GIT_TAG=
 		--ginkgo.json-report=artifacts/report.json \
 		-timeout 60m
 
+# Runs the KEP-531 upgrade/downgrade drills against a throwaway cluster with NO
+# rbgs install: the suite installs the pre-KEP release itself from a git
+# worktree of RBGS_DRILL_FROM_REF (default main), upgrades it to the chart in
+# this tree, rolls the controller image back inside an admission-disabled
+# window, and re-applies the validating webhook configuration from the rendered
+# chart. RBGS_DRILLS=1 is the runtime gate; without it a bare `go test` of the
+# package skips instead of mutating whatever cluster the KUBECONFIG points at.
+# The images of both ends must be reachable; a local build of the target goes
+# through RBGS_TO_TAG as with the upgrade suite. See test/e2e/drills.
+.PHONY: test-e2e-drills
+test-e2e-drills: ## Run the KEP-531 upgrade/downgrade drill e2e suite (RBGS_DRILL_FROM_REF selects the pre-KEP base; default main).
+	# 60m: two image rollouts with their readiness gates, one helm upgrade and
+	# install, several render settles and the re-apply of the webhook
+	# configuration each spend minutes, and a go test timeout that fires first
+	# reports a panic instead of a gate's own message.
+	mkdir -p test/e2e/drills/artifacts
+	RBGS_DRILLS=1 go test ./test/e2e/drills/ -v -ginkgo.v --ginkgo.fail-fast \
+		--ginkgo.junit-report=artifacts/junit.xml \
+		--ginkgo.json-report=artifacts/report.json \
+		-timeout 60m
+
 .PHONY: lint
 lint: golangci-lint ## Run golangci-lint linter
 	$(GOLANGCI_LINT) run

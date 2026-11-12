@@ -279,6 +279,23 @@ func crdUpgradeTag() string {
 	})))
 }
 
+// imagePullSecretSets returns the global.imagePullSecrets --set pair when
+// RBGS_IMAGE_PULL_SECRET names a Secret, nil when the cluster's nodes can
+// pull anonymously. The value sets the list element's name field (the chart
+// renders the list with toYaml, so the element must be a
+// LocalObjectReference object, not a bare string). The chart routes
+// global.imagePullSecrets to both the controller Deployment and the
+// crd-upgrade hook Job, so one value covers every image the release itself
+// runs; fixture pods run in the framework's namespace against public images
+// and are out of scope.
+func imagePullSecretSets() []string {
+	name := envOr("RBGS_IMAGE_PULL_SECRET", "")
+	if name == "" {
+		return nil
+	}
+	return []string{"--set", "global.imagePullSecrets[0].name=" + name}
+}
+
 // requireUpgradeTarget checks the images the upgrade will use are all known, so a
 // missing one fails here instead of as a confusing `helm upgrade` error later.
 func requireUpgradeTarget() error {

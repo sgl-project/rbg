@@ -9,10 +9,6 @@ kind: ClusterEngineRuntimeProfile
 metadata:
   name: nvidia-runtime-profile
 spec:
-  # updateStrategy: NoUpdate (default) or RollingUpdate
-  # NoUpdate: profile changes do not trigger pod updates
-  # RollingUpdate: profile changes trigger rolling update of associated pods
-  updateStrategy: RollingUpdate
   initContainers:
     - name: gpu-driver-init
       image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
@@ -33,6 +29,35 @@ spec:
   volumes:
     - name: gpu-lib
       emptyDir: {}
+  # containerPatches: the profile-side patch list — target-less RFC 6902
+  # `add` ops, each firing at every targetContainers address the
+  # referencing engineRuntimes[] entry lists, in list order. The profile
+  # side may address /env, /volumeMounts and /command/0 only — /args and
+  # capabilities are role-side-only roots. `/X/0` head-inserts stack with
+  # the later rule leftmost, so a multi-element command prepend is written
+  # in reverse (the rendered command below is
+  # ["/opt/gpu/wrap", "exec", "nginx"]).
+  containerPatches:
+    - jsonPatch:
+        op: add
+        path: /command/0
+        value: "exec"
+    - jsonPatch:
+        op: add
+        path: /command/0
+        value: "/opt/gpu/wrap"
+    - jsonPatch:
+        op: add
+        path: /env/-
+        value:
+          name: GPU_WRAPPER_SITE
+          value: /opt/gpu/site
+    - jsonPatch:
+        op: add
+        path: /volumeMounts/-
+        value:
+          name: gpu-lib
+          mountPath: /usr/local/lib/gpu
 
 ---
 # Step 2: Create a RoleBasedGroup referencing the engine runtime profile
@@ -45,18 +70,34 @@ spec:
   roles:
     - name: prefill
       replicas: 2
-      # engineRuntimes: inject the profile into specified containers of this role
+      # engineRuntimes: reference the profile. component scopes the
+      # reference to one component of the role's pattern; each
+      # targetContainers entry names one container the reference touches —
+      # the listing is the consent to the profile's containerPatches at
+      # that container, and the entry's extraPatches carry the role's own
+      # rules for the same container, landing after the profile's
+      # (targetContainers requires component). Capabilities and args are
+      # role-side-only roots, so the SYS_RESOURCE append lives here.
       engineRuntimes:
         - profileName: nvidia-runtime-profile
-          # injectContainers: which containers to inject the runtime into
-          injectContainers:
-            - prefill-main
-      standalonePattern:
+          component: worker
+          targetContainers:
+            - name: prefill-main
+              extraPatches:
+                - jsonPatch:
+                    op: add
+                    path: /securityContext/capabilities/add/-
+                    value: SYS_RESOURCE
+      leaderWorkerPattern:
+        size: 2
         template:
           spec:
             containers:
+              # A patch may only prepend to a declared command — creating one
+              # would silently discard the image ENTRYPOINT — so declare it.
               - name: prefill-main
                 image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                command: ["nginx"]
                 ports:
                   - containerPort: 8080
                 resources:
@@ -69,14 +110,22 @@ spec:
       replicas: 4
       engineRuntimes:
         - profileName: nvidia-runtime-profile
-          injectContainers:
-            - decode-main
-      standalonePattern:
+          component: worker
+          targetContainers:
+            - name: decode-main
+              extraPatches:
+                - jsonPatch:
+                    op: add
+                    path: /securityContext/capabilities/add/-
+                    value: SYS_RESOURCE
+      leaderWorkerPattern:
+        size: 2
         template:
           spec:
             containers:
               - name: decode-main
                 image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                command: ["nginx"]
                 ports:
                   - containerPort: 8081
                 resources:

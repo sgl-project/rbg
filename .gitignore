@@ -33,6 +33,7 @@ test/e2e/**/artifacts/
 # Track shared skills (team assets), ignore personal .claude/ content (memory, settings, etc.)
 .claude/*
 !.claude/skills/
+
 *.swp
 *.swo
 *~
@@ -45,3 +46,6 @@ test/e2e/**/artifacts/
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Local scratch: build binaries, logs, reports
+tmp/

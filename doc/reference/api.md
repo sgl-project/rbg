@@ -140,9 +140,18 @@ the pre-Ready `Restarting` guard limit, backend support and upgrade/rollout cons
 
 | Field | Description |
 |-------|-------------|
-| `profileName` | string — ClusterEngineRuntimeProfile name |
-| `injectContainers` | []string — target container names |
-| `containers` | []Container — override container configs |
+| `profileName` | string — ClusterEngineRuntimeProfile name (required) |
+| `component` | string — the one component of the role's pattern this reference operates on: `leader` or `worker` under leaderWorkerPattern, a declared component name under customComponentsPattern, the role's own name under standalonePattern (any other name there is a render error). Absent, the fragments (and the legacy `containers` merge) deliver to the pattern's default component set — the leader only under leaderWorkerPattern, every declared component under customComponentsPattern, the single role-named component under standalonePattern. Required whenever `targetContainers` is set, except under standalonePattern, where a component-less reference carrying `targetContainers` is scoped to the role's own name |
+| `targetContainers` | []EngineRuntimeTargetContainer — one entry per container this reference touches: the entry's `name` is the consent to the profile's `containerPatches` at that container and the address of the entry's own `extraPatches` (requires `component`; duplicate names rejected at write time via the map list) |
+| `containers` | []Container — legacy: role-provided env/args appended to profile-declared containers within the reference's component scope; superseded by `targetContainers[].extraPatches` |
+| `injectContainers` | []string — inert: accepted and ignored, nothing reads it; removed at the next API version boundary |
+
+### EngineRuntimeTargetContainer
+
+| Field | Description |
+|-------|-------------|
+| `name` | string — the rendered container this entry addresses (required): role-declared or profile-declared, containers and init containers alike. Listing the name is the single toggle — it consents to the profile's patches at that container *and* fixes where the entry's `extraPatches` land. A name the role's own template also declares resolves to the role-owned container; a name injected only by a different reference or profile is a render error |
+| `extraPatches` | []ContainerPatch — the role's RFC 6902 patch rules for this entry's container, applied in list order after the profile's `containerPatches` — all five roots at any index; what the role writes lands where it is written. Optional, 1–32 items |
 
 ## RoleBasedGroupStatus
 
@@ -248,10 +257,42 @@ the pre-Ready `Restarting` guard limit, backend support and upgrade/rollout cons
 
 | Field | Description |
 |-------|-------------|
-| `updateStrategy` | UpdateStrategy — `NoUpdate` or `RollingUpdate` |
+| `updateStrategy` | UpdateStrategy — `NoUpdate` or `RollingUpdate`. **Deprecated:** accepted and never consumed; immutability removes the surface it would have governed, and the field is removed at the next API version boundary alongside `injectContainers` (see [Profile Mutability](../features/engine-runtime.md#profile-mutability)) |
 | `initContainers` | []Container — init containers to inject |
 | `containers` | []Container — sidecar containers to inject |
 | `volumes` | []Volume — volumes to inject |
+| `containerPatches` | []ContainerPatch — the profile-side patch list: target-less ordered entries, each firing at every `targetContainers` address a referencing `engineRuntimes[]` entry lists, in list order. Profile-side entries may address `/env`, `/volumeMounts` and `/command/0` only; `/args`, `/command/<i>` with `i > 0` and `/securityContext/capabilities/add` are role-side-only roots, and a profile-side entry addressing one is a render error attributed to the profile. Optional, 1–32 items. Mirrored into v1alpha1 with identical markers |
+
+### EngineRuntimeProfileStatus
+
+Maintained by the controller as reference tracking (display and detection surface; rendering never consults it, and enforcement stays with the admission webhook):
+
+| Field | Description |
+|-------|-------------|
+| `referenceCount` | int32 — the count of live references (RoleBasedGroups and RoleBasedGroupSet group templates), surfaced as a `REFERENCES` printer column |
+| `referencedGeneration` | int64 — the `metadata.generation` at which the profile became referenced, recorded on the none-to-referenced transition, never refreshed while referenced, cleared when the last reference leaves |
+| `conditions` | []Condition — carries the `Frozen` condition: `True` with reason `Referenced` while referenced, flipping to reason `SpecChangedWhileReferenced` when `metadata.generation` no longer matches `referencedGeneration` (evidence the spec changed since the baseline was recorded: a bypassed write, or a legal edit in a zero-reference window the controller never observed) |
+
+### ContainerPatch
+
+| Field | Description |
+|-------|-------------|
+| `jsonPatch` | ContainerJSONPatch — the RFC 6902 format. Exactly one patch field must be set; today `jsonPatch` is the only one, and a future patch format joins as a sibling field |
+
+### ContainerJSONPatch
+
+| Field | Description |
+|-------|-------------|
+| `op` | string — patch operation; only `add` is accepted |
+| `path` | string — RFC 6901 pointer, relative to the target container. Must be an element pointer under `/command`, `/args`, `/env`, `/volumeMounts` or `/securityContext/capabilities/add` |
+| `value` | object — raw JSON matching the path's element shape: a string for `/command`, `/args` and capability elements; a corev1 EnvVar object for `/env`; a corev1 VolumeMount object for `/volumeMounts` |
+
+Ops apply in list order (later ops see earlier ops' mutations; `add /command/0`
+head-inserts, so multi-element prepends are written in reverse). Same-named
+env entries resolve positionally, last-wins: a role-side append of an existing
+name is the override gesture; a profile-side entry for a name the target
+already carries must default ahead of it via `/env/0`, and a profile-side `-`
+append onto a role-owned name is a render error.
 
 ## RoleInstanceSet Rollback Recovery
 
