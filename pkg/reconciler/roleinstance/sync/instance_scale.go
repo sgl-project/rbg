@@ -61,7 +61,12 @@ func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alph
 	}
 	if diffRes.toDeleteNum > 0 {
 		scaled, scaleErr := c.deletePods(ctx, updateInstance, diffRes.toDeletePod)
-		return scaled, 0, scaleErr
+		// A started wave counts as handled even when its first DELETE fails: the
+		// reconciler must propagate the restart tracking (RestartCount /
+		// LastRestartTime) written by updateRestartTracking, otherwise the API
+		// persists Restarting=True with stale tracking and backoff plus the
+		// marker-less fallback key on the old values.
+		return scaled || diffRes.waveStarted, 0, scaleErr
 	}
 	if diffRes.toScaleNum > 0 {
 		scaled, scaleErr := c.createPods(ctx, updateInstance, diffRes.toScaleRoleIDS, updateRevision.Name)
@@ -80,6 +85,11 @@ type expectationDiff struct {
 	// requeueAfter is set when the reconcile should be requeued after a delay
 	// without performing any scaling actions (used by restart backoff).
 	requeueAfter time.Duration
+
+	// waveStarted reports that this diff started a restart-policy recreation
+	// wave: updateRestartTracking ran, so the restart accounting must be
+	// propagated even when the deletion itself fails.
+	waveStarted bool
 }
 
 func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance,
@@ -95,6 +105,21 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 		freshInstance = c.syncRestartTrackingFromAPI(ctx, updateInstance)
 	}
 
+	// Check RestartPolicy: if RecreateInstanceOnPodRestart and any pod Failed,
+	// recreate all pods of the instance.
+	// We include inactive pods (Failed/Succeeded) in the check because Failed pods are
+	// filtered out by IsPodActive but must be visible to trigger recreation.
+	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
+	allPods = append(allPods, pods...)
+	allPods = append(allPods, inactivePods...)
+
+	// Release the restart guard once the recreation itself is complete: all Pods
+	// from the pre-restart generation are gone. The guard exists only to absorb the
+	// cascading triggers produced while those Pods are deleted; keeping it until the
+	// instance becomes Ready again permanently blocks a second recovery when the
+	// rebuilt group fails before Ready (#563).
+	c.releaseCompletedRestartWave(updateInstance, freshInstance, allPods)
+
 	// Check restart backoff BEFORE any pod processing (including inactive pod cleanup).
 	// If the delay from the last restart hasn't elapsed, skip all scaling and requeue.
 	// This preserves crashed pods during the backoff window for log observability.
@@ -104,24 +129,30 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 
 	coreControl := instancecore.New(updateInstance)
 
-	// Check RestartPolicy: if RecreateInstanceOnPodRestart and any pod Failed,
-	// recreate all pods of the instance.
-	// We include inactive pods (Failed/Succeeded) in the check because Failed pods are
-	// filtered out by IsPodActive but must be visible to trigger recreation.
-	allPods := make([]*v1.Pod, 0, len(pods)+len(inactivePods))
-	allPods = append(allPods, pods...)
-	allPods = append(allPods, inactivePods...)
-
-	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines) {
+	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines, freshInstance) {
 		// Mark instance as restarting to prevent cascading re-triggers
 		setRestartingCondition(updateInstance)
+		// Remember the pre-restart Pods so the guard below only absorbs the triggers
+		// caused by deleting them, not failures of the replacement generation.
+		rememberRestartWave(updateInstance, allPods)
 		// Update restart tracking for exponential backoff
 		updateRestartTracking(updateInstance)
 		reason, podName := recreateTriggerReason(updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines)
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
 			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v (reason=%s, pod=%s, restartCount=%d)",
 				klog.KObj(updateInstance), reason, podName, updateInstance.Status.RestartCount))
-		return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods}, nil
+		return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods, waveStarted: true}, nil
+	}
+
+	// A wave whose deletion failed or was interrupted must retry deleting the
+	// recorded pre-restart Pods. The guard above intentionally suppresses new
+	// triggers while those Pods remain, so without this retry a transient DELETE
+	// failure (for example a UID-precondition conflict) would leave the wave —
+	// and the guard — stuck forever while normal scaling sees no diff for the
+	// still-running desired members. The retry re-issues the same deletions: it
+	// does not start a new wave and does not increment RestartCount.
+	if pending := pendingWaveDeletions(updateInstance, allPods); len(pending) > 0 {
+		return &expectationDiff{toDeleteNum: len(pending), toDeletePod: pending}, nil
 	}
 
 	if isGangSchedulingEnabled(updateInstance) {
@@ -340,6 +371,7 @@ func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha
 			return modified, fmt.Errorf("refusing to delete foreign pod %s", pod.Name)
 		}
 		if pod.DeletionTimestamp != nil {
+			markWaveDeleteIssued(instance, pod)
 			modified = true
 			continue
 		}
@@ -356,16 +388,41 @@ func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha
 		}
 		if err := c.Delete(ctx, pod, opts); err != nil {
 			if apierrors.IsNotFound(err) {
+				markWaveDeleteIssued(instance, pod)
 				modified = true
 				continue
 			}
 			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedDelete", "failed to delete pod %s: %v", pod.Name, err)
 			return modified, err
 		}
+		markWaveDeleteIssued(instance, pod)
 		modified = true
 		c.recorder.Event(instance, v1.EventTypeNormal, "SuccessfulDelete", fmt.Sprintf("succeed to delete pod %s", pod.Name))
 	}
 	return modified, nil
+}
+
+// markWaveDeleteIssued records that the Pod's deletion was accepted, so the
+// wave deletion retry does not re-issue it while the pod informer lags.
+func markWaveDeleteIssued(instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) {
+	v, _ := waveDeletesIssued.LoadOrStore(instanceKey(instance), sets.New[string]())
+	if issued, ok := v.(sets.Set[string]); ok {
+		issued.Insert(restartWavePodKey(pod))
+	}
+}
+
+// issuedWaveDeletes returns the Pod identities already accepted for deletion
+// during the instance's current restart wave.
+func issuedWaveDeletes(instance *workloadsv1alpha2.RoleInstance) sets.Set[string] {
+	v, ok := waveDeletesIssued.Load(instanceKey(instance))
+	if !ok {
+		return nil
+	}
+	issued, ok := v.(sets.Set[string])
+	if !ok {
+		return nil
+	}
+	return issued
 }
 
 func (c *realControl) getExistingPod(ctx context.Context, namespace, name string) (*v1.Pod, error) {
@@ -389,13 +446,13 @@ func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alp
 }
 
 // shouldRecreateInstanceGuarded wraps shouldRecreateInstance with a deferred guard:
-// when the core logic decides to recreate, a final check ensures the instance isn't
-// already in a restart cycle. This uses an in-memory LRU cache (instant, no informer lag)
-// with a fallback to a direct API server read for the persisted Restarting condition
-// (survives controller restarts).
-func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) (recreate bool) {
+// when the core logic decides to recreate, a final check ensures the deletion of the
+// pre-restart generation hasn't already started one. The guard is scoped to that
+// deletion (see isAlreadyRestarting): once all pre-restart Pods are gone, the wave is
+// complete and new failures may start another recreation, bounded by checkRestartBackoff.
+func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline, fresh *workloadsv1alpha2.RoleInstance) (recreate bool) {
 	defer func() {
-		if recreate && c.isAlreadyRestarting(ctx, instance) {
+		if recreate && c.isAlreadyRestarting(ctx, instance, pods, fresh) {
 			recreate = false
 		}
 	}()
@@ -418,6 +475,10 @@ func (c *realControl) shouldRecreateInstanceGuarded(ctx context.Context, instanc
 // as a versioned pair: when the fresh timestamp is newer, BOTH fields are adopted
 // — even if the count is lower (stable-period reset case). This prevents a
 // stale-high count from surviving a reset.
+// The persisted Restarting condition is adopted too: the informer copy may lag a
+// status write, and propagating a stale condition (True after a completed wave, or
+// absent while the API still holds RestartCompleted) would regress or delete the
+// persisted state.
 // Returns the fresh instance for callers that need additional fields
 // (e.g., checkRestartBackoff needs the Restarting condition).
 func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
@@ -438,7 +499,38 @@ func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *
 		// Timestamps equal but count is higher (e.g. same-second writes) — adopt count.
 		instance.Status.RestartCount = fresh.Status.RestartCount
 	}
+	syncRestartingConditionFromFresh(instance, fresh)
 	return fresh
+}
+
+// syncRestartingConditionFromFresh replaces the Restarting condition on the
+// (informer-derived) instance copy with the fresh API value, removing a stale
+// condition when the API holds none.
+func syncRestartingConditionFromFresh(instance *workloadsv1alpha2.RoleInstance, fresh *workloadsv1alpha2.RoleInstance) {
+	var freshCond *workloadsv1alpha2.RoleInstanceCondition
+	for i := range fresh.Status.Conditions {
+		if fresh.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceRestarting {
+			freshCond = &fresh.Status.Conditions[i]
+			break
+		}
+	}
+	if freshCond == nil {
+		filtered := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(instance.Status.Conditions))
+		for _, cond := range instance.Status.Conditions {
+			if cond.Type != workloadsv1alpha2.RoleInstanceRestarting {
+				filtered = append(filtered, cond)
+			}
+		}
+		instance.Status.Conditions = filtered
+		return
+	}
+	for i := range instance.Status.Conditions {
+		if instance.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceRestarting {
+			instance.Status.Conditions[i] = *freshCond
+			return
+		}
+	}
+	instance.Status.Conditions = append(instance.Status.Conditions, *freshCond)
 }
 
 func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstance,
@@ -562,26 +654,233 @@ func calculateRestartDelay(baseDelaySeconds, maxDelaySeconds, restartCount int32
 	return int32(delay)
 }
 
-// This guard also blocks a second recovery before the instance becomes Ready again;
-// relaxing it for repeated pre-Ready attempts is tracked in
-// https://github.com/sgl-project/rbg/issues/563.
-// isAlreadyRestarting checks whether the instance is already undergoing a restart-policy
-// recreation. It first checks the in-memory cache (zero latency, immune to informer lag),
-// then falls back to a direct API server read to check the persisted Restarting condition.
-func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) bool {
-	// Fast path: check in-memory cache
-	if _, ok := restartingCache.Load(instanceKey(instance)); ok {
-		return true
+// isAlreadyRestarting checks whether a restart-policy recreation wave is still
+// deleting the pre-restart Pods. While those Pods remain (typically observed as
+// Terminating), their deletion must not start another wave. Once they are all gone
+// the wave is complete, even if the replacement generation has not become Ready yet
+// (https://github.com/sgl-project/rbg/issues/563).
+//
+// The in-memory wave marker (exact Pod identities, zero informer lag) is
+// authoritative. Without it — for example after the controller restarted mid-wave —
+// the persisted Restarting condition decides, preferring the fresh API copy already
+// read by this reconcile (fresh) and only falling back to a direct API server read
+// when no fresh copy is available, combined with a creation-time heuristic to
+// detect a completed wave.
+func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, fresh *workloadsv1alpha2.RoleInstance) bool {
+	// Fast path: in-memory wave marker. While any recorded Pod is still present,
+	// the deletion that must not re-trigger is still in progress.
+	if v, ok := restartingCache.Load(instanceKey(instance)); ok {
+		oldPods, valid := v.(sets.Set[string])
+		if !valid {
+			// Unknown marker value (e.g. written by an older version): stay
+			// conservative and keep blocking.
+			return true
+		}
+		return wavePodsRemaining(instance, oldPods, pods)
 	}
-	// Slow path: read fresh from API server (bypasses informer cache)
-	if c.apiReader == nil {
+	if fresh == nil {
+		// No fresh copy from this reconcile: fall back to the in-memory condition,
+		// and only read the API server when it reports restarting (the persisted
+		// condition is authoritative over a stale informer copy).
+		if !isInstanceRestarting(instance) {
+			return false
+		}
+		if c.apiReader == nil {
+			return true
+		}
+		apiFresh := &workloadsv1alpha2.RoleInstance{}
+		if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), apiFresh); err != nil {
+			return true
+		}
+		fresh = apiFresh
+	}
+	if !isInstanceRestarting(fresh) {
 		return false
 	}
-	fresh := &workloadsv1alpha2.RoleInstance{}
-	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
+	// Persisted wave whose marker was lost (controller restart): only Pods created
+	// strictly before the last restart belong to the pre-restart generation.
+	return hasPreRestartPods(fresh, pods)
+}
+
+// releaseCompletedRestartWave completes the pre-restart deletion phase of a restart
+// wave once every pre-restart Pod is gone. Completion is independent of readiness
+// and does not imply that replacement creation has finished; the guard must stop
+// absorbing the pre-restart deletion triggers at this point. It removes
+// the in-memory marker and flips the Restarting condition to False (reason
+// RestartCompleted) on the revision-patched copy and the fresh API copy. The same
+// reconcile's backoff and recreation decisions observe the flip immediately, and
+// syncInstance propagates the completed condition into the persisted status.
+func (c *realControl) releaseCompletedRestartWave(instance *workloadsv1alpha2.RoleInstance, fresh *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) {
+	if v, ok := restartingCache.Load(instanceKey(instance)); ok {
+		oldPods, valid := v.(sets.Set[string])
+		if !valid {
+			// Unknown marker value: leave it to the Ready/deletion cleanup paths.
+			return
+		}
+		if wavePodsRemaining(instance, oldPods, pods) {
+			return
+		}
+		completeRestartWave(instance, fresh)
+		return
+	}
+	// No in-memory marker (controller restart mid-wave): use the persisted
+	// Restarting condition plus the creation-time heuristic.
+	restarting := isInstanceRestarting(instance)
+	if fresh != nil {
+		restarting = isInstanceRestarting(fresh)
+	}
+	if !restarting {
+		return
+	}
+	waveInstance := instance
+	if fresh != nil {
+		waveInstance = fresh
+	}
+	if hasPreRestartPods(waveInstance, pods) {
+		return
+	}
+	completeRestartWave(instance, fresh)
+}
+
+// completeRestartWave marks a restart wave complete: forget the in-memory marker
+// and flip the Restarting condition to False (RestartCompleted) on the in-memory
+// copies. syncInstance persists the flipped condition with the status update.
+func completeRestartWave(instance *workloadsv1alpha2.RoleInstance, fresh *workloadsv1alpha2.RoleInstance) {
+	restartingCache.Delete(instanceKey(instance))
+	waveDeletesIssued.Delete(instanceKey(instance))
+	completeRestartingCondition(instance)
+	if fresh != nil {
+		completeRestartingCondition(fresh)
+	}
+}
+
+// rememberRestartWave records the Pods present when a restart wave starts. While
+// these Pods are still being deleted, observed triggers belong to the same wave.
+func rememberRestartWave(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) {
+	oldPods := sets.New[string]()
+	for _, pod := range pods {
+		oldPods.Insert(restartWavePodKey(pod))
+	}
+	restartingCache.Store(instanceKey(instance), oldPods)
+}
+
+// wavePodsRemaining reports whether any desired-member Pod recorded for a restart
+// wave is still present (active, inactive or terminating). Non-desired members
+// (e.g. a scale-in leftover stuck Terminating on a finalizer) neither produce
+// triggers nor block readiness, so they must not keep the wave open — otherwise
+// the guard would silently disable the restart policy for a Ready instance.
+func wavePodsRemaining(instance *workloadsv1alpha2.RoleInstance, oldPods sets.Set[string], pods []*v1.Pod) bool {
+	for _, pod := range pods {
+		if oldPods.Has(restartWavePodKey(pod)) {
+			if isDesiredMember(instance, pod) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// pendingWaveDeletions returns the recorded pre-restart Pods that are still
+// present but not terminating: their deletion belongs to the active wave and
+// must be (re-)issued. Pods already terminating are left alone.
+//
+// The in-memory wave marker is authoritative. When it is absent — the
+// controller restarted mid-wave — the persisted wave state serves as a fallback:
+// a True Restarting condition plus the creation-time heuristic (strictly before
+// LastRestartTime, see hasPreRestartPods). This keeps a wave whose DELETE failed
+// before the restart from deadlocking the same way it would with the marker.
+// Deletion is idempotent: already-terminating Pods are skipped here and
+// already-gone Pods surface as NotFound inside deletePods. The fallback's
+// same-second ambiguity is therefore bounded to one redundant deletion of a
+// replacement Pod, which normal reconciliation recreates without touching
+// RestartCount.
+func pendingWaveDeletions(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) []*v1.Pod {
+	v, ok := restartingCache.Load(instanceKey(instance))
+	if !ok {
+		return pendingDeletionsFromPersistedWave(instance, pods)
+	}
+	oldPods, valid := v.(sets.Set[string])
+	if !valid {
+		return nil
+	}
+	issued := issuedWaveDeletes(instance)
+	var pending []*v1.Pod
+	for _, pod := range pods {
+		podKey := restartWavePodKey(pod)
+		if !oldPods.Has(podKey) {
+			continue
+		}
+		// A missing DeletionTimestamp in the pod list may be informer lag right
+		// after our own delete; the issued set distinguishes that from a
+		// deletion that genuinely never went through.
+		if pod.DeletionTimestamp == nil && (issued == nil || !issued.Has(podKey)) {
+			pending = append(pending, pod)
+		}
+	}
+	return pending
+}
+
+// pendingDeletionsFromPersistedWave is the marker-less fallback of
+// pendingWaveDeletions: non-terminating desired members created strictly before
+// the last restart belong to a persisted, unfinished wave whose deletion must be
+// re-issued.
+func pendingDeletionsFromPersistedWave(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) []*v1.Pod {
+	if !isInstanceRestarting(instance) {
+		return nil
+	}
+	if instance.Status.LastRestartTime == nil {
+		return nil
+	}
+	var pending []*v1.Pod
+	for _, pod := range pods {
+		if pod.DeletionTimestamp != nil {
+			continue
+		}
+		if !pod.CreationTimestamp.Before(instance.Status.LastRestartTime) {
+			continue
+		}
+		if !isDesiredMember(instance, pod) {
+			continue
+		}
+		pending = append(pending, pod)
+	}
+	return pending
+}
+
+// restartWavePodKey identifies a Pod in a restart wave. UID is authoritative;
+// the name fallback only serves unit-test fixtures without UIDs (replacement Pods
+// reuse the same ordinal names as the Pods they replace).
+func restartWavePodKey(pod *v1.Pod) string {
+	if pod.UID != "" {
+		return string(pod.UID)
+	}
+	return pod.Namespace + "/" + pod.Name
+}
+
+// hasPreRestartPods reports whether any Pod was created strictly before the last
+// restart and therefore belongs to the pre-restart generation. This is the fallback
+// for a persisted wave whose in-memory marker was lost (controller restart).
+// CreationTimestamp has second granularity, so a Pod created within the same second
+// as the restart counts as a replacement. That can release the guard while such a
+// Pod is still terminating: backoff delays the re-trigger, but a deletion that
+// outlasts the backoff window (finalizers, long grace periods) may allow one
+// extra recreation.
+func hasPreRestartPods(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) bool {
+	if instance.Status.LastRestartTime == nil {
 		return false
 	}
-	return isInstanceRestarting(fresh)
+	for _, pod := range pods {
+		if !pod.CreationTimestamp.Before(instance.Status.LastRestartTime) {
+			continue
+		}
+		// Mirror wavePodsRemaining: only desired members keep the persisted wave
+		// open, so the marker-less fallback stays consistent with the marker path
+		// (pendingDeletionsFromPersistedWave only re-deletes desired members).
+		if isDesiredMember(instance, pod) {
+			return true
+		}
+	}
+	return false
 }
 
 // recreateTriggerReason names what is about to trigger a recreation, for the
@@ -812,13 +1111,10 @@ func isInstanceRestarting(instance *workloadsv1alpha2.RoleInstance) bool {
 	return false
 }
 
-// setRestartingCondition marks the instance as currently restarting due to restart policy.
-// It updates both the in-memory cache (for immediate visibility) and the status condition
-// (for persistence across controller restarts).
+// setRestartingCondition marks the instance as currently restarting due to restart
+// policy. The in-memory wave marker is recorded separately by rememberRestartWave
+// because it must capture the pre-restart Pod identities.
 func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
-	// Write to in-memory cache first for immediate visibility
-	restartingCache.Store(instanceKey(instance), true)
-
 	for i, cond := range instance.Status.Conditions {
 		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
 			instance.Status.Conditions[i].Status = v1.ConditionTrue
@@ -835,6 +1131,21 @@ func setRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
 		Reason:             "RestartPolicyTriggered",
 		Message:            "Instance is being recreated due to restart policy",
 	})
+}
+
+// completeRestartingCondition marks a completed restart wave: the recreation action
+// finished (all pre-restart Pods are gone) even though the replacement generation
+// may not be Ready yet. Subsequent failures are governed by checkRestartBackoff.
+func completeRestartingCondition(instance *workloadsv1alpha2.RoleInstance) {
+	for i, cond := range instance.Status.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
+			instance.Status.Conditions[i].Status = v1.ConditionFalse
+			instance.Status.Conditions[i].LastTransitionTime = metav1.Now()
+			instance.Status.Conditions[i].Reason = "RestartCompleted"
+			instance.Status.Conditions[i].Message = "Restart policy recreation completed; new failures re-arm after backoff"
+			return
+		}
+	}
 }
 
 // stableThreshold returns the duration after which the instance is considered
@@ -880,9 +1191,10 @@ func updateRestartTracking(instance *workloadsv1alpha2.RoleInstance) {
 	instance.Status.LastRestartTime = &now
 }
 
-// ClearRestarting removes the instance from the in-memory restarting cache.
+// ClearRestarting removes the instance from the in-memory restarting caches.
 func (c *realControl) ClearRestarting(instance *workloadsv1alpha2.RoleInstance) {
 	restartingCache.Delete(instanceKey(instance))
+	waveDeletesIssued.Delete(instanceKey(instance))
 }
 
 // instanceKey returns a unique key for the instance used in the restarting cache.

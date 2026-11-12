@@ -27,12 +27,15 @@ import (
 	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -338,6 +341,63 @@ func TestRestartBookkeepingForAlreadyDeletingMembers(t *testing.T) {
 	}
 }
 
+// TestRestartBookkeepingWhenFirstDeleteFails covers the wave-start accounting
+// when the first DELETE of a new wave fails: the reconcile must still propagate
+// RestartCount/LastRestartTime together with Restarting=True, otherwise backoff
+// and the marker-less fallback key on stale tracking values.
+func TestRestartBookkeepingWhenFirstDeleteFails(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+		Type:          workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+		ActivateAfter: workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+	}
+	instance.Status.ObservedGeneration = instance.Generation
+	revisions := revisioncontrol.NewRevisionControl()
+	revision, err := revisions.NewRevision(instance, 1, new(int32))
+	require.NoError(t, err)
+	instance.Status.CurrentRevision = revision.Name
+	instance.Status.UpdateRevision = revision.Name
+	pods := []*v1.Pod{newReadinessTestPod(instance, "router"), newReadinessTestPod(instance, "sidecar")}
+	objects := make([]client.Object, 0, 1+len(pods))
+	objects = append(objects, instance)
+	for i, pod := range pods {
+		pod.UID = types.UID(fmt.Sprintf("old-%d", i))
+		// Container-restart trigger while the Pods are still Running/Ready.
+		pod.Status.ContainerStatuses = []v1.ContainerStatus{{Name: "main", RestartCount: 1}}
+		objects = append(objects, pod)
+	}
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(instance).WithObjects(objects...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, cc client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				return apierrors.NewConflict(
+					schema.GroupResource{Resource: "pods"}, obj.GetName(), fmt.Errorf("transient conflict"))
+			},
+		}).Build()
+	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+	t.Cleanup(func() { control.ClearRestarting(instance) })
+	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control}
+	computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
+	result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, pods)
+	require.ErrorContains(t, result.err, "transient conflict")
+	require.EqualValues(t, 1, computed.RestartCount,
+		"the wave must be counted even when its first DELETE fails")
+	require.NotNil(t, computed.LastRestartTime)
+	require.True(t, slices.ContainsFunc(computed.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
+		return condition.Type == workloadsv1alpha2.RoleInstanceRestarting && condition.Status == v1.ConditionTrue
+	}))
+	require.NoError(t, (&realStatusUpdater{Client: c}).updateStatus(ctx, instance, computed))
+	live := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.EqualValues(t, 1, live.Status.RestartCount,
+		"the API must persist the wave's restart accounting")
+	require.NotNil(t, live.Status.LastRestartTime)
+	require.True(t, slices.ContainsFunc(live.Status.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
+		return condition.Type == workloadsv1alpha2.RoleInstanceRestarting && condition.Status == v1.ConditionTrue
+	}))
+}
+
 func TestAuxiliaryOwnerReferencesDoNotBlockMemberRepair(t *testing.T) {
 	ctx := context.Background()
 	instance := newReadinessTestInstance()
@@ -468,4 +528,82 @@ func TestReadinessLatchRequiresReadyTargetRevision(t *testing.T) {
 	}
 	updater.calculateStatus(instance, status, nil, pods)
 	require.Equal(t, instance.Generation, status.LastReadyGeneration, "latch once the target revision actually becomes Ready")
+}
+
+func TestRestartingConditionLifecycleWithReadiness(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	pods := []*v1.Pod{newReadinessTestPod(instance, "router"), newReadinessTestPod(instance, "sidecar")}
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithObjects(pods[0], pods[1]).Build()
+	updater := &realStatusUpdater{Client: c}
+	hasRestarting := func(status *workloadsv1alpha2.RoleInstanceStatus, condStatus v1.ConditionStatus) bool {
+		return slices.ContainsFunc(status.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
+			return condition.Type == workloadsv1alpha2.RoleInstanceRestarting && condition.Status == condStatus
+		})
+	}
+
+	// A wave that starts while the pod snapshot is still Ready (for example a
+	// container-restart trigger) must keep its in-progress condition.
+	inProgress := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "r1", UpdateRevision: "r1"}
+	updater.setInstanceConditions(instance, inProgress, []workloadsv1alpha2.RoleInstanceCondition{
+		{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: v1.ConditionTrue, Reason: "RestartPolicyTriggered"},
+	})
+	require.True(t, hasRestarting(inProgress, v1.ConditionTrue),
+		"an in-progress wave must survive a Ready pod snapshot")
+	instance.Status = *inProgress
+
+	// A completed wave is dropped once the instance is Ready.
+	completed := &workloadsv1alpha2.RoleInstanceStatus{
+		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: instance.Status.LastReadyGeneration,
+	}
+	updater.setInstanceConditions(instance, completed, []workloadsv1alpha2.RoleInstanceCondition{
+		{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: v1.ConditionFalse, Reason: "RestartCompleted"},
+	})
+	require.False(t, hasRestarting(completed, v1.ConditionFalse),
+		"a completed wave must be dropped when the instance is Ready")
+
+	// A completed wave persists while the instance is not Ready.
+	instance.Status = *completed
+	instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+		Type: workloadsv1alpha2.RoleInstanceRestarting, Status: v1.ConditionFalse, Reason: "RestartCompleted",
+	})
+	require.NoError(t, c.Delete(ctx, pods[0]))
+	notReady := &workloadsv1alpha2.RoleInstanceStatus{
+		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: instance.Status.LastReadyGeneration,
+	}
+	updater.setInstanceConditions(instance, notReady, nil)
+	require.True(t, hasRestarting(notReady, v1.ConditionFalse),
+		"a completed wave must persist while the instance is not Ready")
+}
+
+// TestUpdateStatusPersistsRestartingCompletion verifies that a condition-only
+// wave completion (Restarting True → False/RestartCompleted, with no other
+// status change) still triggers an API status write.
+func TestUpdateStatusPersistsRestartingCompletion(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+		Type:   workloadsv1alpha2.RoleInstanceRestarting,
+		Status: v1.ConditionTrue,
+		Reason: "RestartPolicyTriggered",
+	})
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(instance).WithObjects(instance).Build()
+	updater := &realStatusUpdater{Client: c}
+
+	completed := instance.Status.DeepCopy()
+	completed.Conditions[len(completed.Conditions)-1] = workloadsv1alpha2.RoleInstanceCondition{
+		Type:   workloadsv1alpha2.RoleInstanceRestarting,
+		Status: v1.ConditionFalse,
+		Reason: "RestartCompleted",
+	}
+	require.NoError(t, updater.updateStatus(ctx, instance, completed))
+
+	live := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.True(t, slices.ContainsFunc(live.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+		return cond.Type == workloadsv1alpha2.RoleInstanceRestarting &&
+			cond.Status == v1.ConditionFalse &&
+			cond.Reason == "RestartCompleted"
+	}), "a condition-only wave completion must be persisted")
 }
