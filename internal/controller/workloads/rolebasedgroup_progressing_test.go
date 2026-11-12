@@ -136,6 +136,15 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 			wantStatus:  metav1.ConditionTrue,
 		},
 		{
+			name: "ris resources blocker aggregates at rbg",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonWaitingForResources, corev1.ConditionTrue, "hash"),
+			},
+			wantReason: workloadconstants.ProgressingReasonWaitingForResources,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
 			name: "family blocker outranks dependencies",
 			rbg:  newProgressingRBG(),
 			observations: map[string]risObservation{
