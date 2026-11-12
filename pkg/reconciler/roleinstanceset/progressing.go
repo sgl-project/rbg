@@ -24,6 +24,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/tools/record"
 
 	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -114,34 +115,58 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 		return condition
 	}
 
-	// Creating is used only during initial set establishment, before the RIS has an
-	// established revision or established RIs for its target.
-	established := newStatus.Replicas > 0 || set.Status.CurrentRevision != "" || newStatus.CurrentRevision != ""
-	if !established {
-		condition.Reason = workloadconstants.ProgressingReasonCreating
-		return condition
-	}
-
-	if anyInstanceRecovering(instances) {
-		condition.Reason = workloadconstants.ProgressingReasonRecovering
-		return condition
-	}
-
-	if updateActive(set, newStatus, instances) {
-		condition.Reason = workloadconstants.ProgressingReasonRoleInstanceUpdated
-		return condition
-	}
-
 	target := int32(0)
 	if set.Spec.Replicas != nil {
 		target = *set.Spec.Replicas
 	}
+
+	updatePending := updateActive(set, newStatus, instances)
+
+	// Creating is used only during initial set establishment, before the RIS has
+	// established RIs for a previous target. Revisions are published on the first
+	// reconcile, so a non-empty revision is not evidence of establishment; only a
+	// previous convergence is. A zero-replica target is structurally complete at
+	// creation and never reports Creating.
+	if !setEstablished(set) && newStatus.Replicas < target {
+		condition.Reason = workloadconstants.ProgressingReasonCreating
+		return condition
+	}
+
+	// A required RI that does not exist is not Creating once the set is
+	// established: when the target did not grow, the missing instance is repair or
+	// replacement, not a scale-up. Update-driven replacement is excluded because
+	// it remains RoleInstanceUpdated.
+	if anyInstanceRecovering(instances) || establishedInstanceMissing(set, newStatus, target, updatePending) {
+		condition.Reason = workloadconstants.ProgressingReasonRecovering
+		return condition
+	}
+
+	// A paused update is not executing, so it must not mask a concurrent workflow.
+	paused := set.Spec.UpdateStrategy.Paused
+	if updatePending {
+		if !paused {
+			condition.Reason = workloadconstants.ProgressingReasonRoleInstanceUpdated
+			return condition
+		}
+		condition.Message = "update progress is paused"
+	} else if paused {
+		condition.Message = "update progress is paused"
+	}
+
 	switch {
 	case newStatus.Replicas < target:
 		condition.Reason = workloadconstants.ProgressingReasonScalingUp
 		return condition
 	case newStatus.Replicas > target:
 		condition.Reason = workloadconstants.ProgressingReasonScalingDown
+		return condition
+	}
+
+	if paused && updatePending {
+		// A fully paused update with no other workflow is not progress toward the
+		// target: all relevant progress is paused.
+		condition.Status = v1.ConditionFalse
+		condition.Reason = workloadconstants.ProgressingReasonPaused
 		return condition
 	}
 
@@ -153,6 +178,34 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	condition.Status = v1.ConditionFalse
 	condition.Reason = workloadconstants.ProgressingReasonConverged
 	return condition
+}
+
+// setEstablished reports whether the RoleInstanceSet has established the instances
+// of a previous target. Freshly published revisions are not evidence: both modes
+// initialize CurrentRevision before any RoleInstance exists, and instances appearing
+// during initial creation do not turn the remaining work into a scale-up.
+func setEstablished(set *workloadsv1alpha2.RoleInstanceSet) bool {
+	if set.Status.Replicas > 0 && set.Status.ReadyReplicas == set.Status.Replicas &&
+		set.Status.UpdatedReplicas == set.Status.Replicas {
+		return true
+	}
+	for _, condition := range set.Status.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
+			condition.Status == v1.ConditionFalse &&
+			condition.Reason == workloadconstants.ProgressingReasonConverged {
+			return true
+		}
+	}
+	return false
+}
+
+// establishedInstanceMissing reports whether an established set lost instances it
+// still requires: the target did not grow, no update workflow explains the loss,
+// and the current instance count is below both the target and the previously
+// established count.
+func establishedInstanceMissing(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, target int32, updatePending bool) bool {
+	return !updatePending && setEstablished(set) &&
+		newStatus.Replicas < target && set.Status.Replicas >= target
 }
 
 // extractOwnSetBlocker returns the blocker recorded by this controller's own
@@ -183,6 +236,12 @@ func currentSetBlocker(ownBlocker *SetBlocker, instances []*workloadsv1alpha2.Ro
 			if condition.Type != workloadsv1alpha2.RoleInstanceProgressing || condition.Status != v1.ConditionTrue {
 				continue
 			}
+			// A condition written for an older RoleInstance generation does not
+			// describe the current target; a legacy writer omitting
+			// observedGeneration does not confirm the current generation either.
+			if condition.ObservedGeneration != instance.Generation {
+				continue
+			}
 			if family, ok := instanceReasonFamily[condition.Reason]; ok {
 				if _, exists := candidates[family]; !exists {
 					candidates[family] = condition.Message
@@ -205,21 +264,57 @@ func currentSetBlocker(ownBlocker *SetBlocker, instances []*workloadsv1alpha2.Ro
 
 func anyInstanceRecovering(instances []*workloadsv1alpha2.RoleInstance) bool {
 	for _, instance := range instances {
-		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseRecovering {
+		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseRecovering ||
+			instanceProgressingReason(instance) == workloadsv1alpha2.ReasonInstanceRecovering {
 			return true
 		}
 	}
 	return false
 }
 
+// instanceProgressingReason returns the fresh RI Progressing reason for the
+// instance's current generation, or "" when the condition is absent or stale.
+// RIS aggregates lower-level facts through reason families; it must not parse
+// condition messages.
+func instanceProgressingReason(instance *workloadsv1alpha2.RoleInstance) string {
+	for _, condition := range instance.Status.Conditions {
+		if condition.Type != workloadsv1alpha2.RoleInstanceProgressing || condition.Status != v1.ConditionTrue {
+			continue
+		}
+		if condition.ObservedGeneration == instance.Generation {
+			return condition.Reason
+		}
+	}
+	return ""
+}
+
+// EmitOperationFailureEvent emits an edge-triggered Warning Event for a failed
+// RoleInstanceSet operation. Events are diagnostic history; the current blocker fact
+// stays in the Progressing condition. The event is emitted only when the failure
+// message changes, so repeated identical failures do not drain the event budget or
+// trigger the client-go spam filter.
+func EmitOperationFailureEvent(recorder record.EventRecorder, set *workloadsv1alpha2.RoleInstanceSet, reason string, err error) {
+	for _, condition := range set.Status.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing && condition.Message == err.Error() {
+			return
+		}
+	}
+	recorder.Eventf(set, v1.EventTypeWarning, reason, "%v", err)
+}
+
 // updateActive reports whether update work remains: instances below the policy's
 // expected update scope, or an instance still executing its own update.
 func updateActive(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) bool {
-	if newStatus.UpdatedReplicas < newStatus.ExpectedUpdatedReplicas {
+	// A below-target updated count only means update work when a revision rollout
+	// is in progress. With equal revisions it reflects missing instances, which is
+	// classified as recovery or scaling, not as an update.
+	if newStatus.UpdateRevision != newStatus.CurrentRevision &&
+		newStatus.UpdatedReplicas < newStatus.ExpectedUpdatedReplicas {
 		return true
 	}
 	for _, instance := range instances {
-		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseUpdating {
+		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseUpdating ||
+			instanceProgressingReason(instance) == workloadsv1alpha2.ReasonInstanceUpdating {
 			return true
 		}
 	}

@@ -89,6 +89,10 @@ type risObservation struct {
 	// progressing is the RIS Progressing condition, nil when absent.
 	progressing *workloadsv1alpha2.RoleInstanceSetCondition
 
+	// generation is the observed RoleInstanceSet generation, used to reject stale
+	// conditions that do not describe the child's current target.
+	generation int64
+
 	// revisionLabel is the role revision hash the RBG dispatched to this RIS.
 	revisionLabel string
 
@@ -178,6 +182,7 @@ func (r *RoleBasedGroupReconciler) collectRISObservations(
 		}
 		observation := risObservation{
 			exists:        true,
+			generation:    set.Generation,
 			revisionLabel: set.Labels[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)],
 		}
 		for j := range set.Status.Conditions {
@@ -285,6 +290,13 @@ func computeRBGProgressingCondition(
 		return condition
 	}
 
+	if allRoleProgressPaused(observations) {
+		condition.Status = metav1.ConditionFalse
+		condition.Reason = constants.ProgressingReasonPaused
+		condition.Message = "all role progress is paused"
+		return condition
+	}
+
 	if reason, message := rbgChildReadiness(rbg, roleStatuses); reason != "" {
 		condition.Reason = reason
 		condition.Message = message
@@ -310,18 +322,26 @@ func rbgCurrentBlocker(
 	gangWaiting bool,
 	depsNotReady []string,
 ) (string, string) {
+	// All current blockers, including RBG-owned gang and dependency facts, compete
+	// through the KEP-502 family precedence: gang and dependencies rank below
+	// permission, admission, quota, and resources blockers.
+	// RBG does not probe Pod-level errors itself.
+	byFamily := make(map[string][]string)
 	if gangWaiting {
-		return constants.ProgressingReasonWaitingForGang, "gang scheduling preconditions are not satisfied"
+		byFamily[constants.ProgressingReasonWaitingForGang] = []string{}
 	}
 	if len(depsNotReady) > 0 {
-		return constants.ProgressingReasonWaitingForDependencies,
-			fmt.Sprintf("dependencies for roles %s are not ready", strings.Join(depsNotReady, ", "))
+		byFamily[constants.ProgressingReasonWaitingForDependencies] = append(
+			byFamily[constants.ProgressingReasonWaitingForDependencies], depsNotReady...)
 	}
-
-	// Map RIS family blockers; RBG does not probe Pod-level errors itself.
-	byFamily := make(map[string][]string)
 	for roleName, observation := range observations {
 		if observation.progressing == nil || observation.progressing.Status != v1.ConditionTrue {
+			continue
+		}
+		if observation.progressing.ObservedGeneration != observation.generation {
+			// A condition written for an older RIS generation does not describe the
+			// current target, and a legacy writer omitting observedGeneration does
+			// not confirm the current generation.
 			continue
 		}
 		mapped, ok := risReasonToRBG[observation.progressing.Reason]
@@ -339,6 +359,12 @@ func rbgCurrentBlocker(
 	}
 	for _, family := range rbgBlockerFamilyPriority {
 		if roles, ok := byFamily[family]; ok {
+			if family == constants.ProgressingReasonWaitingForGang {
+				return family, "gang scheduling preconditions are not satisfied"
+			}
+			if family == constants.ProgressingReasonWaitingForDependencies {
+				return family, fmt.Sprintf("dependencies for roles %s are not ready", strings.Join(sortedCopy(roles), ", "))
+			}
 			return family, fmt.Sprintf("%s affects roles %s", family, strings.Join(sortedCopy(roles), ", "))
 		}
 	}
@@ -350,6 +376,7 @@ func rbgCurrentActivity(rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []wo
 
 	for _, activity := range rbgActivityPriority {
 		var roles []string
+		var roleDetails []string
 		switch activity {
 		case constants.ProgressingReasonCreating:
 			roles = creating
@@ -362,15 +389,59 @@ func rbgCurrentActivity(rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []wo
 			if observation.progressing == nil || observation.progressing.Status != v1.ConditionTrue {
 				continue
 			}
+			if observation.progressing.ObservedGeneration != observation.generation {
+				continue
+			}
 			if mapped, ok := risReasonToRBG[observation.progressing.Reason]; ok && mapped == activity {
 				roles = append(roles, roleName)
 			}
 		}
 		if len(roles) > 0 {
-			return activity, fmt.Sprintf("%s in roles %s", activity, strings.Join(sortedCopy(roles), ", "))
+			for _, role := range sortedCopy(roles) {
+				roleDetails = append(roleDetails, describeRoleActivity(role, observations, activity))
+			}
+			return activity, fmt.Sprintf("%s in roles %s", activity, strings.Join(roleDetails, ", "))
 		}
 	}
 	return "", ""
+}
+
+// describeRoleActivity names the role and, when the RIS reports a concrete workflow
+// reason, the role's activity, so the message describes every concurrent activity
+// for humans without becoming a machine interface.
+func describeRoleActivity(roleName string, observations map[string]risObservation, aggregate string) string {
+	observation, ok := observations[roleName]
+	if !ok || observation.progressing == nil {
+		return roleName
+	}
+	reason := observation.progressing.Reason
+	if reason == "" || reason == aggregate {
+		return roleName
+	}
+	return fmt.Sprintf("%s (%s)", roleName, reason)
+}
+
+// allRoleProgressPaused reports whether every role's RoleInstanceSet is observed and
+// paused or converged, with at least one role paused. It runs only after the blocker
+// and activity checks, so a role that is still recovering, updating, or scaling keeps
+// the overall condition True.
+func allRoleProgressPaused(observations map[string]risObservation) bool {
+	paused := false
+	for _, observation := range observations {
+		if !observation.exists || observation.progressing == nil {
+			return false
+		}
+		switch {
+		case observation.progressing.Reason == constants.ProgressingReasonPaused &&
+			observation.progressing.Status == v1.ConditionFalse:
+			paused = true
+		case observation.progressing.Status == v1.ConditionFalse &&
+			observation.progressing.Reason == constants.ProgressingReasonConverged:
+		default:
+			return false
+		}
+	}
+	return paused
 }
 
 // missingChildRoles classifies required RIS objects that do not exist. Non-zero
@@ -424,7 +495,8 @@ func rbgOwnTargetComplete(
 			return false
 		}
 		if observation.progressing == nil || observation.progressing.Status != v1.ConditionFalse ||
-			observation.progressing.Reason != constants.ProgressingReasonConverged {
+			observation.progressing.Reason != constants.ProgressingReasonConverged ||
+			observation.progressing.ObservedGeneration != observation.generation {
 			return false
 		}
 		if roleStatus.Replicas != *role.Replicas || roleStatus.ReadyReplicas != roleStatus.Replicas {

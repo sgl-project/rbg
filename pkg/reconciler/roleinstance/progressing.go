@@ -56,7 +56,11 @@ type roleInstancePhaseFacts struct {
 func nextRoleInstancePhase(current workloadsv1alpha2.RoleInstancePhase, facts roleInstancePhaseFacts) workloadsv1alpha2.RoleInstancePhase {
 	switch current {
 	case workloadsv1alpha2.RoleInstancePhaseCreating, "":
-		if facts.podsPresent && facts.readySatisfied {
+		// The current creation target must have taken effect before Creating exits:
+		// pods left over from a superseded target do not prove the new target is
+		// established, so a target change during Create convergence folds into
+		// Creating instead of passing through Running.
+		if !facts.updateActive && facts.podsPresent && facts.readySatisfied {
 			return workloadsv1alpha2.RoleInstancePhaseRunning
 		}
 		return workloadsv1alpha2.RoleInstancePhaseCreating

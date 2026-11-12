@@ -131,6 +131,11 @@ const (
 	// ProgressingReasonConverged reports the current target is complete.
 	ProgressingReasonConverged = "Converged"
 
+	// ProgressingReasonPaused reports that all relevant progress for the current
+	// target is paused. Pausing updates alone does not produce this reason while
+	// another workflow is still progressing.
+	ProgressingReasonPaused = "Paused"
+
 	// ProgressingReasonCreating reports initial establishment is in progress.
 	ProgressingReasonCreating = "Creating"
 

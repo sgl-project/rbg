@@ -57,6 +57,16 @@ func observation(reason string, status corev1.ConditionStatus, revision string) 
 	}
 }
 
+// observationWithGeneration builds an observation with explicit set and condition
+// generations, for staleness checks. A condition whose observedGeneration does not
+// match the observed RoleInstanceSet generation must not be treated as current.
+func observationWithGeneration(reason string, status corev1.ConditionStatus, revision string, setGeneration, conditionGeneration int64) risObservation {
+	obs := observation(reason, status, revision)
+	obs.generation = setGeneration
+	obs.progressing.ObservedGeneration = conditionGeneration
+	return obs
+}
+
 func convergedObservations() map[string]risObservation {
 	return map[string]risObservation{
 		"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
@@ -113,6 +123,38 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 				"decode": observation(workloadconstants.ProgressingReasonWaitingForQuota, corev1.ConditionTrue, "hash"),
 			},
 			wantReason: workloadconstants.ProgressingReasonWaitingForQuota,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
+			name: "family blocker outranks gang waiting",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"decode": observation(workloadconstants.ProgressingReasonWaitingForQuota, corev1.ConditionTrue, "hash"),
+			},
+			gangWaiting: true,
+			wantReason:  workloadconstants.ProgressingReasonWaitingForQuota,
+			wantStatus:  metav1.ConditionTrue,
+		},
+		{
+			name: "family blocker outranks dependencies",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"decode": observation(workloadconstants.ProgressingReasonPermissionDenied, corev1.ConditionTrue, "hash"),
+			},
+			depsNotReady: []string{"decode"},
+			wantReason:   workloadconstants.ProgressingReasonPermissionDenied,
+			wantStatus:   metav1.ConditionTrue,
+		},
+		{
+			name:         "stale child condition does not confirm completion",
+			rbg:          newProgressingRBG(),
+			roleStatuses: readyRoleStatuses(),
+			observations: map[string]risObservation{
+				"prefill": observationWithGeneration(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash", 5, 4),
+				"decode":  observationWithGeneration(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash", 5, 5),
+			},
+			expected:   expectedRevisions(),
+			wantReason: workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
 			wantStatus: metav1.ConditionTrue,
 		},
 		{
@@ -201,6 +243,36 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 				"decode":  observation(workloadconstants.ProgressingReasonInstancesNotReady, corev1.ConditionTrue, "hash"),
 			},
 			wantReason: workloadconstants.ProgressingReasonRolesNotReady,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
+			name: "all roles paused reports paused",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonPaused, corev1.ConditionFalse, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonPaused, corev1.ConditionFalse, "hash"),
+			},
+			wantReason: workloadconstants.ProgressingReasonPaused,
+			wantStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "paused and converged roles report paused",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonPaused, corev1.ConditionFalse, "hash"),
+			},
+			wantReason: workloadconstants.ProgressingReasonPaused,
+			wantStatus: metav1.ConditionFalse,
+		},
+		{
+			name: "active role outranks paused role",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonScalingUp, corev1.ConditionTrue, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonPaused, corev1.ConditionFalse, "hash"),
+			},
+			wantReason: workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
 			wantStatus: metav1.ConditionTrue,
 		},
 	}
