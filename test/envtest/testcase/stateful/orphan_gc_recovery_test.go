@@ -86,13 +86,17 @@ var _ = Describe("Stateful RoleInstance orphan Pod recovery", func() {
 				return false, err
 			}
 			for _, condition := range currentInstance.Status.Conditions {
-				if condition.Type == workloadsv1alpha2.RoleInstanceFailedScale &&
+				// KEP-502: a same-name Pod from a previous controller UID awaiting
+				// garbage collection cannot be classified into a blocker family, so
+				// the blocked creation is reported through the Progressing
+				// condition with PodOperationUnclassified instead of FailedScale.
+				if condition.Type == workloadsv1alpha2.RoleInstanceProgressing &&
 					condition.Status == corev1.ConditionTrue {
 					return true, nil
 				}
 			}
 			return false, nil
-		}, timeout, interval).Should(BeTrue(), "the blocked creation should be reported through FailedScale")
+		}, timeout, interval).Should(BeTrue(), "the blocked creation should be reported through Progressing")
 
 		Expect(testutil.K8sClient.Delete(testutil.Ctx, oldPod)).To(Succeed())
 		Eventually(func() (bool, error) {
@@ -133,18 +137,18 @@ var _ = Describe("Stateful RoleInstance orphan Pod recovery", func() {
 				return false, err
 			}
 			ready := false
-			failedScale := false
+			blocked := false
 			for _, condition := range instance.Status.Conditions {
 				switch condition.Type {
 				case workloadsv1alpha2.RoleInstanceReady:
 					ready = condition.Status == corev1.ConditionTrue
-				case workloadsv1alpha2.RoleInstanceFailedScale:
-					failedScale = condition.Status == corev1.ConditionTrue
+				case workloadsv1alpha2.RoleInstanceProgressing:
+					blocked = condition.Status == corev1.ConditionTrue
 				}
 			}
-			return ready && !failedScale, nil
+			return ready && !blocked, nil
 		}, timeout, interval).Should(BeTrue(),
-			"the recovered instance should become Ready and clear the transient FailedScale condition")
+			"the recovered instance should become Ready and clear the transient Progressing blocker")
 	})
 })
 
