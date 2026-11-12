@@ -57,7 +57,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
-	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/coordination/coordinationscaling"
@@ -195,7 +194,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// generation write: record observedGeneration together with the configuration-family
 	// blocker before returning.
 	if err := r.preCheck(ctx, rbg); err != nil {
-		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, workloadconstants.ProgressingReasonInvalidSpec, err.Error()); reportErr != nil {
+		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, constants.ProgressingReasonInvalidSpec, err.Error()); reportErr != nil {
 			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for preCheck failure")
 		}
 		return ctrl.Result{}, err
