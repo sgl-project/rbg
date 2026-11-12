@@ -36,20 +36,23 @@ rejected in `0.9.0`.
 Decide by installation type, not by migration progress:
 
 - **New installation**: set `false`. This is the recommended starting point; only `RoleInstanceSet` is accepted.
-- **Upgraded cluster, inventory empty**: set `false` now. Nothing is left to migrate.
-- **Upgraded cluster with deprecated roles**: keep `true` until the inventory below is empty, then switch to `false`.
+- **Upgraded cluster, migration complete**: set `false`. The inventory below is empty, reconciliation has finished, and no RBG-owned legacy workloads remain.
+- **Upgraded cluster with deprecated roles**: keep `true` until the migration is complete, then switch to `false`.
 
-Take the inventory to decide (empty output means `false` is safe):
+Take the inventory to find remaining role specs (empty output means no role still selects a deprecated workload type):
 
 ```bash
 kubectl get rbg,rbgs -A -o json | jq -r '.items[] | . as $o
-  | (.spec.roles // .spec.groupTemplate.spec.roles // [])[]
-  | (.annotations["rbg.workloads.x-k8s.io/role-workload-type"] // "") as $wt
+  | (.spec.roles // .spec.groupTemplate.spec.roles // .spec.template.roles // [])[]
+  | ((.annotations // {})["rbg.workloads.x-k8s.io/role-workload-type"]
+     // (if .workload.kind then "\(.workload.apiVersion)/\(.workload.kind)" else "" end)) as $wt
   | select($wt | test("/(Deployment|StatefulSet|LeaderWorkerSet)$"))
   | "\($o.kind) \($o.metadata.namespace)/\($o.metadata.name) role=\(.name) \($wt)"'
 ```
 
 While the value is `true`, the controller retains RBAC, watches, and orphan cleanup so existing roles can be reconciled and manually migrated (migrate `RoleBasedGroupSet` templates before their children). New deprecated workload uses are rejected during this transition.
+
+An empty inventory is necessary but not sufficient for the final cutoff. The inventory becomes empty as soon as the last role is edited, while the controller may still be reconciling and deleting the old workload. Before switching to `false`, wait for reconciliation to complete without errors and verify that the old RBG-owned Deployment, StatefulSet, and LeaderWorkerSet resources have been deleted (their Pods should be gone as well). Switching earlier disables legacy cleanup and can leave those resources running.
 
 When the value is `false`, every deprecated workload use is rejected and the chart also removes legacy workload RBAC, so the controller does not watch those resources.
 
@@ -168,10 +171,11 @@ kubectl delete -f config/crd/bases/
 ## Upgrading
 
 `helm upgrade` is supported. Review [Deprecated workload types](#deprecated-workload-types) and take
-the inventory before upgrading: if it is empty, set `controller.deprecatedWorkloadTypes.enabled=false`
-with the upgrade; otherwise keep `true`, migrate the listed roles (the migration guide is tracked in
-[sgl-project/rbg#454](https://github.com/sgl-project/rbg/issues/454)), and switch to `false` once it
-is empty.
+the inventory before upgrading: if it is empty and the old RBG-owned workloads are gone, set
+`controller.deprecatedWorkloadTypes.enabled=false` with the upgrade; otherwise keep `true`, migrate
+the listed roles (the migration guide is tracked in
+[sgl-project/rbg#454](https://github.com/sgl-project/rbg/issues/454)), and switch to `false` only
+after reconciliation has completed and the legacy workloads have been deleted.
 
 ### Breaking change: values regrouped in chart v0.8.0
 

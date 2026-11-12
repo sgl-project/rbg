@@ -97,7 +97,7 @@ Choose by installation type, not by migration progress:
 
 - **New installation**: use `false`. This is the recommended starting point; only `RoleInstanceSet` is accepted, with the constraint enforced by the controller rather than by convention.
 - **Upgraded cluster with no remaining deprecated roles**: use `false`.
-- **Upgraded cluster with deprecated roles**: keep `true` until those roles are migrated to `RoleInstanceSet`, then switch to `false`. While `true`, the controller keeps RBAC, watches, and orphan cleanup for the deprecated types so the remaining roles stay reconcilable.
+- **Upgraded cluster with deprecated roles**: keep `true` until those roles are migrated to `RoleInstanceSet`, reconciliation completes, and the old RBG-owned workloads are deleted; then switch to `false`. While `true`, the controller keeps RBAC, watches, and orphan cleanup for the deprecated types so the remaining roles stay reconcilable.
 
 > **v1alpha1 defaults to a deprecated workload type.** The `v1alpha1` schema defaults
 > `spec.roles[].workload` to `apps/v1 StatefulSet`, so a new `v1alpha1` object that never mentions

@@ -36,7 +36,9 @@ will be removed in 0.10.0.
 For a new installation, prefer controller.deprecatedWorkloadTypes.enabled=false.
 {{- else }}
 Take the deprecated-role inventory (see the chart README) and switch to
-controller.deprecatedWorkloadTypes.enabled=false once it is empty.
+controller.deprecatedWorkloadTypes.enabled=false only after reconciliation
+has completed and the old RBG-owned Deployment, StatefulSet, and
+LeaderWorkerSet workloads are gone.
 {{- end }}
 {{- end }}
 

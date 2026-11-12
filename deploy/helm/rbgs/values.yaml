@@ -74,8 +74,9 @@ controller:
   # deprecatedWorkloadTypes controls compatibility for existing deprecated
   # workload types (Deployment, StatefulSet, LeaderWorkerSet), superseded by
   # RoleInstanceSet.
-  # Recommended: false for new installations and for clusters with no remaining
-  # deprecated roles. Keep true only while roles still use a deprecated type:
+  # Recommended: false for new installations and for clusters where migration
+  # is complete: no deprecated role remains, reconciliation has finished, and
+  # the old RBG-owned workloads are gone. Keep true while cleanup is pending:
   # existing roles keep their own type and can be migrated one at a time, while
   # new uses — including switching between deprecated types — are rejected.
   # With false, every remaining use is rejected and legacy RBAC/watches are off.
