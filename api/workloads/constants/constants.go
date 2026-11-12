@@ -71,6 +71,74 @@ const (
 // RoleInstanceLifecycleStateType defines the lifecycle state of a RoleInstance
 type RoleInstanceLifecycleStateType string
 
+// Progressing reason constants shared by RoleInstanceSet and RoleBasedGroup (KEP-502).
+// RIS maps RoleInstance reason families to these canonical reasons; RBG uses the same
+// family names plus its own aggregates.
+const (
+	// ProgressingReasonRoleInstanceUpdated reports child RoleInstances are being updated
+	// (RIS scope, strategy-agnostic).
+	ProgressingReasonRoleInstanceUpdated = "RoleInstanceUpdated"
+
+	// ProgressingReasonRoleInstanceSetUpdated reports child RoleInstanceSets are converging
+	// (RBG aggregate, covering updates and scaling).
+	ProgressingReasonRoleInstanceSetUpdated = "RoleInstanceSetUpdated"
+
+	// ProgressingReasonScalingUp reports scale-up is incomplete.
+	ProgressingReasonScalingUp = "ScalingUp"
+
+	// ProgressingReasonScalingDown reports scale-down is incomplete.
+	ProgressingReasonScalingDown = "ScalingDown"
+
+	// ProgressingReasonInstancesNotReady reports no active RIS workflow while target
+	// instances are not ready.
+	ProgressingReasonInstancesNotReady = "InstancesNotReady"
+
+	// ProgressingReasonRolesNotReady reports no active RBG workflow while target roles
+	// are not ready.
+	ProgressingReasonRolesNotReady = "RolesNotReady"
+
+	// ProgressingReasonInvalidSpec reports a persisted invalid spec.
+	ProgressingReasonInvalidSpec = "InvalidSpec"
+
+	// ProgressingReasonSchedulerUnsupported reports a missing scheduler capability.
+	ProgressingReasonSchedulerUnsupported = "SchedulerUnsupported"
+
+	// ProgressingReasonIncompatibleGangConfig reports an unsatisfiable gang combination.
+	ProgressingReasonIncompatibleGangConfig = "IncompatibleGangConfig"
+
+	// ProgressingReasonPermissionDenied reports an operation is blocked by RBAC.
+	ProgressingReasonPermissionDenied = "PermissionDenied"
+
+	// ProgressingReasonAdmissionDenied reports an operation is rejected by admission.
+	ProgressingReasonAdmissionDenied = "AdmissionDenied"
+
+	// ProgressingReasonWaitingForQuota reports an operation is blocked by resource quota.
+	ProgressingReasonWaitingForQuota = "WaitingForQuota"
+
+	// ProgressingReasonWaitingForResources reports insufficient resources.
+	ProgressingReasonWaitingForResources = "WaitingForResources"
+
+	// ProgressingReasonWaitingForGang reports gang scheduling preconditions are unmet.
+	ProgressingReasonWaitingForGang = "WaitingForGang"
+
+	// ProgressingReasonWaitingForDependencies reports role dependencies are not ready.
+	ProgressingReasonWaitingForDependencies = "WaitingForDependencies"
+
+	// ProgressingReasonUnclassifiedBlocker reports an error whose family cannot be
+	// determined yet.
+	ProgressingReasonUnclassifiedBlocker = "UnclassifiedBlocker"
+
+	// ProgressingReasonConverged reports the current target is complete.
+	ProgressingReasonConverged = "Converged"
+
+	// ProgressingReasonCreating reports initial establishment is in progress.
+	ProgressingReasonCreating = "Creating"
+
+	// ProgressingReasonRecovering reports repair or replacement of an established
+	// resource is in progress.
+	ProgressingReasonRecovering = "Recovering"
+)
+
 const (
 	RoleInstanceLifecycleStateNormal          RoleInstanceLifecycleStateType = "Normal"
 	RoleInstanceLifecycleStatePreparingUpdate RoleInstanceLifecycleStateType = "PreparingUpdate"

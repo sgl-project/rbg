@@ -147,6 +147,12 @@ type RoleInstanceStatus struct {
 	// RoleInstance's generation, which is updated on mutation by the API Server.
 	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 
+	// Phase is the optional instance-level lifecycle phase. It records the stage the
+	// instance has entered, is not a readiness or success verdict, is not copied by
+	// parent controllers, and is not used as the lifecycle-hook protocol.
+	// +optional
+	Phase RoleInstancePhase `json:"phase,omitempty"`
+
 	// Conditions track the condition of the RoleInstance
 	Conditions []RoleInstanceCondition `json:"conditions,omitempty"`
 
@@ -260,6 +266,77 @@ const (
 	// While this condition is True, further restart-policy recreations are suppressed to
 	// prevent cascading restart loops.
 	RoleInstanceRestarting RoleInstanceConditionType = "Restarting"
+
+	// RoleInstanceProgressing reports current progress toward the instance target or the
+	// current blocker. It is not a readiness gate.
+	RoleInstanceProgressing RoleInstanceConditionType = "Progressing"
+)
+
+// RoleInstancePhase is the instance-level lifecycle phase of a RoleInstance.
+// +kubebuilder:validation:Enum={Creating,Running,Updating,Recovering,Terminating}
+type RoleInstancePhase string
+
+const (
+	// RoleInstancePhaseCreating means the instance is initially establishing the target
+	// Pods for each component and waiting for readyPolicy to be satisfied. External
+	// readiness gates do not gate this phase.
+	RoleInstancePhaseCreating RoleInstancePhase = "Creating"
+
+	// RoleInstancePhaseRunning means the instance-level target is steady after startup,
+	// an update, or recovery completes. Readiness may still be false.
+	RoleInstancePhaseRunning RoleInstancePhase = "Running"
+
+	// RoleInstancePhaseUpdating means an identified component spec, template, or revision
+	// update is in progress, including in-place updates and Pod replacements.
+	RoleInstancePhaseUpdating RoleInstancePhase = "Updating"
+
+	// RoleInstancePhaseRecovering means independent recreation or replacement of required
+	// Pods is in progress outside an update.
+	RoleInstancePhaseRecovering RoleInstancePhase = "Recovering"
+
+	// RoleInstancePhaseTerminating means the RoleInstance itself has a deletionTimestamp.
+	RoleInstancePhaseTerminating RoleInstancePhase = "Terminating"
+)
+
+// RoleInstance Progressing reasons. Reason strings are scoped to the object that owns
+// the condition; RIS and RBG map these families to their canonical reasons.
+const (
+	// ReasonInstanceConverged reports the instance target is complete.
+	ReasonInstanceConverged = "Converged"
+
+	// ReasonInstanceCreating reports initial creation is in progress.
+	ReasonInstanceCreating = "Creating"
+
+	// ReasonInstanceUpdating reports an instance update is in progress.
+	ReasonInstanceUpdating = "Updating"
+
+	// ReasonInstanceRecovering reports independent recovery is in progress.
+	ReasonInstanceRecovering = "Recovering"
+
+	// ReasonInstancePodsNotReady reports no active workflow while target Pods are not ready.
+	ReasonInstancePodsNotReady = "PodsNotReady"
+
+	// ReasonPodCreateQuotaExceeded reports Pod creation is blocked by resource quota.
+	ReasonPodCreateQuotaExceeded = "PodCreateQuotaExceeded"
+
+	// ReasonPodUpdateQuotaExceeded reports Pod updates are blocked by resource quota.
+	ReasonPodUpdateQuotaExceeded = "PodUpdateQuotaExceeded"
+
+	// ReasonPodCreateForbidden reports Pod creation is blocked by RBAC.
+	ReasonPodCreateForbidden = "PodCreateForbidden"
+
+	// ReasonPodUpdateForbidden reports Pod updates are blocked by RBAC.
+	ReasonPodUpdateForbidden = "PodUpdateForbidden"
+
+	// ReasonPodAdmissionRejected reports a Pod operation is rejected by admission.
+	ReasonPodAdmissionRejected = "PodAdmissionRejected"
+
+	// ReasonInstanceInsufficientResources reports insufficient resources for Pod scheduling.
+	ReasonInstanceInsufficientResources = "InsufficientResources"
+
+	// ReasonPodOperationUnclassified reports an operation failure whose family cannot be
+	// determined yet.
+	ReasonPodOperationUnclassified = "PodOperationUnclassified"
 )
 
 // RoleInstanceCondition describes the state of a RoleInstance at a certain point.
@@ -278,6 +355,11 @@ type RoleInstanceCondition struct {
 
 	// A human readable message indicating details about the transition.
 	Message string `json:"message,omitempty"`
+
+	// ObservedGeneration is the generation of this RoleInstance to which the fact applies.
+	// Its absence does not confirm the current generation.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
@@ -287,6 +369,7 @@ type RoleInstanceCondition struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:resource:shortName=rins,path=roleinstances,scope=Namespaced
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='RoleInstanceReady')].status",description="Overall readiness status"
+// +kubebuilder:printcolumn:name="PHASE",type="string",JSONPath=".status.phase",description="Instance-level lifecycle phase"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC."
 
 // RoleInstance is the Schema for the roleinstances API

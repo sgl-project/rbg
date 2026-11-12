@@ -57,6 +57,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/coordination/coordinationscaling"
@@ -189,8 +190,13 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 0: Pre-check validations
+	// Step 0: Pre-check validations. Per KEP-502, preflight failures must not skip the
+	// generation write: record observedGeneration together with the configuration-family
+	// blocker before returning.
 	if err := r.preCheck(ctx, rbg); err != nil {
+		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, workloadconstants.ProgressingReasonInvalidSpec, err.Error()); reportErr != nil {
+			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for preCheck failure")
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -252,6 +258,9 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if gangErr != nil {
+		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, workloadconstants.ProgressingReasonIncompatibleGangConfig, gangErr.Error()); reportErr != nil {
+			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for incompatible gang config")
+		}
 		// A gang configuration the current RBG cannot satisfy is not transient: only a
 		// user or operator change resolves it, and CR edits already re-enqueue through
 		// the watches in SetupWithManager, so the workqueue's 5ms-and-doubling error
@@ -826,6 +835,12 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, readyCondition)
 	rbg.Status.ObservedGeneration = rbg.Generation
+
+	// Record the KEP-502 Progressing condition before the unchanged-status check so
+	// condition-only changes still produce an SSA patch.
+	if err := r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, r.observeGangWaiting(ctx, rbg)); err != nil {
+		log.FromContext(ctx).V(2).Info("Skip RBG Progressing update: RIS observation failed", "error", err)
+	}
 
 	// update role status
 	for i := range roleStatuses {

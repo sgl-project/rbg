@@ -38,6 +38,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
+	setprogressing "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
 )
@@ -269,6 +270,10 @@ func (ssc *defaultStatefulInstanceSetControl) performUpdate(
 	if getStatusErr != nil && currentStatus == nil {
 		return currentRevision, updateRevision, getStatusErr
 	}
+
+	// Apply the KEP-502 Progressing condition before the status write; instances are
+	// needed to map lower-level blockers and recovery facts.
+	setprogressing.ApplySetProgressingCondition(set, currentStatus, instances)
 
 	// make sure to update the latest status even if there is an error with non-nil currentStatus
 	updateStatusErr := ssc.updateInstanceSetStatus(ctx, set, currentStatus)

@@ -21,6 +21,10 @@ spec:
       jsonPath: .status.conditions[?(@.type=='RoleInstanceReady')].status
       name: READY
       type: string
+    - description: Instance-level lifecycle phase
+      jsonPath: .status.phase
+      name: PHASE
+      type: string
     - description: CreationTimestamp is a timestamp representing the server time when
         this object was created. It is not guaranteed to be set in happens-before
         order across separate operations. Clients may not set this value. It is represented
@@ -243,6 +247,12 @@ spec:
                       description: A human readable message indicating details about
                         the transition.
                       type: string
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration is the generation of this RoleInstance to which the fact applies.
+                        Its absence does not confirm the current generation.
+                      format: int64
+                      type: integer
                     reason:
                       description: The reason for the condition's last transition.
                       type: string
@@ -309,6 +319,15 @@ spec:
                   RoleInstance's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
+              phase:
+                description: Phase is the optional instance-level lifecycle phase.
+                enum:
+                - Creating
+                - Running
+                - Updating
+                - Recovering
+                - Terminating
+                type: string
               restartCount:
                 description: |-
                   RestartCount tracks the number of times the restart policy has triggered

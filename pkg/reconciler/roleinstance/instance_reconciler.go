@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -148,6 +149,8 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 
 	res := r.syncInstance(ctx, instance, &newStatus, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 
+	newStatus.Phase = nextRoleInstancePhase(instance.Status.Phase, r.phaseFacts(instance, &newStatus, filteredPods))
+
 	if err = r.statusUpdater.UpdateInstanceStatus(ctx, instance, &newStatus, filteredPods); err != nil {
 		logger.Error(err, "Failed to update instance status")
 		return reconcile.Result{}, err
@@ -189,10 +192,13 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 	var scaleRequeue time.Duration
 	scaling, scaleRequeue, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 	if podsScaleErr != nil {
+		scaleReason := classifyPodOperationError("Create", podsScaleErr)
+		r.emitOperationFailureEvent(instance, workloadsv1alpha2.RoleInstanceFailedScale, scaleReason, podsScaleErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:               workloadsv1alpha2.RoleInstanceFailedScale,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
+			Reason:             scaleReason,
 			Message:            podsScaleErr.Error(),
 		})
 	}
@@ -233,10 +239,13 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 
 	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods)
 	if podsUpdateErr != nil {
+		updateReason := classifyPodOperationError("Update", podsUpdateErr)
+		r.emitOperationFailureEvent(instance, workloadsv1alpha2.RoleInstanceFailedUpdate, updateReason, podsUpdateErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:               workloadsv1alpha2.RoleInstanceFailedUpdate,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
+			Reason:             updateReason,
 			Message:            podsUpdateErr.Error(),
 		})
 	}
@@ -349,6 +358,50 @@ func (r *reconciler) truncateHistory(
 		}
 	}
 	return nil
+}
+
+// phaseFacts derives the controller-observed facts for the RI phase machine. External
+// readiness gates are intentionally excluded: they gate externally observed readiness
+// and parent availability, not phase completion.
+func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, pods []*v1.Pod) roleInstancePhaseFacts {
+	var expectedPods int32
+	for _, component := range instance.Spec.Components {
+		if component.Size != nil {
+			expectedPods += *component.Size
+		}
+	}
+	podsPresent := int32(len(pods)) == expectedPods
+
+	updateActive := newStatus.UpdateRevision != "" && newStatus.UpdateRevision != newStatus.CurrentRevision
+
+	readySatisfied := true
+	if policy := instance.Spec.ReadyPolicy; policy == "" || policy == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady {
+		coreControl := instancecore.New(instance)
+		for _, pod := range pods {
+			if !coreControl.IsPodUpdateReady(pod, 0) {
+				readySatisfied = false
+				break
+			}
+		}
+	}
+	return roleInstancePhaseFacts{
+		updateActive:   updateActive,
+		podsPresent:    podsPresent,
+		readySatisfied: readySatisfied,
+	}
+}
+
+// emitOperationFailureEvent emits an edge-triggered Warning Event for a failed pod
+// operation. Events are diagnostic history: the current blocker fact stays in the
+// Progressing condition. The event is emitted only when the failure message changes,
+// so repeated identical failures do not drain the object's event budget.
+func (r *reconciler) emitOperationFailureEvent(instance *workloadsv1alpha2.RoleInstance, conditionType workloadsv1alpha2.RoleInstanceConditionType, reason string, err error) {
+	for _, condition := range instance.Status.Conditions {
+		if condition.Type == conditionType && condition.Message == err.Error() {
+			return
+		}
+	}
+	r.recorder.Eventf(instance, v1.EventTypeWarning, reason, "%v", err)
 }
 
 func handleCrash(ctx context.Context, additionalHandlers ...func(interface{})) {

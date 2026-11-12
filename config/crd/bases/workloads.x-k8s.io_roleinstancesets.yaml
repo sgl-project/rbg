@@ -300,6 +300,12 @@ spec:
                       description: A human-readable message indicating details about
                         the transition.
                       type: string
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration is the generation of this RoleInstanceSet to which the fact applies.
+                        Its absence does not confirm the current generation.
+                      format: int64
+                      type: integer
                     reason:
                       description: The reason for the condition's last transition.
                       type: string
