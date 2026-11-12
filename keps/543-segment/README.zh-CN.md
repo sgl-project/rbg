@@ -31,10 +31,12 @@
       - [Adapter 与 RBG 的扩缩协调闭环](#adapter-与-rbg-的扩缩协调闭环)
       - [scale 子资源与指标边界](#scale-子资源与指标边界)
     - [与 Gang 的集成](#与-gang-的集成)
+      - [Volcano subGroup 映射](#volcano-subgroup-映射)
+      - [与 Scaling 的配置校验](#与-scaling-的配置校验)
     - [与 Rolling Update 的集成](#与-rolling-update-的集成)
       - [RBG 与 RIS 的更新协调闭环](#rbg-与-ris-的更新协调闭环)
       - [成员可用性与预算补位](#成员可用性与预算补位)
-      - [Policy 覆盖与 RIS 局部窗口](#policy-覆盖与-ris-局部窗口)
+      - [Policy 覆盖与 RIS 执行窗口](#policy-覆盖与-ris-执行窗口)
       - [maxSurge 上限与 RIS 执行](#maxsurge-上限与-ris-执行)
       - [按 Segment 生成 partition](#按-segment-生成-partition)
       - [目标版本变化时的新模板与 partition 下发](#目标版本变化时的新模板与-partition-下发)
@@ -122,7 +124,7 @@ Segment 将多个 role 的 RoleInstance 按固定配比分组，为扩缩容、�
 
 `segment` 定义在 `CoordinatedPolicy.spec.policies[]` 中，只声明成员结构；同一规则的 `strategy` 决定创建批量、调度门槛和更新预算。组身份保存在 RoleInstance 与 Pod 的受管标签中，在同一有效分组配置下保持稳定。组成员可以先后创建、启动和 Ready；更新期间允许新旧版本共存。
 
-本文面向 KEP 评审者和控制器开发者，假定读者了解 RBG、RIS 及 Kubernetes 控制器的基本工作方式。本文是设计提案，Segment API 扩展、控制器适配和测试尚未完成；文中标注为“现有行为”的内容仅说明复用边界，其余行为是实现要求。讨论过程见[设计讨论记录](review-discussion.zh-CN.md)。
+本文面向 KEP 评审者和控制器开发者，假定读者了解 RBG、RIS 及 Kubernetes 控制器的基本工作方式。本文是设计提案，Segment API 扩展、控制器适配和测试尚未完成；文中标注为“现有行为”的内容仅说明复用边界，其余行为是实现要求。
 
 本文使用以下简称：
 
@@ -151,7 +153,7 @@ PD 分离推理需要 prefill 与 decode 配对。现有 CoordinatedPolicy 能�
 - 自动推断配比、实现或强制启用 router 组感知路由。
 - 设计完整 topology API、tier、pack 或调度器翻译。
 - 保证跨对象原子操作、成员同时 Ready、无混版更新或重新分组时的应用状态无缝迁移。
-- 改造现有地址发现；地址仍按期望副本枚举，不代表成员已创建或可服务。
+- 改造非 Segment 规则的现有地址发现。对有效 Segment，地址发现必须只发布对齐后的基础组目标，不得把剩余实例或 surge 身份发布为可服务成员。
 - 新增首次创建专用 progression、“整 Segment 更新”开关、实际 surge 目标或跨 role 临时组生命周期协议。
 - 设计完整 HPA 使用方案，或增加通用 Pod 选择及业务指标采集、聚合、去重职责；本期只定义 ScalingAdapter 能力。
 - 适配 Stateless RIS，以及后续版本不再支持的 Deployment、StatefulSet、LWS 等 deprecated workload。
@@ -209,11 +211,11 @@ spec:
 
 ### 约束与注意事项
 
-- 当前仅支持 Stateful RIS，复用从 0 开始的连续 ordinal 分组。任一成员为 Stateless 就拒绝或阻塞该组合，不自动转换模式；分组概念本身不等于 Stateful 模式。
+- 当前仅支持成员为原生 Stateful RoleInstanceSet 且成员序号稠密的配置。拒绝 Stateless RIS、deprecated workload、未知后端、`excluded-ordinals` 以及子 RIS 上非空的 `committed-skip-ordinals` 记录；分组概念本身不等于 Stateful 模式。
 - 同一 Policy 中，Segment 成员不得出现在其他任何规则中，不区分策略域。需要共同协调的 role 应在一条规则内声明配比和策略。
 - 配比在同一有效配置内不可原地修改；撤销后可按新配比重新校验、接管，不记录或限制历史配比。
 - Segment 下忽略 `scaling.maxSkew` 和 `rollingUpdate.maxSkew`。创建使用批量与 progression，更新使用共同边界与组级预算。
-- Segment 的 scaling 与 Gang 独立执行，不调整彼此参数或交叉校验；合法组合仍可能持续互等，由用户调整配置。
+- Segment 的 scaling 与 Gang 独立执行，执行期不调整彼此参数；Policy 准入和 RBG reconcile 校验两者是否兼容，避免首批成员不足造成持续互等。
 - 非 Segment 保留现有行为；唯一新增覆盖能力是显式配置 Policy `maxSurge`，详见[参数覆盖规则](#maxsurge-上限与-ris-执行)。
 
 ### 风险与缓解
@@ -221,12 +223,12 @@ spec:
 | 风险或代价 | 设计边界与处理方式 |
 | --- | --- |
 | 配比或规则组织限制灵活性 | 不支持单 role 扩缩、成员跨规则重叠或原地改配比；相关 role 在同一规则内协调，改配比通过撤销和重新接管完成 |
-| 副本不能组成完整组 | 报告剩余实例，不将其作为完整目标创建；存量接管失败时保留已有成员，由用户修正目标 |
+| 期望副本不满足配比 | 报告各 role 的剩余实例并停止本次 Segment 副本变更；首次创建不生成成员目标，已生效的 Segment 保持当前合法目标，存量接管不生效，由用户修正目标 |
 | 分组和业务路由不一致 | RBG 发布并维护身份，但无法验证 router 是否按组路由；重新分组不保证应用状态或路由无缝迁移 |
 | 各 RIS 独立执行可能突破预算 | RBG 按组身份去重并控制共同边界；部分下发、目标变化及状态延迟必须验证 |
 | 慢成员或坏版本持续占用预算 | 无 surge 时，预算耗尽允许阻塞新增组；有余量且满足其他条件时仍可补位，不自动扩大预算 |
 | surge 容量被误当成完整备用服务 | 仅保证上限投影，实际数量与回收由 RIS 决定，不保证额外 RI 成组 |
-| scaling 与 Gang 门槛冲突 | 两者独立等待；用户调整批量或门槛，系统不自动抬升目标或降低门槛 |
+| scaling 与 Gang 门槛冲突 | 静态冲突由 Policy 准入拒绝，跨资源变化由 RBG reconcile 报告；系统不自动抬升目标或降低门槛 |
 | 标签被修改或同步延迟 | 控制器恢复受管字段；消费者区分标签存在与当前配置有效 |
 
 ## 设计细节
@@ -252,7 +254,7 @@ Policy 字段以 `CoordinatedPolicy.spec.policies[]` 为起点。新增字段均
 | `segment` | `map[string]int32`，RI 配额 | 未配置时按非 Segment 规则执行 |
 | `strategy.scaling.segBatchSize` | 正整数，组数 | 有 Segment scaling 策略时默认 `1`；用于首次创建和扩容 |
 | `strategy.scaling.scalingAdapter` | 复用现有 `ScalingAdapter` 类型 | `enable` 默认 `false`；`labels` 附加到自动创建的 Adapter |
-| `strategy.scheduling.gang.minSegments` | 正整数，组数 | 已声明 Gang 时，省略该字段表示全部期望完整组；与 `minReplicas` 互斥 |
+| `strategy.scheduling.gang.minSegments` | 正整数，组数 | 未配置 scaling 时，省略表示全部期望完整组；同时配置 scaling 和 Gang 时必须显式设置；与 `minReplicas` 互斥 |
 | `strategy.rollingUpdate.maxSurge` | 整数或百分比 | Segment 下未配置按 `0` 下发；非 Segment 未配置时保留 role 行为 |
 
 现有 `strategy.scaling.maxSkew` 和 `strategy.rollingUpdate.maxSkew` 字段继续保留，但 Segment 计算忽略其值。现有更新字段的组级单位见[滚动更新](#与-rolling-update-的集成)。Adapter 资源新增的 `spec.scaleTargetRef.segment` 及副本字段语义见[目标与副本单位](#目标与副本单位)。
@@ -316,6 +318,25 @@ type GangSchedulingStrategy struct {
 }
 ```
 
+更新 Adapter 目标引用，使 role 与 Segment 目标互斥但各自可选：
+
+```go
+type AdapterScaleTargetRef struct {
+    Name string `json:"name"`
+
+    // Role 指向单个 RBG role。Role 与 Segment 必须且只能设置一个；
+    // 现有 role 目标客户端行为保持不变。
+    // +optional
+    Role string `json:"role,omitempty"`
+
+    // Segment 指向 CoordinatedPolicy 规则，此时 spec.replicas 表示完整 Segment 数。
+    // +optional
+    Segment string `json:"segment,omitempty"`
+}
+```
+
+准入和 reconcile 必须拒绝 `role` 与 `segment` 同时设置或同时为空。CRD schema、生成代码和校验必须同步更新；`role` 从 required 变为 optional 是本契约的一部分。
+
 ### 校验
 
 准入校验检查配置结构，RBG reconcile 检查关联资源与执行条件。以下 Policy 字段路径均相对于 `spec.policies[]`。
@@ -324,11 +345,17 @@ type GangSchedulingStrategy struct {
 
 | 校验对象 | 要求 |
 | --- | --- |
-| `segment` 与 `roles` | key 集合完全一致，至少两个 role，每个 value 大于 0 |
+| `segment` 与 `roles` | key 集合完全一致，至少两个 role，每个 value 大于 0，且 `roles` 中不得重复 |
 | 成员独占 | Segment 成员与其他所有规则的 `roles` 不相交，不区分策略域；创建、更新及不同规则排列顺序下结果一致 |
 | `strategy.scheduling.gang.minSegments` | 正整数，只用于 Segment，与同一规则的 `minReplicas` 互斥 |
+| Segment Gang 的调度器 | 要求 Volcano 支持 `subGroupPolicy`；scheduler-plugins 只有 Pod 总数门槛，不能保证完整 Segment 身份，拒绝该组合 |
+| Segment 同时配置 scaling 与 Gang | 必须显式设置 `minSegments`，且有效 `segBatchSize >= minSegments`；`segBatchSize` 省略时按 1 参与检查 |
 | 配比更新 | 同一命名规则在更新前后均声明 Segment 时，map 必须完全相同；禁止增删 key 或修改 value |
-| `strategy.scaling.segBatchSize` | 正整数，只用于 Segment，不支持百分比；省略时按 1 处理，不与 `minSegments` 交叉校验 |
+| 规则重命名 | 同一次更新只有在不改变 Segment map 时才允许重命名；同时改变规则名和配比必须拒绝，并拆分为撤销后另行添加 |
+| 规则身份 | 同一 Policy 内确定性 rule ID 不得冲突 |
+| `strategy.scaling.segBatchSize` | 正整数，只用于 Segment，不支持百分比；省略时按 1 处理 |
+
+同时配置 scaling 与 Gang 时要求显式设置 `minSegments`，使上述检查只依赖当前 Policy，不需要在 webhook 中读取 RBG 或 Adapter 的最终期望组数。未配置 scaling 时，RIS 直接收到全部期望组目标，Gang 可以继续使用省略 `minSegments` 表示全部期望组的默认规则。
 
 添加、移除及重新添加 Segment 按[配置生命周期](#coordinatedpolicy-的添加与删除)处理，不校验历史配比。
 
@@ -340,7 +367,8 @@ type GangSchedulingStrategy struct {
 
 Policy 与 RBG 的关联配置决定成员模式是否支持 Segment：
 
-- 创建或更新 Policy、RBG 时，若关联配置已存在，校验 Segment 成员的有效 RIS 模式；任一成员为 Stateless 时拒绝该组合，包括向已有 Stateless role 添加 Segment，以及将已有 Segment 的成员改为 Stateless。不自动把 Stateless 转换为 Stateful，也不静默忽略 Segment。
+- 创建或更新 Policy、RBG 时，若关联配置已存在，校验成员的有效 workload 后端和模式。每个成员必须使用 `workloads.x-k8s.io/v1alpha2 RoleInstanceSet`，且 pattern 为 `Stateful` 或默认 Stateful。拒绝 Stateless RIS、Deployment、StatefulSet、LeaderWorkerSet 和未知后端，不自动转换模式或忽略 Segment。
+- 稠密成员是前置条件。Segment 成员不得携带用户 `excluded-ordinals`，其子 RIS 不得携带非空的 controller 管理 `committed-skip-ordinals` annotation。稀疏 Stateful 成员阻塞对应规则，不得直接按配比做整数除法。
 - Policy 可以先于 RBG 创建；此时不能仅凭 Policy 确认成员模式，允许先保存 Policy，待 RBG 出现时校验。reconcile 在接管及下发 Segment 参数前再次检查，发现不合法组合时阻塞对应规则并报告具体成员和原因，不改写模式或删除已有实例。
 - 非 Segment 的 Stateless role 不受该限制影响；移除 Segment 后，模式变更仍遵守原有 workload 校验，不因撤销 Segment 而承诺支持原地切换模式。
 
@@ -348,23 +376,32 @@ Policy 与 RBG 的关联配置决定成员模式是否支持 Segment：
 
 #### 副本与执行条件校验
 
-RBG reconcile 按[完整 Segment 不变量](#完整-segment-不变量)计算有效期望副本能够组成的组数，并通过 condition 报告剩余实例。若 `minSegments` 超过该组数，则报告调度门槛不可满足。
+RBG reconcile 先检查有效期望副本是否满足共同整数组数：所有 role 的 `roleReplicas / segment[role]` 必须等于同一个非负整数 `N`。满足时，`N` 为期望完整组数。副本未对齐时拒绝并报告；Segment 不静默向下取整，不发布剩余实例地址，也不删除已有成员。若 `minSegments` 超过 `N`，则报告调度门槛不可满足。
 
-完整组数的计算不替代存量接管校验，也不授权静默缩容已有成员。已有 RBG 添加或重新添加 Segment 时，所有 role 的有效期望副本必须对应同一个整数组数，否则阻塞接管。
+任一 role 不能整除，或各 role 得到的组数不同，都属于配比错误。RBG 按[完整 Segment 不变量](#完整-segment-不变量)计算并报告各 role 的剩余实例，停止本次 Segment 副本目标下发。该规则同时适用于首次创建、已生效 Segment 的后续 reconcile，以及已有 RBG 添加或重新添加 Segment：
 
-Policy 准入不校验 RBG 副本数：Policy 可以先于 RBG 创建，副本数也可能随后由外部扩缩容系统修改。
+- 首次创建不生成成员副本目标，不按向下取整后的组数创建部分实例。
+- 已生效的 Segment 保持各 RIS 当前已下发的合法目标，不根据非法期望继续扩缩。
+- 已有 RBG 添加或重新添加 Segment 时阻塞接管，不删除、重排已有成员，也不切换 Adapter 控制权。
+
+阻塞只针对本次 Segment 配置及其副本变更，不停止整个 RBG 的 reconcile；其他有效规则继续执行，RIS 继续维护已有实例。用户修正期望副本后，RBG 再重新校验并继续处理。
+
+Policy 准入不校验 RBG 副本数，因为 Policy 可以先于 RBG 创建，副本数也可能随后由外部扩缩容系统修改。Segment 生效后，RBG 准入和 reconcile 必须拒绝只修改部分成员副本的请求，除非所有成员在同一请求中更新为同一个整数 Segment 数。ScalingAdapter controller 同样拒绝单 role 目标。这些是硬对齐规则，不是静默取整，并且必须在 RBG reconcile 中再次检查。
 
 ### 组指派与持久化
 
-Stateful RIS 使用从 0 开始的连续实例序号，通过整数除法确定组归属：
+有效 Segment 下的 Stateful RIS 成员必须稠密：ordinal 从 0 开始且没有 exclusion。此时才通过整数除法确定组归属：
 
 ```text
 groupIndex = instanceOrdinal / segment[role]
-labelKey = rbg.workloads.x-k8s.io/segment
-labelValue = <rule-name>-<groupIndex>
+ruleID = SHA-256(ruleName) 的前 12 位小写十六进制字符
+segmentRuleLabelKey = rbg.workloads.x-k8s.io/segment-rule
+segmentRuleLabelValue = <ruleID>
+segmentLabelKey = rbg.workloads.x-k8s.io/segment
+segmentLabelValue = <ruleID>-<groupIndex>
 ```
 
-例如，`2P:1D` 配比下，prefill-2 的组序号为 `2 / 2 = 1`，标签为 `kv-cache-1`。同一 RI 的所有 component Pod 共用该身份。
+例如，`2P:1D` 配比下，prefill-2 的组序号为 `2 / 2 = 1`。同一 RI 的所有 component Pod 共用规则标签和组标签。固定长度 `ruleID` 保证生成 label value 始终满足 Kubernetes 限制，且不依赖规则名的拼写或长度。准入必须拒绝同一 Policy 内 12 位十六进制 rule ID 冲突。
 
 RIS 和 RI controller 通过独立于扩缩容、滚动更新的 metadata 同步链路维护身份。用户修改受管标签后，reconcile 恢复期望值。同一有效配置内，相同 ordinal 的 RI 或 Pod 重建、原地更新都不改变组归属；重新接管时则按新配置计算。
 
@@ -382,6 +419,7 @@ metadata:
       {
         "policyUID": "<policy-uid>",
         "ruleName": "kv-cache",
+        "ruleID": "<12 位十六进制 rule id>",
         "instancesPerSegment": 2
       }
 spec:
@@ -391,7 +429,8 @@ spec:
 | 字段 | 用途 |
 | --- | --- |
 | `policyUID` | 区分同名 Policy 的删除重建，不表示永久绑定 |
-| `ruleName` | 标识规则，用于构造组标签 |
+| `ruleName` | 标识规则，用于派生确定性 rule ID |
+| `ruleID` | 用于受管标签和选择器的确定性短身份 |
 | `instancesPerSegment` | 本 role 每组的 RI 数；同例中 prefill RIS 的值为 `1`，副本目标为 `3` |
 
 annotation 是内部传递协议，不是用户配置入口。RBG 负责维护和撤销它。具体的 `segment=kv-cache-0` 只写到对应 RI 及其 Pod，不写入 RIS 公共实例模板，因为同一 RIS 的实例分属多个组。
@@ -403,12 +442,14 @@ annotation 是内部传递协议，不是用户配置入口。RBG 负责维护�
 ```text
 RIS.metadata.annotations[segment-config]
     ↓ RIS controller 按实例 ordinal 计算 groupIndex
-RI.metadata.labels[segment] = <ruleName>-<groupIndex>
+RI.metadata.labels[segment-rule] = <ruleID>
+RI.metadata.labels[segment] = <ruleID>-<groupIndex>
     ↓ RI controller 同步各 component 的 Pod template 和已有 Pod
-Pod.metadata.labels[segment] = <ruleName>-<groupIndex>
+Pod.metadata.labels[segment-rule] = <ruleID>
+Pod.metadata.labels[segment] = <ruleID>-<groupIndex>
 ```
 
-完整 key 分别为 `rbg.workloads.x-k8s.io/segment-config` 和 `rbg.workloads.x-k8s.io/segment`。
+完整 key 分别为 `rbg.workloads.x-k8s.io/segment-config`、`rbg.workloads.x-k8s.io/segment-rule` 和 `rbg.workloads.x-k8s.io/segment`。
 
 RIS 与 RI controller 在常规 reconcile 中使用同一期望状态同步逻辑，覆盖新建和已有成员，而非仅在扩缩容分支处理：
 
@@ -419,7 +460,7 @@ RIS 与 RI controller 在常规 reconcile 中使用同一期望状态同步逻�
 | 已符合期望 | 不操作 |
 | 读取或解析失败 | 重试，不按无分组处理 |
 
-- RI controller 直接 patch 已有 Pod 的 metadata，并同步后续创建或重建使用的 Pod template；不通过业务 rollout、镜像变更或 Pod 重建传播标签，不改变容器运行状态。
+- RI controller 直接 patch 已有 Pod 的 metadata，并同步后续创建或重建使用的 Pod template。ControllerRevision 计算必须忽略两个受管 Segment label key：仅新增、修改或删除这些标签时，不得产生更新 revision，不得修改 `updatedReplicas`，也不得进入滚动更新链路；不通过业务 rollout、镜像变更或 Pod 重建传播标签，不改变容器运行状态。
 - Policy 事件触发对应 RBG reconcile；RIS annotation 和 RI label 的增改删触发下游同步。事件过滤和 metadata 比较必须保留这些变化。
 - patch 只修改有差异的受管字段，保留其他 metadata。跨层允许短暂不一致，失败后重试，无需等待 Pod 自然重建。
 - 同一 controller 对同一对象串行 reconcile，每次及冲突重试时按当前配置和归属重算期望。缓存延迟通过幂等 reconcile 收敛，不保存独立旧清理任务，也不新增清理控制器或保护协议。
@@ -430,37 +471,40 @@ Stateless RIS 不接收有效分组描述。已有 RBG 接管和撤销复用本�
 
 完整性约束的是基础组目标和更新批次，不是 Kubernetes 对象的原子执行。本节先固定四个口径，避免后续把“期望”“下发”和“实际”混在一起：
 
-- 期望副本：用户或 Adapter 提交的最终期望副本数，可以包含无法组成完整组的残差。
-- 有效期望副本：经过控制权解析后的最终期望副本数，用于计算完整组数。
-- 基础组目标：RBG 下发到 RIS 的目标副本数，只包含完整组，不包含残差。
+- 期望副本：用户或 Adapter 提交的最终期望副本数，可以包含无法组成完整组的残差；存在残差的期望不能作为 Segment 副本目标执行。
+- 有效期望副本：经过控制权解析后的最终期望副本数，用于校验配比和计算组数。
+- 基础组目标：有效期望满足共同整数组数时，RBG 下发到 RIS 的目标副本数，只包含完整组；配比错误时不生成或更新该目标。
 - 实际创建数：RIS 当前已创建的 RI 数，可能低于基础组目标。
 
 以下三个状态口径用于判断：
 
 | 口径 | 判定方式 |
 | --- | --- |
-| 有效期望副本可组成的组数 | 按各 role 的期望 RI 数和配比计算，不读取 Ready 数 |
+| 合法有效期望的组数 | 各 role 的期望 RI 数分别除以配比，商必须为相同的非负整数；不读取 Ready 数 |
 | 实际完整组数 | 按组身份检查配比要求的全部 RI 是否存在 |
 | 实际可用组数 | 成员完整，且每个成员都满足 RIS 的可用性条件 |
 
-有效期望副本能够组成的完整组数为：
+诊断配比错误时，可以按以下公式计算向下取整的组数和各 role 的剩余实例：
 
 ```text
 completeSegments = min(floor(roleReplicas / segment[role]))
 residual[role] = roleReplicas - completeSegments × segment[role]
+aligned = 所有 residual[role] 均为 0
 ```
 
-例如 `2P:1D`、期望 `P=5、D=2`，可组成 2 组，剩余 1 个 P。生成基础组目标时不创建该剩余实例，并通过 condition 报告；不能把 `1P:1D` 或 `2P:0D` 作为完整组目标。
+`completeSegments` 只是诊断值，不是非法期望的执行目标。只有所有 `residual[role]` 都为 `0` 时，有效期望才通过配比校验，`completeSegments` 才能作为期望完整组数 `N`。对于 `2P:1D` 规则，`1P:1D` 和 `2P:0D` 都不是完整组目标。
 
-该计算不授权删除存量成员：已有 RBG 添加或重新添加 Segment 时，若有效期望副本不满足共同整数组数，则[阻塞接管](#已有-rbg-后添加-policy)。若期望满足配比但实际缺员，则保留已有成员，按原目标补齐，不以实际完整组数缩容。有效 Segment 的单 role 扩缩请求仍被拒绝。
+例如 `2P:1D`、期望 `P=5、D=2`，公式得到 `completeSegments=2`、`residual[P]=1`、`residual[D]=0`。由于存在剩余实例，本次配比校验失败：RBG 通过 condition 报告原因，不生成或更新 RIS 副本目标。首次创建不能按 2 组创建 `4P、2D`；已生效的 Segment 保持当前合法目标；已有 RBG 添加或重新添加 Segment 时[阻塞接管](#已有-rbg-后添加-policy)，不删除或重排已有成员。
+
+期望满足配比但实际缺员不属于配比错误。此时保留已有成员，按原目标补齐，不以实际完整组数缩容。有效 Segment 的单 role 扩缩请求同样被拒绝，不能通过上述公式部分执行。
 
 创建、删除和更新期间允许暂态缺员，成员无需同时启动或 Ready。surge RI 不改变基础组目标，各 RIS 独立创建和回收，额外实例可能始终未组成完整组；组标签也不证明它们可服务，见[maxSurge 上限与 RIS 执行](#maxsurge-上限与-ris-执行)。
 
-现有地址发现按“期望副本”枚举，而不是按“基础组目标”或“实际创建数”枚举；因此上例剩余 P 的地址条目可以存在，尽管它不会被创建。地址表不是实际完整组或可用成员列表。
+有效 Segment 的地址发现必须只枚举对齐后的基础组目标，不得发布不会被创建的剩余身份，也不得把 surge 身份发布为基础服务成员。地址表仍不是实际完整组或可用成员列表。
 
 ### 与 Scaling 的集成
 
-RBG controller 在组数空间计算共同副本目标，再乘配比生成各 role 的 RI 目标；不先算各 role 的实例目标再分别取整。Policy 的 `strategy.scaling` 同时控制首次创建和后续扩容。
+RBG controller 先确认有效期望副本满足共同整数组数，再在组数空间计算共同副本目标，并乘配比生成各 role 的 RI 目标；不先算各 role 的实例目标再分别取整。配比校验失败时不生成或更新 RIS 副本目标。Policy 的 `strategy.scaling` 同时控制首次创建和后续扩容。
 
 | 配置 | 行为 |
 | --- | --- |
@@ -474,7 +518,7 @@ RBG controller 在组数空间计算共同副本目标，再乘配比生成各 r
 目标不变且 `C < N` 时，扩容公式为：
 
 ```text
-N = 有效期望副本可组成的完整 Segment 数
+N = 合法有效期望副本对应的完整 Segment 数
 C = 已下发的当前组数目标（不是当前 Ready 或实际完整组数）
 B = segBatchSize，未配置为 1
 当前批次尚未满足 progression：保持 C，继续补齐当前批次
@@ -632,7 +676,14 @@ Adapter controller 按以下顺序处理：
 
 Ready 组数必须按组身份统计。例如 P 仅在 Segment 0 Ready、D 仅在 Segment 1 Ready，不能拼成一个 Ready 组。Ready 组数用于观测或相应 scaling progression，不作为 Gang 资源准入条件。
 
-`status.selector` 保留为 `/scale` 的 Pod 标签选择器。本 KEP 不增加多 component、surge 场景下的通用 Pod 选择，以及业务指标采集、聚合或去重职责。
+`status.selector` 保留为 `/scale` 的 Pod 标签选择器。Segment Adapter 必须用单个 AND selector 覆盖该规则的全部 component Pod：
+
+```text
+rbg.workloads.x-k8s.io/group-name=<rbg-name>,
+rbg.workloads.x-k8s.io/segment-rule=<ruleID>
+```
+
+该 selector 不得匹配其他 RBG、其他 Segment 规则、非成员 role 或单个 component。它只用于观测和后续指标接入；组数统计仍独立按组身份计算。本 KEP 不增加业务指标采集、聚合或去重职责。
 
 HPA 使用是开放问题，边界如下：
 
@@ -642,24 +693,56 @@ HPA 使用是开放问题，边界如下：
 
 ### 与 Gang 的集成
 
-声明 Segment 后，gang 的计数单位从 RoleInstance 切换为完整 Segment。
-
-Gang 遵守以下规则：
+声明 Segment 后，Gang 的计数单位从 RoleInstance 切换为完整 Segment：
 
 - `minSegments: n` 表示集群可调度资源至少满足 `n` 个完整 Segment 的资源需求时，才允许调度放行。需求覆盖这些 Segment 中全部 RoleInstance 的全部 Pod。
 - 资源是否足够由调度器结合 Pod 的 requests 和调度约束判断，不能只比较集群资源总量；资源不足时等待，不以成员 Ready 作为准入条件。
-- 声明 Gang 但省略 `minSegments` 时，默认要求资源满足全部期望完整 Segment。
+- 未配置 scaling 时，声明 Gang 但省略 `minSegments` 表示全部期望完整 Segment；同时配置 scaling 与 Gang 时必须显式设置该字段。
 - `minSegments` 与 `minReplicas` 在同一规则内互斥。未声明 Segment 的规则继续使用 `minReplicas`。
 - Gang 只负责资源准入与调度放行，不负责 Segment 的结构划分，也不保证成员同时启动或同时 Ready。
-- Segment 的 scaling 与 Gang 独立执行。Gang 不改变 `segBatchSize` 或 scaling target，scaling 不降低 Gang 门槛；不校验两者是否匹配，不自动避免配置导致的互等。
+
+#### Volcano subGroup 映射
+
+Segment 复用现有单 RBG PodGroup，但将 Volcano subGroup 的划分单位从一个 RoleInstance 改为一个完整 Segment。每条 Segment Gang 规则生成一个 SubGroupPolicy：
+
+```text
+labelSelector:
+  rbg.workloads.x-k8s.io/group-name=<rbg-name>
+  rbg.workloads.x-k8s.io/segment-rule=<ruleID>
+matchLabelKeys = [rbg.workloads.x-k8s.io/segment]
+subGroupSize   = Σ(segment[role] × ComputeSubGroupSize(role))
+minSubGroups   = minSegments
+minMember      = minSegments × subGroupSize
+```
+
+`matchLabelKeys` 只包含 `segment`，不再包含 `role-instance-name`。因此，同一 Segment 标签下不同 role、不同 RI 的 Pod 属于同一个 subGroup；不同 Segment 的 P、D 即使分别满足各 role 的数量要求，也不能拼成完整组满足门槛。
+
+例如 `1P:2D`、每个 RI 一个 Pod、`minSegments: 2` 时，一个 subGroup 包含 `1P + 2D`，`subGroupSize=3`、`minSubGroups=2`、`minMember=6`。多条 Gang 规则共用一个 RBG PodGroup，每条 Segment 规则分别生成 SubGroupPolicy，并将各自门槛累加到 `minMember`；`segment-rule` selector 保证不同规则互不重叠。未配置 scaling 且省略 `minSegments` 时，先将门槛解析为全部期望完整组，再生成策略。
+
+scheduler-plugins 只有 Pod 总数门槛，无法表达上述完整 Segment 约束。Segment 规则声明 Gang 时要求 Volcano 支持 `subGroupPolicy`；admission 检查配置的调度器，reconcile 再检查实际 CRD 能力，不降级为 Pod 总数或 per-role 数量门槛。
+
+#### 与 Scaling 的配置校验
+
+Segment 的 scaling 与 Gang 独立执行。Gang 不改变 `segBatchSize` 或 scaling target，scaling 不降低 Gang 门槛。两者通过配置校验避免首批成员不足，而不是在执行期互相调参。
+
+设 `B` 为有效 `segBatchSize`，省略时为 1，`G` 为显式 `minSegments`。同一 Segment 规则同时配置 scaling 与 Gang 时必须满足：
+
+```text
+B >= G
+```
+
+这样首次创建或从低于门槛的目标继续扩容时，下一批能够提供至少 G 组。后续最后一批可以小于 G，因为此前下发的目标已经达到门槛，不需要限制每一批都大于等于 G。
 
 例如从零创建 4 组：
 
 | 配置 | 行为 |
 | --- | --- |
-| `segBatchSize: 2`、`minSegments: 2` | 首批部署 2 组；调度器满足资源准入后放行，达到 progression 条件再部署后 2 组。 |
-| `segBatchSize: 1`、`minSegments: 2` | 首批只有 1 组，Gang 等待更多成员，scaling 等待首批 Scheduled 或 Ready；保持等待，由用户调整配置。 |
-| `segBatchSize: 1`、省略 `minSegments` | Gang 仍默认要求全部 4 组，不改成 1 组，也不自动扩大首批；同样可能互等。 |
+| `segBatchSize: 2`、`minSegments: 2` | 合法；首批部署 2 组，满足资源准入和 progression 后再部署后 2 组 |
+| `segBatchSize: 1`、`minSegments: 2` | Policy webhook 拒绝；首批必然不足，不进入持续互等 |
+| 配置 scaling、`segBatchSize: 1`，省略 `minSegments` | Policy webhook 拒绝；同时配置 scaling 与 Gang 时必须显式设置门槛 |
+| 未配置 scaling，省略 `minSegments` | 合法；直接下发 4 组目标，Gang 默认要求全部 4 组 |
+
+Policy webhook 只检查当前 Policy 能确定的组合。RBG reconcile 还需检查 `minSegments <= 期望完整组数`、有效配比、调度器能力以及绕过准入的旧配置；Adapter 或 RBG 后续修改期望组数导致冲突时，按现有 Gang 不兼容路径报告 `GangConfigured=False`，不自动增加期望副本或抬升中间目标。配置合法但资源不足不属于配置错误，`GangConfigured` 不代替 Pod 和 PodGroup 的调度状态。
 
 现有非 Segment 路径会[按 Gang minimum 抬升 scaling target](../../internal/controller/workloads/rolebasedgroup_controller.go)。Segment 不沿用该联动；非 Segment 行为保持不变。
 
@@ -672,15 +755,25 @@ Gang 遵守以下规则：
 | 字段 | Segment 语义 |
 | --- | --- |
 | `partition` | 保留不更新的组数；`1` 保留 Segment 0，后续组可进入更新范围 |
-| `maxUnavailable` | 显式配置时，作为 RBG 跨 role 共享的组级预算；RIS 层原样接收同一值，并按本 role 的 RI 数控制局部执行窗口 |
+| `maxUnavailable` | 显式配置且解析预算大于 0 时，作为 RBG 跨 role 共享的组级预算，获准组内不再按同一值限制 RI 并发；预算为 0 时与 surge 配合；未配置时沿用 RIS 设置 |
 | `maxSurge` | 额外组容量上限，按配额投影为各 RIS 的 RI 上限；不承诺创建完整备用组 |
 | `maxSkew` | 忽略；创建批量字段 `scaling.segBatchSize` 也不参与更新准入 |
 
-前三个字段在 RBG 层按期望完整组数解析百分比。下发 RIS 时，`partition` 和 `maxSurge` 按配比生成实例参数，`maxUnavailable` 则原值覆盖，详见[局部窗口](#policy-覆盖与-ris-局部窗口)。
+前三个字段在 RBG 层按期望完整组数解析百分比。下发 RIS 时，`partition` 和 `maxSurge` 按配比生成实例参数；`maxUnavailable` 根据组级预算是否为零设置 RIS 的执行窗口，不再原值覆盖，详见[执行窗口](#policy-覆盖与-ris-执行窗口)。
 
-需要区分两层语义：
+百分比取整规则固定如下：
 
-- `maxUnavailable` 的同一个配置值会在两层同时生效：RBG 层按 Segment 计数，RIS 层按 RI 计数；两层不是互相替换或叠加。
+| 字段 | 组级取整规则 |
+| --- | --- |
+| `partition` | 向下取整为保留的完整 Segment 数 |
+| `maxUnavailable` | 向下取整为不可用的完整 Segment 数 |
+| `maxSurge` | 向上取整为额外完整 Segment 数 |
+
+例如期望 3 组时，`25%` 分别解析为 0 个保留组、0 个不可用组和 1 个额外组。
+
+需要区分两类语义：
+
+- `maxUnavailable` 是用户声明的组级预算。解析预算大于 0 时，RBG 按 Segment 计数，RIS 收到 `100%`，获准组内不再增加 RI 数限制；预算为 0 时，RIS 收到 `0`，通过可用 surge 维持不增加不可用实例。未配置时不生成组级默认预算，保留 RIS 原设置。
 - `partition` 有两层含义：作为用户配置，它表示保留不更新的 Segment 数；作为 RBG 下发值，它是本轮准入结果在 RIS 上的投影边界。它不是传统 StatefulSet partition 的单调递减序号，目标版本变化时可以收紧或放宽。
 
 例如 `2P:1D`、`partition: 1` 保留的是 `2P + 1D`，不是各 role 各保留一个 RI。
@@ -692,16 +785,16 @@ Gang 遵守以下规则：
 ```text
 RBG controller：成员状态 + Policy
     ↓ 按组统计不可用与在途占用，计算共同更新边界
-    ↓ 投影 partition，原值覆盖 maxUnavailable，投影 maxSurge
+    ↓ 投影 partition，按组级预算设置 maxUnavailable，投影 maxSurge
 WorkloadReconciler：写入各 RIS.spec.updateStrategy
-    ↓ RIS controller 在 partition、局部预算和 surge 条件内更新 RI
+    ↓ RIS controller 在 partition、执行窗口和 surge 条件内更新 RI
     ↓ RI controller 执行 Pod 更新，成员状态反馈给 RBG
 RBG controller：下一次 reconcile 重算边界
 ```
 
 各 RIS 不能因本地预算空闲越过共同边界。无 surge、`maxUnavailable: 1` 时，如果 D 仍在 Segment 1 更新，P 即使已恢复可用，也不能继续更新 Segment 0，导致两组同时不可用。
 
-RBG 必须读取成员归属与状态，不能仅比较各 role 的聚合副本数或下发相同的局部预算，也不通过伪造健康成员的 unhealthy 状态传递组级占用。多个 RIS 可以先后接收参数，但新模板与 partition 必须落实同一组级预算。
+RBG 必须读取成员归属与状态，不能仅比较各 role 的聚合副本数或依赖 RIS 的局部窗口，也不通过伪造健康成员的 unhealthy 状态传递组级占用。多个 RIS 可以先后接收参数，但新模板与 partition 必须落实同一组级预算。
 
 #### 成员可用性与预算补位
 
@@ -727,6 +820,19 @@ B = Policy 的 strategy.rollingUpdate.maxUnavailable 按期望完整组数解析
 
 同一组同时属于 `U` 和 `I` 时只计一次。RBG 在剩余预算内放行符合 partition 等条件的完整组；新增准入立即占用预算，避免状态延迟造成重复放行。外部故障也计入 `U`，可能使实际不可用数超过预算；此时控制器不得继续主动扩大不可用组集合。
 
+有 surge 时，RBG 使用以下确定性准入规则：
+
+```text
+availableSurge[role] = 该 role 中已创建、处于目标版本、健康且非 terminating 的额外 RI 数
+surgeEligible(group) = 每个成员 role 均满足 availableSurge[role] >= segment[role]
+
+若 partition 允许，且满足以下任一条件，则放行该组：
+    |U ∪ I_loss| + 1 <= B
+    或 surgeEligible(group)
+```
+
+`I_loss` 包含已准入但尚未完成、且已经出现基础成员不可用，或每个 role 已不再保有足够目标版本 surge 以继续无损推进的组。安全的 surge 支撑在途组仍被跟踪为 in-flight，但不消耗不可用预算。若 surge 容量消失或基础成员变为不可用，该组立即转为 `I_loss`。仅一个 role 有富余 surge 不能放行组；每个成员 role 都必须至少达到本组配额。
+
 例如无 surge、`maxUnavailable: 2`，在满足 `partition` 等其他推进条件时：
 
 | 不可用与在途 Segment 的去重占用数 | 最多还能新增放行 |
@@ -735,24 +841,25 @@ B = Policy 的 strategy.rollingUpdate.maxUnavailable 按期望完整组数解析
 | 1 | 1 组 |
 | 2 或更多 | 0 组 |
 
-一组完成并恢复可用后，下一次 reconcile 可以补入一组，不必等待另一组完成。某组因慢成员或失败成员卡住，只保留该组的占用；有剩余预算且满足其他条件时，其他组仍可推进，不因一组未 Ready 就冻结整条规则或整个 RBG。这里的“两组”是准入窗口，不保证各 RIS 同时执行这两组内的所有更新。
+一组完成并恢复可用后，下一次 reconcile 可以补入一组，不必等待另一组完成。某组因慢成员或失败成员卡住，只保留该组的占用；有剩余预算且满足其他条件时，其他组仍可推进，不因一组未 Ready 就冻结整条规则或整个 RBG。这里的“两组”是准入窗口，组内不再用同一个 `maxUnavailable` 值限制 RI 并发，但仍不保证各 RIS 同时启动或同时 Ready。
 
-#### Policy 覆盖与 RIS 局部窗口
+#### Policy 覆盖与 RIS 执行窗口
 
-RBG 控制跨 Segment 的更新步骤，RIS 继续控制本 role 内部的 RI 滚动窗口。两层职责不同，不需要把 RIS 的 `maxUnavailable` 改成 Segment 计数，也不要求为了组内并行按配比放大窗口。
+RBG 控制哪些 Segment 可以进入更新，RIS 在共同边界内执行 RI 更新。组级预算已经允许整个 Segment 暂时不可用时，不再用同一个值限制组内 RI 轮换；未配置组级预算时，仍保留 RIS 原有的局部窗口。
 
-沿用现有 CoordinatedPolicy 的参数覆盖关系：
+Segment 的参数覆盖规则为：
 
-| 配置情况 | RBG 的组级控制 | RIS 的局部窗口 |
+| 配置情况 | RBG 的组级控制 | RIS 的执行窗口 |
 | --- | --- | --- |
-| Policy 显式设置 `maxUnavailable` | 按组聚合不可用与在途状态；无 surge 时使用上述窗口，有 surge 时保留额外可用容量参与预算的机制 | Policy 值原样覆盖 role 配置，由 RIS 按 RI 计数执行 |
+| Policy 显式设置 `maxUnavailable`，解析预算 `B > 0` | 按组聚合不可用与在途状态；无 surge 时使用上述窗口，有 surge 时保留额外可用容量参与预算的机制 | 忽略 role 原值，下发 `100%`；共同 partition 内的获准 RI 不再受额外 RI 数限制 |
+| Policy 显式设置 `maxUnavailable`，解析预算 `B = 0` | 无 surge 时不主动增加不可用组；有 surge 时允许准备额外容量，并结合组状态推进 | 忽略 role 原值，下发 `0`；只有实际可用的 surge 增加执行预算 |
 | Policy 未设置 `maxUnavailable` | 不新增隐式组级默认预算，仍按 Segment 边界及其他已配置的协调条件推进 | 保留 role 配置；role 也未配置时沿用 RIS 默认值 |
 
-覆盖不是与 role 配置取最小值，也不是把两份配置叠加执行。Policy 使用百分比时，RBG 以期望完整 Segment 数解析组级预算；下发 RIS 的仍是原百分比，由各 RIS 按自身副本数及现有规则解析局部窗口。RBG 不从各 RIS 的局部值反推统一组级默认预算。
+`B > 0` 时，Policy 的整数或百分比只用于 RBG 的组级预算，不再作为 RI 预算二次执行。下发 `100%` 是取消 RIS 的额外局部限流，不是按配比放大 Policy 原值；各 RIS 仍不得越过共同 partition。`B = 0` 不能下发 `100%`，否则会在没有可用 surge 时主动制造不可用实例。RBG 不从各 RIS 的局部值反推统一组级默认预算。
 
-例如无 surge、`1P:2D`、Policy 配置 `maxUnavailable: 1`，P、D 两个 RIS 最终都收到 `1`，各自原有 role 配置被覆盖。RBG 一次最多让一个 Segment 占用更新预算；该组获准后，D RIS 可以先更新一个 D，再更新另一个 D。整组完成目标版本并恢复可用后，RBG 才释放在途占用并继续补位。
+例如无 surge、起始全部健康的 `1P:2D`，Policy 配置 `maxUnavailable: 1`。RBG 一次最多让一个 Segment 占用更新预算，P、D 两个 RIS 都收到 `100%`。该组获准后，P、D0、D1 都可以进入更新，不要求两个 D 串行轮换；整个组可能暂时不可用，但只占用一份组级预算。实际启动和 Ready 时间仍可不同，整组完成目标版本并恢复可用后，RBG 才释放在途占用并继续补位。
 
-组内串行符合“同批准入、不保证同时执行”的承诺，RBG 不接管 RIS 的内部更新顺序。若应用要求多个新成员同时更新后才能 Ready，应按现有 RIS 窗口配置评估其可推进性；Segment 不自动扩大局部窗口或保证这类应用依赖不会阻塞。
+`B = 0` 时，P、D 两个 RIS 都收到 `0`。配置了 surge 时，各 RIS 先按现有算法准备额外实例，只有实际可用的 surge 才能支持基础 RI 更新；未配置 surge 时，健康基础 RI 不因组级准入而开始会造成额外不可用的更新。
 
 #### maxSurge 上限与 RIS 执行
 
@@ -774,7 +881,7 @@ S = Policy 的 strategy.rollingUpdate.maxSurge 解析出的额外 Segment 容量
 risMaxSurge[role] = S × segment[role]
 ```
 
-百分比沿用 `maxSurge` 向上取整的规则，但先在 Segment 层解析，再投影整数；不能把原百分比分别交给 RIS 取整。例如期望 3 个 `1P:2D` Segment，`maxSurge: "25%"` 得到 `S=1`，P RIS 收到 `1`，D RIS 收到 `2`。这与 `maxUnavailable` 原值覆盖的规则不同：同例中 Policy `maxUnavailable: 1` 仍使两个 RIS 都收到 `1`。
+百分比沿用 `maxSurge` 向上取整的规则，但先在 Segment 层解析，再投影整数；不能把原百分比分别交给 RIS 取整。例如期望 3 个 `1P:2D` Segment，`maxSurge: "25%"` 得到 `S=1`，P RIS 收到 `1`，D RIS 收到 `2`。`maxUnavailable` 使用另一套规则：组级预算大于 0 时两个 RIS 都收到 `100%`，预算为 0 时都收到 `0`，不下发 Policy 原值。
 
 覆盖只改变下发的执行参数，不改写 RBG 中用户声明的 role 配置。Segment 仍有效时，移除 Policy 的 `maxSurge` 字段应下发 `0`，撤销旧正值的影响，不能因值为空而跳过覆盖；整个 Policy 或 Segment 撤销后，则按当前 role 配置及剩余有效策略重算，见生命周期章节。
 
@@ -785,7 +892,7 @@ healthyOld = [partition, replicas) 内健康、非 terminating 的旧版本 RI �
 activeSurge = min(maxSurge, max(healthyOld - maxUnavailable, 0))
 ```
 
-已有有效 surge 时还会应用本地保留逻辑，不能直接套用上述简化式。`replicas=4、partition=0、maxUnavailable=2、maxSurge=2` 且 4 个旧实例健康时，额外目标为 `2`；`replicas=3、partition=2、maxUnavailable=1、maxSurge=1` 且仅放行的旧实例健康时，额外目标为 `0`。两者均遵守上限，不要求每轮用满 surge。
+公式中的 `maxUnavailable` 是 RIS 最终接收的执行值，不是 Policy 的组级原始值。已有有效 surge 时还会应用本地保留逻辑，不能直接套用上述简化式。`replicas=4、partition=0、maxUnavailable=2、maxSurge=2` 且 4 个旧实例健康时，额外目标为 `2`；`replicas=3、partition=2、maxUnavailable=1、maxSurge=1` 且仅放行的旧实例健康时，额外目标为 `0`。两者均遵守上限，不要求每轮用满 surge。Segment 组级预算大于 0 时，RIS 收到 `100%`，上述简化式不会要求额外创建 surge；预算为 0 时则收到 `0`，可按可用 surge 推进。
 
 各 RIS 的实际额外数量可以不满足 Segment 配比，也可以先后回收；RBG 不强制补齐临时组或等待跨 role 的统一回收条件。surge RI 复用普通 RI 的创建及分组 label 同步链路，但 label 不代表临时组已完整或可服务。本方案不承诺完整备用 Segment 的创建、保留或生命周期协调。
 
@@ -800,11 +907,11 @@ availableSurge = 本 RIS 中已创建、处于目标版本、健康且非 termin
 
 RBG 继续生成共同的 Segment 更新边界，并聚合不可用与在途状态；RIS 不得越过该边界。进入候选更新范围不等于立即允许损失可用容量，后者仍受 RIS 的实际执行预算约束。因此，不能把无 surge 时的 `max(B - |U ∪ I|, 0)` 公式直接用作所有场景的 partition 前置门槛，在 `B=0` 时连 surge 的准备机会也一并阻断。
 
-RBG 必须验证组状态、在途占用与各 RIS 额外可用容量的衔接。单个 role 的 surge Ready 不表示基础组更新完成，各 role 的可用 RI 数也不能直接当成完整可用组数。该要求不增加完整备用组保证或跨 role 统一回收协议。
+上述准入规则就是组状态、在途占用与各 role 额外容量之间的必需衔接规则。单个 role 的 surge Ready 不表示基础组更新完成，各 role 的可用 RI 数也不能拼成幻影完整组。该规则不增加完整备用组保证或跨 role 统一回收协议。
 
 #### 按 Segment 生成 partition
 
-对于从 0 开始、连续 ordinal 分组的 Stateful RIS，常规更新优先复用现有 partition 表达共同准入边界，无需预先增加 Segment 更新名单 annotation：
+对于已通过校验、ordinal 从 0 开始且稠密的 Stateful RIS，常规更新优先复用现有 partition 表达共同准入边界，无需预先增加 Segment 更新名单 annotation：
 
 ```text
 segmentBoundary = max(userSegmentPartition, dynamicSegmentBoundary)
@@ -835,7 +942,7 @@ partition 是准入结果的下发方式，不替代组级预算判断，也不�
 - 保留不可用与在途组的去重占用 `U ∪ I`，不因目标变化清空或提前释放。
 - 按新目标、成员状态和剩余预算重算 partition，并保留用户分区限制。必要时收紧，保持旧值本身不构成预算保证。
 - 预算耗尽时允许阻塞新增组；有剩余预算且满足其他条件时继续推进。坏版本不改变该规则，不增加特殊恢复机制，也不要求 B 必须先成功。
-- 无 surge 时，RIS 预算耗尽会阻止继续更新健康 RI；partition 允许范围内、满足既有持续 unhealthy 条件的成员仍可能被修复。修复不能越过边界或绕过组级预算。
+- 无 surge 时，组级预算耗尽会阻止继续放行健康 RI；partition 允许范围内、满足既有持续 unhealthy 条件的成员仍可能被修复。修复不能越过边界或绕过组级预算。
 
 例如，无 surge、`maxUnavailable: 1`，Segment 2 已完成 B，Segment 1 的 P 已 Ready、D 未 Ready，此时目标改为 C。Segment 1 仍占满预算；RBG 必须重算并下发边界，阻止 P 因本地预算空闲而更新 Segment 2，避免两组同时不可用。
 
@@ -871,7 +978,7 @@ RBG 先执行[成员模式校验](#成员模式校验)，再检查当前有效�
 
 身份同步只 patch 受管 metadata，不触发业务 rollout 或 Pod 重建。给运行中的 Pod 补标签不会重新触发 Gang 准入，也不保证自动迁移到新拓扑域。
 
-例如，连续 ordinal 的 Stateful RIS 配比为 `1P:1D`，期望 `2P、2D`，实际仅有 `P0、P1、D0`：
+例如，已通过校验、ordinal 稠密的 Stateful RIS 配比为 `1P:1D`，期望 `2P、2D`，实际仅有 `P0、P1、D0`：
 
 ```text
 Segment 0：P0、D0 → 成员完整，可用性另行判断
@@ -914,7 +1021,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 | --- | --- |
 | 同配比重新添加 | 按当前副本、规则及控制权条件重新校验和接管，不沿用旧准入结果。 |
 | 撤销后以不同配比重新添加 | 按新配比校验当前有效期望副本；满足共同组数条件则接管，不满足则阻塞，不自动取整或调整副本。 |
-| 规则重命名 | 按当前规则重新校验和同步分组描述、label；成员和配额不变时保持成员配对，规则名引起的标签变化通过同一同步逻辑收敛。 |
+| 规则重命名 | 仅在 Segment map 不变时允许。按当前规则重新校验并同步分组描述、label，成员配对保持不变，rule ID 与标签通过同一同步逻辑收敛；同一次更新同时改变规则名和配比必须拒绝，并拆分为撤销后另行添加。 |
 
 同名 Policy 删除重建后，其 UID 已变化，应按新的 Policy 实例重新校验、接管并更新 RIS 分组描述，不沿用旧绑定或旧准入结果。`policyUID` 仅用于区分对象身份，不表示永久冻结协同关系；残留 label 也不能作为接管已完成的依据。
 
@@ -928,7 +1035,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 - 保持现有非 Segment CoordinatedPolicy scaling 测试可通过，保留原 `maxSkew` 与 progression 行为。
 - 保持非 Segment 的 Stateless RIS 创建、扩缩容和滚动更新测试可通过，不将组合限制扩大为全局禁用 Stateless。
-- 保持现有非 Segment gang 测试可通过，包括按 Gang minimum 抬升 scaling target；为 Segment 增加不联动的独立断言。
+- 保持现有非 Segment gang 测试可通过，包括按 Gang minimum 抬升 scaling target；为 Segment 增加不抬升 target、由配置校验排除冲突的独立断言。
 - 保持现有 RIS surge 单元与端到端测试可通过，不因增加 Policy 字段改变 RIS 的实际 surge 算法。
 - 为 segment 与 scaling 的组合增加回归测试，确认首次创建不会退化为实例粒度。
 
@@ -939,27 +1046,38 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 ##### API 校验
 
 - `segment` 的 key 集合与 `roles` 不一致、value 小于等于 0 或仅包含一个 role 时拒绝。
+- `roles` 中存在重复项时拒绝，即使去重后的 key 集合与 `segment` 一致。
 - Segment 成员出现在其他 Segment 或普通规则时拒绝，包括双方使用不同策略域的情况；覆盖创建、更新与规则排列顺序变化。
 - 相关 role 合并为一条 Segment 规则并声明完整配比时接受；不涉及 Segment 成员的普通规则保持原有重叠处理行为。
 - 关联 RBG 已存在时，向 Stateless RIS 成员添加 Segment 被拒绝；覆盖全部 Stateless 和 Stateful/Stateless 混用，不受成员顺序影响。
+- 非 RoleInstanceSet、未知后端、Deployment、StatefulSet 和 LeaderWorkerSet 均拒绝；仅接受原生 Stateful RoleInstanceSet 成员。
+- Segment 成员存在用户 `excluded-ordinals` 或子 RIS 存在非空 `committed-skip-ordinals` 时拒绝；非 Segment 的选择性成员行为保持不变。
 - 已有 Segment 成员改为 Stateless 被拒绝；所有 RIS 成员均为 Stateful 且其余条件满足时接受，非 Segment 的 Stateless role 保持原行为。
 - `minSegments` 与 `minReplicas` 同时配置、`minSegments` 非法或用于未声明 `segment` 的规则时拒绝。
 - `segBatchSize` 显式为零、负数、百分比或用于未声明 `segment` 的规则时拒绝；正整数接受，字段在 API、CRD 和生成代码中保留，Segment scaling 缺省按 1 处理。
-- `segBatchSize: 1、minSegments: 2` 等各字段合法但可能互等的组合仍可通过配置校验，不增加跨策略匹配校验。
+- Segment 同时配置 scaling 与 Gang 时，省略 `minSegments` 被拒绝；`segBatchSize: 1、minSegments: 2` 以及省略批量但门槛为 2 的组合被拒绝，`segBatchSize: 2、minSegments: 2` 等满足 `B >= G` 的组合通过。
+- scheduler-plugins 下的 Segment Gang 被拒绝；Volcano 下允许通过 Policy 准入，实际 `subGroupPolicy` 能力由 reconcile 再检查。
 - 修改已声明 segment 的 value 或 key 集合被拒绝。
+- 同一次更新同时改变规则名和 Segment map 时拒绝，要求拆分为撤销后另行添加。
+- 覆盖 rule ID 冲突，并验证长规则名、大组序号下生成的 label value 仍是合法 Kubernetes label value。
+- Segment rolling update 的有效组级 `maxUnavailable` 与 `maxSurge` 同时解析为 0 时仍接受；无 surge 时不开始会增加不可用实例的更新。
+- 验证更新后的 CRD 中 `AdapterScaleTargetRef.role` 可选，且 `role` 与 `segment` 必须二选一。
 - 配比不变时允许修改策略参数；添加、删除及重新添加 segment 遵循接管与撤销规则，不以历史配比拒绝新配置。
 - Policy `maxSurge` 的整数、百分比、显式零值与未配置在 API、CRD 和生成代码中正确保留，不将未配置一律默认成 `0` 而丢失非 Segment 的回退语义。
 
 ##### 组指派
 
 - 按整数除法将实例序号映射为组序号，同一 RI 的所有 component Pod 具有相同组身份。
+- 验证确定性 12 位十六进制 rule ID、`segment-rule` 标签和短 `segment` 标签值。
 - label 正确写入 RoleInstance 与 Pod template。
 - 用户修改受管 label 后，reconcile 恢复期望值。
 - Pod 重建后 label 不漂移。
 - 固定配比下，同一 ordinal 的 RoleInstance 删除重建后组身份不漂移。
 - RIS annotation 正确传递 Policy UID、规则名和当前 role 的配比，不将具体组 label 写入 RIS 公共模板。
+- RIS annotation 同时传递用于标签和 selector 的确定性 rule ID。
 - replicas 不变时仍同步已有 RI 与 Pod 的 label，metadata 变化可触发下游 reconcile。
 - label 的添加、更新、移除及无差异时不操作使用同一期望状态同步逻辑，幂等且保留其他 metadata，不触发业务 rollout 或 Pod 重建。
+- 仅增删改受管 Segment 标签时，ControllerRevision hash 和 `updatedReplicas` 不变。
 - RIS 分组描述移除后，RI、已有 Pod 及后续 Pod template 不再保留受管组 label，之后重建 Pod 不恢复旧标签。
 - annotation 和 label 的移除可触发下游同步；读取或解析描述失败不按无分组清理。
 
@@ -967,6 +1085,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 - Policy 创建、删除以及添加或移除 Segment 配置，在 RBG replicas 和业务模板不变时也触发接管或撤销。
 - 首次添加、重新添加及 reconcile 重试均检查成员模式；发现 Stateless RIS 时阻塞对应 Segment，不下发有效分组描述、不创建对应 Segment Adapter，也不转换模式或删除已有实例。
+- 稀疏成员、用户 exclusion 和非原生 Stateful 后端阻塞接管，不删除实例或改写成员记录。
 - 首次接管时，有效期望副本不满足共同配比则阻塞且不因新 Policy 重排或删除已有成员；满足配比时，成员完整与否都可先同步已有 RI / Pod 的分组身份。
 - 期望 `2P、2D`、实际 `2P、1D` 时，保留不完整组中的 P，保持有效目标并由 RIS 补齐 D；不按当前完整组数回退目标或先清理再重建。
 - 分组描述与现有成员身份同步完成后可完成接管，不等待全部期望成员创建或 Ready；缺员组计为不完整、不可用，后续成员继承正确组身份。
@@ -980,15 +1099,18 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 ##### Scaling
 
-- 在 Segment 数量空间计算共同 target，再按配比生成各 role 的实例 target。
-- 扩缩容均以完整 Segment 为单位，target 不超过可组成的完整组数。
+- 有效期望满足共同整数组数时，在 Segment 数量空间计算共同 target，再按配比生成各 role 的实例 target。
+- 扩缩容均以完整 Segment 为单位，target 不超过合法期望的组数。
+- 首次创建使用 `2P:1D`、`P=5、D=2` 等不满足配比的期望时，报告各 role 剩余实例，不创建 `4P、2D` 或其他 Segment 成员。
+- 已生效 Segment 的后续副本变更不满足配比时，保持各 RIS 当前合法目标，不部分扩缩；添加或重新添加 Segment 时阻塞接管，不切换 Adapter 控制权。
+- 配比错误只阻塞对应 Segment 配置及其副本变更，其他有效规则继续 reconcile，RIS 继续维护已有实例；修正期望后恢复处理。
 - 首次创建与后续扩容统一使用 `segBatchSize`，缺省每批 1 组；目标 5 组、批量 2 时按 `0 → 2 → 4 → 5` 推进，最后一批不要求满额；没有 scaling 策略时直接下发完整目标。
 - Segment 的 `scaling.maxSkew` 无论省略、零值或其他合法整数、百分比均不影响 target；批量字段不作用于缩容或 surge。
 - `OrderScheduled` 检查当前批次全部成员的预期 Pod 已调度，`OrderReady` 检查全部成员 Ready；多 component、缺员、部分 role 已达到最终副本数但当前批次未 Ready 时仍按批次判断。
 - 当前批次未完成时保持已下发目标，不按 Ready 或实际完整组数回退，不在重复 reconcile、部分下发或状态延迟时提前增加下一批。
-- Segment scaling 不读取 Gang minimum 来抬升 target，不因 `segBatchSize < minSegments` 拒绝配置或自动修改批量。
-- 部分 role 扩缩被拒绝。
-- desired replicas 不整除时报告剩余实例，地址发现仍按 desired replicas 枚举。
+- Segment scaling 不读取 Gang minimum 来抬升 target，也不自动修改批量；`segBatchSize < minSegments` 的静态冲突由准入拒绝，绕过准入的组合由 reconcile 报告。
+- 部分 role 扩缩被拒绝，不通过向下取整部分执行。
+- desired replicas 不整除或各 role 组数不同时报告剩余实例并停止副本目标下发，地址发现只发布对齐后的基础组目标。
 
 ##### ScalingAdapter 状态与控制权
 
@@ -999,6 +1121,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 - `strategy.scaling.scalingAdapter` 复用现有 `ScalingAdapter` 类型，`enable` 默认 `false`，`labels` 正确传递且不能覆盖受管标识；API、CRD 和生成代码保留该配置。
 - 仅为启用配置的有效 Segment 规则自动创建一个 Adapter，关联当前 RBG，重复 reconcile 不重复创建，Adapter 意外丢失后可恢复；未配置或未启用时不自动创建。
 - `role` 与 `segment` target 二选一；无效 RBG、Policy、规则或成员不触发部分写入，原 role 模式保持兼容。
+- 验证 CRD 将 `role` 改为可选，同时拒绝两者均设置或均未设置，并保持既有 role-only 客户端兼容。
 - Segment `spec.replicas` 使用组级绝对目标，覆盖扩容、缩容、重复 reconcile、非法组数和投影溢出。
 - 全部成员副本在一次 RBG 更新中提交；冲突重试重新读取目标，保留无关 role 和字段，重试与重启不重复累加副本。
 - RBG 分批下发 RIS target 时，不把中间目标回写为 Adapter 或 RBG 的最终期望。
@@ -1019,6 +1142,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 - 请求 4 组、目标已提交、本轮推进到 3 组、实际 2 组 Ready 时，Adapter 的 `spec.replicas`、`status.replicas`、`status.readyReplicas` 分别为 4、4、2。
 - Ready 组数按组身份与成员实际状态统计，缺员或成员未 Ready 时不计入，不能将不同组的 Ready 成员拼为完整组；目标不变时仍同步 Ready 数变化。
 - 通过 `/scale` 写入期望组数、读取已提交目标，验证其与 Adapter 副本字段映射一致；HPA 使用方案、通用 Pod 选择和指标聚合、去重不作为本期验收要求。
+- 验证 Segment Adapter selector 精确等于 group-name 与 segment-rule 的 AND selector，不匹配其他 RBG、规则、非成员 role 或单个 component。
 
 ##### Rolling update
 
@@ -1026,7 +1150,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 ###### 组级准入与预算恢复
 
-- 同一 Segment 同批获准更新，允许成员先后启动、Ready 以及暂态新旧版本共存。
+- 同一 Segment 同批获准更新；组级预算大于 0 时，获准组内不再按同一个值限制 RI 并发，允许成员同时或先后启动、Ready 以及暂态新旧版本共存。
 - `partition` 保留完整 Segment，不按各 role 独立保留相同实例数。
 - Stateful 常规更新将共同 Segment 边界按配比投影为各 RIS 的 partition，并始终保留用户要求的旧组。
 - 在固定目标版本、`maxUnavailable: 1` 的逐组推进示例中，当前组未完成或共享预算不足时，后续 reconcile 保持边界；满足推进条件后才放宽，较快 role 不得单独提前进入下一组。
@@ -1035,6 +1159,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 - 一组因成员失败持续占用、另一窗口可用时，仍可放行其他符合条件的组；占满预算后不再放宽边界，目标变化时必要收紧，恢复可用并完成目标版本后补位，不因单组失败冻结整个 RBG。
 - RBG 使用组身份和成员状态计算预算，不通过改写健康 RI / Pod 的 Ready 状态传递组级不可用信息。
 - Policy 的 `maxUnavailable` 直接以 Segment 计数，无需额外更新模式开关；Segment 下 `rollingUpdate.maxSkew` 的省略、零值及其他合法值均不改变共同边界和组级预算，`segBatchSize` 不限制更新窗口。
+- 组级 `partition` 和 `maxUnavailable` 百分比向下取整，`maxSurge` 百分比向上取整；覆盖 0、1 和边界百分比。
 - 同一 Segment 的多个成员不可用只计一次，不同 Segment 的不可用成员分别计数。
 - 无 surge、`maxUnavailable: 1` 时，不允许各 RIS 独立推进更新而同时使两个 Segment 不可用。
 - 已放行但尚未反映到成员状态中的更新占用预算，不因状态延迟重复放行。
@@ -1044,25 +1169,30 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 ###### 更新参数与 surge 投影
 
-- Policy `maxUnavailable` 的组级百分比预算以期望完整 Segment 数为基数解析；下发 RIS 保留原百分比，并按各 RIS 副本数及现有规则解析局部窗口。
-- Policy 显式 `maxUnavailable` 原样覆盖 role 配置，不取最小值、不按配比放大；`1P:2D`、Policy 值为 `1` 时两个 RIS 均收到 `1`，允许两个 D 串行更新。
+- Policy `maxUnavailable` 的百分比只以期望完整 Segment 数为基数解析组级预算，不再交给 RIS 按各自副本数二次解析。
+- 组级预算 `B > 0` 时忽略 role 原值并向各 RIS 下发 `100%`，不按配比放大 Policy 原值；`1P:2D`、Policy 值为 `1` 时，一个获准 Segment 的 P、D0、D1 都可进入更新，整组只占用一份组级预算，不要求实际同时启动或 Ready。
+- 组级预算 `B = 0` 时向各 RIS 下发 `0`，不能为绕过零预算而下发 `100%`；无 surge 时不主动增加不可用实例，有 surge 时仅由实际可用额外实例增加执行预算。
 - Policy 未配置 `maxUnavailable` 时保留各 role 配置或 RIS 默认值，不新增或反推组级默认预算，仍保持 Segment 更新边界和其他协调条件。
 - 未声明 segment 的规则继续使用各 role 独立的不可用预算。
 - 非 Segment 的 Policy `maxSurge` 显式配置时原样覆盖 role，未配置时保留原行为，显式 `0` 不等同于未配置。
 - Segment 的 Policy `maxSurge` 忽略 role 配置；`1P:2D`、组级值为 `1` 时下发 `P=1、D=2`，未配置或移除字段后显式下发 `0`，撤销整个 Segment 后恢复当前普通配置。
 - `maxSurge` 百分比按期望完整组数向上取整后再乘配额，覆盖零副本、取整边界和乘积溢出，不能先按各 RIS 的副本分别取整。
 - 保留 Stateful 实际 surge 算法：完整更新范围可创建上限数量，较小 partition 范围可能创建更少或不创建；已有有效 surge 的保留与回收仍由 RIS 决定，不增加跨 role 补齐与统一回收要求。
-- `maxUnavailable: 0、maxSurge > 0` 沿用先准备额外容量、待其可用后更新健康基础实例的机制；RBG 不因简化组级窗口为零而阻断 surge 准备，RIS 不将配置上限或未 Ready 的额外 RI 当成可用预算。
+- `maxUnavailable: 0、maxSurge > 0` 时 RIS 收到 `0`，沿用先准备额外容量、待其可用后更新健康基础实例的机制；RBG 不因简化组级窗口为零而阻断 surge 准备，RIS 不将配置上限或未 Ready 的额外 RI 当成可用预算。
+- 实现 surge 准入规则：每个 role 至少拥有配额数量的健康目标版本 surge RI 时组才可 surge 放行，否则必须消耗不可用预算；覆盖 surge 容量消失和从安全在途转为 loss-risk 的场景。
 - surge 的创建路径同样写入 RI 与 Pod 分组 label；额外成员不完整时不将其误判为完整可服务组，不因局部 surge Ready 就释放基础 Segment 的在途占用。
 
 ##### Gang
 
-- 资源至少满足 `minSegments` 个完整 Segment 时才允许调度放行。
-- 资源不足或调度约束不满足时不放行。
+- 每条 Segment 规则只生成一个 SubGroupPolicy，使用 group-name 与 segment-rule selector，`matchLabelKeys` 只包含 `segment`，不为每个 Segment 创建独立 PodGroup。
+- `subGroupSize` 按整组全部 RI、全部 component Pod 计算，`minSubGroups=minSegments`，`minMember=minSegments×subGroupSize`；覆盖多 component 与多 Segment 规则累加。
+- 资源至少满足 `minSegments` 个完整 Segment 时才允许调度放行，资源不足或调度约束不满足时不放行。
 - 从零创建无需等待成员 Ready，放行后允许成员先后启动。
-- 默认要求资源满足全部期望完整 Segment，不因 scaling 批量较小而降低门槛。
+- 未配置 scaling 时，省略 `minSegments` 要求全部期望完整 Segment；同时配置 scaling 时省略该字段会被准入拒绝。
 - `minSegments` 超过期望完整组数时报告不可满足，不自动扩大 desired。
-- 从零创建时，批量 1、门槛 2 的组合保持互等；批量 2、门槛 2 的组合在调度及 progression 条件满足后可继续推进。
+- `segBatchSize: 1、minSegments: 2` 被准入拒绝；批量 2、门槛 2 的组合不抬升 target，在调度及 progression 条件满足后继续推进。
+- 将 Segment 规则翻译为一个 Volcano subgroup，验证 group-name 与 segment-rule selector、segment match key、每组 Pod 总数和 `minSegments`；多条规则保持隔离。
+- scheduler-plugins 的 Segment Gang 被拒绝；Volcano CRD 缺少 `subGroupPolicy` 时报告不兼容，不降级为 Pod 总数或 per-role 数量门槛。
 - 未声明 Segment 的规则继续使用 `minReplicas` 和现有 target 抬升逻辑。
 
 #### 集成测试
@@ -1095,11 +1225,11 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 - 滚动更新按 Segment 批次准入，`partition` 和 `maxUnavailable` 使用 Segment 单位，`rollingUpdate.maxSkew` 被忽略。
 - 在固定副本、固定目标版本、无 surge 的 Stateful 场景中，验证 RBG 计算 partition、RIS 执行、状态反馈、RBG 重新计算的完整闭环；覆盖 3P、6D 按 1P:2D 逐组推进的边界序列。
-- 覆盖 Policy 值为 `1` 时两个 D 在 RIS 局部窗口内串行更新，整组按 RIS 判断完成更新并恢复可用前，RBG 不放行下一组；包含原地更新和 `minReadySeconds` 等待。
+- 覆盖 Policy 值为 `1` 时 P、D RIS 均收到 `100%`，一个获准 Segment 的全部成员都可进入更新，不再要求两个 D 串行轮换；整组按 RIS 判断完成更新并恢复可用前，RBG 不放行下一组，实际启动和 Ready 顺序不受保证。包含原地更新和 `minReadySeconds` 等待。
 - 覆盖无 surge、Policy 值为 `2` 时同时准入两组、一组完成后补位，以及一组持续失败时另一窗口仍可推进；Policy 未配置时保留局部窗口且不新增组级默认预算。
 - 覆盖 Policy `maxSurge` 从 API 到 RBG 计算、RIS 参数覆盖和额外 RI 创建的链路：非 Segment 原样覆盖，Segment 按配比投影；下发上限正确不等于每轮必须创建满额。
 - 覆盖较小 partition 下各 role 实际额外数量不成组、独立回收以及 surge RI / Pod label 同步；基础组仍遵守共同边界和有效执行预算。
-- 覆盖 Segment Policy `maxUnavailable: 0、maxSurge: 1`：在用户 partition 和其他协调条件允许、旧成员健康时，候选更新范围可触发 surge 创建；额外 RI 未可用时不更新健康旧实例，可用后按 RIS 原预算机制推进，不新增零预算冻结规则；同时验证组级状态和在途记录不因局部 Ready 被提前清除。
+- 覆盖 Segment Policy `maxUnavailable: 0、maxSurge: 1`：各 RIS 收到 `maxUnavailable: 0`，在用户 partition 和其他协调条件允许、旧成员健康时，候选更新范围可触发 surge 创建；额外 RI 未可用时不更新健康旧实例，可用后按 RIS 原预算机制推进，不新增零预算冻结规则；同时验证组级状态和在途记录不因局部 Ready 被提前清除。
 - 一个 role 更新较快、另一个较慢或失败时，不可用 Segment 的并集不因各 RIS 独立推进而突破已配置的共享预算。
 - controller 重启或成员状态延迟时，共同准入恢复后不重复放行，也不丢失在途更新的预算占用。
 - 无 surge、`maxUnavailable: 1`，Segment 2 已完成 B，Segment 1 的 P 已 Ready、D 未 Ready，此时目标改为 C：验证新模板与重算后的 partition 阻止 P 因本地预算空闲而更新 Segment 2，避免两组同时不可用；覆盖各 RIS 部分下发、状态延迟和重启。
@@ -1108,7 +1238,10 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 ##### Gang 资源准入
 
 - Gang 仅检查资源准入，不等待应用 Ready。
-- Segment 从零创建时，`segBatchSize: 1、minSegments: 2` 可接受但不会自动抬升 target；验证等待状态及用户调整 Gang 门槛后继续推进。省略 `minSegments` 仍要求全部期望组；同一 RBG 的非 Segment 规则不受影响。
+- 在 Volcano 中验证同一 Segment 标签下不同 role、不同 RI 的 Pod 被划为一个 subGroup；不同 Segment 的 P、D 即使各自数量足够，也不能满足门槛，至少 `minSegments` 个身份一致且成员完整的组才可放行。
+- 从零创建时使用 `segBatchSize: 2、minSegments: 2`，验证首批目标保持为 2 组、资源准入后按 progression 推进；最后一批为 1 组时不重复要求首批门槛。
+- 模拟旧配置绕过准入以及 Adapter 将期望组数缩到 `minSegments` 以下，验证 reconcile 报告配置错误且不自动调整副本；资源不足时保持正常 Pending，不误报为配置不兼容。
+- 未配置 scaling 时省略 `minSegments` 仍要求全部期望组；同一 RBG 的非 Segment 规则不受影响。
 
 ##### Policy 接管与撤销
 
@@ -1130,8 +1263,8 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 #### 端到端测试
 
 - 运行 PD 分离推理示例，验证 RI 与 Pod 的组身份符合 prefill / decode 配比。
-- 执行 Segment 粒度扩缩，验证最终副本满足配比、创建批次遵守 progression。
-- 执行 Segment 粒度滚动升级，验证共同 partition 和组级预算限制实际更新范围。
+- 执行 Segment 粒度扩缩，验证最终副本满足配比、创建批次遵守 progression；分别验证首次创建和已生效 Segment 的非法配比会停止副本变更，修正后恢复。
+- 执行 Segment 粒度滚动升级，验证共同 partition 和组级预算限制实际更新范围；正值预算下获准组内不按 Policy 原值轮换 RI，零值与 surge 组合仍不增加不可用实例。
 - 通过非 Segment Policy 配置 `maxSurge: 2`，在 `replicas=4、partition=0`、初始全部健康旧版本的条件下，分别覆盖 `maxUnavailable: 0` 与 `2`，验证出现两个额外 RI 并最终回收至 4 个；复用现有 RIS surge E2E 场景，不扩展为任意 partition 下必须创建两个的断言。
 - Segment Policy 的上限投影、role 配置被覆盖以及未配置时归零；验证各 RIS 按本地算法执行，不要求额外 RI 构成完整组。
 - 与 gang 调度组合：批量与门槛匹配时正常推进，不匹配时保持等待而不自动改写 target；覆盖默认 Gang 门槛及用户调整配置后的恢复。
@@ -1250,15 +1383,25 @@ RBG 及相关 Adapter 的状态信息应支持确认：
 - 配置是否被接受，以及被拒绝的原因。
 - 最终期望组数与当前已下发的组数目标。
 - 实际完整组数、Ready 组数和满足 RIS 可用性条件的组数。
-- 各 role 的剩余实例数量，以及是否存在被拒绝的扩缩请求。
+- 各 role 的未对齐明细，以及是否存在被拒绝的扩缩请求。
+
+最小 condition 契约如下：
+
+| 对象与 condition | 必须表达的含义 |
+| --- | --- |
+| RBG `SegmentConfigurationValid` | 规则、后端、稠密成员、rule ID 和更新参数是否合法；reason 指明第一个阻塞成员或字段 |
+| RBG `SegmentReplicasAligned` | 各成员 role 的有效期望副本是否解析为同一个整数组数 |
+| RBG `SegmentAssignmentReady` | 有效规则的 RIS 描述及已有 RI / Pod 身份是否已收敛 |
+| RBG `SegmentGangConfigured` | 调度器是否支持 Segment 子组，PodGroup 翻译是否为当前状态 |
+| Adapter `SegmentTargetBound` | Segment target 是否绑定、是否取得写入权，以及是否已成功提交全部成员目标 |
+
+condition reason 必须区分配置非法、调度器能力不支持、副本未对齐、同步延迟和控制器错误。
 
 ### 依赖
 
 #### 功能依赖哪些集群服务？
 
-Segment 结构本身不依赖特定 scheduler。
-
-与 gang 组合时沿用现有 gang 调度依赖。与 topology 组合时依赖后续 topology 设计。router 组感知路由依赖具体 router 实现。
+Segment 结构本身不依赖特定 scheduler。Segment Gang 依赖 Volcano `subGroupPolicy`，scheduler-plugins 不支持完整 Segment 门槛；非 Segment Gang 的调度器支持范围不变。与 topology 组合时依赖后续 topology 设计，router 组感知路由依赖具体 router 实现。
 
 ### 规模与资源开销
 
@@ -1268,7 +1411,7 @@ Segment 结构本身不依赖特定 scheduler。
 
 #### 是否增加 API 对象的大小或数量？
 
-- Policy 增加分组与策略字段；启用适配器时，每条 Segment 规则增加一个 Adapter，不为每个 Segment 或 Pod 创建独立的管理资源。
+- Policy 增加分组与策略字段；启用适配器时，每条 Segment 规则增加一个 Adapter。Gang 继续使用单 RBG PodGroup，每条 Segment 规则增加一个 SubGroupPolicy，不为每个 Segment 或 Pod 创建独立的管理资源。
 - 状态汇总按规则组织；具体状态字段与持久化开销以实现及规模测试结果为准。
 
 #### 是否增加控制器的资源开销？
@@ -1277,7 +1420,7 @@ Segment 结构本身不依赖特定 scheduler。
 
 ### 故障排查
 
-以下为状态与诊断能力的设计要求；condition 的具体名称和字段需在实现中落实，本文不将示例名称当作现有 API。
+以下为状态与诊断能力的设计要求；[监控要求](#监控要求)中的 condition 名称是最小契约，实现可以增加字段但不能缺失这些含义。
 
 #### 已知故障模式有哪些，如何处理？
 
@@ -1285,9 +1428,9 @@ Segment 结构本身不依赖特定 scheduler。
 | --- | --- |
 | 副本不满足配比 | 查看配比违规原因及各 role 剩余数量；按共同组数修正有效目标，启用 Adapter 时通过 Adapter 提交组数，不单独改成员副本 |
 | Adapter 请求被拒绝 | 检查是否请求了单 role 扩缩，以及 RBG、Policy、规则、对象归属和控制权是否有效 |
-| Gang 或创建批次持续等待 | 检查 `minSegments`、期望组数、Pod requests 和调度约束；再检查 `segBatchSize` 能否提供门槛所需成员。默认门槛是全部期望组，冲突需用户调整，业务未 Ready 不等于资源准入失败 |
+| Gang 或创建批次持续等待 | 先检查是否存在配置校验错误，包括 `segBatchSize < minSegments`、`minSegments` 大于期望组数或调度器不支持；再检查 Pod requests、调度约束和实际资源。配置合法时等待资源属于正常行为，业务未 Ready 不等于资源准入失败 |
 | Pod 标签与预期不一致 | 沿 Policy → RIS annotation → RI label → Pod label 检查当前期望与同步错误，确认是否被外部修改；通过 reconcile 恢复，不靠重启传播 |
-| 成员模式被拒绝 | 检查是否有 Stateless RIS；如需保留 Stateless，移除对应 Segment 配置，控制器不自动转换模式 |
+| 成员模式被拒绝 | 检查是否存在 Stateless RIS、非原生后端或稀疏成员（`excluded-ordinals` / `committed-skip-ordinals`）；如需保留该成员形态，移除对应 Segment 配置，控制器不自动转换模式或填充 exclusion |
 | 更新未继续 | 检查不可用与在途组占用、用户 partition、RIS 局部预算及实际可用 surge；目标改版不清空已有占用 |
 
 ## 实施历史

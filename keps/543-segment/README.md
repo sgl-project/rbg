@@ -29,12 +29,14 @@
       - [Targets and Replica Units](#targets-and-replica-units)
       - [Replica Control Authority and Lifecycle](#replica-control-authority-and-lifecycle)
       - [Adapter and RBG Scaling Coordination Loop](#adapter-and-rbg-scaling-coordination-loop)
-      - [Scale Subresource and Metrics Scope](#scale-subresource-and-metrics-scope)
+    - [Scale Subresource and Metrics Scope](#scale-subresource-and-metrics-scope)
     - [Integration with Gang](#integration-with-gang)
+      - [Volcano SubGroup Mapping](#volcano-subgroup-mapping)
+      - [Configuration Validation with Scaling](#configuration-validation-with-scaling)
     - [Integration with Rolling Update](#integration-with-rolling-update)
       - [RBG and RIS Update Coordination Loop](#rbg-and-ris-update-coordination-loop)
       - [Member Availability and Reusing Budget Capacity](#member-availability-and-reusing-budget-capacity)
-      - [Policy Overrides and RIS Local Windows](#policy-overrides-and-ris-local-windows)
+      - [Policy Overrides and RIS Execution Windows](#policy-overrides-and-ris-execution-windows)
       - [maxSurge Limits and RIS Execution](#maxsurge-limits-and-ris-execution)
       - [Generating Partitions by Segment](#generating-partitions-by-segment)
       - [Applying New Templates and Partitions After a Target Version Change](#applying-new-templates-and-partitions-after-a-target-version-change)
@@ -151,7 +153,7 @@ PD-disaggregated inference requires pairing prefill and decode instances. The ex
 - Infer ratios automatically, implement group-aware routing, or require routers to use it.
 - Design a complete topology API, tiers, packs, or scheduler translation.
 - Guarantee atomic operations across objects, simultaneous readiness, updates without mixed versions, or seamless application-state migration when regrouping.
-- Change existing address discovery. Addresses continue to be enumerated from desired replicas and do not imply that members exist or can serve traffic.
+- Change address discovery for non-Segment roles. For an effective Segment, discovery must publish only the aligned base-group target and must not publish residual or surge identities as serviceable members.
 - Add progression specifically for initial creation, a whole-Segment update switch, an actual surge target, or a cross-role lifecycle protocol for temporary groups.
 - Design a complete HPA integration or add general-purpose Pod selection and business-metric collection, aggregation, or deduplication. This phase defines only ScalingAdapter capabilities.
 - Support Stateless RIS or deprecated workloads such as Deployment, StatefulSet, and LWS that will no longer be supported in subsequent versions.
@@ -209,11 +211,11 @@ Admission in the same batch means that members of a Segment enter the update sco
 
 ### Notes and Constraints
 
-- Only Stateful RIS is supported in this phase. Grouping reuses contiguous ordinals starting at zero. If any member is Stateless, reject or block the combination without automatically changing its mode. Grouping itself does not imply Stateful mode.
+- Only native Stateful RoleInstanceSet members with dense membership are supported in this phase. Reject Stateless RIS, deprecated workload backends, unknown backends, `excluded-ordinals`, and a non-empty child `committed-skip-ordinals` record. Grouping itself does not imply Stateful mode.
 - Within one Policy, Segment members must not appear in any other rule, regardless of strategy domain. Roles that require joint coordination must declare their ratio and strategies in one rule.
 - The ratio cannot be changed in place within the same effective configuration. After withdrawal, a new ratio can be validated and adopted without recording or restricting historical ratios.
 - Segment ignores `scaling.maxSkew` and `rollingUpdate.maxSkew`. Creation uses batches and progression; updates use a shared boundary and group-level budget.
-- Segment scaling and Gang execute independently. They do not adjust each other's parameters or perform cross-validation. Individually valid settings can cause persistent mutual waiting and require user adjustment.
+- Segment scaling and Gang execute independently without adjusting each other's parameters. Policy admission and RBG reconciliation validate their compatibility to prevent persistent mutual waiting caused by an insufficient first batch.
 - Non-Segment behavior is preserved. The only new override capability is an explicitly configured Policy `maxSurge`; see [parameter override rules](#maxsurge-limits-and-ris-execution).
 
 ### Risks and Mitigations
@@ -221,12 +223,12 @@ Admission in the same batch means that members of a Segment enter the update sco
 | Risk or cost | Design boundary and handling |
 | --- | --- |
 | Ratios or rule organization limit flexibility | No independent member-role scaling, membership overlap across rules, or in-place ratio changes; coordinate related roles in one rule and change ratios through withdrawal and re-adoption |
-| Replicas cannot form complete groups | Report residual instances and exclude them from complete targets; preserve existing members if adoption fails and let users correct the target |
+| Desired replicas violate the ratio | Report residual instances for each role and stop the Segment replica change. Initial creation produces no member target, an active Segment keeps its current valid targets, and existing-workload adoption does not take effect; users must correct the target |
 | Grouping differs from application routing | RBG publishes and maintains identity but cannot verify group-aware routing; regrouping does not guarantee seamless application-state or routing migration |
 | Independent RIS execution could exceed the budget | RBG deduplicates by group identity and controls a common boundary; partial parameter application, target changes, and delayed status require verification |
 | Slow members or a bad version keep occupying budget | Without surge, an exhausted budget can block new groups; otherwise eligible groups may use remaining capacity, without automatically increasing the budget |
 | Surge capacity is mistaken for a complete standby service | Only limit projection is guaranteed; RIS determines actual counts and reclamation, and extra RIs need not form groups |
-| Scaling and Gang thresholds conflict | Both wait independently; users adjust the batch size or threshold, and the system does not automatically raise targets or lower thresholds |
+| Scaling and Gang thresholds conflict | Policy admission rejects static conflicts, while RBG reconciliation reports conflicts caused by related-resource changes; the system neither raises targets nor lowers thresholds automatically |
 | Labels are modified or synchronization is delayed | Controllers restore managed fields; consumers distinguish label presence from an effective configuration |
 
 ## Design Details
@@ -252,7 +254,7 @@ Policy field paths start at `CoordinatedPolicy.spec.policies[]`. All new fields 
 | `segment` | `map[string]int32`, RI quotas | If omitted, use non-Segment rule behavior |
 | `strategy.scaling.segBatchSize` | Positive integer, groups | Defaults to `1` when a Segment scaling strategy exists; applies to initial creation and scale-out |
 | `strategy.scaling.scalingAdapter` | Reuses the existing `ScalingAdapter` type | `enable` defaults to `false`; `labels` are added to the automatically created Adapter |
-| `strategy.scheduling.gang.minSegments` | Positive integer, groups | If Gang is declared, omission means all desired complete groups; mutually exclusive with `minReplicas` |
+| `strategy.scheduling.gang.minSegments` | Positive integer, groups | Without scaling, omission means all desired complete groups; required when scaling and Gang are both configured; mutually exclusive with `minReplicas` |
 | `strategy.rollingUpdate.maxSurge` | Integer or percentage | If omitted, explicitly apply `0` for Segment; retain role behavior for non-Segment rules |
 
 The existing `strategy.scaling.maxSkew` and `strategy.rollingUpdate.maxSkew` fields remain, but Segment calculations ignore their values. See [rolling updates](#integration-with-rolling-update) for the group-level units of existing update fields. See [targets and replica units](#targets-and-replica-units) for the Adapter's new `spec.scaleTargetRef.segment` field and replica semantics.
@@ -317,6 +319,26 @@ type GangSchedulingStrategy struct {
 }
 ```
 
+Update the Adapter target reference so role and Segment targeting are mutually exclusive but individually optional:
+
+```go
+type AdapterScaleTargetRef struct {
+    Name string `json:"name"`
+
+    // Role names an individual RBG role. Exactly one of Role and Segment
+    // must be set. Existing role-target clients are unchanged.
+    // +optional
+    Role string `json:"role,omitempty"`
+
+    // Segment names a CoordinatedPolicy rule and makes spec.replicas a
+    // complete-Segment count.
+    // +optional
+    Segment string `json:"segment,omitempty"`
+}
+```
+
+Admission and reconciliation must reject references where both `role` and `segment` are set or both are empty. The CRD schema, generated code, and validation must be updated together; a required-to-optional change to `role` is part of this contract.
+
 ### Validation
 
 Admission validates configuration structure; RBG reconciliation validates related resources and execution conditions. Policy field paths below are relative to `spec.policies[]`.
@@ -325,11 +347,17 @@ Admission validates configuration structure; RBG reconciliation validates relate
 
 | Validation target | Requirement |
 | --- | --- |
-| `segment` and `roles` | Exactly matching key sets, at least two roles, and every value greater than zero |
+| `segment` and `roles` | Exactly matching key sets, at least two roles, every value greater than zero, and no duplicate role entries |
 | Exclusive membership | Segment members must not intersect with `roles` in any other rule, regardless of strategy domain; results must be consistent for creation, updates, and different rule orderings |
 | `strategy.scheduling.gang.minSegments` | Positive integer, valid only for Segment, and mutually exclusive with `minReplicas` in the same rule |
+| Scheduler for Segment Gang | Requires Volcano with `subGroupPolicy`; reject scheduler-plugins because its Pod-count threshold cannot guarantee complete Segment identity |
+| Segment with both scaling and Gang | Require explicit `minSegments` and effective `segBatchSize >= minSegments`; an omitted batch size counts as 1 |
 | Ratio updates | If the same named rule declares Segment before and after an update, its map must be identical; no keys may be added or removed, and no values changed |
-| `strategy.scaling.segBatchSize` | Positive integer, valid only for Segment, with no percentage support; defaults to 1 and is not cross-validated against `minSegments` |
+| Rule renaming | A single update may rename a rule only when its Segment map is unchanged; changing both the rule name and ratio is rejected and requires withdrawal followed by a separate addition |
+| Rule identity | Deterministic rule IDs must not collide within a Policy |
+| `strategy.scaling.segBatchSize` | Positive integer, valid only for Segment, with no percentage support; defaults to 1 |
+
+Requiring explicit `minSegments` when scaling and Gang are combined keeps this check within the current Policy. The webhook does not need to read the final desired group count from an RBG or Adapter. Without scaling, RIS receives the full desired group target directly, so Gang can retain the default of all desired groups when `minSegments` is omitted.
 
 Adding, removing, and re-adding Segment follow the [configuration lifecycle](#adding-and-removing-coordinatedpolicy), without historical-ratio validation.
 
@@ -341,7 +369,8 @@ This restriction applies only to overlap involving Segment members. Ordinary rul
 
 The related Policy and RBG configuration determines whether member modes support Segment:
 
-- On Policy or RBG creation or update, validate members' effective RIS modes when the related configuration exists. Reject any combination containing a Stateless member, including adding Segment to an existing Stateless role or changing an existing Segment member to Stateless. Do not automatically convert Stateless to Stateful or silently ignore Segment.
+- On Policy or RBG creation or update, validate members' effective workload backend and mode when the related configuration exists. Every member must use `workloads.x-k8s.io/v1alpha2 RoleInstanceSet` with `Stateful` or the default Stateful pattern. Reject Stateless RIS, Deployment, StatefulSet, LeaderWorkerSet, and unknown backends; do not convert modes or silently ignore Segment.
+- Dense membership is a prerequisite. A Segment member may not carry user `excluded-ordinals`, and its child RIS may not carry a non-empty controller-managed `committed-skip-ordinals` annotation. Sparse Stateful membership blocks the affected rule rather than being silently divided by the ratio.
 - A Policy can be created before its RBG. Because Policy alone cannot establish member modes, allow it to be saved and validate when the RBG appears. Reconciliation checks again before adoption and before applying Segment parameters. An invalid combination blocks the affected rule and reports the member and reason without changing modes or deleting existing instances.
 - Non-Segment Stateless roles are unaffected. After Segment is removed, mode changes still follow existing workload validation; withdrawing Segment does not guarantee support for in-place mode switching.
 
@@ -349,23 +378,32 @@ For example, Stateful prefill and Stateless decode cannot enable Segment even if
 
 #### Replica and Execution Validation
 
-RBG reconciliation calculates how many groups the effective desired replicas can form according to the [complete Segment invariants](#complete-segment-invariants), and reports residual instances through a condition. If `minSegments` exceeds that count, report an unsatisfiable scheduling threshold.
+RBG reconciliation first checks whether effective desired replicas represent a common integer group count: `roleReplicas / segment[role]` must equal the same non-negative integer `N` for every role. If so, `N` is the desired complete-group count. Misaligned replicas are rejected and reported; Segment does not silently floor them, publish residual addresses, or delete existing members. If `minSegments` exceeds `N`, report an unsatisfiable scheduling threshold.
 
-Computing complete groups does not replace adoption validation for existing workloads or authorize silently scaling down existing members. When adding or re-adding Segment to an existing RBG, every role's effective desired replicas must correspond to the same integer group count; otherwise, block adoption.
+A role whose replicas do not divide evenly, or different group counts across roles, indicates a ratio violation. RBG calculates residual instances for each role according to the [complete Segment invariants](#complete-segment-invariants), reports them through a condition, and stops applying the Segment replica target. This rule applies to initial creation, subsequent reconciliation of an active Segment, and adding or re-adding Segment to an existing RBG:
 
-Policy admission does not validate RBG replica counts: a Policy can precede its RBG, and external scaling systems may change replicas later.
+- Initial creation produces no member replica target and does not create a subset based on rounded-down group counts.
+- An active Segment keeps the valid targets currently applied to each RIS and does not continue scaling from invalid desired replicas.
+- Adding or re-adding Segment to an existing RBG blocks adoption without deleting or rearranging existing members or transferring Adapter control authority.
+
+The block applies only to this Segment configuration and its replica change, not reconciliation of the entire RBG. Other valid rules continue, and RIS continues maintaining existing instances. After the user corrects desired replicas, RBG validates them again and resumes processing.
+
+Policy admission does not validate RBG replica counts because a Policy can precede its RBG and external scaling systems may change replicas later. Once a Segment is effective, RBG admission and reconciliation reject a direct member-role replica update unless all member roles are updated together to the same integer Segment count. The ScalingAdapter controller likewise rejects single-role targets. These are hard alignment rules, not a silent floor, and must also be checked during RBG reconciliation.
 
 ### Group Assignment and Persistence
 
-Stateful RIS uses contiguous instance ordinals starting at zero. Integer division determines group membership:
+For an effective Segment, Stateful RIS membership must be dense: ordinals start at zero and contain no exclusions. Integer division then determines group membership:
 
 ```text
 groupIndex = instanceOrdinal / segment[role]
-labelKey = rbg.workloads.x-k8s.io/segment
-labelValue = <rule-name>-<groupIndex>
+ruleID = first 12 lowercase hexadecimal characters of SHA-256(ruleName)
+segmentRuleLabelKey = rbg.workloads.x-k8s.io/segment-rule
+segmentRuleLabelValue = <ruleID>
+segmentLabelKey = rbg.workloads.x-k8s.io/segment
+segmentLabelValue = <ruleID>-<groupIndex>
 ```
 
-For example, with `2P:1D`, prefill-2 has group index `2 / 2 = 1` and label `kv-cache-1`. All component Pods in the same RI share that identity.
+For example, with `2P:1D`, prefill-2 has group index `2 / 2 = 1`. All component Pods in the same RI share both the rule label and the group label. The fixed-length `ruleID` keeps every generated label value within Kubernetes limits and independent of the rule name's spelling or length. Admission must reject a 12-hex rule-ID collision within the same Policy.
 
 RIS and RI controllers maintain identity through metadata synchronization independent of scaling and rolling updates. Reconciliation restores the desired value after users modify managed labels. Within the same effective configuration, recreating an RI or Pod with the same ordinal, or performing an in-place update, does not change group membership. Re-adoption calculates membership from the new configuration.
 
@@ -383,6 +421,7 @@ metadata:
       {
         "policyUID": "<policy-uid>",
         "ruleName": "kv-cache",
+        "ruleID": "<12-hex-rule-id>",
         "instancesPerSegment": 2
       }
 spec:
@@ -392,7 +431,8 @@ spec:
 | Field | Purpose |
 | --- | --- |
 | `policyUID` | Distinguishes deletion and recreation of a Policy with the same name; does not imply permanent binding |
-| `ruleName` | Identifies the rule and is used to construct group labels |
+| `ruleName` | Identifies the rule and is used to derive the deterministic rule ID |
+| `ruleID` | Deterministic short identity used in managed labels and selectors |
 | `instancesPerSegment` | RIs per group for this role; in the same example, the prefill RIS receives `1` with a replica target of `3` |
 
 The annotation is an internal transport protocol, not a user configuration interface. RBG maintains and removes it. A specific label such as `segment=kv-cache-0` belongs only on the corresponding RIs and their Pods, not on the shared RIS instance template, because instances in one RIS belong to different groups.
@@ -404,12 +444,14 @@ Group identity flows as follows. Metadata keys are abbreviated in the diagram:
 ```text
 RIS.metadata.annotations[segment-config]
     ↓ RIS controller calculates groupIndex from the instance ordinal
-RI.metadata.labels[segment] = <ruleName>-<groupIndex>
+RI.metadata.labels[segment-rule] = <ruleID>
+RI.metadata.labels[segment] = <ruleID>-<groupIndex>
     ↓ RI controller synchronizes component Pod templates and existing Pods
-Pod.metadata.labels[segment] = <ruleName>-<groupIndex>
+Pod.metadata.labels[segment-rule] = <ruleID>
+Pod.metadata.labels[segment] = <ruleID>-<groupIndex>
 ```
 
-The full keys are `rbg.workloads.x-k8s.io/segment-config` and `rbg.workloads.x-k8s.io/segment`, respectively.
+The full keys are `rbg.workloads.x-k8s.io/segment-config`, `rbg.workloads.x-k8s.io/segment-rule`, and `rbg.workloads.x-k8s.io/segment`, respectively.
 
 RIS and RI controllers use the same desired-state synchronization logic during normal reconciliation for both new and existing members, not only in scaling paths:
 
@@ -420,7 +462,7 @@ RIS and RI controllers use the same desired-state synchronization logic during n
 | The object already matches the desired state | No action |
 | Reading or parsing fails | Retry; do not treat it as absence of grouping |
 
-- The RI controller directly patches existing Pod metadata and synchronizes templates for future creation or recreation. Labels do not propagate through workload rollouts, image changes, or Pod recreation, and synchronization does not change container runtime state.
+- The RI controller directly patches existing Pod metadata and synchronizes templates for future creation or recreation. ControllerRevision calculation must ignore both managed Segment label keys. Adding, changing, or removing these labels must not create an update revision, change `updatedReplicas`, or enter the rolling-update path. Labels do not propagate through workload rollouts, image changes, or Pod recreation, and synchronization does not change container runtime state.
 - Policy events trigger reconciliation of the corresponding RBG. Additions, updates, and removals of RIS annotations and RI labels trigger downstream synchronization. Event filters and metadata comparisons must preserve these changes.
 - Patches change only differing managed fields and preserve other metadata. Temporary cross-layer inconsistency is allowed; failures are retried without waiting for natural Pod recreation.
 - Each controller reconciles a given object serially. On each reconciliation and conflict retry, it recalculates desired state from the current configuration and ownership. Idempotent reconciliation handles cache delay; no separate stale-cleanup task, cleanup controller, or protection protocol is introduced.
@@ -431,37 +473,40 @@ Stateless RIS does not receive a valid group description. Adoption and withdrawa
 
 Completeness constrains base-group targets and update batches, not atomic execution of Kubernetes objects. The following four terms distinguish desired, applied, and actual counts:
 
-- Desired replicas: the final replica count submitted by a user or Adapter; it may include residual instances that cannot form a complete group.
-- Effective desired replicas: the final desired replica count after resolving control authority, used to calculate complete groups.
-- Base-group target: the replica count that RBG applies to RIS; it contains only complete groups, with no residual instances.
+- Desired replicas: the final replica count submitted by a user or Adapter; it may include residual instances that cannot form a complete group, but such a desired state cannot be executed as a Segment replica target.
+- Effective desired replicas: the final desired replica count after resolving control authority, used for ratio validation and group-count calculation.
+- Base-group target: when effective desired replicas represent a common integer group count, the complete-group replica count that RBG applies to RIS. No target is generated or updated on a ratio violation.
 - Actual created count: the number of RIs currently created by RIS, which may be below the base-group target.
 
 The following three status measures serve different purposes:
 
 | Measure | Evaluation |
 | --- | --- |
-| Groups that effective desired replicas can form | Calculate from each role's desired RI count and ratio, without using Ready counts |
+| Groups represented by valid effective desired replicas | Divide each role's desired RI count by its ratio; all quotients must be the same non-negative integer, without using Ready counts |
 | Actual complete groups | Check group identities to determine whether all RIs required by the ratio exist |
 | Actual available groups | All members exist and each satisfies RIS availability conditions |
 
-The number of complete groups that effective desired replicas can form is:
+To diagnose a ratio violation, calculate the rounded-down group count and residual instances for each role as follows:
 
 ```text
 completeSegments = min(floor(roleReplicas / segment[role]))
 residual[role] = roleReplicas - completeSegments × segment[role]
+aligned = every residual[role] is zero
 ```
 
-For example, `2P:1D` with desired replicas `P=5, D=2` forms 2 groups with 1 residual P. Exclude that residual instance from the base-group target and report it through a condition. Neither `1P:1D` nor `2P:0D` is a complete-group target.
+`completeSegments` is a diagnostic value, not an execution target for invalid desired replicas. Effective desired replicas pass ratio validation only when every `residual[role]` is zero. Only then can `completeSegments` be used as the desired complete-group count `N`. Neither `1P:1D` nor `2P:0D` is a complete-group target for a `2P:1D` rule.
 
-This calculation does not authorize deleting existing members. When adding or re-adding Segment to an existing RBG, [block adoption](#adding-a-policy-to-an-existing-rbg) if effective desired replicas do not represent a common integer group count. If desired replicas satisfy the ratio but actual members are missing, preserve existing members and fill the gaps against the original target; do not scale down to the actual complete-group count. Single-role scaling requests for an effective Segment remain rejected.
+For example, `2P:1D` with desired replicas `P=5, D=2` produces `completeSegments=2`, `residual[P]=1`, and `residual[D]=0`. The residual instance makes ratio validation fail. RBG reports the reason through a condition and does not generate or update RIS replica targets. Initial creation must not create `4P, 2D` as a two-group subset. An active Segment keeps its current valid targets. Adding or re-adding Segment to an existing RBG [blocks adoption](#adding-a-policy-to-an-existing-rbg) without deleting or rearranging existing members.
+
+Desired replicas that satisfy the ratio while actual members are missing do not violate the ratio. Preserve existing members and fill the gaps against the original target; do not scale down to the actual complete-group count. Single-role scaling requests for an effective Segment are also rejected and cannot be partially executed through this formula.
 
 Members may be temporarily missing during creation, deletion, and updates; simultaneous startup or readiness is not required. Surge RIs do not change the base-group target. Each RIS creates and reclaims them independently, and extra instances may never form complete groups. Group labels do not establish service availability; see [maxSurge limits and RIS execution](#maxsurge-limits-and-ris-execution).
 
-Existing address discovery enumerates desired replicas, not the base-group target or actual created count. In the example above, an address entry can therefore exist for the residual P even though it will not be created. The address table is not a list of actual complete groups or available members.
+For an effective Segment, address discovery must enumerate only the aligned base-group target. It must not publish a residual identity that will not be created, and surge identities must not be published as base service members. The address table still is not a list of actual complete groups or available members.
 
 ### Integration with Scaling
 
-The RBG controller calculates a common replica target in group-count space, then multiplies by the ratio to produce RI targets for each role. It does not calculate and round each role's instance target independently. Policy `strategy.scaling` controls both initial creation and subsequent scale-out.
+The RBG controller first verifies that effective desired replicas represent a common integer group count. It then calculates a common replica target in group-count space and multiplies by the ratio to produce RI targets for each role, rather than calculating and rounding each role's instance target independently. No RIS replica target is generated or updated when ratio validation fails. Policy `strategy.scaling` controls both initial creation and subsequent scale-out.
 
 | Configuration | Behavior |
 | --- | --- |
@@ -475,7 +520,7 @@ The RBG controller calculates a common replica target in group-count space, then
 For a fixed target with `C < N`, scale-out follows:
 
 ```text
-N = Complete Segment count that effective desired replicas can form
+N = Complete Segment count represented by valid effective desired replicas
 C = Current applied group-count target, not the Ready or actual complete-group count
 B = segBatchSize, or 1 if omitted
 Current batch has not satisfied progression: keep C and continue filling the current batch
@@ -555,7 +600,7 @@ spec:
 | --- | --- |
 | `spec.scaleTargetRef.name` | RBG name in the same namespace |
 | `spec.scaleTargetRef.segment` | Rule name in the Policy sharing the RBG's name, not an individual group's label value |
-| `spec.scaleTargetRef.role` | Exactly one of `role` and `segment` must be set; existing role-target units and behavior remain unchanged |
+| `spec.scaleTargetRef.role` | Optional role target; exactly one of `role` and `segment` must be set, and existing role-target units and behavior remain unchanged |
 | `spec.replicas` | Final desired group count, an absolute total rather than an RI count, Pod count, or scaling increment |
 
 Final replicas for all members are derived as `desiredReplicas[role] = spec.replicas × segment[role]`. The 4 groups in this example correspond to `P=4, D=8`. Single-role scaling requests are not executed; a condition reports the reason.
@@ -633,7 +678,14 @@ If submission fails, `status.replicas` retains the previously submitted target. 
 
 Ready groups must be counted by group identity. If P is Ready only in Segment 0 and D only in Segment 1, they cannot be combined into one Ready group. Ready counts support observation or the corresponding scaling progression, not Gang resource admission.
 
-`status.selector` remains the Pod label selector for `/scale`. This KEP adds no general-purpose Pod selection for multiple components or surge, nor business-metric collection, aggregation, or deduplication.
+`status.selector` remains the Pod label selector for `/scale`. For a Segment Adapter it must select all component Pods of the rule with a single AND selector:
+
+```text
+rbg.workloads.x-k8s.io/group-name=<rbg-name>,
+rbg.workloads.x-k8s.io/segment-rule=<ruleID>
+```
+
+The selector must not select other RBGs, other Segment rules, non-member roles, or only one component. It selects Pods for observation and future metric integrations; group counting remains identity-based and separate. This KEP adds no business-metric collection, aggregation, or deduplication.
 
 HPA usage remains an open question with these boundaries:
 
@@ -643,24 +695,56 @@ HPA usage remains an open question with these boundaries:
 
 ### Integration with Gang
 
-When Segment is declared, Gang counts complete Segments instead of RoleInstances.
-
-Gang follows these rules:
+When Segment is declared, Gang counts complete Segments instead of RoleInstances:
 
 - `minSegments: n` allows scheduling admission only when schedulable cluster resources meet the requirements of at least `n` complete Segments, covering every Pod of every RoleInstance in those Segments.
 - The scheduler evaluates sufficiency using Pod requests and scheduling constraints, not cluster resource totals alone. Insufficient resources cause waiting; member readiness is not an admission criterion.
-- If Gang is declared but `minSegments` is omitted, resources must satisfy all desired complete Segments by default.
+- Without scaling, declaring Gang while omitting `minSegments` requires all desired complete Segments. Configuring both scaling and Gang requires an explicit value.
 - `minSegments` and `minReplicas` are mutually exclusive within one rule. Rules without Segment continue to use `minReplicas`.
 - Gang handles only resource admission and scheduling release. It neither defines Segment structure nor guarantees simultaneous startup or readiness.
-- Segment scaling and Gang execute independently. Gang does not change `segBatchSize` or the scaling target, and scaling does not lower the Gang threshold. No matching validation or automatic prevention of configuration-induced mutual waiting is added.
+
+#### Volcano SubGroup Mapping
+
+Segment retains the existing single PodGroup per RBG but changes the Volcano subGroup from one RoleInstance to one complete Segment. Each Segment Gang rule generates one SubGroupPolicy:
+
+```text
+labelSelector:
+  rbg.workloads.x-k8s.io/group-name=<rbg-name>
+  rbg.workloads.x-k8s.io/segment-rule=<ruleID>
+matchLabelKeys = [rbg.workloads.x-k8s.io/segment]
+subGroupSize   = Σ(segment[role] × ComputeSubGroupSize(role))
+minSubGroups   = minSegments
+minMember      = minSegments × subGroupSize
+```
+
+`matchLabelKeys` contains only `segment`, not `role-instance-name`. Pods from different roles and RIs therefore join one subGroup when they share a Segment label. P and D instances from different Segments cannot satisfy the threshold by meeting independent per-role counts.
+
+For `1P:2D`, one Pod per RI, and `minSegments: 2`, one subGroup contains `1P + 2D`, with `subGroupSize=3`, `minSubGroups=2`, and `minMember=6`. Multiple Gang rules share the RBG PodGroup. Each Segment rule contributes one SubGroupPolicy and adds its threshold to `minMember`; the `segment-rule` selector keeps rules separate. When scaling is absent and `minSegments` is omitted, resolve the threshold to all desired complete groups before generating the policy.
+
+scheduler-plugins provides only a Pod-count threshold and cannot express this complete-Segment constraint. A Segment rule with Gang requires Volcano `subGroupPolicy`. Admission checks the configured scheduler, reconciliation checks the installed CRD, and neither path degrades to a Pod-count or per-role threshold.
+
+#### Configuration Validation with Scaling
+
+Segment scaling and Gang execute independently. Gang does not change `segBatchSize` or the scaling target, and scaling does not lower the Gang threshold. Configuration validation prevents an insufficient first batch instead of coupling their execution parameters.
+
+Let `B` be the effective `segBatchSize`, defaulting to 1, and `G` be explicit `minSegments`. A Segment rule with both scaling and Gang must satisfy:
+
+```text
+B >= G
+```
+
+The next batch can then supply at least G groups during initial creation or scale-out from below the threshold. A later final batch may be smaller than G because the applied target has already crossed the threshold; not every batch must be at least G.
 
 For example, when creating 4 groups from zero:
 
 | Configuration | Behavior |
 | --- | --- |
-| `segBatchSize: 2`, `minSegments: 2` | Create 2 groups in the first batch. The scheduler admits them when resources satisfy the threshold; create the remaining 2 after progression is satisfied. |
-| `segBatchSize: 1`, `minSegments: 2` | The first batch contains only 1 group. Gang waits for more members while scaling waits for the first batch to become Scheduled or Ready. Waiting continues until the user adjusts configuration. |
-| `segBatchSize: 1`, `minSegments` omitted | Gang still defaults to all 4 groups. It neither reduces the threshold to 1 nor expands the first batch automatically; mutual waiting can also occur. |
+| `segBatchSize: 2`, `minSegments: 2` | Valid. Create 2 groups initially, then create the remaining 2 after resource admission and progression are satisfied. |
+| `segBatchSize: 1`, `minSegments: 2` | Rejected by the Policy webhook because the first batch cannot satisfy the threshold. |
+| Scaling with `segBatchSize: 1` and omitted `minSegments` | Rejected by the Policy webhook because combining scaling and Gang requires an explicit threshold. |
+| No scaling and omitted `minSegments` | Valid. Apply all 4 groups directly, with Gang requiring all 4 by default. |
+
+The Policy webhook checks combinations determined by the Policy itself. RBG reconciliation also checks `minSegments <= desired complete groups`, ratio validity, scheduler capability, and old configurations that bypass admission. If an Adapter or RBG update later creates a conflict, report `GangConfigured=False` through the existing incompatible-Gang path without increasing desired replicas or raising intermediate targets. Insufficient resources with a valid configuration is not a configuration error, and `GangConfigured` does not replace Pod or PodGroup scheduling status.
 
 The existing non-Segment path [raises the scaling target to the Gang minimum](../../internal/controller/workloads/rolebasedgroup_controller.go). Segment does not reuse that coupling; non-Segment behavior remains unchanged.
 
@@ -673,15 +757,25 @@ All fields in this table are under `CoordinatedPolicy.spec.policies[].strategy.r
 | Field | Segment semantics |
 | --- | --- |
 | `partition` | Number of groups retained without updates; `1` retains Segment 0 while later groups may enter the update scope |
-| `maxUnavailable` | When explicitly configured, a group-level budget shared across roles at the RBG layer; RIS receives the original value and controls its local execution window in RIs |
+| `maxUnavailable` | When the resolved budget is positive, a group-level budget shared across roles at the RBG layer, with no repeated RI concurrency limit inside admitted groups; a zero budget works with surge; omission retains RIS settings |
 | `maxSurge` | Extra group-capacity limit, projected by quota into RI limits for each RIS; does not promise complete standby groups |
 | `maxSkew` | Ignored; the creation batch field `scaling.segBatchSize` also does not participate in update admission |
 
-At the RBG layer, percentages for the first three fields are resolved against the desired complete-group count. For RIS, `partition` and `maxSurge` are projected by ratio into instance parameters, while `maxUnavailable` overrides the role value unchanged; see [local windows](#policy-overrides-and-ris-local-windows).
+At the RBG layer, percentages for the first three fields are resolved against the desired complete-group count. For RIS, `partition` and `maxSurge` are projected by ratio into instance parameters. `maxUnavailable` sets the RIS execution window according to whether the group budget is zero rather than overriding it with the original value; see [execution windows](#policy-overrides-and-ris-execution-windows).
 
-Distinguish the two layers:
+Percentage resolution is deterministic:
 
-- The same `maxUnavailable` value applies at both layers: RBG counts Segments, while RIS counts RIs. The layers neither replace each other nor add their budgets together.
+| Field | Group-level rounding |
+| --- | --- |
+| `partition` | Round down to a whole retained Segment |
+| `maxUnavailable` | Round down to a whole unavailable Segment |
+| `maxSurge` | Round up to a whole extra Segment |
+
+For example, with 3 desired groups, `25%` resolves to 0 retained groups, 0 unavailable groups, and 1 extra group.
+
+Distinguish these semantics:
+
+- `maxUnavailable` is the user-declared group-level budget. When the resolved budget is positive, RBG counts Segments and RIS receives `100%`, adding no RI-count limit inside admitted groups. When it is zero, RIS receives `0` and uses available surge to avoid increasing unavailable instances. If omitted, no default group budget is generated and existing RIS settings are retained.
 - `partition` has two meanings. As user configuration, it counts Segments retained without updates. As an RBG-applied value, it projects the current admission result into a RIS boundary. It is not a monotonically decreasing ordinal as in a conventional StatefulSet partition workflow; target version changes can tighten or relax it.
 
 For example, at `2P:1D`, `partition: 1` retains `2P + 1D`, not one RI per role.
@@ -693,16 +787,16 @@ In the existing non-Segment path, RBG calculates a dynamic partition from each r
 ```text
 RBG controller: member states + Policy
     ↓ Count unavailable and in-flight groups and calculate a common update boundary
-    ↓ Project partition, override maxUnavailable unchanged, and project maxSurge
+    ↓ Project partition, set maxUnavailable from the group budget, and project maxSurge
 WorkloadReconciler: write each RIS.spec.updateStrategy
-    ↓ RIS controller updates RIs within partition, local budget, and surge conditions
+    ↓ RIS controller updates RIs within partition, execution window, and surge conditions
     ↓ RI controller performs Pod updates; member states are reported to RBG
 RBG controller: recalculate the boundary on the next reconciliation
 ```
 
 An RIS must not cross the common boundary simply because its local budget has capacity. Without surge and with `maxUnavailable: 1`, if D is still updating in Segment 1, P must not proceed to Segment 0 after recovering, which would make two groups unavailable.
 
-RBG must read member identities and states. Comparing aggregate per-role replica counts or applying identical local budgets is insufficient. It must not communicate group-level occupancy by fabricating unhealthy states for healthy members. RIS objects may receive parameters at different times, but new templates and partitions must enforce the same group-level budget.
+RBG must read member identities and states. Comparing aggregate per-role replica counts or relying on RIS local windows is insufficient. It must not communicate group-level occupancy by fabricating unhealthy states for healthy members. RIS objects may receive parameters at different times, but new templates and partitions must enforce the same group-level budget.
 
 #### Member Availability and Reusing Budget Capacity
 
@@ -728,6 +822,20 @@ remainingBudget = max(B - |U ∪ I|, 0)
 
 Count a group only once if it belongs to both `U` and `I`. Within the remaining budget, RBG admits complete groups that meet partition and other conditions. New admission occupies budget immediately, preventing duplicate admission due to delayed status. External failures also count in `U` and may make actual unavailability exceed the budget; the controller must not actively expand the unavailable-group set further in that state.
 
+With surge, RBG uses the following deterministic admission rule:
+
+```text
+availableSurge[role] = extra RIs of that role that exist, use the target version,
+                       are healthy, and are non-terminating
+surgeEligible(group) = availableSurge[role] >= segment[role] for every member role
+
+admit(group) if partition permits and either:
+    |U ∪ I_loss| + 1 <= B
+    or surgeEligible(group)
+```
+
+`I_loss` contains admitted, incomplete groups that already have an unavailable base member or no longer retain enough target-version surge in every role to continue without base availability loss. Safe surge-backed in-flight groups remain tracked as in-flight but do not consume the no-unavailability budget. If surge capacity disappears or a base member becomes unavailable, the group moves to `I_loss` immediately. A group is never admitted merely because one role has spare surge; every member role must have at least its Segment quota.
+
 For example, without surge and with `maxUnavailable: 2`, assuming partition and other progression conditions are met:
 
 | Deduplicated count of unavailable and in-flight Segments | Maximum additional groups admitted |
@@ -736,24 +844,25 @@ For example, without surge and with `maxUnavailable: 2`, assuming partition and 
 | 1 | 1 |
 | 2 or more | 0 |
 
-After one group completes and becomes available, the next reconciliation may admit one more without waiting for the other group. A group blocked by a slow or failing member retains only its own occupancy. Other eligible groups can proceed while budget remains; one non-Ready group does not freeze the entire rule or RBG. The two-group window is an admission window, not a guarantee that every RIS executes all updates in both groups simultaneously.
+After one group completes and becomes available, the next reconciliation may admit one more without waiting for the other group. A group blocked by a slow or failing member retains only its own occupancy. Other eligible groups can proceed while budget remains; one non-Ready group does not freeze the entire rule or RBG. The two-group window is an admission window. The same `maxUnavailable` value does not limit RI concurrency within these groups, but simultaneous startup or readiness across RIS objects is still not guaranteed.
 
-#### Policy Overrides and RIS Local Windows
+#### Policy Overrides and RIS Execution Windows
 
-RBG controls update progression across Segments, while RIS continues to control the rolling window of RIs within its role. These responsibilities do not require changing RIS `maxUnavailable` to count Segments or multiplying its window by the ratio to achieve parallel updates within a group.
+RBG controls which Segments may enter an update, while RIS updates RIs within the common boundary. Once the group budget permits an entire Segment to become temporarily unavailable, the same value does not also throttle RI rotation within that group. Without a configured group budget, the existing RIS local window remains in effect.
 
-Preserve existing CoordinatedPolicy parameter override behavior:
+Segment parameter overrides follow these rules:
 
-| Configuration | RBG group-level control | RIS local window |
+| Configuration | RBG group-level control | RIS execution window |
 | --- | --- | --- |
-| Policy explicitly sets `maxUnavailable` | Aggregate unavailable and in-flight groups; use the window above without surge, and retain the contribution of extra available capacity when surge is enabled | Override role configuration with the original Policy value; RIS executes in RI units |
+| Policy explicitly sets `maxUnavailable`, with resolved budget `B > 0` | Aggregate unavailable and in-flight groups; use the window above without surge, and retain the contribution of extra available capacity when surge is enabled | Ignore the role value and apply `100%`; admitted RIs within the common partition have no additional RI-count limit |
+| Policy explicitly sets `maxUnavailable`, with resolved budget `B = 0` | Without surge, do not actively add unavailable groups; with surge, allow extra-capacity preparation and advance using group state | Ignore the role value and apply `0`; only actually available surge increases the execution budget |
 | Policy omits `maxUnavailable` | Do not add an implicit default group-level budget; continue using Segment boundaries and other configured coordination conditions | Retain role configuration, or RIS defaults if the role also omits it |
 
-An override is neither the minimum of the Policy and role values nor the combined application of both configurations. For a percentage, RBG resolves the group-level budget against desired complete Segments, but passes the original percentage to RIS. Each RIS resolves its local window against its own replica count using existing rules. RBG does not infer a default group budget from local RIS values.
+With `B > 0`, the Policy integer or percentage is used only for RBG's group-level budget and is not executed again as an RI budget. Applying `100%` removes additional local RIS throttling; it does not multiply the original Policy value by the ratio. Each RIS must still respect the common partition. With `B = 0`, applying `100%` would incorrectly create unavailable instances without available surge. RBG does not infer a default group budget from local RIS values.
 
-For example, without surge, at `1P:2D` and Policy `maxUnavailable: 1`, both P and D RIS receive `1`, overriding their role configurations. RBG allows at most one Segment to occupy the update budget. Once that group is admitted, D RIS may update one D and then the other. RBG releases the in-flight occupancy and admits another group only after the whole group reaches the target version and becomes available.
+For example, without surge and with initially healthy `1P:2D` members, Policy `maxUnavailable: 1` allows at most one Segment to occupy RBG's update budget. Both P and D RIS receive `100%`. Once the group is admitted, P, D0, and D1 may all enter the update; the two D instances need not rotate serially. The whole group may become temporarily unavailable while occupying only one group-budget slot. Startup and readiness times may still differ. RBG releases occupancy and admits another group only after the whole group reaches the target version and becomes available.
 
-Sequential execution within a group satisfies admission in the same batch without simultaneous execution. RBG does not take over RIS's internal update order. If an application requires multiple new members to update together before any can become Ready, evaluate progress against the existing RIS window configuration. Segment does not automatically enlarge the local window or guarantee that such dependencies cannot block progress.
+With `B = 0`, both P and D RIS receive `0`. If surge is configured, each RIS first prepares extra instances through its existing algorithm, and only actually available surge can support base RI updates. Without surge, healthy base RIs must not begin an update that adds unavailable instances merely because the group entered a candidate update scope.
 
 #### maxSurge Limits and RIS Execution
 
@@ -775,7 +884,7 @@ S = Extra Segment capacity limit resolved from Policy strategy.rollingUpdate.max
 risMaxSurge[role] = S × segment[role]
 ```
 
-Percentages retain the round-up rule for `maxSurge`, but are resolved at the Segment layer before projecting integer values. Do not pass the original percentage to each RIS for independent rounding. For example, 3 desired `1P:2D` Segments and `maxSurge: "25%"` produce `S=1`: P RIS receives `1` and D RIS receives `2`. This differs from the unchanged `maxUnavailable` override: Policy `maxUnavailable: 1` in the same example still sends `1` to both RIS objects.
+Percentages retain the round-up rule for `maxSurge`, but are resolved at the Segment layer before projecting integer values. Do not pass the original percentage to each RIS for independent rounding. For example, 3 desired `1P:2D` Segments and `maxSurge: "25%"` produce `S=1`: P RIS receives `1` and D RIS receives `2`. `maxUnavailable` follows a different rule: both RIS objects receive `100%` when the group budget is positive and `0` when it is zero, rather than the original Policy value.
 
 Overrides change only the applied execution parameters, not the user's role configuration in RBG. While Segment remains effective, removing Policy `maxSurge` must apply `0` and withdraw the previous positive value; an absent value must not skip the override. If the entire Policy or Segment is withdrawn, recalculate from current role configuration and remaining effective strategies as described in the lifecycle section.
 
@@ -786,7 +895,7 @@ healthyOld = Number of healthy, non-terminating old-version RIs in [partition, r
 activeSurge = min(maxSurge, max(healthyOld - maxUnavailable, 0))
 ```
 
-Existing valid surge instances invoke additional local retention logic; the simplified formula cannot be used alone. With `replicas=4, partition=0, maxUnavailable=2, maxSurge=2` and 4 healthy old instances, the extra target is `2`. With `replicas=3, partition=2, maxUnavailable=1, maxSurge=1` and only the admitted old instance healthy, it is `0`. Both respect the limit; neither requires fully using surge capacity in every reconciliation.
+In this formula, `maxUnavailable` is the execution value received by RIS, not the original group-level Policy value. Existing valid surge instances invoke additional local retention logic; the simplified formula cannot be used alone. With `replicas=4, partition=0, maxUnavailable=2, maxSurge=2` and 4 healthy old instances, the extra target is `2`. With `replicas=3, partition=2, maxUnavailable=1, maxSurge=1` and only the admitted old instance healthy, it is `0`. Both respect the limit; neither requires fully using surge capacity in every reconciliation. With a positive Segment group budget, RIS receives `100%`, so this simplified formula does not require additional surge creation. With a zero group budget, RIS receives `0` and can proceed through available surge.
 
 Actual extra counts across RIS objects may not satisfy the Segment ratio, and reclamation can occur at different times. RBG does not force temporary groups to become complete or wait for a cross-role reclamation condition. Surge RIs reuse ordinary RI creation and group-label synchronization, but labels do not mean a temporary group is complete or serviceable. This proposal does not guarantee creation, retention, or coordinated lifecycle of complete standby Segments.
 
@@ -801,11 +910,11 @@ Only actual available extra instances contribute, not the configured `maxSurge` 
 
 RBG continues to calculate a common Segment update boundary and aggregate unavailable and in-flight state; RIS must not cross that boundary. Entering a candidate update scope does not immediately authorize loss of available capacity, which remains constrained by the RIS execution budget. Therefore, the no-surge formula `max(B - |U ∪ I|, 0)` must not become a universal prerequisite for lowering partition, blocking even surge preparation when `B=0`.
 
-RBG must verify the interaction between group state, in-flight occupancy, and each RIS's extra available capacity. Surge readiness in one role does not mean a base group has finished updating, and per-role available RI counts cannot be treated as complete available-group counts. This requirement adds neither a complete standby-group guarantee nor a cross-role reclamation protocol.
+The preceding rule is the required interaction between group state, in-flight occupancy, and per-role extra capacity. Surge readiness in one role does not make a group eligible, and per-role available RI counts are never combined into a phantom complete group. The rule adds neither a complete standby-group guarantee nor a cross-role reclamation protocol.
 
 #### Generating Partitions by Segment
 
-For Stateful RIS with contiguous ordinal grouping starting at zero, normal updates should first reuse the existing partition to express the common admission boundary. A Segment update-list annotation is not required in advance:
+For supported Stateful RIS with validated dense ordinal grouping, normal updates should first reuse the existing partition to express the common admission boundary. A Segment update-list annotation is not required in advance:
 
 ```text
 segmentBoundary = max(userSegmentPartition, dynamicSegmentBoundary)
@@ -836,7 +945,7 @@ When the target changes from B to C or rolls back, continue using the existing g
 - Retain deduplicated unavailable and in-flight occupancy `U ∪ I`; do not clear or release it early because the target changed.
 - Recalculate partition from the new target, member states, and remaining budget while preserving user partition restrictions. Tighten it if necessary; retaining the old value alone does not guarantee budget compliance.
 - An exhausted budget may block new groups. Continue if budget remains and other conditions are met. A bad version does not change this rule, introduce a special recovery mechanism, or require B to succeed first.
-- Without surge, an exhausted RIS budget prevents further updates of healthy RIs. Members within partition that meet existing stable-unhealthy conditions may still be repaired. Repair must not cross the boundary or bypass the group-level budget.
+- Without surge, an exhausted group budget prevents further admission of healthy RIs. Members within partition that meet existing stable-unhealthy conditions may still be repaired. Repair must not cross the boundary or bypass the group-level budget.
 
 For example, without surge and with `maxUnavailable: 1`, Segment 2 has completed B while Segment 1's P is Ready and D is not. The target then changes to C. Segment 1 still occupies the entire budget. RBG must recalculate and apply a boundary that prevents P from updating Segment 2 merely because its local budget is free, avoiding two simultaneously unavailable groups.
 
@@ -872,7 +981,7 @@ Satisfying the ratio requires every role's `replicas / segment[role]` to be the 
 
 Identity synchronization patches only managed metadata; it does not trigger a workload rollout or Pod recreation. Labeling a running Pod neither reruns Gang admission nor guarantees automatic migration to a new topology domain.
 
-For example, Stateful RIS uses contiguous ordinals with ratio `1P:1D`, desired replicas `2P, 2D`, and actual members `P0, P1, D0`:
+For example, Stateful RIS uses validated dense ordinals with ratio `1P:1D`, desired replicas `2P, 2D`, and actual members `P0, P1, D0`:
 
 ```text
 Segment 0: P0, D0 → Complete membership; availability is evaluated separately
@@ -915,7 +1024,7 @@ Policy is pluggable coordination. Ratio immutability restricts only in-place cha
 | --- | --- |
 | Re-add the same ratio | Revalidate and adopt using current replicas, rules, and control authority, without reusing old admission results. |
 | Re-add a different ratio after withdrawal | Validate current effective desired replicas against the new ratio. Adopt if all roles represent a common group count; otherwise block, without automatic rounding or replica adjustment. |
-| Rename a rule | Revalidate and synchronize descriptions and labels against the current rule. If members and quotas are unchanged, retain member pairing; rule-name label changes converge through the same synchronization logic. |
+| Rename a rule | Allowed only when the Segment map is unchanged. Revalidate and synchronize descriptions and labels against the current rule, retaining member pairing; the rule ID and labels converge through the same synchronization logic. A single update that changes both rule name and ratio is rejected and must be split into withdrawal followed by addition. |
 
 Deleting and recreating a same-name Policy changes its UID. Revalidate and adopt the new Policy instance and update RIS descriptions rather than reusing old bindings or admission results. `policyUID` distinguishes object identity; it does not permanently freeze coordination relationships. Residual labels are not evidence of completed adoption.
 
@@ -929,7 +1038,7 @@ The following are acceptance requirements for the implementation and have not be
 
 - Keep existing non-Segment CoordinatedPolicy scaling tests passing, preserving `maxSkew` and progression behavior.
 - Keep non-Segment Stateless RIS creation, scaling, and rolling-update tests passing; do not turn the combination restriction into a global Stateless ban.
-- Keep existing non-Segment Gang tests passing, including raising scaling targets to Gang minimums. Add separate assertions that Segment does not couple the two strategies.
+- Keep existing non-Segment Gang tests passing, including raising scaling targets to Gang minimums. Add separate assertions that Segment does not raise targets and that validation rejects conflicting configurations.
 - Keep existing RIS surge unit and end-to-end tests passing. Adding Policy fields must not change the actual RIS surge algorithm.
 - Add regression tests for Segment with scaling to ensure initial creation does not fall back to instance-level behavior.
 
@@ -940,27 +1049,38 @@ For each capability below, cover valid inputs, invalid inputs, and boundary stat
 ##### API Validation
 
 - Reject `segment` if its keys differ from `roles`, any value is at most zero, or it contains only one role.
+- Reject duplicate entries in `roles`, even when the deduplicated key set matches `segment`.
 - Reject Segment members appearing in another Segment or ordinary rule, including different strategy domains. Cover creation, updates, and rule-order changes.
 - Accept related roles combined into one Segment rule with a complete ratio. Preserve existing overlap handling for ordinary rules that do not involve Segment members.
 - If the related RBG exists, reject adding Segment to Stateless RIS members. Cover all-Stateless and mixed Stateful/Stateless membership regardless of member order.
+- Reject non-RoleInstanceSet, unknown, Deployment, StatefulSet, and LeaderWorkerSet backends. Accept only native Stateful RoleInstanceSet members.
+- Reject user `excluded-ordinals` and a non-empty child `committed-skip-ordinals` annotation for Segment members; preserve non-Segment selective-membership behavior.
 - Reject changing an existing Segment member to Stateless. Accept all-Stateful RIS membership when other conditions hold; preserve non-Segment Stateless behavior.
 - Reject simultaneous `minSegments` and `minReplicas`, invalid `minSegments`, or use of `minSegments` without `segment`.
 - Reject explicit zero, negative, or percentage `segBatchSize`, or its use without `segment`. Accept positive integers, preserve the field in the API, CRDs, and generated code, and default Segment scaling to 1.
-- Accept individually valid combinations such as `segBatchSize: 1, minSegments: 2` even if they can wait mutually; do not add cross-strategy matching validation.
+- When Segment combines scaling and Gang, reject omitted `minSegments`, `segBatchSize: 1, minSegments: 2`, and an omitted batch size with threshold 2. Accept combinations satisfying `B >= G`, such as `segBatchSize: 2, minSegments: 2`.
+- Reject Segment Gang with scheduler-plugins. Allow Policy admission with Volcano, leaving actual `subGroupPolicy` capability validation to reconciliation.
 - Reject changes to the values or key set of a declared `segment`.
+- Reject a single update that changes both a rule name and its Segment map; require withdrawal and a separate addition.
+- Reject rule-ID collisions and verify generated label values remain valid Kubernetes label values for long rule names and large group indices.
+- Accept a Segment rolling-update configuration whose effective group-level `maxUnavailable` and `maxSurge` both resolve to zero; without surge, do not start updates that increase unavailable instances.
+- Verify `AdapterScaleTargetRef.role` is optional in the updated schema and that exactly one of `role` and `segment` is required.
 - Allow strategy parameter changes with an unchanged ratio. Adding, deleting, and re-adding Segment follow adoption and withdrawal rules, without rejecting new configuration based on ratio history.
 - Preserve integer, percentage, explicit zero, and omitted Policy `maxSurge` values in the API, CRDs, and generated code. Do not globally default omission to `0`, losing non-Segment fallback semantics.
 
 ##### Group Assignment
 
 - Map instance ordinals to group indices using integer division; all component Pods in one RI share its identity.
+- Verify the deterministic 12-hex rule ID, the `segment-rule` label, and the short `segment` label value.
 - Write labels correctly to RoleInstances and Pod templates.
 - Reconciliation restores the expected value after users modify managed labels.
 - Pod recreation does not change group identity.
 - With a fixed ratio, deleting and recreating a RoleInstance at the same ordinal does not change its identity.
 - RIS annotations carry Policy UID, rule name, and the current role's quota correctly. Do not put specific group labels on the shared RIS template.
+- RIS annotations also carry the deterministic rule ID used by labels and selectors.
 - Synchronize existing RI and Pod labels even when replicas are unchanged; metadata changes trigger downstream reconciliation.
 - Add, update, remove, and no-op label cases use the same idempotent desired-state logic, preserve other metadata, and do not trigger workload rollouts or Pod recreation.
+- ControllerRevision hashes and `updatedReplicas` are unchanged when only managed Segment labels are added, changed, or removed.
 - After removing RIS group descriptions, RIs, existing Pods, and future Pod templates no longer retain managed group labels. Subsequent Pod recreation must not restore old labels.
 - Annotation and label removals trigger downstream synchronization. Reading or parsing failures must not cause cleanup as if grouping were absent.
 
@@ -968,6 +1088,7 @@ For each capability below, cover valid inputs, invalid inputs, and boundary stat
 
 - Policy creation, deletion, and Segment addition or removal trigger adoption or withdrawal even when RBG replicas and workload templates are unchanged.
 - Initial adoption, re-adoption, and reconciliation retries all check member modes. Stateless RIS blocks the affected Segment without a valid group description or corresponding Segment Adapter, mode conversion, or deletion of existing instances.
+- Sparse membership, user exclusions, and non-native Stateful backends block adoption without deleting instances or rewriting membership.
 - On initial adoption, block mismatched effective desired ratios without rearranging or deleting existing members. If the desired ratio is valid, synchronize existing RI and Pod identities whether or not actual membership is complete.
 - With desired `2P, 2D` and actual `2P, 1D`, retain P in the incomplete group and the effective target, and let RIS create the missing D. Do not reduce the target to current complete groups or clean up before recreating.
 - Adoption may complete once descriptions and existing member identities are synchronized, without waiting for every desired member to exist or become Ready. Missing-member groups remain incomplete and unavailable; later members inherit the correct identity.
@@ -981,15 +1102,18 @@ For each capability below, cover valid inputs, invalid inputs, and boundary stat
 
 ##### Scaling
 
-- Calculate a common target in Segment-count space, then derive each role's instance target by ratio.
-- Scale out and in in complete Segments; targets must not exceed the number of complete groups that can be formed.
+- When effective desired replicas represent a common integer group count, calculate a common target in Segment-count space, then derive each role's instance target by ratio.
+- Scale out and in in complete Segments; targets must not exceed the group count represented by valid desired replicas.
+- During initial creation with an invalid desired state such as `2P:1D` and `P=5, D=2`, report residual instances for each role and create neither `4P, 2D` nor any other Segment members.
+- When a subsequent replica change to an active Segment violates the ratio, keep the valid targets currently applied to each RIS without partial scaling. Adding or re-adding Segment blocks adoption without transferring Adapter control authority.
+- A ratio violation blocks only the affected Segment configuration and its replica change. Other valid rules continue reconciling, RIS continues maintaining existing instances, and processing resumes after desired replicas are corrected.
 - Initial creation and later scale-out both use `segBatchSize`, defaulting to 1. A target of 5 with batch size 2 progresses as `0 → 2 → 4 → 5`, allowing a partial final batch. Without a scaling strategy, apply the full target directly.
 - Omitted, zero, or other valid integer and percentage `scaling.maxSkew` values do not affect Segment targets. The batch field does not affect scale-in or surge.
 - `OrderScheduled` checks all expected Pods of all current-batch members; `OrderReady` checks all members' readiness. Evaluate by batch with multiple components, missing members, or some roles already at final replicas while the current batch is not Ready.
 - Keep the applied target while a batch is incomplete. Do not reduce it to Ready or actual complete groups, or add the next batch early on repeated reconciliation, partial target application, or delayed status.
-- Segment scaling does not raise targets to Gang minimums, reject `segBatchSize < minSegments`, or adjust batch size automatically.
-- Reject scaling only some roles.
-- Report residual instances when desired replicas do not divide evenly, while address discovery continues enumerating desired replicas.
+- Segment scaling neither raises targets to Gang minimums nor adjusts batch size automatically. Admission rejects static `segBatchSize < minSegments` conflicts, while reconciliation reports configurations that bypass admission.
+- Reject scaling only some roles without partially executing the request through rounding.
+- When desired replicas do not divide evenly or yield different group counts, report residual instances and stop applying replica targets. Verify that address discovery publishes only the aligned base-group target.
 
 ##### ScalingAdapter Status and Control Authority
 
@@ -1000,6 +1124,7 @@ Verify configuration and submission, control handoff, and status synchronization
 - `strategy.scaling.scalingAdapter` reuses the existing `ScalingAdapter` type. `enable` defaults to `false`, labels propagate without overriding managed identifiers, and the API, CRDs, and generated code retain the configuration.
 - Automatically create one Adapter only for an effective Segment rule with Adapter configuration enabled, associated with the current RBG. Repeated reconciliation does not create duplicates, and unexpected loss is recoverable. Do not create one if configuration is absent or disabled.
 - Exactly one of `role` and `segment` targets is set. Invalid RBG, Policy, rule, or members do not cause partial writes; existing role mode remains compatible.
+- Verify the CRD makes `role` optional, rejects both-set and neither-set references, and preserves existing role-only clients.
 - Segment `spec.replicas` is an absolute group-level target. Cover scale-out, scale-in, repeated reconciliation, invalid group counts, and projection overflow.
 - Submit all member replicas in one RBG update. Conflict retries reread targets and preserve unrelated roles and fields; retries and restarts do not add replicas again.
 - Applying RIS targets in batches does not write intermediate targets back as final desired values in Adapter or RBG.
@@ -1020,6 +1145,7 @@ Verify configuration and submission, control handoff, and status synchronization
 - With 4 requested groups, the target submitted, the current batch at 3, and 2 actual Ready groups, Adapter `spec.replicas`, `status.replicas`, and `status.readyReplicas` are 4, 4, and 2 respectively.
 - Count Ready groups by identity and actual member state. Exclude groups with missing or non-Ready members, never combine Ready members from different groups, and synchronize Ready-count changes even with an unchanged target.
 - Write desired groups and read submitted targets through `/scale`, verifying mapping to Adapter replica fields. HPA usage, general-purpose Pod selection, and metric aggregation and deduplication are not acceptance requirements for this phase.
+- Verify the Segment Adapter selector is the exact group-name plus segment-rule AND selector and does not match other RBGs, rules, non-member roles, or a single component.
 
 ##### Rolling Update
 
@@ -1027,7 +1153,7 @@ Verify group-level admission, budget recovery, and RIS execution parameters sepa
 
 ###### Group-Level Admission and Budget Recovery
 
-- Admit the same Segment in one update batch, allowing different startup and readiness times and temporary coexistence of old and new versions.
+- Admit the same Segment in one update batch. With a positive group budget, do not limit RI concurrency within admitted groups by the same value again. Members may start and become Ready simultaneously or at different times, with temporary coexistence of old and new versions.
 - `partition` retains complete Segments, not the same independent RI count per role.
 - Normal Stateful updates project the common Segment boundary into per-RIS partitions by ratio and always retain the old groups requested by the user.
 - In the fixed-target, `maxUnavailable: 1`, group-by-group example, later reconciliations retain the boundary while the current group is incomplete or shared budget is insufficient. Relax it only after progression conditions are met; faster roles cannot enter the next group early.
@@ -1036,6 +1162,7 @@ Verify group-level admission, budget recovery, and RIS execution parameters sepa
 - If one group remains occupied by a failed member while another slot is free, allow other eligible groups. Do not relax the boundary when budget is full; tighten it on target changes when needed. Reuse capacity after target completion and availability recovery without freezing the entire RBG for one failed group.
 - RBG calculates budgets from group identities and member states; it does not communicate group unavailability by rewriting Ready states of healthy RIs or Pods.
 - Policy `maxUnavailable` counts Segments directly without an extra update-mode switch. Omitted, zero, and other valid Segment `rollingUpdate.maxSkew` values do not change the common boundary or budget, and `segBatchSize` does not limit the update window.
+- Resolve group-level `partition` and `maxUnavailable` percentages by rounding down, and `maxSurge` percentages by rounding up. Cover 0, 1, and boundary percentages.
 - Count multiple unavailable members of the same Segment once, and unavailable members of different Segments separately.
 - Without surge and with `maxUnavailable: 1`, independent RIS progression must not make two Segments unavailable simultaneously.
 - Admitted updates occupy budget before member status reflects them; delayed status must not admit updates twice.
@@ -1045,25 +1172,30 @@ Verify group-level admission, budget recovery, and RIS execution parameters sepa
 
 ###### Update Parameters and Surge Projection
 
-- Resolve Policy `maxUnavailable` percentages against desired complete Segments at group level. Preserve the original percentage for RIS, where each local window uses that RIS's replica count and existing rules.
-- Explicit Policy `maxUnavailable` overrides role configuration unchanged, without taking a minimum or multiplying by ratio. With `1P:2D` and Policy value `1`, both RIS objects receive `1`, allowing the two D instances to update sequentially.
+- Resolve Policy `maxUnavailable` percentages only against desired complete Segments for the group budget. Do not pass them to RIS for a second calculation against per-RIS replica counts.
+- With group budget `B > 0`, ignore role values and apply `100%` to each RIS without multiplying the original Policy value by the ratio. With `1P:2D` and Policy value `1`, P, D0, and D1 in one admitted Segment may all enter the update while the group occupies one budget slot; simultaneous startup or readiness is not required.
+- With group budget `B = 0`, apply `0` to each RIS, never `100%` as a way around the zero budget. Without surge, do not actively add unavailable instances; with surge, only actually available extra instances increase the execution budget.
 - If Policy omits `maxUnavailable`, retain role configuration or RIS defaults, without adding or inferring a group-level default. Preserve Segment boundaries and other coordination conditions.
 - Rules without Segment retain independent per-role unavailability budgets.
 - For non-Segment rules, explicit Policy `maxSurge` overrides role configuration unchanged; omission preserves existing behavior. Explicit `0` differs from omission.
 - For Segment, Policy `maxSurge` ignores role configuration. With `1P:2D` and group-level value `1`, apply `P=1, D=2`. Omission or field removal explicitly applies `0`; withdrawing Segment restores current ordinary configuration.
 - Resolve `maxSurge` percentages by rounding up desired complete groups before multiplying by quotas. Cover zero replicas, rounding boundaries, and multiplication overflow; do not round per RIS first.
 - Preserve the actual Stateful surge algorithm: a full update range may create up to the limit, while a narrower partition range may create fewer instances or none. RIS retains and reclaims existing valid surge instances without cross-role completion or unified reclamation requirements.
-- With `maxUnavailable: 0, maxSurge > 0`, retain preparation of extra capacity followed by healthy base-instance updates only after that capacity is available. RBG must not block surge preparation because the simplified group window is zero. RIS must not count configured limits or non-Ready extra RIs as available budget.
+- With `maxUnavailable: 0, maxSurge > 0`, RIS receives `0`. Retain preparation of extra capacity followed by healthy base-instance updates only after that capacity is available. RBG must not block surge preparation because the simplified group window is zero. RIS must not count configured limits or non-Ready extra RIs as available budget.
+- Implement the surge admission rule: a group is eligible only when every role has at least its quota of healthy target-version surge RIs; otherwise it consumes the no-unavailability budget. Cover capacity disappearance and movement from safe in-flight to loss-risk.
 - Surge creation also writes RI and Pod group labels. Incomplete extra membership must not be considered a complete serviceable group, and local surge readiness must not release a base Segment's in-flight occupancy.
 
 ##### Gang
 
-- Admit scheduling only when resources can satisfy at least `minSegments` complete Segments.
-- Do not admit when resources are insufficient or scheduling constraints are unsatisfied.
+- Generate one SubGroupPolicy per Segment rule, using the group-name and segment-rule selector and only `segment` in `matchLabelKeys`. Do not create a separate PodGroup for each Segment.
+- Calculate `subGroupSize` from all RIs and component Pods in a complete group, with `minSubGroups=minSegments` and `minMember=minSegments×subGroupSize`. Cover multiple components and accumulation across Segment rules.
+- Admit scheduling only when resources can satisfy at least `minSegments` complete Segments. Do not admit when resources or scheduling constraints are insufficient.
 - Creation from zero does not wait for member readiness; members may start at different times after admission.
-- By default, require resources for all desired complete Segments. A smaller scaling batch must not lower the threshold.
+- Without scaling, omitted `minSegments` requires all desired complete Segments. Combining scaling with Gang requires an explicit value at admission.
 - Report an unsatisfiable threshold if `minSegments` exceeds desired complete groups, without automatically increasing desired replicas.
-- From zero, batch size 1 with threshold 2 keeps waiting mutually. Batch size 2 with threshold 2 can proceed when scheduling and progression conditions are met.
+- Reject batch size 1 with threshold 2 at admission. Batch size 2 with threshold 2 proceeds without target raising once scheduling and progression conditions are met.
+- Translate a Segment rule to one Volcano subGroup using the group-name and segment-rule selector, the segment match key, total per-Segment Pod count, and `minSegments`. Verify multiple rules remain separate.
+- Reject Segment Gang with scheduler-plugins. If the Volcano CRD lacks `subGroupPolicy`, report incompatibility without degrading to Pod-count or per-role thresholds.
 - Rules without Segment continue using `minReplicas` and existing target-raising logic.
 
 #### Integration Tests
@@ -1096,11 +1228,11 @@ These scenarios verify parameter application, event propagation, and final state
 
 - Admit rolling updates in Segment batches. `partition` and `maxUnavailable` use Segment units, and `rollingUpdate.maxSkew` is ignored.
 - For Stateful mode with fixed replicas, a fixed target version, and no surge, verify the full loop: RBG partition calculation, RIS execution, status feedback, and RBG recalculation. Cover the boundary sequence for group-by-group updates of 3P and 6D at `1P:2D`.
-- With Policy value `1`, the two D instances update sequentially within the RIS local window. RBG must not admit the next group until RIS semantics establish target completion and availability of the whole group, including in-place updates and `minReadySeconds`.
+- With Policy value `1`, both P and D RIS receive `100%`, and every member of one admitted Segment may enter the update without serial rotation of the two D instances. RBG must not admit the next group until RIS semantics establish target completion and availability of the whole group. Actual startup and readiness order is not guaranteed. Cover in-place updates and `minReadySeconds`.
 - Without surge and with Policy value `2`, cover admission of two groups, reuse of one slot after completion, and continued progression through the other slot when one group persistently fails. If Policy omits the value, retain local windows without a new group-level default budget.
 - Cover Policy `maxSurge` from the API through RBG calculation, RIS overrides, and extra RI creation: unchanged overrides for non-Segment, ratio projection for Segment. A correct limit does not require creating the full amount every reconciliation.
 - Cover narrower partitions where actual extra counts do not form groups, independent reclamation, and surge RI/Pod label synchronization. Base groups still obey the common boundary and effective execution budget.
-- With Segment Policy `maxUnavailable: 0, maxSurge: 1`, healthy old members, and user partition and other coordination conditions permitting, the candidate update scope can trigger surge creation. Do not update healthy old instances until extra RIs are available; then proceed under the existing RIS budget mechanism, without a new zero-budget freeze rule. Local readiness must not clear group state or in-flight records early.
+- With Segment Policy `maxUnavailable: 0, maxSurge: 1`, each RIS receives `maxUnavailable: 0`. With healthy old members and user partition and other coordination conditions permitting, the candidate update scope can trigger surge creation. Do not update healthy old instances until extra RIs are available; then proceed under the existing RIS budget mechanism, without a new zero-budget freeze rule. Local readiness must not clear group state or in-flight records early.
 - If one role updates faster while another is slow or failing, independent RIS progression must not make the union of unavailable Segments exceed the configured shared budget.
 - After a controller restart or delayed member status, restoring common admission must neither admit groups twice nor lose in-flight budget occupancy.
 - Without surge and with `maxUnavailable: 1`, Segment 2 has completed B, Segment 1's P is Ready, and D is not. Change the target to C and verify that the new template and recalculated partition prevent P from updating Segment 2 on its free local budget, avoiding two unavailable groups. Cover partial RIS parameter application, delayed status, and restarts.
@@ -1109,7 +1241,10 @@ These scenarios verify parameter application, event propagation, and final state
 ##### Gang Resource Admission
 
 - Gang checks resource admission only and does not wait for application readiness.
-- Creating Segment from zero with `segBatchSize: 1, minSegments: 2` is accepted but does not automatically raise the target. Verify waiting and resumed progress after the user adjusts the Gang threshold. Omitted `minSegments` still requires all desired groups; non-Segment rules in the same RBG are unaffected.
+- With Volcano, verify that Pods from different roles and RIs sharing a Segment label form one subGroup. P and D instances from different Segments must not satisfy the threshold through independent role counts; admission requires at least `minSegments` complete groups with matching identities.
+- From zero, use `segBatchSize: 2, minSegments: 2` and verify that the initial target remains 2 groups and progression continues after resource admission. A final batch of 1 group does not repeat the initial-threshold check.
+- Simulate an old configuration bypassing admission and an Adapter reducing desired groups below `minSegments`. Reconciliation reports the configuration error without adjusting replicas. Insufficient resources leave Pods Pending without being misreported as an incompatible configuration.
+- Without scaling, omitted `minSegments` still requires all desired groups; non-Segment rules in the same RBG are unaffected.
 
 ##### Policy Adoption and Withdrawal
 
@@ -1131,8 +1266,8 @@ These scenarios verify parameter application, event propagation, and final state
 #### End-to-End Tests
 
 - Run a PD-disaggregated inference example and verify RI and Pod identities against the prefill/decode ratio.
-- Scale out and in using Segment units; verify final replicas satisfy the ratio and creation batches obey progression.
-- Perform Segment-level rolling upgrades; verify that common partitions and group budgets constrain actual updates.
+- Scale out and in using Segment units; verify final replicas satisfy the ratio and creation batches obey progression. For both initial creation and an active Segment, verify that invalid ratios stop replica changes and processing resumes after correction.
+- Perform Segment-level rolling upgrades; verify that common partitions and group budgets constrain actual updates. With a positive budget, admitted groups do not rotate RIs using the original Policy value; a zero budget with surge still adds no unavailable instances.
 - Set non-Segment Policy `maxSurge: 2` with `replicas=4, partition=0` and initially healthy old-version instances. Cover `maxUnavailable: 0` and `2`; verify two extra RIs appear and are eventually reclaimed to 4. Reuse existing RIS surge E2E scenarios without asserting that every partition must create two extra instances.
 - Verify Segment Policy limit projection, role-configuration overrides, and explicit zero on omission. Each RIS executes its local algorithm; extra RIs need not form complete groups.
 - Combine with Gang: matching batches and thresholds progress normally; mismatches keep waiting without automatic target changes. Cover default Gang thresholds and recovery after user adjustment.
@@ -1251,7 +1386,19 @@ RBG and relevant Adapter status should let users determine:
 - Whether configuration was accepted and, if rejected, why.
 - The final desired group count and the currently applied group-count target.
 - Actual complete groups, Ready groups, and groups satisfying RIS availability conditions.
-- Each role's residual instance count and whether scaling requests have been rejected.
+- Each role's misalignment details and whether scaling requests have been rejected.
+
+The minimum condition contract is:
+
+| Object and condition | Required meaning |
+| --- | --- |
+| RBG `SegmentConfigurationValid` | Whether the rule, backend, dense membership, rule ID, and update parameters are valid; the reason identifies the first blocking member or field |
+| RBG `SegmentReplicasAligned` | Whether every member role's effective desired replicas resolve to the same integer group count |
+| RBG `SegmentAssignmentReady` | Whether RIS descriptions and existing RI/Pod identities have converged for the effective rule |
+| RBG `SegmentGangConfigured` | Whether the scheduler supports Segment subgroups and the PodGroup translation is current |
+| Adapter `SegmentTargetBound` | Whether the Segment target is bound, has write authority, and successfully submitted all member targets |
+
+Condition reasons must distinguish invalid configuration, unsupported scheduler capability, alignment failure, synchronization delay, and controller error.
 
 ### Dependencies
 
@@ -1259,7 +1406,7 @@ RBG and relevant Adapter status should let users determine:
 
 Segment structure itself does not depend on a particular scheduler.
 
-Composition with Gang reuses existing Gang scheduling dependencies. Composition with topology depends on the future topology design. Group-aware routing depends on the specific router implementation.
+Segment Gang requires Volcano `subGroupPolicy`; scheduler-plugins does not support complete-Segment thresholds. Non-Segment Gang retains its existing scheduler support. Composition with topology depends on the future topology design. Group-aware routing depends on the specific router implementation.
 
 ### Scalability
 
@@ -1269,7 +1416,7 @@ Labeling new members reuses RI and Pod creation paths. Adoption and withdrawal f
 
 #### Does the feature increase API object size or count?
 
-- Policy adds grouping and strategy fields. When Adapters are enabled, each Segment rule adds one Adapter; no separate management resource is created for every Segment or Pod.
+- Policy adds grouping and strategy fields. When Adapters are enabled, each Segment rule adds one Adapter. Gang retains one PodGroup per RBG and adds one SubGroupPolicy per Segment rule; no separate management resource is created for every Segment or Pod.
 - Status is aggregated by rule. Exact status fields and persistence costs depend on implementation and scalability testing.
 
 #### Does the feature increase controller resource usage?
@@ -1278,7 +1425,7 @@ Group-level availability and budget calculations traverse member identities and 
 
 ### Troubleshooting
 
-The following are requirements for status and diagnostics. Specific condition names and fields must be defined during implementation; example names are not presented as existing APIs.
+The following are requirements for status and diagnostics. The condition names in [monitoring requirements](#monitoring-requirements) are the minimum contract; implementation may add fields but may not omit these meanings.
 
 #### What are the known failure modes and how are they handled?
 
@@ -1286,9 +1433,9 @@ The following are requirements for status and diagnostics. Specific condition na
 | --- | --- |
 | Replicas do not satisfy the ratio | Inspect the ratio violation and residual counts per role. Correct effective targets to a common group count. With an Adapter enabled, submit the group count through the Adapter rather than changing member replicas independently. |
 | Adapter request rejected | Check for a single-role scaling request and validate RBG, Policy, the rule, object ownership, and control authority. |
-| Gang or creation batches keep waiting | Check `minSegments`, desired groups, Pod requests, and scheduling constraints, then whether `segBatchSize` provides enough members for the threshold. The default threshold is all desired groups. Users must resolve conflicts; application non-readiness does not mean resource admission failed. |
+| Gang or creation batches keep waiting | First check configuration errors, including `segBatchSize < minSegments`, `minSegments` above desired groups, or an unsupported scheduler. Then check Pod requests, scheduling constraints, and actual resources. Waiting for resources with a valid configuration is expected; application non-readiness does not mean resource admission failed. |
 | Pod labels differ from expectations | Trace current desired state and synchronization errors through Policy → RIS annotation → RI label → Pod label, and check for external modification. Restore through reconciliation, not restarts. |
-| Member mode rejected | Check for Stateless RIS. If Stateless must be retained, remove the corresponding Segment configuration; the controller does not convert modes automatically. |
+| Member mode rejected | Check for Stateless RIS, a non-native backend, or sparse membership (`excluded-ordinals` / `committed-skip-ordinals`). If that membership must be retained, remove the corresponding Segment configuration; the controller does not convert modes or fill exclusions automatically. |
 | Updates stop progressing | Check unavailable and in-flight group occupancy, user partition, RIS local budgets, and actual available surge. A target version change does not clear existing occupancy. |
 
 ## Implementation History
