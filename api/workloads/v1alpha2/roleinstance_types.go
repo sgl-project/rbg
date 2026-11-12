@@ -272,8 +272,10 @@ const (
 	RoleInstanceProgressing RoleInstanceConditionType = "Progressing"
 )
 
-// RoleInstancePhase is the instance-level lifecycle phase of a RoleInstance.
-// +kubebuilder:validation:Enum={Creating,Running,Updating,Recovering,Terminating}
+// RoleInstancePhase is the instance-level lifecycle phase of a RoleInstance. Deletion is
+// not a phase: it is indicated by metadata.deletionTimestamp, and the controller stops
+// writing status once it is set.
+// +kubebuilder:validation:Enum={Creating,Running,Updating,Recovering}
 type RoleInstancePhase string
 
 const (
@@ -293,9 +295,6 @@ const (
 	// RoleInstancePhaseRecovering means independent recreation or replacement of required
 	// Pods is in progress outside an update.
 	RoleInstancePhaseRecovering RoleInstancePhase = "Recovering"
-
-	// RoleInstancePhaseTerminating means the RoleInstance itself has a deletionTimestamp.
-	RoleInstancePhaseTerminating RoleInstancePhase = "Terminating"
 )
 
 // RoleInstance Progressing reasons. Reason strings are scoped to the object that owns

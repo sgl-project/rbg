@@ -98338,7 +98338,6 @@ spec:
                 - Running
                 - Updating
                 - Recovering
-                - Terminating
                 type: string
               restartCount:
                 description: |-

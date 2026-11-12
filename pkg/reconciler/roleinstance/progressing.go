@@ -44,19 +44,17 @@ type roleInstancePhaseFacts struct {
 
 // nextRoleInstancePhase implements the allowed phase edges from KEP-502:
 //
-//   - no phase returns to Creating; Creating exits only to Running or Terminating,
+//   - no phase returns to Creating; Creating exits only to Running,
 //     and target changes during Create convergence fold into Create convergence;
 //   - Running enters Updating when an update target is identified, or Recovering
 //     when required Pods are independently recreated outside an update;
 //   - Updating and Recovering return to Running only after the work and
 //     controller-observed readiness complete;
 //   - an update target identified while recovery continues moves to Updating;
-//   - deletion wins from every phase (recorded before the reconciler skips
-//     deleted objects).
+//   - deletion is not a phase: the reconciler returns before status writes once the
+//     instance has a deletionTimestamp, and clients use the deletionTimestamp.
 func nextRoleInstancePhase(current workloadsv1alpha2.RoleInstancePhase, facts roleInstancePhaseFacts) workloadsv1alpha2.RoleInstancePhase {
 	switch current {
-	case workloadsv1alpha2.RoleInstancePhaseTerminating:
-		return workloadsv1alpha2.RoleInstancePhaseTerminating
 	case workloadsv1alpha2.RoleInstancePhaseCreating, "":
 		if facts.podsPresent && facts.readySatisfied {
 			return workloadsv1alpha2.RoleInstancePhaseRunning
