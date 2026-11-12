@@ -180,13 +180,29 @@ func (r *RoleBasedGroupReconciler) leaderWorkerSetRolloutComplete(
 		lws.Status.ReadyReplicas != desired || lws.Status.UpdatedReplicas != desired {
 		return false, nil
 	}
-	// LWS has no observedGeneration (including on its conditions). Derive the
-	// target template hash and verify the actual leader/worker workload chain.
-	revision, err := lwsrevision.NewRevision(ctx, rolloutRevisionReader{Client: r.client, reader: r.apiReader}, lws, "")
+	// LWS has no observedGeneration (including on its conditions). Use the revision
+	// hash the LWS controller actually persisted, rather than recomputing it.
+	selector, err := metav1.LabelSelectorAsSelector(&metav1.LabelSelector{
+		MatchLabels: map[string]string{lwsv1.SetNameLabelKey: lws.Name},
+	})
 	if err != nil {
 		return false, err
 	}
-	hash := revision.Labels[lwsv1.RevisionKey]
+	revisions, err := lwsrevision.ListRevisions(ctx, rolloutRevisionReader{Client: r.client, reader: r.apiReader}, lws, selector)
+	if err != nil {
+		return false, err
+	}
+	var hash string
+	var highest int64
+	for _, rev := range revisions {
+		if rev.Revision >= highest {
+			highest = rev.Revision
+			hash = rev.Labels[lwsv1.RevisionKey]
+		}
+	}
+	if hash == "" {
+		return false, nil
+	}
 	leader := &appsv1.StatefulSet{}
 	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(lws), leader); err != nil {
 		return false, client.IgnoreNotFound(err)

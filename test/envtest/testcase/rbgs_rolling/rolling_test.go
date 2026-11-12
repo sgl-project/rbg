@@ -33,12 +33,15 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
+	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
 	"sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
@@ -698,6 +701,71 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Entry("stateful", constants.StatefulPattern),
 		Entry("stateless", constants.StatelessPattern),
 	)
+
+	DescribeTable("upgrades a pre-annotation role hash without replacing running instances or Pods", func(pattern constants.InstancePatternType) {
+		rbg := wrappersv2.BuildBasicRoleBasedGroup("hash-upgrade", testNs).Obj()
+		rbg.Annotations = map[string]string{constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname"}
+		rbg.Spec.Roles[0].Annotations = map[string]string{constants.RoleInstancePatternKey: string(pattern)}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+		waitChildReady(testNs, rbg.Name)
+		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(rbg), rbg)).To(Succeed())
+		before := downstreamOf(Default, rbg)
+		revisions := &appsv1.ControllerRevisionList{}
+		Expect(testutil.K8sClient.List(testutil.Ctx, revisions, client.InNamespace(testNs),
+			client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).To(Succeed())
+		var revision *appsv1.ControllerRevision
+		for i := range revisions.Items {
+			if metav1.IsControlledBy(&revisions.Items[i], rbg) {
+				Expect(revision).To(BeNil())
+				revision = &revisions.Items[i]
+			}
+		}
+		Expect(revision).NotTo(BeNil())
+		legacyHashes, err := utils.GetRolesRevisionHash(revision)
+		Expect(err).NotTo(HaveOccurred())
+		hashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, rbg.Spec.Roles[0].Name)
+		legacyHash := legacyHashes[rbg.Spec.Roles[0].Name]
+		Expect(legacyHash).NotTo(BeEmpty())
+		Expect(before.set.Labels[hashKey]).NotTo(Equal(legacyHash))
+		seeded := before.set.DeepCopy()
+		seeded.Labels[hashKey] = legacyHash
+		Expect(testutil.K8sClient.Patch(testutil.Ctx, seeded,
+			client.MergeFromWithOptions(before.set, client.MergeFromWithOptimisticLock{}))).To(Succeed())
+		// The workload predicate filters label-only updates, leaving the upgrade fixture intact.
+		Consistently(func() string {
+			return downstreamOf(Default, rbg).set.Labels[hashKey]
+		}, 3*time.Second, interval).Should(Equal(legacyHash))
+		upgraded, err := workloadscontroller.NewRoleBasedGroupReconciler(testutil.TestMgr, scheduler.KubeSchedulerPlugin, "", nil)
+		Expect(err).NotTo(HaveOccurred())
+		_, err = upgraded.Reconcile(testutil.Ctx, ctrl.Request{NamespacedName: client.ObjectKeyFromObject(rbg)})
+		Expect(err).NotTo(HaveOccurred())
+
+		assertUpgraded := func(g Gomega) {
+			current := &workloadsv1alpha2.RoleBasedGroup{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(rbg), current)).To(Succeed())
+			g.Expect(current.Spec).To(Equal(rbg.Spec))
+			g.Expect(current.Generation).To(Equal(rbg.Generation))
+			g.Expect(current.Status.ObservedRolloutRequest).To(BeEmpty())
+			g.Expect(meta.IsStatusConditionFalse(current.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))).To(BeTrue())
+			after := downstreamOf(g, current)
+			g.Expect(after.set.Labels[hashKey]).To(Equal(before.set.Labels[hashKey]))
+			g.Expect(after.set.UID).To(Equal(before.set.UID))
+			g.Expect(after.set.Spec).To(Equal(before.set.Spec))
+			g.Expect(after.set.Generation).To(Equal(before.set.Generation))
+			g.Expect(after.instance.UID).To(Equal(before.instance.UID))
+			g.Expect(after.instance.Spec).To(Equal(before.instance.Spec))
+			g.Expect(after.pod.UID).To(Equal(before.pod.UID))
+			g.Expect(after.pod.Spec).To(Equal(before.pod.Spec))
+			g.Expect(after.pod.Status.ContainerStatuses).To(Equal(before.pod.Status.ContainerStatuses))
+			g.Expect(podConditionStatus(after.pod, corev1.PodReady)).To(Equal(corev1.ConditionTrue))
+			stored := &appsv1.ControllerRevisionList{}
+			g.Expect(testutil.K8sClient.List(testutil.Ctx, stored, client.InNamespace(testNs),
+				client.MatchingLabels{constants.GroupNameLabelKey: rbg.Name})).To(Succeed())
+			g.Expect(stored.Items).To(ConsistOf(revisions.Items))
+		}
+		Eventually(assertUpgraded, timeout, interval).Should(Succeed())
+		Consistently(assertUpgraded, 5*time.Second, interval).Should(Succeed())
+	}, Entry("stateful", constants.StatefulPattern), Entry("stateless", constants.StatelessPattern))
 
 	It("defaults an empty rollout strategy through the CRD without a webhook", func() {
 		set := buildSet("rbgs-default", testNs, 1, 0, &workloadsv1alpha2.GroupSetRolloutStrategy{})

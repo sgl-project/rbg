@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"testing"
 
@@ -30,6 +31,7 @@ import (
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -41,7 +43,10 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
+	"sigs.k8s.io/rbgs/pkg/scheduler"
 	gangcommon "sigs.k8s.io/rbgs/pkg/scheduler/common"
+	"sigs.k8s.io/rbgs/pkg/utils"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 func rolloutTestScheme(t *testing.T) *runtime.Scheme {
@@ -122,6 +127,7 @@ func rolloutTestFixture(t *testing.T, kind string) (*workloadsv1alpha2.RoleBased
 		}
 		revision, err := lwsrevision.NewRevision(context.Background(), fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).Build(), lws, "")
 		require.NoError(t, err)
+		revision.UID = "lws-revision-uid"
 		hash := revision.Labels[lwsv1.RevisionKey]
 		leader := rolloutTestStatefulSet(metav1.ObjectMeta{
 			Name: lws.Name, Namespace: lws.Namespace, UID: "leader-uid", Generation: 2,
@@ -141,7 +147,7 @@ func rolloutTestFixture(t *testing.T, kind string) (*workloadsv1alpha2.RoleBased
 			Labels:          map[string]string{lwsv1.RevisionKey: hash},
 			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(pod, corev1.SchemeGroupVersion.WithKind("Pod"))},
 		})
-		return rbg, []client.Object{lws, leader, pod, worker}
+		return rbg, []client.Object{lws, leader, pod, worker, revision}
 	}
 	t.Fatalf("unknown kind %s", kind)
 	return nil, nil
@@ -206,6 +212,8 @@ func TestRoleWorkloadRolloutComplete(t *testing.T) {
 						objects[1].SetName(objects[0].GetName())
 						objects[2].SetName(objects[0].GetName() + "-0")
 						objects[3].SetName(objects[2].GetName())
+						objects[4].SetName(objects[0].GetName() + "-revision")
+						objects[4].GetLabels()[lwsv1.SetNameLabelKey] = objects[0].GetName()
 					}
 				}
 				c := fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).WithObjects(objects...).Build()
@@ -303,7 +311,7 @@ func TestLeaderWorkerSetRolloutChecksTargetRevisionChain(t *testing.T) {
 			case "missing pod":
 				objects = append(objects[:2], objects[3:]...)
 			case "missing worker":
-				objects = objects[:3]
+				objects = append(objects[:3], objects[4:]...)
 			case "leader only":
 				lws.Spec.LeaderWorkerTemplate.Size = ptr.To(int32(1))
 				revision, err := lwsrevision.NewRevision(context.Background(), fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).Build(), lws, "")
@@ -311,17 +319,18 @@ func TestLeaderWorkerSetRolloutChecksTargetRevisionChain(t *testing.T) {
 				for _, obj := range objects[1:3] {
 					obj.GetLabels()[lwsv1.RevisionKey] = revision.Labels[lwsv1.RevisionKey]
 				}
-				objects = objects[:3]
+				objects[4].GetLabels()[lwsv1.RevisionKey] = revision.Labels[lwsv1.RevisionKey]
+				objects = append(objects[:3], objects[4:]...)
 			}
 			c := fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).WithObjects(objects...).Build()
 			r := &RoleBasedGroupReconciler{client: c, apiReader: c}
 			complete, err := r.roleWorkloadRolloutComplete(context.Background(), rbg, &rbg.Spec.Roles[0], "target")
 			require.NoError(t, err)
 			assert.Equal(t, test == "complete without condition observed generation" || test == "leader only", complete)
-			// Hash computation must not create a ControllerRevision.
+			// The completion check reads the persisted revision; it must not create another.
 			revisions := &appsv1.ControllerRevisionList{}
 			require.NoError(t, c.List(context.Background(), revisions))
-			assert.Empty(t, revisions.Items)
+			assert.Len(t, revisions.Items, 1)
 		})
 	}
 }
@@ -470,6 +479,164 @@ func TestPostApplicationRolloutCompletion(t *testing.T) {
 			assert.Equal(t, 2, patches, "completed rollouts must not be patched again")
 		})
 	}
+}
+
+func TestRoleHashUpgradeConvergesWithoutChangingWorkloadTemplates(t *testing.T) {
+	for _, kind := range []string{"RoleInstanceSet", "Deployment", "StatefulSet", "LeaderWorkerSet"} {
+		for _, annotation := range []string{constants.GroupExclusiveTopologyKey, constants.GangSchedulingAnnotationKey} {
+			t.Run(kind+"/"+annotation, func(t *testing.T) {
+				ctx := context.Background()
+				rbg, objects := rolloutTestFixture(t, kind)
+				rbg.APIVersion, rbg.Kind = workloadsv1alpha2.GroupVersion.String(), "RoleBasedGroup"
+				rbg.Annotations = map[string]string{constants.DiscoveryConfigModeAnnotationKey: "refine", annotation: "true"}
+				if annotation == constants.GroupExclusiveTopologyKey {
+					rbg.Annotations[annotation] = "kubernetes.io/hostname"
+				}
+				role := &rbg.Spec.Roles[0]
+				role.Pattern = wrappersv2.BuildStandaloneRole(role.Name).Obj().Pattern
+				if kind == "LeaderWorkerSet" {
+					role.Pattern = wrappersv2.BuildLeaderWorkerRole(role.Name).WithSize(2).Obj().Pattern
+				}
+				rolling := wrappersv2.BuildRollingUpdate(1, 0)
+				rolling.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType
+				rolling.Partition = ptr.To(intstr.FromInt32(0))
+				role.RolloutStrategy = &workloadsv1alpha2.RolloutStrategy{
+					Type: workloadsv1alpha2.RollingUpdateStrategyType, RollingUpdate: &rolling,
+				}
+				scheme := rolloutTestScheme(t)
+				c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(rbg).WithStatusSubresource(rbg, objects[0]).Build()
+				revision, err := utils.NewRevision(ctx, c, rbg, nil)
+				require.NoError(t, err)
+				revision.UID = "pre-upgrade-revision"
+				require.NoError(t, c.Create(ctx, revision))
+				// Before the annotation fold, workloads used the persisted revision's role hash directly.
+				legacyHashes, err := utils.GetRolesRevisionHash(revision)
+				require.NoError(t, err)
+				hashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)
+				rec, err := reconciler.NewWorkloadReconciler(role.GetWorkloadSpec(), scheme, c)
+				require.NoError(t, err)
+				gang, err := scheduler.NewGangScheduler(scheduler.KubeSchedulerPlugin, c, "")
+				require.NoError(t, err)
+				rec.(reconciler.GangSchedulerSetter).SetGangScheduler(gang)
+				require.NoError(t, rec.Reconciler(ctx, rbg, role.DeepCopy(), nil, legacyHashes[role.Name]))
+				workload := objects[0].DeepCopyObject().(client.Object)
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(objects[0]), workload))
+				workload.SetUID(objects[0].GetUID())
+				workload.SetGeneration(2)
+				require.NoError(t, c.Update(ctx, workload))
+				objects = seedUpgradeWorkloadStatus(t, workload, objects)
+				require.NoError(t, c.Status().Update(ctx, workload))
+				for _, dependent := range objects[1:] {
+					require.NoError(t, c.Create(ctx, dependent))
+				}
+				initialRevisions := &appsv1.ControllerRevisionList{}
+				require.NoError(t, c.List(ctx, initialRevisions))
+				before := workload.DeepCopyObject().(client.Object)
+				require.Equal(t, legacyHashes[role.Name], before.GetLabels()[hashKey])
+				r := &RoleBasedGroupReconciler{client: c, apiReader: c, scheme: scheme, recorder: record.NewFakeRecorder(20),
+					workloadReconciler: map[string]reconciler.WorkloadReconciler{role.GetWorkloadType(): rec}}
+				complete, err := r.roleWorkloadRolloutComplete(ctx, rbg, role, legacyHashes[role.Name])
+				require.NoError(t, err)
+				require.True(t, complete, "the fixture must already be serving before the upgrade")
+
+				expected, err := r.handleRevisions(ctx, rbg)
+				require.NoError(t, err)
+				require.NotEqual(t, legacyHashes[role.Name], expected[role.Name], "the old fixture must exercise the changed hash recipe")
+				_, err = r.constructAndUpdateRoleStatuses(ctx, rbg, expected)
+				require.NoError(t, err)
+				require.True(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
+				require.NoError(t, rec.Reconciler(ctx, rbg, role.DeepCopy(), nil, expected[role.Name]))
+				require.NoError(t, r.finalizeRolloutStatus(ctx, rbg, expected))
+				require.True(t, apimeta.IsStatusConditionFalse(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
+				require.Empty(t, rbg.Status.ObservedRolloutRequest, "standalone upgrades must not invent a rollout request")
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(before), workload))
+				assert.Equal(t, expected[role.Name], workload.GetLabels()[hashKey])
+				assert.Equal(t, before.GetUID(), workload.GetUID())
+				assert.Equal(t, before.GetOwnerReferences(), workload.GetOwnerReferences())
+				assert.Equal(t, upgradeWorkloadTemplate(before), upgradeWorkloadTemplate(workload))
+
+				for pass := 0; pass < 5; pass++ {
+					hashes, err := r.handleRevisions(ctx, rbg)
+					require.NoError(t, err)
+					require.Equal(t, expected, hashes)
+					require.NoError(t, rec.Reconciler(ctx, rbg, role.DeepCopy(), nil, hashes[role.Name]))
+					require.NoError(t, r.finalizeRolloutStatus(ctx, rbg, hashes))
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(before), workload))
+					assert.Equal(t, before.GetUID(), workload.GetUID())
+					assert.Equal(t, expected[role.Name], workload.GetLabels()[hashKey])
+					assert.Equal(t, upgradeWorkloadTemplate(before), upgradeWorkloadTemplate(workload))
+				}
+				settled := workload.DeepCopyObject().(client.Object)
+				require.NoError(t, rec.Reconciler(ctx, rbg, role.DeepCopy(), nil, expected[role.Name]))
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(before), workload))
+				assert.Equal(t, settled, workload, "repeated reconciliation must preserve the entire settled workload")
+				for _, dependent := range objects[1:] {
+					got := dependent.DeepCopyObject().(client.Object)
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(dependent), got))
+					assert.Equal(t, dependent, got, "the existing instance or LWS leader/worker chain must stay untouched")
+				}
+				revisions := &appsv1.ControllerRevisionList{}
+				require.NoError(t, c.List(ctx, revisions))
+				assert.ElementsMatch(t, initialRevisions.Items, revisions.Items, "hash migration must reuse persisted revisions")
+			})
+		}
+	}
+}
+
+func upgradeWorkloadTemplate(workload client.Object) interface{} {
+	switch obj := workload.(type) {
+	case *appsv1.Deployment:
+		return obj.Spec.Template
+	case *appsv1.StatefulSet:
+		return obj.Spec.Template
+	case *workloadsv1alpha2.RoleInstanceSet:
+		return obj.Spec.RoleInstanceTemplate
+	case *lwsv1.LeaderWorkerSet:
+		return obj.Spec.LeaderWorkerTemplate
+	}
+	return nil
+}
+
+// Workload statuses and LWS descendants model already-running controllers; this is not a kubelet or LWS E2E.
+func seedUpgradeWorkloadStatus(t *testing.T, workload client.Object, objects []client.Object) []client.Object {
+	t.Helper()
+	switch obj := workload.(type) {
+	case *appsv1.Deployment:
+		obj.Status = objects[0].(*appsv1.Deployment).Status
+	case *appsv1.StatefulSet:
+		obj.Status = objects[0].(*appsv1.StatefulSet).Status
+		revision := &appsv1.ControllerRevision{ObjectMeta: metav1.ObjectMeta{
+			Name: obj.Name + "-old", Namespace: obj.Namespace, UID: "sts-revision",
+			Labels:          obj.Spec.Selector.MatchLabels,
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(obj, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+		}, Revision: 1}
+		obj.Status.CurrentRevision, obj.Status.UpdateRevision = revision.Name, revision.Name
+		pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{
+			Name: obj.Name + "-0", Namespace: obj.Namespace, UID: "sts-pod", Labels: maps.Clone(obj.Spec.Selector.MatchLabels),
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(obj, appsv1.SchemeGroupVersion.WithKind("StatefulSet"))},
+		}, Spec: *obj.Spec.Template.Spec.DeepCopy(), Status: corev1.PodStatus{
+			Phase: corev1.PodRunning, Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}},
+		}}
+		pod.Labels[appsv1.ControllerRevisionHashLabelKey] = revision.Name
+		objects = append(objects, revision, pod)
+	case *workloadsv1alpha2.RoleInstanceSet:
+		obj.Status = objects[0].(*workloadsv1alpha2.RoleInstanceSet).Status
+		instance := objects[1].(*workloadsv1alpha2.RoleInstance)
+		for key, value := range obj.Spec.Selector.MatchLabels {
+			instance.Labels[key] = value
+		}
+	case *lwsv1.LeaderWorkerSet:
+		obj.Status = objects[0].(*lwsv1.LeaderWorkerSet).Status
+		revision, err := lwsrevision.NewRevision(context.Background(), fake.NewClientBuilder().WithScheme(rolloutTestScheme(t)).Build(), obj, "")
+		require.NoError(t, err)
+		for _, dependent := range objects[1:] {
+			dependent.GetLabels()[lwsv1.RevisionKey] = revision.Labels[lwsv1.RevisionKey]
+		}
+		objects[1].(*appsv1.StatefulSet).Spec.Template = *obj.Spec.LeaderWorkerTemplate.LeaderTemplate.DeepCopy()
+		objects[2].(*corev1.Pod).Spec = *obj.Spec.LeaderWorkerTemplate.LeaderTemplate.Spec.DeepCopy()
+		objects[3].(*appsv1.StatefulSet).Spec.Template = *obj.Spec.LeaderWorkerTemplate.WorkerTemplate.DeepCopy()
+	}
+	return objects
 }
 
 func TestConstructRoleStatusesWaitsForEveryRole(t *testing.T) {
