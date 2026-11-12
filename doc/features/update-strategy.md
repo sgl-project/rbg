@@ -98,19 +98,23 @@ replaced. The controller records the replacement scope in
 `status.rolloutReplacementState` before replacing an instance when `maxSurge`
 is greater than zero. This protects the surge across controller restarts.
 
-Surge is released once every base instance in the recorded update range is
+Surge is released once every base instance in the current update range is
 Ready at the rollback revision, is not terminating, and has observed its current
-generation. The check covers the whole recorded range, rather than only the
-instances actually replaced. An unrelated instance becoming unhealthy within
-that range can therefore retain surge and its resources longer.
+generation. A missing member also keeps protection active.
 
-Changing `partition` or `replicas` keeps protection for the overlap between the
-recorded range and the current update range. Merely adding ordinals does not
-extend the recorded scope; starting additional replacements can extend it.
-Ordinals outside the current range no longer delay completion. During
-scale-down, a healthy former base instance can serve as the
-remaining surge. Pausing a rollout retains the protection; an empty overlap or a
-different target revision ends it.
+The saved positional bounds cannot identify the original members after sparse
+membership changes. For example, filling a gap changes position 2 from member 4
+in `[0,2,4]` to member 2 in `[0,1,2,4]`. The controller therefore checks the
+whole current update range rather than reinterpreting the saved bounds against
+the new layout. This uses the existing status fields and also applies after all
+gaps have been filled.
+
+Changing `partition` or `replicas` can consequently retain surge while newly
+eligible or unrelated members are missing or unhealthy, even after the original
+replacement recovers. Members outside the current update range do not delay
+completion. During scale-down, a healthy former base instance can serve as the
+remaining surge. Pausing retains unfinished protection; an empty current update
+range or a different target revision ends it.
 
 ### partition
 

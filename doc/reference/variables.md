@@ -67,7 +67,14 @@ scheduler.
 |-----|-------------|
 | `rbg.workloads.x-k8s.io/role-size` | The size of the role (managed by controller). |
 | `rbg.workloads.x-k8s.io/role-disable-exclusive` | Set to `"true"` to skip exclusive-topology affinity injection for that role. |
+| `rbg.workloads.x-k8s.io/excluded-ordinals` | Optional Stateful RIS scaling reference: prefer these ordinals on scale-down and skip them on scale-up. [Usage and scope](../features/selective-scale-down.md). |
 | `rbg.workloads.x-k8s.io/role-workload-type` | Specifies the workload type (primarily for v1alpha1 conversion). |
+
+### RoleInstanceSet Internal Annotations
+
+| Key | Description |
+|-----|-------------|
+| `rbg.workloads.x-k8s.io/committed-skip-ordinals` | Controller-managed skip record, committed together with replicas. Direct edits or deletion immediately change desired membership and are not automatically recovered. |
 
 ### RoleInstance Level Annotations
 

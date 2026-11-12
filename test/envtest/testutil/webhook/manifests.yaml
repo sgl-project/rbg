@@ -1,8 +1,7 @@
 # Mutating webhook configurations for the admission defaulters this suite tests.
 #
-# Only the mutating webhooks are installed in envtest: the validating webhooks are
-# intentionally left out so the existing envtest suites keep running without them,
-# and the caBundle/clientConfig below are rewritten by envtest's
+# This directory also installs RBG/RBGSet validators for content and placement
+# tests. The caBundle/clientConfig below are rewritten by envtest's
 # WebhookInstallOptions to point at the local test webhook server.
 #
 # Do NOT use this file for real deployments; deploy/kubectl and deploy/helm carry the
