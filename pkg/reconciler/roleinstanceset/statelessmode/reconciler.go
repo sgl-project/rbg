@@ -234,10 +234,13 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 
 	scaling, scaleErr = r.syncControl.Scale(currentSet, updateSet, currentRevision.Name, updateRevision.Name, filteredInstances)
 	if scaleErr != nil {
+		// KEP-502: single operation attempts are Warning Events; the current blocker
+		// fact is carried by the Progressing condition. FailedScale/FailedUpdate are
+		// no longer written; wholesale status replacement removes stale entries.
 		scaleReason := setprogressing.ClassifySetOperationError(scaleErr)
-		r.emitOperationFailureEvent(set, workloadsv1alpha2.RoleInstanceSetConditionFailedScale, scaleReason, scaleErr)
+		r.emitOperationFailureEvent(set, scaleReason, scaleErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
-			Type:               workloadsv1alpha2.RoleInstanceSetConditionFailedScale,
+			Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             scaleReason,
@@ -252,9 +255,9 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 	updateErr = r.syncControl.Update(updateSet, currentRevision, updateRevision, revisions, filteredInstances)
 	if updateErr != nil {
 		updateReason := setprogressing.ClassifySetOperationError(updateErr)
-		r.emitOperationFailureEvent(set, workloadsv1alpha2.RoleInstanceSetConditionFailedUpdate, updateReason, updateErr)
+		r.emitOperationFailureEvent(set, updateReason, updateErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
-			Type:               workloadsv1alpha2.RoleInstanceSetConditionFailedUpdate,
+			Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
 			Reason:             updateReason,
@@ -271,9 +274,9 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 // emitOperationFailureEvent emits an edge-triggered Warning Event for a failed
 // RoleInstanceSet operation. Events are diagnostic history; the current blocker fact
 // stays in the Progressing condition.
-func (r *ReconcileInstanceSet) emitOperationFailureEvent(set *workloadsv1alpha2.RoleInstanceSet, conditionType workloadsv1alpha2.RoleInstanceSetConditionType, reason string, err error) {
+func (r *ReconcileInstanceSet) emitOperationFailureEvent(set *workloadsv1alpha2.RoleInstanceSet, reason string, err error) {
 	for _, condition := range set.Status.Conditions {
-		if condition.Type == conditionType && condition.Message == err.Error() {
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing && condition.Message == err.Error() {
 			return
 		}
 	}

@@ -103,7 +103,7 @@ func TestComputeInstanceProgressingCondition(t *testing.T) {
 
 	t.Run("blocker outranks activity", func(t *testing.T) {
 		conditions := []workloadsv1alpha2.RoleInstanceCondition{{
-			Type:    workloadsv1alpha2.RoleInstanceFailedScale,
+			Type:    workloadsv1alpha2.RoleInstanceProgressing,
 			Status:  corev1.ConditionTrue,
 			Reason:  workloadsv1alpha2.ReasonPodCreateQuotaExceeded,
 			Message: "exceeded quota",

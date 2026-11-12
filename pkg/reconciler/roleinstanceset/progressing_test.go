@@ -135,7 +135,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ComputeSetProgressingCondition(tc.set, tc.newStatus, tc.instances)
+			got := ComputeSetProgressingCondition(tc.set, tc.newStatus, tc.instances, nil)
 			if got.Reason != tc.wantReason || got.Status != tc.wantStatus {
 				t.Fatalf("got status=%s reason=%s, want status=%s reason=%s", got.Status, got.Reason, tc.wantStatus, tc.wantReason)
 			}
@@ -147,20 +147,38 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 }
 
 func TestCurrentSetBlockerPriority(t *testing.T) {
-	newStatus := &workloadsv1alpha2.RoleInstanceSetStatus{
-		Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{
-			Type:    workloadsv1alpha2.RoleInstanceSetConditionFailedScale,
-			Status:  corev1.ConditionTrue,
-			Reason:  workloadconstants.ProgressingReasonPermissionDenied,
-			Message: "rbac denied",
-		}},
+	own := &SetBlocker{
+		Reason:  workloadconstants.ProgressingReasonPermissionDenied,
+		Message: "rbac denied",
 	}
 	instances := []*workloadsv1alpha2.RoleInstance{
 		instanceWithProgressing(workloadsv1alpha2.ReasonPodCreateQuotaExceeded, workloadsv1alpha2.RoleInstancePhaseCreating),
 	}
-	reason, _ := currentSetBlocker(newStatus, instances)
+	reason, message := currentSetBlocker(own, instances)
 	if reason != workloadconstants.ProgressingReasonPermissionDenied {
 		t.Fatalf("permission must outrank quota, got %s", reason)
+	}
+	if message != "rbac denied" {
+		t.Fatalf("own message must be preserved, got %s", message)
+	}
+}
+
+func TestExtractOwnSetBlocker(t *testing.T) {
+	empty := &workloadsv1alpha2.RoleInstanceSetStatus{}
+	if own := extractOwnSetBlocker(empty); own != nil {
+		t.Fatalf("expected nil, got %+v", own)
+	}
+	withBlocker := &workloadsv1alpha2.RoleInstanceSetStatus{
+		Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{
+			Type:    workloadsv1alpha2.RoleInstanceSetProgressing,
+			Status:  corev1.ConditionTrue,
+			Reason:  workloadconstants.ProgressingReasonUnclassifiedBlocker,
+			Message: "boom",
+		}},
+	}
+	own := extractOwnSetBlocker(withBlocker)
+	if own == nil || own.Reason != workloadconstants.ProgressingReasonUnclassifiedBlocker || own.Message != "boom" {
+		t.Fatalf("got %+v", own)
 	}
 }
 

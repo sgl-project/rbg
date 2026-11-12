@@ -135,19 +135,16 @@ func mentionsAdmissionWebhook(err error) bool {
 		strings.Contains(msg, "admission plugin")
 }
 
-// instanceProgressingBlockerReason selects the RI Progressing reason for the current
-// blocker from the failure conditions recorded by this reconcile. A confirmed blocker
-// always outranks activity reasons.
-func instanceProgressingBlockerReason(conditions []workloadsv1alpha2.RoleInstanceCondition) string {
-	for _, condition := range conditions {
-		switch condition.Type {
-		case workloadsv1alpha2.RoleInstanceFailedScale, workloadsv1alpha2.RoleInstanceFailedUpdate:
-			if condition.Status == v1.ConditionTrue && condition.Reason != "" {
-				return condition.Reason
-			}
+// instanceProgressingBlocker returns the blocker Progressing condition recorded by
+// this reconcile, if any. A confirmed blocker always outranks activity reasons.
+func instanceProgressingBlocker(conditions []workloadsv1alpha2.RoleInstanceCondition) *workloadsv1alpha2.RoleInstanceCondition {
+	for i := range conditions {
+		if conditions[i].Type == workloadsv1alpha2.RoleInstanceProgressing &&
+			conditions[i].Status == v1.ConditionTrue && conditions[i].Reason != "" {
+			return &conditions[i]
 		}
 	}
-	return ""
+	return nil
 }
 
 // instanceProgressingActivityReason selects the activity reason from the phase.
@@ -169,17 +166,17 @@ func instanceProgressingActivityReason(phase workloadsv1alpha2.RoleInstancePhase
 // keeps Progressing=True with the blocker reason while the phase is Updating.
 func computeInstanceProgressingCondition(instance *workloadsv1alpha2.RoleInstance, phase workloadsv1alpha2.RoleInstancePhase,
 	instanceReady bool, newInnerConditions []workloadsv1alpha2.RoleInstanceCondition) workloadsv1alpha2.RoleInstanceCondition {
+	if blocker := instanceProgressingBlocker(newInnerConditions); blocker != nil {
+		progressing := *blocker
+		progressing.ObservedGeneration = instance.Generation
+		return progressing
+	}
+
 	progressing := workloadsv1alpha2.RoleInstanceCondition{
 		Type:               workloadsv1alpha2.RoleInstanceProgressing,
 		Status:             v1.ConditionTrue,
 		LastTransitionTime: metav1.Now(),
 		ObservedGeneration: instance.Generation,
-	}
-
-	if reason := instanceProgressingBlockerReason(newInnerConditions); reason != "" {
-		progressing.Reason = reason
-		progressing.Message = blockerMessage(newInnerConditions, reason)
-		return progressing
 	}
 	if reason := instanceProgressingActivityReason(phase); reason != "" {
 		progressing.Reason = reason
@@ -192,16 +189,6 @@ func computeInstanceProgressingCondition(instance *workloadsv1alpha2.RoleInstanc
 	progressing.Status = v1.ConditionFalse
 	progressing.Reason = workloadsv1alpha2.ReasonInstanceConverged
 	return progressing
-}
-
-func blockerMessage(conditions []workloadsv1alpha2.RoleInstanceCondition, reason string) string {
-	for _, condition := range conditions {
-		if (condition.Type == workloadsv1alpha2.RoleInstanceFailedScale || condition.Type == workloadsv1alpha2.RoleInstanceFailedUpdate) &&
-			condition.Status == v1.ConditionTrue && condition.Reason == reason {
-			return condition.Message
-		}
-	}
-	return ""
 }
 
 // preserveConditionTransitionTime copies LastTransitionTime from a live condition when

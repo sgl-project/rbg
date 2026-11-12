@@ -23,12 +23,14 @@ import (
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/types"
+	intstr "k8s.io/apimachinery/pkg/util/intstr"
 
-	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -37,74 +39,98 @@ import (
 // blockers rank first because a human must change the spec, referenced configuration, or
 // environment. The order affects reporting only, not controller execution order.
 var rbgBlockerFamilyPriority = []string{
-	workloadconstants.ProgressingReasonInvalidSpec,
-	workloadconstants.ProgressingReasonSchedulerUnsupported,
-	workloadconstants.ProgressingReasonPermissionDenied,
-	workloadconstants.ProgressingReasonAdmissionDenied,
-	workloadconstants.ProgressingReasonWaitingForQuota,
-	workloadconstants.ProgressingReasonWaitingForResources,
-	workloadconstants.ProgressingReasonWaitingForGang,
-	workloadconstants.ProgressingReasonWaitingForDependencies,
-	workloadconstants.ProgressingReasonUnclassifiedBlocker,
+	constants.ProgressingReasonInvalidSpec,
+	constants.ProgressingReasonSchedulerUnsupported,
+	constants.ProgressingReasonPermissionDenied,
+	constants.ProgressingReasonAdmissionDenied,
+	constants.ProgressingReasonWaitingForQuota,
+	constants.ProgressingReasonWaitingForResources,
+	constants.ProgressingReasonWaitingForGang,
+	constants.ProgressingReasonWaitingForDependencies,
+	constants.ProgressingReasonUnclassifiedBlocker,
 }
 
 // rbgActivityPriority is the RBG activity precedence from KEP-502.
 var rbgActivityPriority = []string{
-	workloadconstants.ProgressingReasonCreating,
-	workloadconstants.ProgressingReasonRecovering,
-	workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonCreating,
+	constants.ProgressingReasonRecovering,
+	constants.ProgressingReasonRoleInstanceSetUpdated,
 }
 
 // risReasonToRBG maps RIS Progressing reasons to their RBG aggregates.
 var risReasonToRBG = map[string]string{
-	workloadconstants.ProgressingReasonCreating:            workloadconstants.ProgressingReasonCreating,
-	workloadconstants.ProgressingReasonRecovering:          workloadconstants.ProgressingReasonRecovering,
-	workloadconstants.ProgressingReasonRoleInstanceUpdated: workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
-	workloadconstants.ProgressingReasonScalingUp:           workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
-	workloadconstants.ProgressingReasonScalingDown:         workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
-	workloadconstants.ProgressingReasonPermissionDenied:    workloadconstants.ProgressingReasonPermissionDenied,
-	workloadconstants.ProgressingReasonAdmissionDenied:     workloadconstants.ProgressingReasonAdmissionDenied,
-	workloadconstants.ProgressingReasonWaitingForQuota:     workloadconstants.ProgressingReasonWaitingForQuota,
-	workloadconstants.ProgressingReasonWaitingForResources: workloadconstants.ProgressingReasonWaitingForResources,
-	workloadconstants.ProgressingReasonUnclassifiedBlocker: workloadconstants.ProgressingReasonUnclassifiedBlocker,
-	workloadconstants.ProgressingReasonInstancesNotReady:   workloadconstants.ProgressingReasonRolesNotReady,
+	constants.ProgressingReasonCreating:            constants.ProgressingReasonCreating,
+	constants.ProgressingReasonRecovering:          constants.ProgressingReasonRecovering,
+	constants.ProgressingReasonRoleInstanceUpdated: constants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonScalingUp:           constants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonScalingDown:         constants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonPermissionDenied:    constants.ProgressingReasonPermissionDenied,
+	constants.ProgressingReasonAdmissionDenied:     constants.ProgressingReasonAdmissionDenied,
+	constants.ProgressingReasonWaitingForQuota:     constants.ProgressingReasonWaitingForQuota,
+	constants.ProgressingReasonWaitingForResources: constants.ProgressingReasonWaitingForResources,
+	constants.ProgressingReasonUnclassifiedBlocker: constants.ProgressingReasonUnclassifiedBlocker,
+	constants.ProgressingReasonInstancesNotReady:   constants.ProgressingReasonRolesNotReady,
 }
 
 // allRolesUseRoleInstanceSet reports whether the RBG qualifies for the new condition
 // model. Mixed-backend RBGs keep the legacy status behavior.
 func allRolesUseRoleInstanceSet(rbg *workloadsv1alpha2.RoleBasedGroup) bool {
 	for i := range rbg.Spec.Roles {
-		if rbg.Spec.Roles[i].GetWorkloadType() != workloadconstants.RoleInstanceSetWorkloadType {
+		if rbg.Spec.Roles[i].GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
 			return false
 		}
 	}
 	return true
 }
 
+// risObservation carries one role's RoleInstanceSet facts used by the RBG Progressing
+// computation.
+type risObservation struct {
+	// progressing is the RIS Progressing condition, nil when absent.
+	progressing *workloadsv1alpha2.RoleInstanceSetCondition
+
+	// revisionLabel is the role revision hash the RBG dispatched to this RIS.
+	revisionLabel string
+
+	// exists reports whether the RIS object was observed.
+	exists bool
+}
+
 // updateRBGProgressingCondition computes the RBG Progressing condition and records it on
 // the live status object. apimeta.SetStatusCondition preserves LastTransitionTime when
-// the condition status is unchanged.
+// the condition status is unchanged. RBG completion is derived from the RBG's own
+// target: the dispatched revision label and the role's final update scope, never from a
+// child's converged verdict alone, so a coordinated rollout stays Progressing=True
+// between steps.
 func (r *RoleBasedGroupReconciler) updateRBGProgressingCondition(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	roleStatuses []workloadsv1alpha2.RoleStatus,
+	expectedRevisions map[string]string,
 	gangWaiting bool,
-) error {
+) {
 	if !allRolesUseRoleInstanceSet(rbg) {
-		return nil
+		return
 	}
 
-	risProgressing, err := r.collectRISProgressingConditions(ctx, rbg)
-	if err != nil {
-		// Observation failure must not fabricate a converged verdict; keep the last
-		// known condition and surface the read error.
-		return err
+	observations, readErr := r.collectRISObservations(ctx, rbg)
+	if readErr != nil {
+		// An observation failure must not fabricate a converged verdict or a blocker:
+		// report Unknown with ObservationIncomplete per KEP-502.
+		apimeta.SetStatusCondition(&rbg.Status.Conditions, metav1.Condition{
+			Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+			Status:             metav1.ConditionUnknown,
+			LastTransitionTime: metav1.Now(),
+			Reason:             "ObservationIncomplete",
+			Message:            readErr.Error(),
+			ObservedGeneration: rbg.Generation,
+		})
+		return
 	}
 	depsNotReady := unreadyDependencies(rbg, roleStatuses)
 
-	condition := computeRBGProgressingCondition(rbg, roleStatuses, risProgressing, gangWaiting, depsNotReady)
+	condition := computeRBGProgressingCondition(rbg, roleStatuses, observations, expectedRevisions, gangWaiting, depsNotReady)
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, condition)
-	return nil
 }
 
 // reportRBGProgressingBlocker records a controller-owned blocker and observedGeneration
@@ -115,6 +141,10 @@ func (r *RoleBasedGroupReconciler) reportRBGProgressingBlocker(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	reason, message string,
 ) error {
+	if !allRolesUseRoleInstanceSet(rbg) {
+		// Mixed-backend RBGs keep the legacy status behavior.
+		return nil
+	}
 	condition := metav1.Condition{
 		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
 		Status:             metav1.ConditionTrue,
@@ -128,27 +158,43 @@ func (r *RoleBasedGroupReconciler) reportRBGProgressingBlocker(
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus)
 }
 
-// collectRISProgressingConditions reads each role's RoleInstanceSet Progressing
-// condition. Gang waiting and dependencies are RBG-owned facts and are not read from RIS.
-func (r *RoleBasedGroupReconciler) collectRISProgressingConditions(
+// collectRISObservations reads each role's RoleInstanceSet. A missing RIS is a fact
+// (child not established or being replaced), not an observation failure; any other read
+// error is returned so the caller reports Unknown.
+func (r *RoleBasedGroupReconciler) collectRISObservations(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
-) (map[string]workloadsv1alpha2.RoleInstanceSetCondition, error) {
-	result := make(map[string]workloadsv1alpha2.RoleInstanceSetCondition, len(rbg.Spec.Roles))
+) (map[string]risObservation, error) {
+	result := make(map[string]risObservation, len(rbg.Spec.Roles))
 	for i := range rbg.Spec.Roles {
 		role := &rbg.Spec.Roles[i]
 		set := &workloadsv1alpha2.RoleInstanceSet{}
 		if err := r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, set); err != nil {
-			return nil, err
+			if apierrors.IsNotFound(err) {
+				result[role.Name] = risObservation{exists: false}
+				continue
+			}
+			return nil, fmt.Errorf("observe RoleInstanceSet for role %s: %w", role.Name, err)
 		}
-		for _, condition := range set.Status.Conditions {
-			if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing {
-				result[role.Name] = condition
+		observation := risObservation{
+			exists:        true,
+			revisionLabel: set.Labels[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)],
+		}
+		for j := range set.Status.Conditions {
+			if set.Status.Conditions[j].Type == workloadsv1alpha2.RoleInstanceSetProgressing {
+				observation.progressing = &set.Status.Conditions[j]
 				break
 			}
 		}
+		result[role.Name] = observation
 	}
 	return result, nil
+}
+
+// gangPodGroupGVKs covers both supported gang implementations.
+var gangPodGroupGVKs = [][2]string{
+	{"scheduling.volcano.sh/v1beta1", "PodGroup"},
+	{"scheduling.x-k8s.io/v1alpha1", "PodGroup"},
 }
 
 // observeGangWaiting reports whether the gang is waiting from runtime gang-scheduling
@@ -158,14 +204,28 @@ func (r *RoleBasedGroupReconciler) observeGangWaiting(ctx context.Context, rbg *
 		// No gang observation is available; do not report a waiting fact.
 		return false
 	}
-	podGroup := &unstructured.Unstructured{}
-	podGroup.SetAPIVersion("scheduling.volcano.sh/v1beta1")
-	podGroup.SetKind("PodGroup")
-	if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup); err != nil {
-		return false
+	for _, gvk := range gangPodGroupGVKs {
+		podGroup := &unstructured.Unstructured{}
+		podGroup.SetAPIVersion(gvk[0])
+		podGroup.SetKind(gvk[1])
+		if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup); err != nil {
+			continue
+		}
+		phase, _, _ := unstructured.NestedString(podGroup.Object, "status", "phase")
+		return phase != "" && phase != "Running"
 	}
-	phase, _, _ := unstructured.NestedString(podGroup.Object, "status", "phase")
-	return phase != "" && phase != "Running"
+	return false
+}
+
+// classifyGangIncompatibility distinguishes missing scheduler capability from an
+// unsatisfiable gang configuration.
+func classifyGangIncompatibility(err error) string {
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, "not support") || strings.Contains(message, "unsupported") ||
+		strings.Contains(message, "does not support") {
+		return constants.ProgressingReasonSchedulerUnsupported
+	}
+	return constants.ProgressingReasonIncompatibleGangConfig
 }
 
 // unreadyDependencies returns role names whose dependencies are not ready yet.
@@ -200,7 +260,8 @@ func unreadyDependencies(rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []w
 func computeRBGProgressingCondition(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	roleStatuses []workloadsv1alpha2.RoleStatus,
-	risProgressing map[string]workloadsv1alpha2.RoleInstanceSetCondition,
+	observations map[string]risObservation,
+	expectedRevisions map[string]string,
 	gangWaiting bool,
 	depsNotReady []string,
 ) metav1.Condition {
@@ -211,14 +272,14 @@ func computeRBGProgressingCondition(
 		ObservedGeneration: rbg.Generation,
 	}
 
-	blockerReason, blockerMessage := rbgCurrentBlocker(risProgressing, gangWaiting, depsNotReady)
+	blockerReason, blockerMessage := rbgCurrentBlocker(observations, gangWaiting, depsNotReady)
 	if blockerReason != "" {
 		condition.Reason = blockerReason
 		condition.Message = blockerMessage
 		return condition
 	}
 
-	if reason, message := rbgCurrentActivity(risProgressing); reason != "" {
+	if reason, message := rbgCurrentActivity(rbg, roleStatuses, observations); reason != "" {
 		condition.Reason = reason
 		condition.Message = message
 		return condition
@@ -230,40 +291,49 @@ func computeRBGProgressingCondition(
 		return condition
 	}
 
+	// RBG completion is computed from the RBG's own target: every role's dispatched
+	// revision label matches the expected revision, the RIS reports Converged at its
+	// scope, and the role reached the final update scope. A coordinated rollout between
+	// steps fails the update-scope check, so RBG stays Progressing=True.
+	if !rbgOwnTargetComplete(rbg, roleStatuses, observations, expectedRevisions) {
+		condition.Reason = constants.ProgressingReasonRoleInstanceSetUpdated
+		return condition
+	}
+
 	condition.Status = metav1.ConditionFalse
-	condition.Reason = workloadconstants.ProgressingReasonConverged
+	condition.Reason = constants.ProgressingReasonConverged
 	return condition
 }
 
 func rbgCurrentBlocker(
-	risProgressing map[string]workloadsv1alpha2.RoleInstanceSetCondition,
+	observations map[string]risObservation,
 	gangWaiting bool,
 	depsNotReady []string,
 ) (string, string) {
 	if gangWaiting {
-		return workloadconstants.ProgressingReasonWaitingForGang, "gang scheduling preconditions are not satisfied"
+		return constants.ProgressingReasonWaitingForGang, "gang scheduling preconditions are not satisfied"
 	}
 	if len(depsNotReady) > 0 {
-		return workloadconstants.ProgressingReasonWaitingForDependencies,
+		return constants.ProgressingReasonWaitingForDependencies,
 			fmt.Sprintf("dependencies for roles %s are not ready", strings.Join(depsNotReady, ", "))
 	}
 
 	// Map RIS family blockers; RBG does not probe Pod-level errors itself.
 	byFamily := make(map[string][]string)
-	for roleName, condition := range risProgressing {
-		if condition.Status != v1.ConditionTrue {
+	for roleName, observation := range observations {
+		if observation.progressing == nil || observation.progressing.Status != v1.ConditionTrue {
 			continue
 		}
-		mapped, ok := risReasonToRBG[condition.Reason]
+		mapped, ok := risReasonToRBG[observation.progressing.Reason]
 		if !ok {
 			continue
 		}
 		switch mapped {
-		case workloadconstants.ProgressingReasonPermissionDenied,
-			workloadconstants.ProgressingReasonAdmissionDenied,
-			workloadconstants.ProgressingReasonWaitingForQuota,
-			workloadconstants.ProgressingReasonWaitingForResources,
-			workloadconstants.ProgressingReasonUnclassifiedBlocker:
+		case constants.ProgressingReasonPermissionDenied,
+			constants.ProgressingReasonAdmissionDenied,
+			constants.ProgressingReasonWaitingForQuota,
+			constants.ProgressingReasonWaitingForResources,
+			constants.ProgressingReasonUnclassifiedBlocker:
 			byFamily[mapped] = append(byFamily[mapped], roleName)
 		}
 	}
@@ -275,14 +345,24 @@ func rbgCurrentBlocker(
 	return "", ""
 }
 
-func rbgCurrentActivity(risProgressing map[string]workloadsv1alpha2.RoleInstanceSetCondition) (string, string) {
+func rbgCurrentActivity(rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus, observations map[string]risObservation) (string, string) {
+	creating, recovering := missingChildRoles(rbg, roleStatuses, observations)
+
 	for _, activity := range rbgActivityPriority {
 		var roles []string
-		for roleName, condition := range risProgressing {
-			if condition.Status != v1.ConditionTrue {
+		switch activity {
+		case constants.ProgressingReasonCreating:
+			roles = creating
+		case constants.ProgressingReasonRecovering:
+			roles = recovering
+		}
+		// RIS-reported activity aggregates with the RBG-owned classification: an RIS
+		// that exists but is still establishing or recovering reports its own reason.
+		for roleName, observation := range observations {
+			if observation.progressing == nil || observation.progressing.Status != v1.ConditionTrue {
 				continue
 			}
-			if mapped, ok := risReasonToRBG[condition.Reason]; ok && mapped == activity {
+			if mapped, ok := risReasonToRBG[observation.progressing.Reason]; ok && mapped == activity {
 				roles = append(roles, roleName)
 			}
 		}
@@ -291,6 +371,76 @@ func rbgCurrentActivity(risProgressing map[string]workloadsv1alpha2.RoleInstance
 		}
 	}
 	return "", ""
+}
+
+// missingChildRoles classifies required RIS objects that do not exist. Non-zero
+// role-status counters prove prior establishment and map to Recovering; otherwise the
+// observable fact is creation in progress.
+func missingChildRoles(rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus, observations map[string]risObservation) (creating, recovering []string) {
+	statusMap := make(map[string]workloadsv1alpha2.RoleStatus, len(roleStatuses))
+	for _, roleStatus := range roleStatuses {
+		statusMap[roleStatus.Name] = roleStatus
+	}
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		observation, ok := observations[role.Name]
+		if !ok || observation.exists {
+			continue
+		}
+		roleStatus := statusMap[role.Name]
+		if roleStatus.Replicas > 0 || roleStatus.ReadyReplicas > 0 || roleStatus.UpdatedReplicas > 0 {
+			recovering = append(recovering, role.Name)
+		} else {
+			creating = append(creating, role.Name)
+		}
+	}
+	return creating, recovering
+}
+
+// rbgOwnTargetComplete reports whether the RBG's own target is complete: every role's
+// dispatched revision matches, every RIS reports Converged, and every role reached the
+// final update scope required by its own rollout strategy.
+func rbgOwnTargetComplete(
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	roleStatuses []workloadsv1alpha2.RoleStatus,
+	observations map[string]risObservation,
+	expectedRevisions map[string]string,
+) bool {
+	statusMap := make(map[string]workloadsv1alpha2.RoleStatus, len(roleStatuses))
+	for _, roleStatus := range roleStatuses {
+		statusMap[roleStatus.Name] = roleStatus
+	}
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		roleStatus, ok := statusMap[role.Name]
+		if !ok || role.Replicas == nil {
+			return false
+		}
+		observation, ok := observations[role.Name]
+		if !ok || !observation.exists {
+			return false
+		}
+		if expected, found := expectedRevisions[role.Name]; found && observation.revisionLabel != expected {
+			return false
+		}
+		if observation.progressing == nil || observation.progressing.Status != v1.ConditionFalse ||
+			observation.progressing.Reason != constants.ProgressingReasonConverged {
+			return false
+		}
+		if roleStatus.Replicas != *role.Replicas || roleStatus.ReadyReplicas != roleStatus.Replicas {
+			return false
+		}
+		finalPartition := int32(0)
+		if role.RolloutStrategy != nil && role.RolloutStrategy.RollingUpdate != nil && role.RolloutStrategy.RollingUpdate.Partition != nil {
+			if value, err := intstr.GetScaledValueFromIntOrPercent(role.RolloutStrategy.RollingUpdate.Partition, int(*role.Replicas), true); err == nil {
+				finalPartition = int32(value)
+			}
+		}
+		if roleStatus.UpdatedReplicas < *role.Replicas-finalPartition {
+			return false
+		}
+	}
+	return true
 }
 
 func rbgChildReadiness(rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus) (string, string) {
@@ -309,7 +459,7 @@ func rbgChildReadiness(rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []wor
 	if len(notReady) == 0 {
 		return "", ""
 	}
-	return workloadconstants.ProgressingReasonRolesNotReady,
+	return constants.ProgressingReasonRolesNotReady,
 		fmt.Sprintf("roles %s are not ready", strings.Join(notReady, ", "))
 }
 
