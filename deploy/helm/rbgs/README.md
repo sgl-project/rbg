@@ -33,7 +33,7 @@ rejected in `0.9.0`.
 
 ### Choosing a value
 
-Decide by installation type, not by migration progress:
+Decide by whether the cluster still has deprecated roles:
 
 - **New installation**: set `false`. This is the recommended starting point; only `RoleInstanceSet` is accepted.
 - **Upgraded cluster, migration complete**: set `false`. The inventory below is empty, reconciliation has finished, and no RBG-owned legacy workloads remain.
@@ -50,7 +50,7 @@ kubectl get rbg,rbgs -A -o json | jq -r '.items[] | . as $o
   | "\($o.kind) \($o.metadata.namespace)/\($o.metadata.name) role=\(.name) \($wt)"'
 ```
 
-While the value is `true`, the controller retains RBAC, watches, and orphan cleanup so existing roles can be reconciled and manually migrated (migrate `RoleBasedGroupSet` templates before their children). New deprecated workload uses are rejected during this transition.
+While the value is `true`, the controller retains RBAC, watches, and orphan cleanup so existing roles can be reconciled and manually migrated (migrate `RoleBasedGroupSet` templates before their children). New deprecated workload uses are rejected during this transition, except children a RoleBasedGroupSet creates from its existing legacy template.
 
 An empty inventory is necessary but not sufficient for the final cutoff. The inventory becomes empty as soon as the last role is edited, while the controller may still be reconciling and deleting the old workload. Before switching to `false`, wait for reconciliation to complete without errors and verify that the old RBG-owned Deployment, StatefulSet, and LeaderWorkerSet resources have been deleted (their Pods should be gone as well). Switching earlier disables legacy cleanup and can leave those resources running.
 

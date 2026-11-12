@@ -21,10 +21,6 @@ Only RoleInstanceSet is accepted; no RBAC or watches exist for Deployment,
 StatefulSet, or LeaderWorkerSet. If this cluster was upgraded and still has roles
 on those types, set controller.deprecatedWorkloadTypes.enabled=true, migrate
 them, then switch back.
-WARNING: the v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet,
-so a new v1alpha1 object is rejected even if it never sets `workload`. To keep using
-v1alpha1, every role must set workload.apiVersion=workloads.x-k8s.io/v1alpha2 and
-workload.kind=RoleInstanceSet; submitting the object as v1alpha2 does this by default.
 {{- else }}
 NOTE: compatibility for existing deprecated workload types is ENABLED
 (controller.deprecatedWorkloadTypes.enabled=true).
@@ -41,6 +37,11 @@ has completed and the old RBG-owned Deployment, StatefulSet, and
 LeaderWorkerSet workloads are gone.
 {{- end }}
 {{- end }}
+
+WARNING: the v1alpha1 schema defaults spec.roles[].workload to apps/v1 StatefulSet,
+so a new v1alpha1 object is rejected even if it never sets `workload`. To keep using
+v1alpha1, every role must set workload.apiVersion=workloads.x-k8s.io/v1alpha2 and
+workload.kind=RoleInstanceSet; submitting the object as v1alpha2 does this by default.
 
 NOTE: chart v0.8.0 introduced a BREAKING CHANGE: values were regrouped under
 `global`, `controller`, and `crdUpgrade`. Old top-level keys (e.g. `image.*`,

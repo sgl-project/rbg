@@ -90,10 +90,12 @@ their way out, superseded by `v1alpha2` and `RoleInstanceSet`. The chart value
 
 | Value | Behaviour |
 |:------|:----------|
-| `true` (chart default) | Compatibility mode: both `v1alpha1` and `v1alpha2` control logic stay active. Roles that already use a deprecated workload type keep reconciling, while **new** uses are rejected (including switching between deprecated types) — migrate those roles to `RoleInstanceSet`. Every `v1alpha1` request returns a deprecation warning. |
+| `true` (chart default) | Compatibility mode: both `v1alpha1` and `v1alpha2` control logic stay active. Roles that already use a deprecated workload type keep reconciling, while **new** uses are rejected (including switching between deprecated types) — migrate those roles to `RoleInstanceSet`. |
 | `false` | Strict mode: the controller refuses the deprecated workload types outright — no RBAC is granted for them, none of them are watched, and the validating webhook rejects every create and update whose roles use one. |
 
-Choose by installation type, not by migration progress:
+Every `v1alpha1` request returns a deprecation warning; `v1alpha1` will be removed in `0.10.0`.
+
+Choose by whether the cluster still has deprecated roles:
 
 - **New installation**: use `false`. This is the recommended starting point; only `RoleInstanceSet` is accepted, with the constraint enforced by the controller rather than by convention.
 - **Upgraded cluster with no remaining deprecated roles**: use `false`.
