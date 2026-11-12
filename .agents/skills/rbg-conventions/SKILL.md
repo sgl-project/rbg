@@ -150,4 +150,5 @@ the most important rules on a cluster. Each one is described, with its last veri
 - Point to files and functions on `main`, not line numbers, and re-check the pointers when code
   moves.
 - When you rerun a verification case, update its "Last verified" entry.
+- After changing a script in `scripts/`, run `scripts/selftest.sh`. It needs no cluster.
 - Keep this file short. Detail belongs in `references/`.

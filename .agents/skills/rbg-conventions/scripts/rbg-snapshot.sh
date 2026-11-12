@@ -8,7 +8,8 @@
 #   ris          UID, generation, update and current revision, role-revision hash labels
 #   ri           UID, generation, controller-revision-hash label
 #   sts/deploy/lws  UID and generation (deprecated workload types)
-#   pod          UID, owner, node, images, controller-revision-hash label, restarts per container
+#   pod          UID, owner, node, controller-revision-hash label, and the images and restart
+#                counts of its regular and its init containers (native sidecars are init containers)
 #   svc          UID, type, cluster IP, ports, selector
 #   endpoints    ready pods behind each Service
 #   <obj>#label:<key> and <obj>#annotation:<key>  every label and annotation (URI-encoded value)
@@ -32,7 +33,7 @@ while [ $# -gt 0 ]; do
     -n | --namespace) ns=$2; shift 2 ;;
     --settle) settle=$2; shift 2 ;;
     --timeout) timeout=$2; shift 2 ;;
-    *) sed -n '2,20p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,21p' "$0" >&2; exit 2 ;;
   esac
 done
 [ -n "$ns" ] || die "-n NAMESPACE is required"
@@ -49,6 +50,9 @@ fi
 # shellcheck disable=SC2016 # jq programs, not shell expansions
 objects_jq='
   def kv: to_entries | sort_by(.key) | map("\(.key)=\(.value)") | join(",") | if . == "" then "-" else . end;
+  def list: sort | join(",") | if . == "" then "-" else . end;
+  def images(containers): [(containers // [])[] | "\(.name):\(.image)"] | list;
+  def restarts(statuses): [(statuses // [])[] | "\(.name):\(.restartCount)"] | list;
   def owner: [(.metadata.ownerReferences // [])[] | select(.controller == true)
               | "\(.kind)/\(.name)"] | (.[0] // "-");
   def rolehash: (.metadata.labels // {}) | with_entries(select(.key | test("role-revision-"))) | kv;
@@ -76,10 +80,10 @@ objects_jq='
     "\(key) uid=\($m.uid) generation=\($m.generation) roleHash=\(rolehash)", meta
   elif .kind == "Pod" then
     "\(key) uid=\($m.uid) owner=\(owner) node=\(.spec.nodeName // "-")" +
-    " images=\([.spec.containers[] | "\(.name):\(.image)"] | sort | join(","))" +
+    " images=\(images(.spec.containers)) initImages=\(images(.spec.initContainers))" +
     " revision=\(revlabel)" +
-    " restarts=\([(.status.containerStatuses // [])[] | "\(.name):\(.restartCount)"] | sort | join(",")
-                | if . == "" then "-" else . end)", meta
+    " restarts=\(restarts(.status.containerStatuses))" +
+    " initRestarts=\(restarts(.status.initContainerStatuses))", meta
   elif .kind == "Service" then
     "\(key) uid=\($m.uid) type=\(.spec.type) clusterIP=\(.spec.clusterIP // "-")" +
     " ports=\([(.spec.ports // [])[] | "\(.name // ""):\(.port)/\(.protocol)>\(.targetPort)"] | sort | join(",")
@@ -108,7 +112,7 @@ snapshot_once() {
       LC_ALL=C sort >"$tmp/body" || rc=1
   fi
   if [ "$rc" -eq 0 ]; then
-    printf '#rbg-snapshot v1 namespace=%s\n' "$ns"
+    printf '#rbg-snapshot v2 namespace=%s\n' "$ns"
     cat "$tmp/body"
   fi
   rm -rf "$tmp"

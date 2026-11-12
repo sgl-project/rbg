@@ -13,6 +13,10 @@ Clusters used for this are often shared with other people's tests.
     `RBG_VERIFY_STATE_DIR`).
   - Scripts that write refuse any namespace whose token and UID don't match that record. They will
     not touch another tester's verification namespace either.
+  - Namespaces and the throwaway CRD are deleted with their UID as a delete precondition, so an
+    object recreated under the same name is never deleted.
+  - A write is retried only when it provably never reached the API server, so it is never
+    replayed.
 - **Never run a second controller next to one that is already running.** The RBG controller
   watches every namespace and has no namespace flag, so two of them fight over every
   RoleBasedGroup.
@@ -50,17 +54,25 @@ go run ./cmd/rbgs --enable-webhooks=none --leader-elect=false --health-probe-bin
 
 - identities, generations and revisions
 - every label and annotation
-- Pod images and restart counts
+- Pod images and restart counts, for regular and init containers. Native sidecars are init
+  containers, and one can restart while the Pod UID and its regular containers stay unchanged.
 - Service type, ports and selector
 - the ready endpoints
 
-Each output starts with a header line. `rbg-compare.sh` refuses empty files or snapshots of
-different namespaces, so two failed snapshot runs can never compare as identical.
+Each output starts with a header line that carries the format version (currently v2).
+`rbg-compare.sh` refuses empty files, snapshots of different namespaces and older formats, so two
+failed snapshot runs can never compare as identical.
 
 The fixtures cover the RoleInstanceSet paths only (standalone, leader/worker, custom components,
 roleTemplate). Deprecated Deployment, StatefulSet and LeaderWorkerSet roles need their own
 fixtures, or `make test-e2e-upgrade` on a disposable cluster. When webhooks are enabled, the 0.9.0
 gate rejects new uses of those deprecated types.
+
+## Testing the scripts
+
+`scripts/selftest.sh` runs the scripts against a fake kubectl and needs only bash and jq. It
+covers the retry rules of `kc`, the UID-checked deletes and the snapshot/compare pair. Run it after
+changing any script.
 
 ## Cases
 
@@ -70,9 +82,10 @@ gate rejects new uses of those deprecated types.
   without writing it; defaults under an absent optional parent are not materialized
   ([upgrade-compatibility.md](upgrade-compatibility.md), "What moves a hash").
 - **Run:** `scripts/crd-default-on-read.sh`. It creates a throwaway CRD with a unique name, deletes
-  only the CRD it created, and touches no RBG resources, so it is safe on any cluster.
+  only the CRD it created (by UID precondition), and touches no RBG resources, so it is safe on any
+  cluster.
 - **Pass:** A1–A4 print PASS, and the script exits 0. It exits non-zero if cleanup fails.
-- **Last verified:** 2026-11-11 on a Kubernetes 1.37 cluster: 4/4 PASS, run twice.
+- **Last verified:** 2026-11-12 on a Kubernetes 1.37 cluster: 4/4 PASS (also twice on 2026-11-11).
 
 ### VC-2: A controller restart or binary swap changes nothing
 
@@ -90,6 +103,9 @@ gate rejects new uses of those deprecated types.
   - Kubernetes 1.37 cluster with running Pods, controller scoped with the field-selector patch:
     PASS, 352 records.
   - envtest with the production webhooks: PASS, 302 records.
+
+  These runs used snapshot format v1. Format v2 only adds init-container fields, and the fixtures
+  have no init containers, so the results of VC-2 to VC-4 are unaffected.
 
 ### VC-3: The detector catches template stamping (negative control)
 
@@ -166,5 +182,7 @@ gate rejects new uses of those deprecated types.
 - The v1alpha1 conversion claims are now measured, not inferred (VC-5).
 - Running a scoped controller on a shared cluster needs the field-selector patch above
   (`DefaultNamespaces` panics).
-- The scripts guard ownership with per-run tokens, never retry a write that may have reached the
-  server, and fail instead of printing a partial snapshot.
+- The scripts guard ownership with per-run tokens, delete only by UID precondition, retry a write
+  only when it provably never reached the server, and fail instead of printing a partial snapshot.
+- Snapshots include init and sidecar containers: on the cluster, a native sidecar restart left the
+  Pod UID and its regular containers unchanged, and the v1 snapshot compared it as PASS.

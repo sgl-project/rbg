@@ -10,14 +10,16 @@
 # someone else's namespace. It then applies the fixtures with __IMAGE__ replaced. IMAGE defaults to
 # $RBG_FIXTURE_IMAGE or busybox:1.36; any image with `sh` and `sleep` the nodes can pull works.
 # --wait waits until every RoleBasedGroup is Ready, which needs nodes that run pods.
-# delete removes NAMESPACE only if the local ownership record matches it.
+# delete removes NAMESPACE only if the local ownership record matches it. The delete carries the
+# recorded UID as a precondition, so a namespace recreated under the same name is never deleted.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR source=common.sh
 . "$(dirname "$0")/common.sh"
+need jq
 need "$KUBECTL"
 
 usage() {
-  sed -n '2,13p' "$0" >&2
+  sed -n '2,14p' "$0" >&2
   exit 2
 }
 
@@ -60,10 +62,12 @@ EOF
     ;;
   delete)
     require_owned_namespace "$ns"
-    kc delete namespace "$ns" --wait=false >/dev/null
+    read -r _ uid <"$(state_file "$ns")"
+    delete_with_uid "/api/v1/namespaces/$ns" "$uid" || die "could not delete namespace $ns"
     for _ in $(seq 1 90); do
-      left=$(kc get namespace "$ns" --ignore-not-found -o name) || die "cannot read namespace $ns"
-      if [ -z "$left" ]; then
+      current=$(kc get namespace "$ns" --ignore-not-found -o 'jsonpath={.metadata.uid}') ||
+        die "cannot read namespace $ns"
+      if [ "$current" != "$uid" ]; then
         rm -f "$(state_file "$ns")"
         echo "deleted namespace $ns"
         exit 0

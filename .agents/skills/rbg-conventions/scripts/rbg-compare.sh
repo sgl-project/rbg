@@ -19,8 +19,11 @@ after=$2
 header_b=$(head -n 1 "$before")
 header_a=$(head -n 1 "$after")
 case $header_b in
-  "#rbg-snapshot v1 namespace="?*) ;;
-  *) echo "error: $before is not an rbg-snapshot.sh v1 output" >&2; exit 2 ;;
+  "#rbg-snapshot v2 namespace="?*) ;;
+  *)
+    echo "error: $before is not an rbg-snapshot.sh v2 output; take both snapshots with the current script" >&2
+    exit 2
+    ;;
 esac
 [ "$header_a" = "$header_b" ] ||
   { echo "error: snapshots differ in format or namespace: '$header_b' vs '$header_a'" >&2; exit 2; }
@@ -68,7 +71,8 @@ report=$(awk '
         if (k ~ /#(label|annotation):/) note("Label or annotation values changed on existing objects.")
         if (name == "uid") note("Objects were deleted and recreated under the same name (UID changed).")
         if (name == "restarts") note("Containers restarted.")
-        if (name == "images") note("Container images changed.")
+        if (name == "initRestarts") note("Init or sidecar containers restarted.")
+        if (name == "images" || name == "initImages") note("Container images changed.")
         if (name == "updateRevision") note("A RoleInstanceSet moved to a new update revision; its instances roll to it.")
         if (name == "revision" && k ~ /^(pod|ri)\//) note("Pods or RoleInstances moved to a new revision (rolled, possibly in place).")
         if (name == "roleHash") note("A role revision hash changed: the role or its roleTemplate serialized differently.")

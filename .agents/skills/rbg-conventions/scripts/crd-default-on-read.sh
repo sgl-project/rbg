@@ -10,8 +10,9 @@
 # changes what the controller sees for every such object, without anyone writing to them.
 #
 # It creates a throwaway cluster-scoped CRD with a unique name per run (defaultprobes.<random>.
-# rbg-conventions.example.com), deletes only the CRD it created (matched by UID), and touches no RBG
-# resources, so it is safe on a shared cluster. A failed cleanup makes the script exit non-zero.
+# rbg-conventions.example.com) and touches no RBG resources, so it is safe on a shared cluster. It
+# deletes only the CRD it created: the delete carries the CRD's UID as a precondition. A failed
+# cleanup makes the script exit non-zero.
 #
 # Usage: crd-default-on-read.sh [--keep]
 set -euo pipefail
@@ -60,21 +61,12 @@ EOF
 
 # shellcheck disable=SC2329 # invoked by the EXIT trap
 cleanup() {
-  local status=$? current
+  local status=$?
   [ "$keep" = true ] && { echo "kept $crd"; return; }
-  current=$(kc get crd "$crd" --ignore-not-found -o 'jsonpath={.metadata.uid}') || {
-    echo "error: cannot read $crd for cleanup; delete it by hand" >&2
+  delete_with_uid "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$crd" "$crd_uid" || {
+    echo "error: cleanup of $crd failed; see the message above" >&2
     exit 2
   }
-  if [ -n "$current" ] && [ "$current" = "$crd_uid" ]; then
-    kc delete crd "$crd" --wait=false >/dev/null || {
-      echo "error: failed to delete $crd; delete it by hand" >&2
-      exit 2
-    }
-  elif [ -n "$current" ]; then
-    echo "error: $crd has UID $current, not the one this run created; left it alone" >&2
-    exit 2
-  fi
   exit "$status"
 }
 
