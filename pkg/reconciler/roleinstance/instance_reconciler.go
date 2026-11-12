@@ -388,9 +388,10 @@ func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newSta
 		}
 	}
 	return roleInstancePhaseFacts{
-		updateActive:   updateActive,
-		podsPresent:    podsPresent,
-		readySatisfied: readySatisfied,
+		updateActive:          updateActive,
+		podsPresent:           podsPresent,
+		readySatisfied:        readySatisfied,
+		previouslyEstablished: instance.Status.LastReadyGeneration != 0,
 	}
 }
 
@@ -416,9 +417,14 @@ func (r *reconciler) stableBlockerReason(instance *workloadsv1alpha2.RoleInstanc
 		return reason
 	}
 	for _, condition := range instance.Status.Conditions {
-		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue &&
-			condition.Reason != "" && condition.Reason != workloadsv1alpha2.ReasonPodOperationUnclassified &&
-			condition.Reason != workloadsv1alpha2.ReasonInstanceConverged {
+		if condition.Type != workloadsv1alpha2.RoleInstanceProgressing || condition.Status != v1.ConditionTrue {
+			continue
+		}
+		// Retention applies only to a confirmed blocker family observed for the
+		// current target. Activity and child-readiness reasons are not blockers, a
+		// stale condition does not describe the current target, and an unclassified
+		// reason is not a confirmed family.
+		if condition.ObservedGeneration == instance.Generation && isInstanceBlockerReason(condition.Reason) {
 			return condition.Reason
 		}
 	}

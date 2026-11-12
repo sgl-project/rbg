@@ -19,18 +19,109 @@ package workloads
 import (
 	"context"
 	"testing"
+	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
+
+// TestValidateCommittedMembershipReplacesProgressing covers the KEP-502 condition
+// write: an invalid committed-ordinals spec must replace any existing Progressing
+// condition (including a stale Converged verdict) instead of appending a duplicate
+// entry, and must record the current generation for freshness.
+func TestValidateCommittedMembershipReplacesProgressing(t *testing.T) {
+	ctx := context.Background()
+	replicas := int32(3)
+	newSet := func(prior workloadsv1alpha2.RoleInstanceSetCondition) *workloadsv1alpha2.RoleInstanceSet {
+		return &workloadsv1alpha2.RoleInstanceSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "ris", Namespace: "default", Generation: 5,
+				Annotations: map[string]string{
+					constants.CommittedSkipOrdinalsAnnotationKey: "not-an-int-list",
+				},
+			},
+			Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: &replicas},
+			Status: workloadsv1alpha2.RoleInstanceSetStatus{
+				Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{prior},
+			},
+		}
+	}
+	priorTime := metav1.NewTime(time.Now().Add(-time.Hour))
+	cases := []struct {
+		name             string
+		prior            workloadsv1alpha2.RoleInstanceSetCondition
+		wantLastTimeKept bool
+	}{
+		{
+			name: "stale converged verdict is replaced",
+			prior: workloadsv1alpha2.RoleInstanceSetCondition{
+				Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionFalse,
+				Reason: constants.ProgressingReasonConverged, LastTransitionTime: priorTime,
+			},
+		},
+		{
+			name: "active scaling reason is replaced and time preserved",
+			prior: workloadsv1alpha2.RoleInstanceSetCondition{
+				Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
+				Reason: constants.ProgressingReasonScalingUp, LastTransitionTime: priorTime,
+			},
+			wantLastTimeKept: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			set := newSet(tc.prior)
+			var patched *workloadsv1alpha2.RoleInstanceSet
+			scheme := runtime.NewScheme()
+			if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+				t.Fatal(err)
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+				SubResourcePatch: func(_ context.Context, _ client.Client, _ string, obj client.Object, _ client.Patch, _ ...client.SubResourcePatchOption) error {
+					patched = obj.(*workloadsv1alpha2.RoleInstanceSet).DeepCopy()
+					return nil
+				},
+			}).Build()
+			r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+			if err := r.validateCommittedMembership(ctx, set); err == nil {
+				t.Fatal("validation error expected")
+			}
+			if patched == nil {
+				t.Fatal("status patch expected")
+			}
+			var progressing []workloadsv1alpha2.RoleInstanceSetCondition
+			for _, condition := range patched.Status.Conditions {
+				if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing {
+					progressing = append(progressing, condition)
+				}
+			}
+			if len(progressing) != 1 {
+				t.Fatalf("exactly one Progressing condition expected, got %d", len(progressing))
+			}
+			if progressing[0].Reason != constants.ProgressingReasonInvalidSpec ||
+				progressing[0].Status != corev1.ConditionTrue {
+				t.Fatalf("got %+v", progressing[0])
+			}
+			if progressing[0].ObservedGeneration != set.Generation {
+				t.Fatalf("observedGeneration = %d, want %d", progressing[0].ObservedGeneration, set.Generation)
+			}
+			if tc.wantLastTimeKept && !progressing[0].LastTransitionTime.Equal(&priorTime) {
+				t.Fatalf("lastTransitionTime must be preserved for a True→True transition, got %v", progressing[0].LastTransitionTime)
+			}
+		})
+	}
+}
 
 func newTestScheme() *runtime.Scheme {
 	scheme := runtime.NewScheme()

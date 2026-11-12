@@ -78,6 +78,23 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			wantStatus: corev1.ConditionTrue,
 		},
 		{
+			name: "ordered ready subset during initial creation stays creating",
+			// A previously ready subset is not establishment: UpdatedReplicas stays
+			// below ExpectedUpdatedReplicas until the whole initial target exists.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 1, 1, 1
+				set.Status.ExpectedUpdatedReplicas = 3
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "rev", "rev"
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, CurrentRevision: "rev", UpdateRevision: "rev",
+			},
+			wantReason: workloadconstants.ProgressingReasonCreating,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
 			name: "converged zero replica set scaling up reports scaling",
 			set: func() *workloadsv1alpha2.RoleInstanceSet {
 				set := newTestSet(3)
@@ -123,6 +140,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				set := newTestSet(3)
 				set.Spec.UpdateStrategy.Paused = true
 				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+				set.Status.ExpectedUpdatedReplicas = 2
 				return set
 			}(),
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
@@ -154,6 +172,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			set: func() *workloadsv1alpha2.RoleInstanceSet {
 				set := newTestSet(3)
 				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+				set.Status.ExpectedUpdatedReplicas = 2
 				return set
 			}(),
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
@@ -197,6 +216,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			set: func() *workloadsv1alpha2.RoleInstanceSet {
 				set := newTestSet(3)
 				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 3, 3, 3
+				set.Status.ExpectedUpdatedReplicas = 3
 				return set
 			}(),
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
@@ -260,7 +280,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := ComputeSetProgressingCondition(tc.set, tc.newStatus, tc.instances, nil)
+			got := ComputeSetProgressingCondition(tc.set, tc.newStatus, tc.instances, nil, nil)
 			if got.Reason != tc.wantReason || got.Status != tc.wantStatus {
 				t.Fatalf("got status=%s reason=%s, want status=%s reason=%s", got.Status, got.Reason, tc.wantStatus, tc.wantReason)
 			}
@@ -279,12 +299,85 @@ func TestCurrentSetBlockerPriority(t *testing.T) {
 	instances := []*workloadsv1alpha2.RoleInstance{
 		instanceWithProgressing(workloadsv1alpha2.ReasonPodCreateQuotaExceeded, workloadsv1alpha2.RoleInstancePhaseCreating),
 	}
-	reason, message := currentSetBlocker(own, instances)
+	reason, message := currentSetBlocker(own, nil, instances)
 	if reason != workloadconstants.ProgressingReasonPermissionDenied {
 		t.Fatalf("permission must outrank quota, got %s", reason)
 	}
 	if message != "rbac denied" {
 		t.Fatalf("own message must be preserved, got %s", message)
+	}
+}
+
+func TestCurrentSetBlockerRetainsPriorFamily(t *testing.T) {
+	prior := &SetBlocker{
+		Reason:  workloadconstants.ProgressingReasonPermissionDenied,
+		Message: "rbac denied",
+	}
+	own := &SetBlocker{
+		Reason:  workloadconstants.ProgressingReasonUnclassifiedBlocker,
+		Message: "server timeout",
+	}
+	reason, _ := currentSetBlocker(own, prior, nil)
+	if reason != workloadconstants.ProgressingReasonPermissionDenied {
+		t.Fatalf("confirmed permission blocker must survive an unclassified error, got %s", reason)
+	}
+
+	// A fresh successful observation clears the prior family.
+	reason, _ = currentSetBlocker(nil, prior, nil)
+	if reason != "" {
+		t.Fatalf("successful observation must clear the prior blocker, got %s", reason)
+	}
+}
+
+func TestPriorSetBlockerRequiresCurrentGeneration(t *testing.T) {
+	set := newTestSet(3)
+	set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+		Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+		Status:             corev1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonPermissionDenied,
+		Message:            "rbac denied",
+		ObservedGeneration: 4,
+	}}
+	if prior := priorSetBlocker(set); prior == nil || prior.Reason != workloadconstants.ProgressingReasonPermissionDenied {
+		t.Fatalf("current-generation blocker expected, got %+v", prior)
+	}
+	set.Status.Conditions[0].ObservedGeneration = 3
+	if prior := priorSetBlocker(set); prior != nil {
+		t.Fatalf("stale-generation blocker must not be retained, got %+v", prior)
+	}
+}
+
+func TestApplySetProgressingConditionDeduplicates(t *testing.T) {
+	set := newTestSet(3)
+	set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+	set.Status.ExpectedUpdatedReplicas = 2
+	newStatus := &workloadsv1alpha2.RoleInstanceSetStatus{
+		CurrentRevision: "rev", UpdateRevision: "rev", Replicas: 2,
+		Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{
+			// A scale failure and an update failure in the same reconcile append two
+			// raw blockers; the lower-priority one is first.
+			{
+				Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
+				Reason: workloadconstants.ProgressingReasonUnclassifiedBlocker, Message: "scale timeout",
+			},
+			{
+				Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
+				Reason: workloadconstants.ProgressingReasonPermissionDenied, Message: "update forbidden",
+			},
+		},
+	}
+	ApplySetProgressingCondition(set, newStatus, nil)
+	var progressing []*workloadsv1alpha2.RoleInstanceSetCondition
+	for i := range newStatus.Conditions {
+		if newStatus.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetProgressing {
+			progressing = append(progressing, &newStatus.Conditions[i])
+		}
+	}
+	if len(progressing) != 1 {
+		t.Fatalf("exactly one Progressing condition expected, got %d", len(progressing))
+	}
+	if progressing[0].Reason != workloadconstants.ProgressingReasonPermissionDenied {
+		t.Fatalf("permission must outrank the unclassified first error, got %s", progressing[0].Reason)
 	}
 }
 
@@ -304,6 +397,23 @@ func TestExtractOwnSetBlocker(t *testing.T) {
 	own := extractOwnSetBlocker(withBlocker)
 	if own == nil || own.Reason != workloadconstants.ProgressingReasonUnclassifiedBlocker || own.Message != "boom" {
 		t.Fatalf("got %+v", own)
+	}
+
+	multiple := &workloadsv1alpha2.RoleInstanceSetStatus{
+		Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{
+			{
+				Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
+				Reason: workloadconstants.ProgressingReasonUnclassifiedBlocker, Message: "scale timeout",
+			},
+			{
+				Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
+				Reason: workloadconstants.ProgressingReasonPermissionDenied, Message: "update forbidden",
+			},
+		},
+	}
+	own = extractOwnSetBlocker(multiple)
+	if own == nil || own.Reason != workloadconstants.ProgressingReasonPermissionDenied {
+		t.Fatalf("highest-priority own blocker expected, got %+v", own)
 	}
 }
 

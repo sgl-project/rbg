@@ -40,6 +40,7 @@ import (
 // environment. The order affects reporting only, not controller execution order.
 var rbgBlockerFamilyPriority = []string{
 	constants.ProgressingReasonInvalidSpec,
+	constants.ProgressingReasonIncompatibleGangConfig,
 	constants.ProgressingReasonSchedulerUnsupported,
 	constants.ProgressingReasonPermissionDenied,
 	constants.ProgressingReasonAdmissionDenied,
@@ -105,16 +106,17 @@ type risObservation struct {
 // the condition status is unchanged. RBG completion is derived from the RBG's own
 // target: the dispatched revision label and the role's final update scope, never from a
 // child's converged verdict alone, so a coordinated rollout stays Progressing=True
-// between steps.
+// between steps. It returns the roles whose persisted role status must be preserved as
+// prior-establishment evidence for a currently missing RoleInstanceSet.
 func (r *RoleBasedGroupReconciler) updateRBGProgressingCondition(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	roleStatuses []workloadsv1alpha2.RoleStatus,
 	expectedRevisions map[string]string,
 	gangWaiting bool,
-) {
+) map[string]bool {
 	if !allRolesUseRoleInstanceSet(rbg) {
-		return
+		return nil
 	}
 
 	observations, readErr := r.collectRISObservations(ctx, rbg)
@@ -129,12 +131,19 @@ func (r *RoleBasedGroupReconciler) updateRBGProgressingCondition(
 			Message:            readErr.Error(),
 			ObservedGeneration: rbg.Generation,
 		})
-		return
+		return nil
 	}
 	depsNotReady := unreadyDependencies(rbg, roleStatuses)
 
 	condition := computeRBGProgressingCondition(rbg, roleStatuses, observations, expectedRevisions, gangWaiting, depsNotReady)
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, condition)
+
+	_, recovering := missingChildRoles(rbg, observations)
+	preserved := make(map[string]bool, len(recovering))
+	for _, role := range recovering {
+		preserved[role] = true
+	}
+	return preserved
 }
 
 // reportRBGProgressingBlocker records a controller-owned blocker and observedGeneration
@@ -149,6 +158,7 @@ func (r *RoleBasedGroupReconciler) reportRBGProgressingBlocker(
 		// Mixed-backend RBGs keep the legacy status behavior.
 		return nil
 	}
+	reason, message = retainRBGBlockerFamily(rbg, reason, message)
 	condition := metav1.Condition{
 		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
 		Status:             metav1.ConditionTrue,
@@ -160,6 +170,40 @@ func (r *RoleBasedGroupReconciler) reportRBGProgressingBlocker(
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, condition)
 	rbg.Status.ObservedGeneration = rbg.Generation
 	return utils.PatchObjectApplyConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus)
+}
+
+// isRBGBlockerFamily reports whether the reason is a current-blocker family reason
+// rather than an activity or child-readiness reason.
+func isRBGBlockerFamily(reason string) bool {
+	for _, family := range rbgBlockerFamilyPriority {
+		if family == reason {
+			return true
+		}
+	}
+	return false
+}
+
+// retainRBGBlockerFamily keeps a previously confirmed blocker family for the current
+// target when the new controller-owned error cannot be classified: an unclassifiable
+// error does not establish that the confirmed blocker no longer holds, and the new
+// error stays in the message. A specific new error or a fresh success replaces the
+// prior family.
+func retainRBGBlockerFamily(rbg *workloadsv1alpha2.RoleBasedGroup, reason, message string) (string, string) {
+	if reason != constants.ProgressingReasonUnclassifiedBlocker {
+		return reason, message
+	}
+	for i := range rbg.Status.Conditions {
+		condition := rbg.Status.Conditions[i]
+		if condition.Type != string(workloadsv1alpha2.RoleBasedGroupProgressing) ||
+			condition.Status != metav1.ConditionTrue ||
+			condition.ObservedGeneration != rbg.Generation ||
+			condition.Reason == constants.ProgressingReasonUnclassifiedBlocker ||
+			!isRBGBlockerFamily(condition.Reason) {
+			continue
+		}
+		return condition.Reason, fmt.Sprintf("%s; latest unclassified error: %s", condition.Message, message)
+	}
+	return reason, message
 }
 
 // collectRISObservations reads each role's RoleInstanceSet. A missing RIS is a fact
@@ -284,7 +328,7 @@ func computeRBGProgressingCondition(
 		return condition
 	}
 
-	if reason, message := rbgCurrentActivity(rbg, roleStatuses, observations); reason != "" {
+	if reason, message := rbgCurrentActivity(rbg, observations); reason != "" {
 		condition.Reason = reason
 		condition.Message = message
 		return condition
@@ -371,8 +415,8 @@ func rbgCurrentBlocker(
 	return "", ""
 }
 
-func rbgCurrentActivity(rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus, observations map[string]risObservation) (string, string) {
-	creating, recovering := missingChildRoles(rbg, roleStatuses, observations)
+func rbgCurrentActivity(rbg *workloadsv1alpha2.RoleBasedGroup, observations map[string]risObservation) (string, string) {
+	creating, recovering := missingChildRoles(rbg, observations)
 
 	for _, activity := range rbgActivityPriority {
 		var roles []string
@@ -444,12 +488,14 @@ func allRoleProgressPaused(observations map[string]risObservation) bool {
 	return paused
 }
 
-// missingChildRoles classifies required RIS objects that do not exist. Non-zero
-// role-status counters prove prior establishment and map to Recovering; otherwise the
-// observable fact is creation in progress.
-func missingChildRoles(rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus, observations map[string]risObservation) (creating, recovering []string) {
-	statusMap := make(map[string]workloadsv1alpha2.RoleStatus, len(roleStatuses))
-	for _, roleStatus := range roleStatuses {
+// missingChildRoles classifies required RIS objects that do not exist. It reads the
+// persisted rbg.Status.RoleStatuses rather than the freshly constructed statuses: a
+// missing RIS yields a fresh zero-valued entry, while the persisted non-zero counters
+// are the durable evidence that the child was previously established and is now being
+// replaced. Zero or absent persisted evidence maps to Creating.
+func missingChildRoles(rbg *workloadsv1alpha2.RoleBasedGroup, observations map[string]risObservation) (creating, recovering []string) {
+	statusMap := make(map[string]workloadsv1alpha2.RoleStatus, len(rbg.Status.RoleStatuses))
+	for _, roleStatus := range rbg.Status.RoleStatuses {
 		statusMap[roleStatus.Name] = roleStatus
 	}
 	for i := range rbg.Spec.Roles {

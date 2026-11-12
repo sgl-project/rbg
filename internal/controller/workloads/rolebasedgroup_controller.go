@@ -849,10 +849,20 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 
 	// Record the KEP-502 Progressing condition before the unchanged-status check so
 	// condition-only changes still produce an SSA patch.
-	r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash, r.observeGangWaiting(ctx, rbg))
+	preservedEvidence := r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash, r.observeGangWaiting(ctx, rbg))
 
 	// update role status
 	for i := range roleStatuses {
+		if preservedEvidence[roleStatuses[i].Name] &&
+			roleStatuses[i].Replicas == 0 && roleStatuses[i].ReadyReplicas == 0 && roleStatuses[i].UpdatedReplicas == 0 {
+			// Keep the persisted non-zero counters for a currently missing
+			// RoleInstanceSet: a NotFound lookup yields exactly this zero-valued
+			// fresh entry, and overwriting it would destroy the durable
+			// prior-establishment evidence that classifies the missing child as
+			// Recovering. The entry is refreshed once the RoleInstanceSet exists
+			// again or reports non-zero facts.
+			continue
+		}
 		found := false
 		for j, oldStatus := range rbg.Status.RoleStatuses {
 			// if found, update
