@@ -246,6 +246,10 @@ const (
 
 	// RoleInstanceSetConditionFailedUpdate indicates RoleInstanceSet controller failed to update RoleInstances.
 	RoleInstanceSetConditionFailedUpdate RoleInstanceSetConditionType = "FailedUpdate"
+
+	// RoleInstanceSetProgressing reports progress toward the instance-set target, whether
+	// executing, waiting, or blocked.
+	RoleInstanceSetProgressing RoleInstanceSetConditionType = "Progressing"
 )
 
 // RoleInstanceSetCondition describes the state of a RoleInstanceSet at a certain point.
@@ -264,6 +268,11 @@ type RoleInstanceSetCondition struct {
 
 	// A human-readable message indicating details about the transition.
 	Message string `json:"message,omitempty"`
+
+	// ObservedGeneration is the generation of this RoleInstanceSet to which the fact applies.
+	// Its absence does not confirm the current generation.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // +genclient

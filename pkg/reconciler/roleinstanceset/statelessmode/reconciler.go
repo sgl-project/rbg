@@ -38,6 +38,7 @@ import (
 	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	setprogressing "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/sync"
@@ -233,10 +234,13 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 
 	scaling, scaleErr = r.syncControl.Scale(currentSet, updateSet, currentRevision.Name, updateRevision.Name, filteredInstances)
 	if scaleErr != nil {
+		scaleReason := setprogressing.ClassifySetOperationError(scaleErr)
+		r.emitOperationFailureEvent(set, workloadsv1alpha2.RoleInstanceSetConditionFailedScale, scaleReason, scaleErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
 			Type:               workloadsv1alpha2.RoleInstanceSetConditionFailedScale,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
+			Reason:             scaleReason,
 			Message:            scaleErr.Error(),
 		})
 		err = scaleErr
@@ -247,10 +251,13 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 
 	updateErr = r.syncControl.Update(updateSet, currentRevision, updateRevision, revisions, filteredInstances)
 	if updateErr != nil {
+		updateReason := setprogressing.ClassifySetOperationError(updateErr)
+		r.emitOperationFailureEvent(set, workloadsv1alpha2.RoleInstanceSetConditionFailedUpdate, updateReason, updateErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
 			Type:               workloadsv1alpha2.RoleInstanceSetConditionFailedUpdate,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
+			Reason:             updateReason,
 			Message:            updateErr.Error(),
 		})
 		if err == nil {
@@ -259,6 +266,18 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 	}
 
 	return err
+}
+
+// emitOperationFailureEvent emits an edge-triggered Warning Event for a failed
+// RoleInstanceSet operation. Events are diagnostic history; the current blocker fact
+// stays in the Progressing condition.
+func (r *ReconcileInstanceSet) emitOperationFailureEvent(set *workloadsv1alpha2.RoleInstanceSet, conditionType workloadsv1alpha2.RoleInstanceSetConditionType, reason string, err error) {
+	for _, condition := range set.Status.Conditions {
+		if condition.Type == conditionType && condition.Message == err.Error() {
+			return
+		}
+	}
+	r.recorder.Eventf(set, v1.EventTypeWarning, reason, "%v", err)
 }
 
 func (r *ReconcileInstanceSet) getActiveRevisions(set *workloadsv1alpha2.RoleInstanceSet, revisions []*apps.ControllerRevision) (

@@ -112,6 +112,7 @@ func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceCond
 		// so they are already present and must not be appended again from the live clone.
 		workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 		workloadsv1alpha2.RoleInstanceCustomReady,
+		workloadsv1alpha2.RoleInstanceProgressing,
 	)
 }
 
@@ -193,11 +194,18 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 	conditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(instance.Status.Conditions)+1)
 	conditions = append(conditions, newInnerConditions...)
 	podsReadyCondition := r.getInstancePodsReadyCondition(instance)
-	conditions = append(conditions, getInstanceReadyCondition(
+	if podsReadyCondition != nil {
+		podsReadyCondition.LastTransitionTime = preserveConditionTransitionTime(
+			instance.Status.Conditions, workloadsv1alpha2.RoleInstanceAllPodsReady, podsReadyCondition.Status)
+	}
+	instanceReadyCondition := getInstanceReadyCondition(
 		instance,
 		podsReadyCondition,
 		r.getInstanceInplaceUpdateReadyCondition(instance),
-	))
+	)
+	instanceReadyCondition.LastTransitionTime = preserveConditionTransitionTime(
+		instance.Status.Conditions, workloadsv1alpha2.RoleInstanceReady, instanceReadyCondition.Status)
+	conditions = append(conditions, instanceReadyCondition)
 	if instance.Spec.ReadyPolicy == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady && podsReadyCondition != nil {
 		conditions = append(conditions, *podsReadyCondition)
 	}
@@ -231,6 +239,11 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 		}
 		conditions = filtered
 	}
+
+	progressing := computeInstanceProgressingCondition(instance, newStatus.Phase, instanceReady, newInnerConditions)
+	progressing.LastTransitionTime = preserveConditionTransitionTime(
+		instance.Status.Conditions, workloadsv1alpha2.RoleInstanceProgressing, progressing.Status)
+	conditions = append(conditions, progressing)
 
 	innerConditionTypes := sets.New[workloadsv1alpha2.RoleInstanceConditionType]()
 	for _, c := range conditions {
@@ -390,6 +403,7 @@ func getInstanceReadyCondition(instance *workloadsv1alpha2.RoleInstance, podsRea
 func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus) bool {
 	oldStatus := instance.Status
 	if newStatus.ObservedGeneration > oldStatus.ObservedGeneration ||
+		newStatus.Phase != oldStatus.Phase ||
 		newStatus.LabelSelector != oldStatus.LabelSelector ||
 		newStatus.CurrentRevision != oldStatus.CurrentRevision ||
 		newStatus.UpdateRevision != oldStatus.UpdateRevision ||
