@@ -350,7 +350,6 @@ spec:
                 - Running
                 - Updating
                 - Recovering
-                - Terminating
                 type: string
               restartBudgetExhausted:
                 description: |-

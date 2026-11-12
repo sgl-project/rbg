@@ -51,7 +51,6 @@ func TestNextRoleInstancePhase(t *testing.T) {
 		{"updating continues", workloadsv1alpha2.RoleInstancePhaseUpdating, updating, workloadsv1alpha2.RoleInstancePhaseUpdating},
 		{"recovery completes", workloadsv1alpha2.RoleInstancePhaseRecovering, complete, workloadsv1alpha2.RoleInstancePhaseRunning},
 		{"update interrupts recovery", workloadsv1alpha2.RoleInstancePhaseRecovering, updating, workloadsv1alpha2.RoleInstancePhaseUpdating},
-		{"terminating is sticky", workloadsv1alpha2.RoleInstancePhaseTerminating, complete, workloadsv1alpha2.RoleInstancePhaseTerminating},
 		{"unknown phase completes conservatively", "Weird", complete, workloadsv1alpha2.RoleInstancePhaseRunning},
 	}
 	for _, tc := range cases {

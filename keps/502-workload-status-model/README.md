@@ -255,7 +255,7 @@ Child readiness is a transition condition, not an invariant required to remain R
 - Initial creation transitions to Running once the target structure is established and the effective readiness policy is satisfied. RI retains readyPolicy (AllPodReady by default) and configured readiness gates; the gates apply to externally observed readiness and parent availability, but phase completion uses controller-observed workload readiness only.
 - Recreating missing resources after the RI has entered normal operation does not trigger a return to Creating; a replacement Pod goes through creation independently while the RI remains in its current phase unless an update or independent recovery is confirmed.
 - Recovery completes when the target Pods are all present, the relevant recreation / replacement / cleanup work is complete, and readyPolicy is satisfied; external readiness gates do not block the phase transition.
-- When observations are insufficient to confirm a transition condition, retain the last phase; if it was absent, leave it absent. Related conditions may still change. A confirmed deletionTimestamp on the RI allows it to enter Terminating without complete observations of child resources.
+- When observations are insufficient to confirm a transition condition, retain the last phase; if it was absent, leave it absent. Related conditions may still change.
 - When multiple workflows remain incomplete, select the RI phase using the display priority defined in the RoleInstance section. Display priority does not determine execution order.
 - When a target changes or is withdrawn, evaluate remaining work against the current target, accounting for operations already issued and required cleanup. Target changes during initial creation do not waive structural completeness or effective readiness requirements; pausing does not mean completion. Such changes fold into Create convergence: `Creating` does not transition directly to `Updating` or `Recovering`, consistent with the KEP-527 hook rules.
 
@@ -399,11 +399,10 @@ The RI phase values and boundaries are:
 | `Running` | The RI target is steady after startup, an update, or recovery completes; readiness may still be False and a readiness drop alone does not change the phase |
 | `Updating` | An identified component spec, template, or revision update is in progress, including in-place updates and Pod replacements required by the update |
 | `Recovering` | Independent recreation or replacement of required Pods is in progress outside an update, until recreation, cleanup, and controller-observed readiness complete |
-| `Terminating` | The RI itself has a deletionTimestamp, rather than a child Pod being deleted |
 
 RI phase is not the lifecycle-hook protocol. Hook execution, retries, and release use the hook-state labels and finalizer handshake defined by KEP-527. Phase describes the instance lifecycle for observation and pacing and serves as an eligibility input: an RI that is still `Creating` has never established its target, so target changes during Create convergence do not invoke `preUpdate` or `preRecover`. Phase must not be used as a hook trigger, handshake, or completion signal.
 
-Deletion of the RI takes priority and enters Terminating. Identifying an update target enters Updating; an empty revision during initial creation is not evidence of an update.
+Deletion of the RI is indicated by `metadata.deletionTimestamp`: the RI controller deliberately skips status writes once it is set (to avoid foreground-deletion StorageErrors), so no `Terminating` phase is defined and deletion is never represented through phase. Identifying an update target enters Updating; an empty revision during initial creation is not evidence of an update.
 Confirming independent recovery of required Pods outside an update enters Recovering. Pod recreation that is already part of an update remains Updating rather than entering a separate Recovering phase.
 Scaling the number of RIs belongs to RIS; component spec changes within an RI are expressed as Updating.
 
@@ -419,17 +418,13 @@ The allowed phase edges are:
 | absent | RI creation begins | `Creating` |
 | `Creating` | The current creation target is structurally complete and its controller-observed readiness requirements are satisfied | `Running` |
 | `Creating` | An update or recovery target is identified before initial creation completes | Remain `Creating`; fold the new target into Create convergence without invoking hooks |
-| `Creating` | RI deletion is confirmed | `Terminating` |
 | `Running` | An update target is identified | `Updating` |
 | `Running` | Independent recreation or replacement of required Pods is confirmed | `Recovering` |
-| `Running` | RI deletion is confirmed | `Terminating` |
 | `Updating` | The update target, its replacement work, and controller-observed readiness requirements complete | `Running` |
-| `Updating` | RI deletion is confirmed | `Terminating` |
 | `Recovering` | Recovery and its controller-observed readiness requirements complete | `Running` |
 | `Recovering` | An update target is identified while recovery continues | `Updating` |
-| `Recovering` | RI deletion is confirmed | `Terminating` |
 
-No phase returns to `Creating`, and `Creating` exits only to `Running` or `Terminating`: recreating an established RI's Pods is recovery, and an update or recovery target identified before initial creation completes is folded into Create convergence, with message noting the target change. This matches KEP-527: `preUpdate` and `preRecover` apply to an established instance, so replacing members that have not yet reached workload Ready during a first deploy does not invoke them. `Creating` still describes first convergence toward the latest target, including replacement of partially created resources. `Updating` is the Activity reason only when no current blocker or incomplete observation takes precedence; for example, a quota-blocked Pod creation keeps `Progressing=True(reason=PodCreateQuotaExceeded)` while `phase=Updating`. Readiness gates only `Creating → Running` and completion decisions, but a readiness drop alone never triggers a phase transition. Deletion wins from every phase.
+No phase returns to `Creating`, and `Creating` exits only to `Running`: recreating an established RI's Pods is recovery, and an update or recovery target identified before initial creation completes is folded into Create convergence, with message noting the target change. This matches KEP-527: `preUpdate` and `preRecover` apply to an established instance, so replacing members that have not yet reached workload Ready during a first deploy does not invoke them. `Creating` still describes first convergence toward the latest target, including replacement of partially created resources. `Updating` is the Activity reason only when no current blocker or incomplete observation takes precedence; for example, a quota-blocked Pod creation keeps `Progressing=True(reason=PodCreateQuotaExceeded)` while `phase=Updating`. Readiness gates only `Creating → Running` and completion decisions, but a readiness drop alone never triggers a phase transition.
 
 | Situation | Phase Handling |
 | --- | --- |
@@ -484,7 +479,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Propagate initial readiness and creation completion signals upward through conditions and counters. Recreating a child with a new UID does not by itself change parent status.
 - Recovery completion requires all target Pods to be present and readyPolicy to be satisfied, with completion facts aggregated upward. Cover AllPodReady waiting for Pod readiness and None skipping that wait. Entering Running does not wait for external readiness gates: an RI can enter Running while `RoleInstanceCustomReady` is False, including while a KEP-527 `markPodNotReady` lifecycle gate is still held, and stateless availability still counts that gate as not ready.
 - Insufficient observations leave affected conditions Unknown or retain the last RI phase; related facts may change. Deletion of the object does not require complete child observations.
-- Cover RI deletion taking priority to enter Terminating, empty revisions during initial creation, child Pod deletion versus RI deletion, and readiness gates becoming unsatisfied again after Running.
+- Cover deletion behavior: once the RI has a deletionTimestamp the controller stops writing phase and status, and clients use the deletionTimestamp as the deletion signal. Cover empty revisions during initial creation, child Pod deletion versus RI deletion, and readiness gates becoming unsatisfied again after Running.
 - Distinguish RIS initial creation from scale-up, and cover scaling direction and target reversal. `Creating` is reserved for initial set establishment; a scale-up that creates a new RI, such as 2 → 3 with the third RI not yet created, reports `ScalingUp`. Surge, terminating instances, and fault recovery must not be misclassified as scaling.
 - Target changes during initial creation do not bypass structural or readiness requirements; withdrawing a target does not bypass operations already issued or required cleanup. For RI, template changes during `Creating` remain `Creating` and fold into Create convergence without invoking `preUpdate` or `preRecover`; when a current blocker exists, the blocker reason takes precedence over the activity reason.
 - Cover template, replica, partition, and pause changes during RIS initial creation; RIS has no phase, so `Progressing.reason` is recomputed from current facts. Include the stateful OrderedReady case where the first instance is stuck, then the target is fixed: the affected RI remains `Creating` and converges toward the latest target without invoking hooks, and completion still waits for structural and readiness requirements without reporting early convergence.
@@ -511,7 +506,7 @@ after support is removed, tests verify rejection and migration guidance instead.
 - Document and regression-test the stateless / stateful readiness-gate difference: stateless requires `RoleInstanceReady` plus every `spec.readinessGates` condition, stateful checks only `RoleInstanceReady`.
 - Cover legacy API writes, historically incomplete conditions, and applicability boundaries for v1alpha2 objects using legacy backends and mixed-backend RBGs.
 - A legacy writer omitting condition.observedGeneration does not confirm the current generation; the aggregation layer does not supply confirmation for external owners.
-- For existing RI objects without phase, confirmed completion initializes Running, confirmed in-progress workflows initialize the corresponding RI phase, and uncertainty leaves phase absent. Confirmed deletion of the RI initializes Terminating.
+- For existing RI objects without phase, confirmed completion initializes Running, confirmed in-progress workflows initialize the corresponding RI phase, and uncertainty leaves phase absent.
 
 #### Integration tests
 
@@ -572,7 +567,6 @@ Initialize existing RI objects without phase based on facts that can currently b
 | Current relevant workflows have completed | May enter Running directly without repeating initial creation |
 | Creation, update, or recovery is in progress | Initialize according to the RI phase definitions; independent recovery enters Recovering |
 | The current phase cannot be confirmed | Leave phase absent; do not default to initial creation or Running |
-| The RI itself has a deletionTimestamp | Enter Terminating without requiring complete child observations |
 
 Re-upgrade after rollback revalidates current targets and observations rather than trusting a retained RI phase that stopped being updated.
 Upgrade to a CRD that supports the additional fields and remains compatible with legacy writes before enabling the new controller. Rollback does not guarantee continued updates to new status, and new CRD fields must not be removed casually.
