@@ -287,13 +287,16 @@ func crdUpgradeTag() string {
 // global.imagePullSecrets to both the controller Deployment and the
 // crd-upgrade hook Job, so one value covers every image the release itself
 // runs; fixture pods run in the framework's namespace against public images
-// and are out of scope.
+// and are out of scope. --set-string keeps names that parse as scalars
+// (e.g. "123" or "true" — both legal Secret names) as strings: the chart
+// renders the list with toYaml, and an int or bool name would make
+// Kubernetes reject the Deployment/Job instead of using the Secret.
 func imagePullSecretSets() []string {
 	name := envOr("RBGS_IMAGE_PULL_SECRET", "")
 	if name == "" {
 		return nil
 	}
-	return []string{"--set", "global.imagePullSecrets[0].name=" + name}
+	return []string{"--set-string", "global.imagePullSecrets[0].name=" + name}
 }
 
 // requireUpgradeTarget checks the images the upgrade will use are all known, so a

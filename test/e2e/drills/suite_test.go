@@ -51,18 +51,20 @@ func TestUpgradeDowngradeDrills(t *testing.T) {
 			// precondition reads the Deployment, and the from-release chart
 			// must be checked out before any default image value is read
 			// (the accessors cache their answer, so a read before the
-			// checkout would poison them with its error forever).
+			// checkout would poison them with its error forever). The path
+			// must be assigned before requireDrillFrom resolves those
+			// defaults for exactly the same reason.
 			f.Initialize()
 			chart, err := checkoutDrillFromChart()
 			if err != nil {
 				ginkgo.Fail(drillCleanupInstructions(err.Error()))
 				return
 			}
+			fromChartPathValue = chart
 			if err := requireDrillFrom(); err != nil {
 				ginkgo.Fail(drillCleanupInstructions(err.Error()))
 				return
 			}
-			fromChartPathValue = chart
 
 			requireCleanDrillCluster(f)
 

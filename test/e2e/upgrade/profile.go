@@ -39,6 +39,14 @@ type releaseProfile struct {
 	// install instead of the pinned images.
 	installValues []string
 
+	// pullSecretPath is the release's OWN value path for image pull secrets
+	// (without the [0].name element): v0.7.0 kept imagePullSecrets top-level
+	// while v0.8.0 moved it under global. The upgrade already routes
+	// RBGS_IMAGE_PULL_SECRET through the CURRENT chart's global path; the
+	// from-install needs the release's own path so a cluster whose registry
+	// needs authentication does not time out before the upgrade runs.
+	pullSecretPath string
+
 	// newBundleMarker is the evidence that the upgrade's CRD bundle really
 	// landed: something the new bundle has that the release being upgraded from
 	// cannot have. It must be absent right after installFromRelease -- its
@@ -118,6 +126,9 @@ func v070Profile() *releaseProfile {
 			"--set", "crdUpgrade.imagePullPolicy=IfNotPresent",
 			"--set", "portAllocator.enabled=true",
 		},
+		// v0.7.0 keeps imagePullSecrets top-level; both the manager and the
+		// crd-upgrade Job template read it.
+		pullSecretPath: "imagePullSecrets",
 		newBundleMarker: bundleMarker{
 			description: "CRD " + warmupCRDName,
 			present: func(f *framework.Framework) (bool, error) {
@@ -144,6 +155,7 @@ func v080Profile() *releaseProfile {
 			"--set", "crdUpgrade.image.pullPolicy=IfNotPresent",
 			"--set", "controller.features.portAllocator.enabled=true",
 		},
+		pullSecretPath: "global.imagePullSecrets",
 		// The warmup CRD already exists in v0.8.0, so it cannot mark this hop.
 		// The strategy type enum on the RoleInstanceSet CRD is what the new
 		// bundle adds: v0.8.0's CRDs accept any string there.
