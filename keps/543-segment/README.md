@@ -226,7 +226,7 @@ Admission in the same batch means that members of a Segment enter the update sco
 | Risk or cost | Design boundary and handling |
 | --- | --- |
 | Ratios or rule organization limit flexibility | No independent member-role scaling, membership overlap across rules, or in-place ratio changes; coordinate related roles in one rule and change ratios through withdrawal and re-adoption |
-| Desired replicas violate the ratio | Report residual instances for each role and stop the Segment replica change. Initial creation produces no member target, an active Segment keeps its current valid targets, and existing-workload adoption does not take effect; users must correct the target |
+| Desired replicas violate the ratio | Report residual instances for each role and stop the entire RBG reconciliation before any Segment or role target is written. Initial creation produces no member target, an active Segment keeps its current valid targets, and existing-workload adoption does not take effect; users must correct the target |
 | Grouping differs from application routing | RBG publishes and maintains identity but cannot verify group-aware routing; regrouping does not guarantee seamless application-state or routing migration |
 | Independent RIS execution could exceed the budget | RBG deduplicates by group identity and controls a common boundary; partial parameter application, target changes, and delayed status require verification |
 | Slow members or a bad version keep occupying budget | Without surge, an exhausted budget can block new groups; otherwise eligible groups may use remaining capacity, without automatically increasing the budget |
@@ -373,8 +373,8 @@ This restriction applies only to overlap involving Segment members. Ordinary rul
 The related Policy and RBG configuration determines whether member modes support Segment:
 
 - On Policy or RBG creation or update, validate members' effective workload backend and mode when the related configuration exists. Every member must use `workloads.x-k8s.io/v1alpha2 RoleInstanceSet` with `Stateful` or the default Stateful pattern. Reject Stateless RIS, Deployment, StatefulSet, LeaderWorkerSet, and unknown backends; do not convert modes or silently ignore Segment.
-- Dense membership is a prerequisite. A Segment member may not carry user `excluded-ordinals`, and its child RIS may not carry a non-empty controller-managed `committed-skip-ordinals` annotation. Sparse Stateful membership blocks the affected rule rather than being silently divided by the ratio.
-- A Policy can be created before its RBG. Because Policy alone cannot establish member modes, allow it to be saved and validate when the RBG appears. Reconciliation checks again before adoption and before applying Segment parameters. An invalid combination blocks the affected rule and reports the member and reason without changing modes or deleting existing instances.
+- Dense membership is a prerequisite. A Segment member may not carry user `excluded-ordinals`, and its child RIS may not carry a non-empty controller-managed `committed-skip-ordinals` annotation. Sparse Stateful membership stops the RBG reconciliation rather than being silently divided by the ratio.
+- A Policy can be created before its RBG. Because Policy alone cannot establish member modes, allow it to be saved and validate when the RBG appears. Reconciliation checks again before adoption and before applying Segment parameters. An invalid combination stops the entire RBG reconciliation and reports the member and reason without changing modes or deleting existing instances.
 - Non-Segment Stateless roles are unaffected. After Segment is removed, mode changes still follow existing workload validation; withdrawing Segment does not guarantee support for in-place mode switching.
 
 For example, Stateful prefill and Stateless decode cannot enable Segment even if their replicas satisfy `1P:1D`. If both members use Stateful RIS, proceed with the remaining validation.
@@ -383,13 +383,13 @@ For example, Stateful prefill and Stateless decode cannot enable Segment even if
 
 RBG reconciliation first checks whether effective desired replicas represent a common integer group count: `roleReplicas / segment[role]` must equal the same non-negative integer `N` for every role. If so, `N` is the desired complete-group count. Misaligned replicas are rejected and reported; Segment does not silently floor them, publish residual addresses, or delete existing members. If `minSegments` exceeds `N`, report an unsatisfiable scheduling threshold.
 
-A role whose replicas do not divide evenly, or different group counts across roles, indicates a ratio violation. RBG calculates residual instances for each role according to the [complete Segment invariants](#complete-segment-invariants), reports them through a condition, and stops applying the Segment replica target. This rule applies to initial creation, subsequent reconciliation of an active Segment, and adding or re-adding Segment to an existing RBG:
+A role whose replicas do not divide evenly, or different group counts across roles, indicates a ratio violation. RBG calculates residual instances for each role according to the [complete Segment invariants](#complete-segment-invariants), reports them through a condition, and stops the RBG reconciliation before any target or group description is written. This rule applies to initial creation, subsequent reconciliation of an active Segment, and adding or re-adding Segment to an existing RBG:
 
 - Initial creation produces no member replica target and does not create a subset based on rounded-down group counts.
 - An active Segment keeps the valid targets currently applied to each RIS and does not continue scaling from invalid desired replicas.
 - Adding or re-adding Segment to an existing RBG blocks adoption without deleting or rearranging existing members or transferring Adapter control authority.
 
-The block applies only to this Segment configuration and its replica change, not reconciliation of the entire RBG. Other valid rules continue, and RIS continues maintaining existing instances. After the user corrects desired replicas, RBG validates them again and resumes processing.
+The validation runs at the start of RBG reconciliation, before the discovery ConfigMap, group descriptions, coordination parameters, or role targets are updated. A ratio violation therefore stops the entire RBG reconciliation: RBG reports the condition, writes no partial target, and leaves existing RIS objects and their specs unchanged. Existing instances keep running, and the separate RIS controllers continue maintaining them. After the user corrects desired replicas, RBG validates them again and resumes processing.
 
 Policy admission does not validate RBG replica counts because a Policy can precede its RBG and external scaling systems may change replicas later. Once a Segment is effective, RBG admission and reconciliation reject a direct member-role replica update unless all member roles are updated together to the same integer Segment count. The ScalingAdapter controller likewise rejects single-role targets. These are hard alignment rules, not a silent floor, and must also be checked during RBG reconciliation.
 
@@ -1096,7 +1096,7 @@ For each capability below, cover valid inputs, invalid inputs, and boundary stat
 ##### Policy Lifecycle
 
 - Policy creation, deletion, and Segment addition or removal trigger adoption or withdrawal even when RBG replicas and workload templates are unchanged.
-- Initial adoption, re-adoption, and reconciliation retries all check member modes. Stateless RIS blocks the affected Segment without a valid group description or corresponding Segment Adapter, mode conversion, or deletion of existing instances.
+- Initial adoption, re-adoption, and reconciliation retries all check member modes. Stateless RIS stops the entire RBG reconciliation without a valid group description, a corresponding Segment Adapter, mode conversion, or deletion of existing instances.
 - Sparse membership, user exclusions, and non-native Stateful backends block adoption without deleting instances or rewriting membership.
 - On initial adoption, block mismatched effective desired ratios without rearranging or deleting existing members. If the desired ratio is valid, synchronize existing RI and Pod identities whether or not actual membership is complete.
 - With desired `2P, 2D` and actual `2P, 1D`, retain P in the incomplete group and the effective target, and let RIS create the missing D. Do not reduce the target to current complete groups or clean up before recreating.
@@ -1115,14 +1115,14 @@ For each capability below, cover valid inputs, invalid inputs, and boundary stat
 - Scale out and in in complete Segments; targets must not exceed the group count represented by valid desired replicas.
 - During initial creation with an invalid desired state such as `2P:1D` and `P=5, D=2`, report residual instances for each role and create neither `4P, 2D` nor any other Segment members.
 - When a subsequent replica change to an active Segment violates the ratio, keep the valid targets currently applied to each RIS without partial scaling. Adding or re-adding Segment blocks adoption without transferring Adapter control authority.
-- A ratio violation blocks only the affected Segment configuration and its replica change. Other valid rules continue reconciling, RIS continues maintaining existing instances, and processing resumes after desired replicas are corrected.
+- A ratio violation stops the entire RBG reconciliation before any Segment or role target is written; existing RIS objects are unchanged and their controllers continue maintaining existing instances. Processing resumes after desired replicas are corrected.
 - Initial creation and later scale-out both use `segBatchSize`, defaulting to 1. A target of 5 with batch size 2 progresses as `0 → 2 → 4 → 5`, allowing a partial final batch. Without a scaling strategy, apply the full target directly.
 - Omitted, zero, or other valid integer and percentage `scaling.maxSkew` values do not affect Segment targets. The batch field does not affect scale-in or surge.
 - `OrderScheduled` checks all expected Pods of all current-batch members; `OrderReady` checks all members' readiness. Evaluate by batch with multiple components, missing members, or some roles already at final replicas while the current batch is not Ready.
 - Keep the applied target while a batch is incomplete. Do not reduce it to Ready or actual complete groups, or add the next batch early on repeated reconciliation, partial target application, or delayed status.
 - Segment scaling neither raises targets to Gang minimums nor adjusts batch size automatically. Admission rejects static `segBatchSize < minSegments` conflicts, while reconciliation reports configurations that bypass admission.
 - Reject scaling only some roles without partially executing the request through rounding.
-- When desired replicas do not divide evenly or yield different group counts, report residual instances and stop applying replica targets. Verify that address discovery publishes only the aligned base-group target.
+- When desired replicas do not divide evenly or yield different group counts, report residual instances and stop the RBG reconciliation. Verify that the address discovery update is skipped and no residual identity is published while the violation persists.
 
 ##### ScalingAdapter Status and Control Authority
 
@@ -1215,7 +1215,7 @@ These scenarios verify parameter application, event propagation, and final state
 
 - With all-Stateful RIS membership and other validation satisfied, creating a CoordinatedPolicy with Segment labels both RoleInstances and Pods.
 - Cover creating RBG before adding Segment and creating Policy before RBG. Stateless-member combinations must never become effective, and switching an effective Segment member to Stateless is rejected.
-- Simulate an invalid combination bypassing admission. Reconciliation blocks the affected Segment and reports the specific member without a valid group description, automatic mode conversion, or deletion of existing instances. Non-Segment Stateless roles run normally.
+- Simulate an invalid combination bypassing admission. Reconciliation stops with a condition and reports the specific member without a valid group description, automatic mode conversion, or deletion of existing instances. Existing instances, including non-Segment Stateless roles, continue running unchanged.
 - Pod recreation does not change group identity.
 
 ##### Adapter Targets and Control Handoff
@@ -1258,7 +1258,7 @@ These scenarios verify parameter application, event propagation, and final state
 
 ##### Address Discovery
 
-- While effective desired replicas violate the ratio, such as `2P:1D` with `P=5, D=2`, verify that the published address table contains no address for a residual instance such as `prefill-4` and publishes no surge identity as a base service member. The address table must track only the aligned base-group target that RBG actually applies.
+- While effective desired replicas violate the ratio, such as `2P:1D` with `P=5, D=2`, verify that reconciliation stops before the address table is updated: no residual address such as `prefill-4` appears and the last aligned table is retained. Also verify that no surge identity is published as a base service member.
 - During rolling updates and surge creation, verify that discovery output changes only with the applied base-group target and that residual or surge identities are never published as serviceable members.
 
 ##### Policy Adoption and Withdrawal
@@ -1281,8 +1281,8 @@ These scenarios verify parameter application, event propagation, and final state
 #### End-to-End Tests
 
 - Run a PD-disaggregated inference example and verify RI and Pod identities against the prefill/decode ratio.
-- Exercise address discovery end-to-end from the ConfigMap consumed by routers: while desired replicas violate the ratio and while surge instances exist, publish only aligned base-group identities, never residual or surge identities, and return to the corrected target after the desired replicas are fixed.
-- Scale out and in using Segment units; verify final replicas satisfy the ratio and creation batches obey progression. For both initial creation and an active Segment, verify that invalid ratios stop replica changes and processing resumes after correction.
+- Exercise address discovery end-to-end from the ConfigMap consumed by routers: while desired replicas violate the ratio, reconciliation stops before the ConfigMap is updated and the last aligned identities remain; while surge instances exist, publish only aligned base-group identities and never surge identities; return to the corrected target after the desired replicas are fixed.
+- Scale out and in using Segment units; verify final replicas satisfy the ratio and creation batches obey progression. For both initial creation and an active Segment, verify that invalid ratios stop RBG reconciliation and processing resumes after correction.
 - Perform Segment-level rolling upgrades; verify that common partitions and group budgets constrain actual updates. With a positive budget, admitted groups do not rotate RIs using the original Policy value; a zero budget with surge still adds no unavailable instances.
 - Set non-Segment Policy `maxSurge: 2` with `replicas=4, partition=0` and initially healthy old-version instances. Cover `maxUnavailable: 0` and `2`; verify two extra RIs appear and are eventually reclaimed to 4. Reuse existing RIS surge E2E scenarios without asserting that every partition must create two extra instances.
 - Verify Segment Policy limit projection, role-configuration overrides, and explicit zero on omission. Each RIS executes its local algorithm; extra RIs need not form complete groups.

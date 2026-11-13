@@ -226,7 +226,7 @@ spec:
 | 风险或代价 | 设计边界与处理方式 |
 | --- | --- |
 | 配比或规则组织限制灵活性 | 不支持单 role 扩缩、成员跨规则重叠或原地改配比；相关 role 在同一规则内协调，改配比通过撤销和重新接管完成 |
-| 期望副本不满足配比 | 报告各 role 的剩余实例并停止本次 Segment 副本变更；首次创建不生成成员目标，已生效的 Segment 保持当前合法目标，存量接管不生效，由用户修正目标 |
+| 期望副本不满足配比 | 报告各 role 的剩余实例，并在写入任何 Segment 或 role 目标前停止整个 RBG reconcile；首次创建不生成成员目标，已生效的 Segment 保持当前合法目标，存量接管不生效，由用户修正目标 |
 | 分组和业务路由不一致 | RBG 发布并维护身份，但无法验证 router 是否按组路由；重新分组不保证应用状态或路由无缝迁移 |
 | 各 RIS 独立执行可能突破预算 | RBG 按组身份去重并控制共同边界；部分下发、目标变化及状态延迟必须验证 |
 | 慢成员或坏版本持续占用预算 | 无 surge 时，预算耗尽允许阻塞新增组；有余量且满足其他条件时仍可补位，不自动扩大预算 |
@@ -371,8 +371,8 @@ type AdapterScaleTargetRef struct {
 Policy 与 RBG 的关联配置决定成员模式是否支持 Segment：
 
 - 创建或更新 Policy、RBG 时，若关联配置已存在，校验成员的有效 workload 后端和模式。每个成员必须使用 `workloads.x-k8s.io/v1alpha2 RoleInstanceSet`，且 pattern 为 `Stateful` 或默认 Stateful。拒绝 Stateless RIS、Deployment、StatefulSet、LeaderWorkerSet 和未知后端，不自动转换模式或忽略 Segment。
-- 稠密成员是前置条件。Segment 成员不得携带用户 `excluded-ordinals`，其子 RIS 不得携带非空的 controller 管理 `committed-skip-ordinals` annotation。稀疏 Stateful 成员阻塞对应规则，不得直接按配比做整数除法。
-- Policy 可以先于 RBG 创建；此时不能仅凭 Policy 确认成员模式，允许先保存 Policy，待 RBG 出现时校验。reconcile 在接管及下发 Segment 参数前再次检查，发现不合法组合时阻塞对应规则并报告具体成员和原因，不改写模式或删除已有实例。
+- 稠密成员是前置条件。Segment 成员不得携带用户 `excluded-ordinals`，其子 RIS 不得携带非空的 controller 管理 `committed-skip-ordinals` annotation。稀疏 Stateful 成员使整个 RBG reconcile 停止，不得直接按配比做整数除法。
+- Policy 可以先于 RBG 创建；此时不能仅凭 Policy 确认成员模式，允许先保存 Policy，待 RBG 出现时校验。reconcile 在接管及下发 Segment 参数前再次检查，发现不合法组合时停止整个 RBG reconcile 并报告具体成员和原因，不改写模式或删除已有实例。
 - 非 Segment 的 Stateless role 不受该限制影响；移除 Segment 后，模式变更仍遵守原有 workload 校验，不因撤销 Segment 而承诺支持原地切换模式。
 
 例：prefill 为 Stateful RIS、decode 为 Stateless RIS，即使副本满足 `1P:1D`，也不能启用 Segment；两个成员均为 Stateful RIS 时，继续执行其余校验。
@@ -381,13 +381,13 @@ Policy 与 RBG 的关联配置决定成员模式是否支持 Segment：
 
 RBG reconcile 先检查有效期望副本是否满足共同整数组数：所有 role 的 `roleReplicas / segment[role]` 必须等于同一个非负整数 `N`。满足时，`N` 为期望完整组数。副本未对齐时拒绝并报告；Segment 不静默向下取整，不发布剩余实例地址，也不删除已有成员。若 `minSegments` 超过 `N`，则报告调度门槛不可满足。
 
-任一 role 不能整除，或各 role 得到的组数不同，都属于配比错误。RBG 按[完整 Segment 不变量](#完整-segment-不变量)计算并报告各 role 的剩余实例，停止本次 Segment 副本目标下发。该规则同时适用于首次创建、已生效 Segment 的后续 reconcile，以及已有 RBG 添加或重新添加 Segment：
+任一 role 不能整除，或各 role 得到的组数不同，都属于配比错误。RBG 按[完整 Segment 不变量](#完整-segment-不变量)计算并报告各 role 的剩余实例，停止整个 RBG reconcile，不写入任何目标或分组描述。该规则同时适用于首次创建、已生效 Segment 的后续 reconcile，以及已有 RBG 添加或重新添加 Segment：
 
 - 首次创建不生成成员副本目标，不按向下取整后的组数创建部分实例。
 - 已生效的 Segment 保持各 RIS 当前已下发的合法目标，不根据非法期望继续扩缩。
 - 已有 RBG 添加或重新添加 Segment 时阻塞接管，不删除、重排已有成员，也不切换 Adapter 控制权。
 
-阻塞只针对本次 Segment 配置及其副本变更，不停止整个 RBG 的 reconcile；其他有效规则继续执行，RIS 继续维护已有实例。用户修正期望副本后，RBG 再重新校验并继续处理。
+该校验发生在 RBG reconcile 开始处，早于 discovery ConfigMap、分组描述、协调参数或 role 目标的任何写入。配比错误因此停止整个 RBG reconcile：RBG 报告 condition，不写入任何部分目标，也不改已有 RIS 对象及其 spec；已有实例继续运行，由独立的 RIS controller 继续维护。用户修正期望副本后，RBG 再重新校验并继续处理。
 
 Policy 准入不校验 RBG 副本数，因为 Policy 可以先于 RBG 创建，副本数也可能随后由外部扩缩容系统修改。Segment 生效后，RBG 准入和 reconcile 必须拒绝只修改部分成员副本的请求，除非所有成员在同一请求中更新为同一个整数 Segment 数。ScalingAdapter controller 同样拒绝单 role 目标。这些是硬对齐规则，不是静默取整，并且必须在 RBG reconcile 中再次检查。
 
@@ -1093,7 +1093,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 ##### Policy 生命周期
 
 - Policy 创建、删除以及添加或移除 Segment 配置，在 RBG replicas 和业务模板不变时也触发接管或撤销。
-- 首次添加、重新添加及 reconcile 重试均检查成员模式；发现 Stateless RIS 时阻塞对应 Segment，不下发有效分组描述、不创建对应 Segment Adapter，也不转换模式或删除已有实例。
+- 首次添加、重新添加及 reconcile 重试均检查成员模式；发现 Stateless RIS 时停止整个 RBG reconcile，不下发有效分组描述、不创建对应 Segment Adapter，也不转换模式或删除已有实例。
 - 稀疏成员、用户 exclusion 和非原生 Stateful 后端阻塞接管，不删除实例或改写成员记录。
 - 首次接管时，有效期望副本不满足共同配比则阻塞且不因新 Policy 重排或删除已有成员；满足配比时，成员完整与否都可先同步已有 RI / Pod 的分组身份。
 - 期望 `2P、2D`、实际 `2P、1D` 时，保留不完整组中的 P，保持有效目标并由 RIS 补齐 D；不按当前完整组数回退目标或先清理再重建。
@@ -1112,14 +1112,14 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 - 扩缩容均以完整 Segment 为单位，target 不超过合法期望的组数。
 - 首次创建使用 `2P:1D`、`P=5、D=2` 等不满足配比的期望时，报告各 role 剩余实例，不创建 `4P、2D` 或其他 Segment 成员。
 - 已生效 Segment 的后续副本变更不满足配比时，保持各 RIS 当前合法目标，不部分扩缩；添加或重新添加 Segment 时阻塞接管，不切换 Adapter 控制权。
-- 配比错误只阻塞对应 Segment 配置及其副本变更，其他有效规则继续 reconcile，RIS 继续维护已有实例；修正期望后恢复处理。
+- 配比错误在写入任何 Segment 或 role 目标前停止整个 RBG reconcile；已有 RIS 对象不变，其 controller 继续维护已有实例；修正期望后恢复处理。
 - 首次创建与后续扩容统一使用 `segBatchSize`，缺省每批 1 组；目标 5 组、批量 2 时按 `0 → 2 → 4 → 5` 推进，最后一批不要求满额；没有 scaling 策略时直接下发完整目标。
 - Segment 的 `scaling.maxSkew` 无论省略、零值或其他合法整数、百分比均不影响 target；批量字段不作用于缩容或 surge。
 - `OrderScheduled` 检查当前批次全部成员的预期 Pod 已调度，`OrderReady` 检查全部成员 Ready；多 component、缺员、部分 role 已达到最终副本数但当前批次未 Ready 时仍按批次判断。
 - 当前批次未完成时保持已下发目标，不按 Ready 或实际完整组数回退，不在重复 reconcile、部分下发或状态延迟时提前增加下一批。
 - Segment scaling 不读取 Gang minimum 来抬升 target，也不自动修改批量；`segBatchSize < minSegments` 的静态冲突由准入拒绝，绕过准入的组合由 reconcile 报告。
 - 部分 role 扩缩被拒绝，不通过向下取整部分执行。
-- desired replicas 不整除或各 role 组数不同时报告剩余实例并停止副本目标下发，地址发现只发布对齐后的基础组目标。
+- desired replicas 不整除或各 role 组数不同时报告剩余实例并停止整个 RBG reconcile，地址发现不更新，不发布剩余身份。
 
 ##### ScalingAdapter 状态与控制权
 
@@ -1212,7 +1212,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 - 所有 RIS 成员均为 Stateful 且其余校验通过时，创建带 segment 的 CoordinatedPolicy 后，RoleInstance 与 Pod 均带 label。
 - 覆盖先创建 RBG 再添加 Segment、先创建 Policy 再创建 RBG 两种顺序，Stateless 成员组合均不能生效；有效 Segment 的成员切换为 Stateless 被拒绝。
-- 模拟跳过准入后出现不合法组合，验证 reconcile 阻塞对应 Segment 并报告具体成员，不下发有效分组描述、不自动转换模式或删除已有实例；非 Segment 的 Stateless role 正常运行。
+- 模拟跳过准入后出现不合法组合，验证 reconcile 停止并报告具体成员，不下发有效分组描述、不自动转换模式或删除已有实例；已有实例（含非 Segment 的 Stateless role）继续运行，不因停止被删除或改写。
 - Pod 重建后 label 不漂移。
 
 ##### Adapter 目标与控制权交接
@@ -1255,7 +1255,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 ##### 地址发现
 
-- 当有效期望副本违反配比（例如 `2P:1D` 且 `P=5、D=2`）时，验证发布的地址表不包含 `prefill-4` 等剩余实例的地址，也不把 surge 身份发布为基础可服务成员；地址表只能跟随 RBG 实际下发的对齐基础组目标。
+- 当有效期望副本违反配比（例如 `2P:1D` 且 `P=5、D=2`）时，验证 reconcile 在更新地址表前停止：不出现 `prefill-4` 等剩余实例地址，保留上一次对齐地址表；同时验证不把 surge 身份发布为基础可服务成员。
 - 滚动更新和 surge 创建期间，验证地址发现输出只随实际下发的基础组目标变化，任何剩余实例或 surge 身份都不会被发布为可服务成员。
 
 ##### Policy 接管与撤销
@@ -1278,8 +1278,8 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 #### 端到端测试
 
 - 运行 PD 分离推理示例，验证 RI 与 Pod 的组身份符合 prefill / decode 配比。
-- 从 router 消费的 ConfigMap 出发端到端验证地址发现：期望副本违反配比以及存在 surge 实例期间，只发布对齐的基础组身份，不发布剩余或 surge 身份；期望副本修正后恢复为目标地址。
-- 执行 Segment 粒度扩缩，验证最终副本满足配比、创建批次遵守 progression；分别验证首次创建和已生效 Segment 的非法配比会停止副本变更，修正后恢复。
+- 从 router 消费的 ConfigMap 出发端到端验证地址发现：期望副本违反配比时 reconcile 在 ConfigMap 更新前停止并保留上次对齐身份；存在 surge 实例期间只发布对齐的基础组身份，不发布剩余或 surge 身份；期望副本修正后恢复为目标地址。
+- 执行 Segment 粒度扩缩，验证最终副本满足配比、创建批次遵守 progression；分别验证首次创建和已生效 Segment 的非法配比会停止 RBG reconcile，修正后恢复。
 - 执行 Segment 粒度滚动升级，验证共同 partition 和组级预算限制实际更新范围；正值预算下获准组内不按 Policy 原值轮换 RI，零值与 surge 组合仍不增加不可用实例。
 - 通过非 Segment Policy 配置 `maxSurge: 2`，在 `replicas=4、partition=0`、初始全部健康旧版本的条件下，分别覆盖 `maxUnavailable: 0` 与 `2`，验证出现两个额外 RI 并最终回收至 4 个；复用现有 RIS surge E2E 场景，不扩展为任意 partition 下必须创建两个的断言。
 - Segment Policy 的上限投影、role 配置被覆盖以及未配置时归零；验证各 RIS 按本地算法执行，不要求额外 RI 构成完整组。
