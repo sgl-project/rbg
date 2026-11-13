@@ -52,27 +52,89 @@ var instanceReasonFamily = map[string]string{
 	workloadsv1alpha2.ReasonPodOperationUnclassified:      workloadconstants.ProgressingReasonUnclassifiedBlocker,
 }
 
-// ClassifySetOperationError maps a RoleInstanceSet CR-operation error to the canonical
-// RIS blocker reason. Unclassified errors use UnclassifiedBlocker; RIS must not guess a
-// family from the status code alone.
+// ClassifySetOperationError maps a RoleInstanceSet CR-operation error (or a joined
+// aggregate of such errors) to the canonical RIS blocker reason. Each constituent
+// error is classified independently, because a joined Forbidden error and a quota
+// message from different roles must not be classified from the combined text; the
+// highest-priority family wins. Unclassified errors use UnclassifiedBlocker; RIS must
+// not guess a family from the status code alone.
 func ClassifySetOperationError(err error) string {
 	if err == nil {
 		return ""
 	}
+	classifications := map[string]bool{}
+	for _, single := range flattenErrors(err) {
+		classifications[classifySingleSetOperationError(single)] = true
+	}
+	for _, family := range familyPriority {
+		if classifications[family] {
+			return family
+		}
+	}
+	return workloadconstants.ProgressingReasonUnclassifiedBlocker
+}
+
+// classifySingleSetOperationError classifies one concrete error.
+func classifySingleSetOperationError(err error) string {
 	switch {
 	case apierrors.IsForbidden(err):
-		if strings.Contains(err.Error(), "exceeded quota") {
+		// HTTP 403 is ambiguous: admission webhooks also reject with Forbidden, so
+		// the admission detail must be recognized before defaulting to RBAC.
+		if mentionsAdmissionWebhook(err) {
+			return workloadconstants.ProgressingReasonAdmissionDenied
+		}
+		if isQuotaExceededError(err) {
 			return workloadconstants.ProgressingReasonWaitingForQuota
 		}
 		return workloadconstants.ProgressingReasonPermissionDenied
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
-		if msg := err.Error(); strings.Contains(msg, "admission webhook") || strings.Contains(msg, "admission plugin") {
+		if mentionsAdmissionWebhook(err) {
 			return workloadconstants.ProgressingReasonAdmissionDenied
 		}
 		return workloadconstants.ProgressingReasonUnclassifiedBlocker
 	default:
 		return workloadconstants.ProgressingReasonUnclassifiedBlocker
 	}
+}
+
+// flattenErrors expands joined and aggregated errors into their concrete
+// constituents, keeping single errors unchanged.
+func flattenErrors(err error) []error {
+	if aggregate, ok := err.(interface{ Unwrap() []error }); ok {
+		constituents := aggregate.Unwrap()
+		out := make([]error, 0, len(constituents))
+		for _, single := range constituents {
+			out = append(out, flattenErrors(single)...)
+		}
+		return out
+	}
+	if aggregate, ok := err.(interface{ Errors() []error }); ok {
+		constituents := aggregate.Errors()
+		out := make([]error, 0, len(constituents))
+		for _, single := range constituents {
+			out = append(out, flattenErrors(single)...)
+		}
+		return out
+	}
+	return []error{err}
+}
+
+func isQuotaExceededError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Quota rejections are Forbidden with an "exceeded quota" detail, which is not
+	// distinguishable through a typed helper.
+	return strings.Contains(err.Error(), "exceeded quota")
+}
+
+func mentionsAdmissionWebhook(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "admission webhook") ||
+		strings.Contains(msg, "admission plugin")
 }
 
 // SetBlocker carries a blocker fact observed by this controller's own operations.
@@ -123,6 +185,11 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	if set.Spec.Replicas != nil {
 		target = *set.Spec.Replicas
 	}
+	// Structural progress uses observed required instances, not the compatibility
+	// counters: stateful mode fills missing slots with synthetic RoleInstances and
+	// updateStatus counts them, which would hide initial creation, scale-up, and
+	// missing-instance recovery.
+	observedReplicas := int32(len(instances))
 
 	updatePending := updateActive(set, newStatus, instances)
 
@@ -131,7 +198,7 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	// reconcile, so a non-empty revision is not evidence of establishment; only a
 	// previous convergence is. A zero-replica target is structurally complete at
 	// creation and never reports Creating.
-	if !setEstablished(set) && newStatus.Replicas < target {
+	if !setEstablished(set) && observedReplicas < target {
 		condition.Reason = workloadconstants.ProgressingReasonCreating
 		return condition
 	}
@@ -140,7 +207,7 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	// established: when the target did not grow, the missing instance is repair or
 	// replacement, not a scale-up. Update-driven replacement is excluded because
 	// it remains RoleInstanceUpdated.
-	if anyInstanceRecovering(instances) || establishedInstanceMissing(set, newStatus, target, updatePending) {
+	if anyInstanceRecovering(instances) || establishedInstanceMissing(set, observedReplicas, target, updatePending) {
 		condition.Reason = workloadconstants.ProgressingReasonRecovering
 		return condition
 	}
@@ -158,10 +225,10 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	}
 
 	switch {
-	case newStatus.Replicas < target:
+	case observedReplicas < target:
 		condition.Reason = workloadconstants.ProgressingReasonScalingUp
 		return condition
-	case newStatus.Replicas > target:
+	case observedReplicas > target:
 		condition.Reason = workloadconstants.ProgressingReasonScalingDown
 		return condition
 	}
@@ -176,6 +243,13 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 
 	if newStatus.ReadyReplicas < newStatus.Replicas {
 		condition.Reason = workloadconstants.ProgressingReasonInstancesNotReady
+		return condition
+	}
+	if newStatus.AvailableReplicas < newStatus.Replicas {
+		// Readiness is satisfied but the minReadySeconds stability window is still
+		// running; completion must not be reported before availability.
+		condition.Reason = workloadconstants.ProgressingReasonInstancesNotReady
+		condition.Message = "instances are ready but have not satisfied minReadySeconds"
 		return condition
 	}
 
@@ -224,11 +298,25 @@ func setEstablished(set *workloadsv1alpha2.RoleInstanceSet) bool {
 
 // establishedInstanceMissing reports whether an established set lost instances it
 // still requires: the target did not grow, no update workflow explains the loss,
-// and the current instance count is below both the target and the previously
-// established count.
-func establishedInstanceMissing(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, target int32, updatePending bool) bool {
-	return !updatePending && setEstablished(set) &&
-		newStatus.Replicas < target && set.Status.Replicas >= target
+// and the observed instance count is below the target. The first status write of a
+// shortage lowers the persisted counters, so a persisted Recovering reason also
+// proves replacement is in progress and keeps the classification stable instead of
+// flipping to ScalingUp on the next observation.
+func establishedInstanceMissing(set *workloadsv1alpha2.RoleInstanceSet, observedReplicas, target int32, updatePending bool) bool {
+	if updatePending || !setEstablished(set) || observedReplicas >= target {
+		return false
+	}
+	if set.Status.Replicas >= target {
+		return true
+	}
+	for _, condition := range set.Status.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
+			condition.Status == v1.ConditionTrue &&
+			condition.Reason == workloadconstants.ProgressingReasonRecovering {
+			return true
+		}
+	}
+	return false
 }
 
 // extractOwnSetBlocker returns the highest-priority blocker recorded by this
@@ -299,9 +387,10 @@ func currentSetBlocker(ownBlocker, priorBlocker *SetBlocker, instances []*worklo
 		// The prior family stays when the new failure cannot be classified; a fresh
 		// successful observation of the current target clears it, and an
 		// unclassifiable error does not establish that the confirmed family no
-		// longer holds.
+		// longer holds. The message records the latest operation error so
+		// diagnostics and event deduplication follow the current attempt.
 		if _, exists := candidates[priorBlocker.Reason]; !exists {
-			candidates[priorBlocker.Reason] = priorBlocker.Message
+			candidates[priorBlocker.Reason] = ownBlocker.Message
 		}
 	}
 

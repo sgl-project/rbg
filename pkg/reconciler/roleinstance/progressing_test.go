@@ -22,7 +22,9 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 
+	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -98,6 +100,10 @@ func TestClassifyPodOperationError(t *testing.T) {
 		{"quota create", forbiddenQuota, workloadsv1alpha2.ReasonPodCreateQuotaExceeded},
 		{"rbac create", forbiddenRBAC, workloadsv1alpha2.ReasonPodCreateForbidden},
 		{"admission", admission, workloadsv1alpha2.ReasonPodAdmissionRejected},
+		{"forbidden admission detail", apierrors.NewForbidden(
+			corev1.Resource("pods"), "ri-0",
+			apierrors.NewBadRequest(`admission webhook "example" denied the request`)),
+			workloadsv1alpha2.ReasonPodAdmissionRejected},
 		{"unclassified", apierrors.NewServerTimeout(corev1.Resource("pods"), "POST", 1), workloadsv1alpha2.ReasonPodOperationUnclassified},
 	}
 	for _, tc := range cases {
@@ -195,6 +201,30 @@ func TestComputeInstanceProgressingCondition(t *testing.T) {
 	})
 }
 
+func TestInstanceProgressingBlockerPriority(t *testing.T) {
+	// A scale failure and an update failure can both be recorded in one reconcile;
+	// a lower-priority failure appended first must not hide a later permission
+	// failure.
+	conditions := []workloadsv1alpha2.RoleInstanceCondition{
+		{
+			Type:    workloadsv1alpha2.RoleInstanceProgressing,
+			Status:  corev1.ConditionTrue,
+			Reason:  workloadsv1alpha2.ReasonPodOperationUnclassified,
+			Message: "scale timeout",
+		},
+		{
+			Type:    workloadsv1alpha2.RoleInstanceProgressing,
+			Status:  corev1.ConditionTrue,
+			Reason:  workloadsv1alpha2.ReasonPodUpdateForbidden,
+			Message: "update forbidden",
+		},
+	}
+	blocker := instanceProgressingBlocker(conditions)
+	if blocker == nil || blocker.Reason != workloadsv1alpha2.ReasonPodUpdateForbidden {
+		t.Fatalf("highest-priority blocker expected, got %+v", blocker)
+	}
+}
+
 func TestStableBlockerReason(t *testing.T) {
 	instance := &workloadsv1alpha2.RoleInstance{
 		ObjectMeta: metav1.ObjectMeta{Generation: 2},
@@ -238,6 +268,73 @@ func TestStableBlockerReason(t *testing.T) {
 	if got := r.stableBlockerReason(instance, workloadsv1alpha2.ReasonPodCreateForbidden); got != workloadsv1alpha2.ReasonPodCreateForbidden {
 		t.Fatalf("specific new error must win, got %s", got)
 	}
+}
+
+func TestPhaseFacts(t *testing.T) {
+	r := &reconciler{}
+	size := int32(2)
+
+	t.Run("component size increase without revision change is a spec-driven update", func(t *testing.T) {
+		// Component size is excluded from revision patches, so the revisions stay
+		// equal after a user increases size; the generation latch proves the new
+		// target has not been confirmed ready.
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Generation: 2},
+			Spec: workloadsv1alpha2.RoleInstanceSpec{
+				Components: []workloadsv1alpha2.RoleInstanceComponent{{Name: "main", Size: &size}},
+			},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				LastReadyGeneration: 1,
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "rev", UpdateRevision: "rev"}
+		facts := r.phaseFacts(instance, newStatus, []*corev1.Pod{{}})
+		if !facts.updateActive {
+			t.Fatal("size-only spec update must be updateActive")
+		}
+		if facts.podsPresent {
+			t.Fatal("one pod for a size-two component is not structurally complete")
+		}
+	})
+
+	t.Run("independent pod loss without spec change is recovery", func(t *testing.T) {
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Generation: 2},
+			Spec: workloadsv1alpha2.RoleInstanceSpec{
+				Components: []workloadsv1alpha2.RoleInstanceComponent{{Name: "main", Size: &size}},
+			},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				LastReadyGeneration: 2,
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "rev", UpdateRevision: "rev"}
+		facts := r.phaseFacts(instance, newStatus, []*corev1.Pod{{}})
+		if facts.updateActive {
+			t.Fatal("pod loss without a spec change must not be updateActive")
+		}
+	})
+
+	t.Run("readyPolicy none still honors the in-place gate", func(t *testing.T) {
+		instance := &workloadsv1alpha2.RoleInstance{
+			Spec: workloadsv1alpha2.RoleInstanceSpec{
+				ReadyPolicy: workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone,
+				Components:  []workloadsv1alpha2.RoleInstanceComponent{{Name: "main", Size: ptr.To(int32(1))}},
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "rev", UpdateRevision: "rev"}
+		blocked := []*corev1.Pod{{
+			Status: corev1.PodStatus{Conditions: []corev1.PodCondition{{
+				Type:   workloadconstants.InPlaceUpdateReady,
+				Status: corev1.ConditionFalse,
+			}}},
+		}}
+		if facts := r.phaseFacts(instance, newStatus, blocked); facts.readySatisfied {
+			t.Fatal("the controller-owned in-place gate must gate phase completion")
+		}
+		if facts := r.phaseFacts(instance, newStatus, []*corev1.Pod{{}}); !facts.readySatisfied {
+			t.Fatal("without the gate condition the None policy is satisfied")
+		}
+	})
 }
 
 func TestInsufficientResourcesMessage(t *testing.T) {
