@@ -232,6 +232,7 @@ spec:
 | 慢成员或坏版本持续占用预算 | 无 surge 时，预算耗尽允许阻塞新增组；有余量且满足其他条件时仍可补位，不自动扩大预算 |
 | surge 容量被误当成完整备用服务 | 仅保证上限投影，实际数量与回收由 RIS 决定，不保证额外 RI 成组 |
 | scaling 与 Gang 门槛冲突 | 静态冲突由 Policy 准入拒绝，跨资源变化由 RBG reconcile 报告；系统不自动抬升目标或降低门槛 |
+| 零更新预算且无 surge | 零 Segment 组级预算要求有效 `maxSurge` 为正；静态冲突由准入拒绝，绕过准入的组合由 reconcile 报告 |
 | 标签被修改或同步延迟 | 控制器恢复受管字段；消费者区分标签存在与当前配置有效 |
 
 ## 设计细节
@@ -357,8 +358,11 @@ type AdapterScaleTargetRef struct {
 | 规则重命名 | 同一次更新只有在不改变 Segment map 时才允许重命名；同时改变规则名和配比必须拒绝，并拆分为撤销后另行添加 |
 | 规则身份 | 同一 Policy 内确定性 rule ID 不得冲突 |
 | `strategy.scaling.segBatchSize` | 正整数，只用于 Segment，不支持百分比；省略时按 1 处理 |
+| Segment 滚动更新零预算 | 显式 `maxUnavailable` 为 `0` 时要求 `maxSurge` 为正；`maxSurge` 省略或为零被拒绝 |
 
 同时配置 scaling 与 Gang 时要求显式设置 `minSegments`，使上述检查只依赖当前 Policy，不需要在 webhook 中读取 RBG 或 Adapter 的最终期望组数。未配置 scaling 时，RIS 直接收到全部期望组目标，Gang 可以继续使用省略 `minSegments` 表示全部期望组的默认规则。
+
+零组级预算要求有效 `maxSurge` 为正。无 surge 时，零预算既不允许不可用实例、也无法推进更新，因此该组合是静态冲突而不是暂停语义：准入拒绝显式组合，reconcile 报告百分比向下取整到零且无 surge 的绕过场景，处理模式与 `segBatchSize < minSegments` 相同。
 
 添加、移除及重新添加 Segment 按[配置生命周期](#coordinatedpolicy-的添加与删除)处理，不校验历史配比。
 
@@ -504,6 +508,8 @@ aligned = 所有 residual[role] 均为 0
 创建、删除和更新期间允许暂态缺员，成员无需同时启动或 Ready。surge RI 不改变基础组目标，各 RIS 独立创建和回收，额外实例可能始终未组成完整组；组标签也不证明它们可服务，见[maxSurge 上限与 RIS 执行](#maxsurge-上限与-ris-执行)。
 
 有效 Segment 的地址发现必须只枚举对齐后的基础组目标，不得发布不会被创建的剩余身份，也不得把 surge 身份发布为基础服务成员。地址表仍不是实际完整组或可用成员列表。
+
+owner 是现有 RBG discovery ConfigMap 构建链路，不引入单独的 Segment discovery 组件。地址表由已下发的基础组目标推导——子对象创建前使用 RBG role replicas，创建后使用子 RIS 的 committed ordinals——从不读取实际 Pod 或 RoleInstance。Stateful surge 实例的 ordinal 位于 `RIS.spec.replicas` 及以上，且 surge 不改变该值，因此 surge 身份按构造被排除，不依赖感知 surge 的选择器。
 
 ### 与 Scaling 的集成
 
@@ -859,14 +865,16 @@ Segment 的参数覆盖规则为：
 | 配置情况 | RBG 的组级控制 | RIS 的执行窗口 |
 | --- | --- | --- |
 | Policy 显式设置 `maxUnavailable`，解析预算 `B > 0` | 按组聚合不可用与在途状态；无 surge 时使用上述窗口，有 surge 时保留额外可用容量参与预算的机制 | 忽略 role 原值，下发 `100%`；共同 partition 内的获准 RI 不再受额外 RI 数限制 |
-| Policy 显式设置 `maxUnavailable`，解析预算 `B = 0` | 无 surge 时不主动增加不可用组；有 surge 时允许准备额外容量，并结合组状态推进 | 忽略 role 原值，下发 `0`；只有实际可用的 surge 增加执行预算 |
+| Policy 显式设置 `maxUnavailable`，解析预算 `B = 0` | 仅在有效 `maxSurge` 为正时合法：允许准备额外容量，并结合组状态推进；无 surge 的零预算由准入拒绝或 reconcile 报告 | 忽略 role 原值，下发 `0`；只有实际可用的 surge 增加执行预算 |
 | Policy 未设置 `maxUnavailable` | 不新增隐式组级默认预算，仍按 Segment 边界及其他已配置的协调条件推进 | 保留 role 配置；role 也未配置时沿用 RIS 默认值 |
 
 `B > 0` 时，Policy 的整数或百分比只用于 RBG 的组级预算，不再作为 RI 预算二次执行。下发 `100%` 是取消 RIS 的额外局部限流，不是按配比放大 Policy 原值；各 RIS 仍不得越过共同 partition。`B = 0` 不能下发 `100%`，否则会在没有可用 surge 时主动制造不可用实例。RBG 不从各 RIS 的局部值反推统一组级默认预算。
 
+该零预算规则与现有 Stateful RIS 解析行为刻意对齐：RIS 仅在 `maxSurge` 为零时把解析后的 `maxUnavailable` floor 到 `1`，上述准入与 reconcile 规则保证 Segment 不会把零预算写入该场景；`maxSurge` 为正时，RBG 写入的字面 `0` 原样通过现有 RIS 逻辑，更新只消耗实际可用的 surge。非 Segment 规则保持现有 floor 行为。
+
 例如无 surge、起始全部健康的 `1P:2D`，Policy 配置 `maxUnavailable: 1`。RBG 一次最多让一个 Segment 占用更新预算，P、D 两个 RIS 都收到 `100%`。该组获准后，P、D0、D1 都可以进入更新，不要求两个 D 串行轮换；整个组可能暂时不可用，但只占用一份组级预算。实际启动和 Ready 时间仍可不同，整组完成目标版本并恢复可用后，RBG 才释放在途占用并继续补位。
 
-`B = 0` 时，P、D 两个 RIS 都收到 `0`。配置了 surge 时，各 RIS 先按现有算法准备额外实例，只有实际可用的 surge 才能支持基础 RI 更新；未配置 surge 时，健康基础 RI 不因组级准入而开始会造成额外不可用的更新。
+`B = 0` 且 `maxSurge` 为正时，P、D 两个 RIS 都收到 `0`，各 RIS 先按现有算法准备额外实例，只有实际可用的 surge 才能支持基础 RI 更新。无 surge 的零预算组合在下发覆盖前被拒绝或报告，因此健康基础 RI 不会仅因组级准入进入候选更新范围就开始造成额外不可用的更新。
 
 #### maxSurge 上限与 RIS 执行
 
@@ -1180,7 +1188,8 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 - Policy `maxUnavailable` 的百分比只以期望完整 Segment 数为基数解析组级预算，不再交给 RIS 按各自副本数二次解析。
 - 组级预算 `B > 0` 时忽略 role 原值并向各 RIS 下发 `100%`，不按配比放大 Policy 原值；`1P:2D`、Policy 值为 `1` 时，一个获准 Segment 的 P、D0、D1 都可进入更新，整组只占用一份组级预算，不要求实际同时启动或 Ready。
-- 组级预算 `B = 0` 时向各 RIS 下发 `0`，不能为绕过零预算而下发 `100%`；无 surge 时不主动增加不可用实例，有 surge 时仅由实际可用额外实例增加执行预算。
+- 组级预算 `B = 0` 且 `maxSurge` 为正时向各 RIS 下发 `0`，不能为绕过零预算而下发 `100%`，仅由实际可用额外实例增加执行预算；验证准入拒绝显式零预算搭配省略或零值 `maxSurge`，reconcile 报告百分比取整到零且无 surge 的绕过场景。
+- 验证 `maxSurge` 为正时字面 `0` 覆盖原样通过现有 Stateful RIS 解析（不被 floor 到 `1`），且 Segment 不向 RIS 写入会被 floor 抬升为 `1` 的零预算；非 Segment 规则保留现有 floor 行为。
 - Policy 未配置 `maxUnavailable` 时保留各 role 配置或 RIS 默认值，不新增或反推组级默认预算，仍保持 Segment 更新边界和其他协调条件。
 - 未声明 segment 的规则继续使用各 role 独立的不可用预算。
 - 非 Segment 的 Policy `maxSurge` 显式配置时原样覆盖 role，未配置时保留原行为，显式 `0` 不等同于未配置。
