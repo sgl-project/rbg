@@ -121,7 +121,7 @@ var _ = Describe("Stateful selective scale-down", func() {
 			sort.Strings(values)
 			return values
 		}
-		Eventually(revisionNames, timeout, interval).ShouldNot(BeEmpty())
+		Eventually(revisionNames, timeout, interval).Should(HaveLen(7))
 		revisions := revisionNames()
 		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) {
 			g.Spec.Roles[0].Replicas = ptr.To[int32](3)
