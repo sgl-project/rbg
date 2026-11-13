@@ -55,9 +55,12 @@ func InjectEngineRuntimeFragments(
 	roleName string, recorder record.EventRecorder, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	logger := log.FromContext(ctx)
-	// injectedBy records which profile introduced each appended fragment
-	// name — the cross-profile skip detector's state.
+	// injectedBy records which profile introduced each appended fragment,
+	// keyed by (kind, name) — container and volume names occupy independent
+	// namespaces, so a same-named fragment of another kind must not
+	// overwrite the recorded owner. The cross-profile skip detector's state.
 	injectedBy := map[string]string{}
+	recordKey := func(kind, name string) string { return kind + "\x00" + name }
 	warnCollision := func(kind, name, profileName, ownerProfile string) {
 		emitEngineRuntimeWarning(ctx, recorder, rbg, ReasonEngineRuntimeNameCollision, fmt.Sprintf(
 			"role %q: profile %q declares %s %q, which an earlier reference to profile %q already delivered — "+
@@ -67,11 +70,12 @@ func InjectEngineRuntimeFragments(
 			roleName, profileName, kind, name, ownerProfile))
 	}
 	skipOrAppend := func(kind, name, ownerProfile string, present bool) bool {
+		key := recordKey(kind, name)
 		if !present {
-			injectedBy[name] = ownerProfile
+			injectedBy[key] = ownerProfile
 			return true
 		}
-		if owner, ok := injectedBy[name]; ok && owner != ownerProfile {
+		if owner, ok := injectedBy[key]; ok && owner != ownerProfile {
 			warnCollision(kind, name, ownerProfile, owner)
 		}
 		// A name present from the role's own template — or from the same

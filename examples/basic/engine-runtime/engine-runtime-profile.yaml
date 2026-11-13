@@ -12,7 +12,17 @@ spec:
   initContainers:
     - name: gpu-driver-init
       image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
-      command: ["/bin/sh", "-c", "echo 'GPU driver initialized'"]
+      # Installs the wrapper the containerPatches below prepend: the shared
+      # volume is mounted at /opt/gpu by the patched containers too, so
+      # /opt/gpu/wrap resolves to this file and the rendered worker command
+      # ["/opt/gpu/wrap", "exec", "nginx"] actually starts nginx.
+      command:
+        - /bin/sh
+        - -c
+        - >
+          printf '#!/bin/sh\n[ "$1" = exec ] && shift\nexec "$@"\n' > /usr/local/lib/gpu/wrap &&
+          chmod +x /usr/local/lib/gpu/wrap &&
+          echo 'GPU driver initialized'
       volumeMounts:
         - name: gpu-lib
           mountPath: /usr/local/lib/gpu
@@ -57,7 +67,7 @@ spec:
         path: /volumeMounts/-
         value:
           name: gpu-lib
-          mountPath: /usr/local/lib/gpu
+          mountPath: /opt/gpu
 
 ---
 # Step 2: Create a RoleBasedGroup referencing the engine runtime profile
