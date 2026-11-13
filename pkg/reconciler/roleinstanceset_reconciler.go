@@ -479,7 +479,6 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceTemplateByLeaderWorkerP
 
 	engineRuntimePlan, err := discovery.ResolveEngineRuntimes(ctx, r.client, r.recorder, rbg, role)
 	if err != nil {
-		logger.Error(err, "resolve engine runtimes failed", "rbg", keyOfRbg(rbg))
 		return err
 	}
 

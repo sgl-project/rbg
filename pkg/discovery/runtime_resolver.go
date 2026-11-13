@@ -188,7 +188,7 @@ func ResolveEngineRuntimes(
 	for _, runtime := range role.EngineRuntimes {
 		profile := &workloadsv1alpha2.ClusterEngineRuntimeProfile{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: runtime.ProfileName}, profile); err != nil {
-			err = fmt.Errorf("get engine runtime %s, error: %s", runtime.ProfileName, err.Error())
+			err = fmt.Errorf("get engine runtime %s: %w", runtime.ProfileName, err)
 			return plan, failRef(ctx, recorder, rbg, runtime, err)
 		}
 
