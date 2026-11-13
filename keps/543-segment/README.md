@@ -66,6 +66,7 @@
         - [Creation Batches and Progression](#creation-batches-and-progression)
         - [Group-Level Updates and Surge](#group-level-updates-and-surge)
         - [Gang Resource Admission](#gang-resource-admission)
+        - [Address Discovery](#address-discovery)
         - [Policy Adoption and Withdrawal](#policy-adoption-and-withdrawal)
         - [Controller Downgrade Preparation](#controller-downgrade-preparation)
       - [End-to-End Tests](#end-to-end-tests)
@@ -153,7 +154,7 @@ PD-disaggregated inference requires pairing prefill and decode instances. The ex
 - Infer ratios automatically, implement group-aware routing, or require routers to use it.
 - Design a complete topology API, tiers, packs, or scheduler translation.
 - Guarantee atomic operations across objects, simultaneous readiness, updates without mixed versions, or seamless application-state migration when regrouping.
-- Change address discovery for non-Segment roles. For an effective Segment, discovery must publish only the aligned base-group target and must not publish residual or surge identities as serviceable members.
+- Change address discovery for non-Segment roles. Segment-aware discovery requirements are defined in [complete Segment invariants](#complete-segment-invariants).
 - Add progression specifically for initial creation, a whole-Segment update switch, an actual surge target, or a cross-role lifecycle protocol for temporary groups.
 - Design a complete HPA integration or add general-purpose Pod selection and business-metric collection, aggregation, or deduplication. This phase defines only ScalingAdapter capabilities.
 - Support Stateless RIS or deprecated workloads such as Deployment, StatefulSet, and LWS that will no longer be supported in subsequent versions.
@@ -195,8 +196,10 @@ With desired replicas `P=4, D=2`, group membership is as follows. Instance names
 
 | Group | Members | `rbg.workloads.x-k8s.io/segment` label on each RI and its Pods |
 | --- | --- | --- |
-| Segment 0 | prefill-0, prefill-1, decode-0 | `kv-cache-0` |
-| Segment 1 | prefill-2, prefill-3, decode-1 | `kv-cache-1` |
+| Segment 0 | prefill-0, prefill-1, decode-0 | `e7652f82cdee-0` |
+| Segment 1 | prefill-2, prefill-3, decode-1 | `e7652f82cdee-1` |
+
+The label value follows the normative `<ruleID>-<groupIndex>` scheme. The rule name `kv-cache` derives the deterministic rule ID `e7652f82cdee`, the first 12 lowercase hexadecimal characters of `SHA-256("kv-cache")`.
 
 Strategies share the same grouping but have different responsibilities:
 
@@ -435,7 +438,7 @@ spec:
 | `ruleID` | Deterministic short identity used in managed labels and selectors |
 | `instancesPerSegment` | RIs per group for this role; in the same example, the prefill RIS receives `1` with a replica target of `3` |
 
-The annotation is an internal transport protocol, not a user configuration interface. RBG maintains and removes it. A specific label such as `segment=kv-cache-0` belongs only on the corresponding RIs and their Pods, not on the shared RIS instance template, because instances in one RIS belong to different groups.
+The annotation is an internal transport protocol, not a user configuration interface. RBG maintains and removes it. A specific label value such as `rbg.workloads.x-k8s.io/segment=e7652f82cdee-0` belongs only on the corresponding RIs and their Pods, not on the shared RIS instance template, because instances in one RIS belong to different groups.
 
 #### RI and Pod Label Synchronization
 
@@ -746,6 +749,10 @@ For example, when creating 4 groups from zero:
 
 The Policy webhook checks combinations determined by the Policy itself. RBG reconciliation also checks `minSegments <= desired complete groups`, ratio validity, scheduler capability, and old configurations that bypass admission. If an Adapter or RBG update later creates a conflict, report `GangConfigured=False` through the existing incompatible-Gang path without increasing desired replicas or raising intermediate targets. Insufficient resources with a valid configuration is not a configuration error, and `GangConfigured` does not replace Pod or PodGroup scheduling status.
 
+The incompatible-Gang path is also the user-visible outcome for a scale-in below `minSegments`: RBG reports the condition, keeps the last valid group target applied to RIS, and does not lower role replica targets. The scale-in stays blocked until the user corrects the desired group count or the threshold, and the controller requeues on its existing incompatible-Gang interval. Correcting the configuration resumes normal role reconciliation.
+
+The webhook check `B >= G` is intentionally static and stateless. It also rejects `B < G` for an RBG that already runs at least `G` complete groups, where the next batch would be at or above the threshold as soon as it lands. This couples scale-out batch granularity to the gang threshold in steady state: for example, a mature five-group workload with `minSegments: 2` must add at least two groups per scaling progression instead of one group at a time. This is a documented alpha tradeoff that keeps Policy admission deterministic without reading RBG state. Moving the check to reconciliation, where the applied group count is known, remains a possible follow-up and is not part of this proposal.
+
 The existing non-Segment path [raises the scaling target to the Gang minimum](../../internal/controller/workloads/rolebasedgroup_controller.go). Segment does not reuse that coupling; non-Segment behavior remains unchanged.
 
 ### Integration with Rolling Update
@@ -1028,6 +1035,8 @@ Policy is pluggable coordination. Ratio immutability restricts only in-place cha
 
 Deleting and recreating a same-name Policy changes its UID. Revalidate and adopt the new Policy instance and update RIS descriptions rather than reusing old bindings or admission results. `policyUID` distinguishes object identity; it does not permanently freeze coordination relationships. Residual labels are not evidence of completed adoption.
 
+Renaming a rule also has a gang convergence boundary. The new rule name derives a new `ruleID`, so every managed `segment` and `segment-rule` label value is re-keyed fleet-wide, and the Volcano `SubGroupPolicy` is regenerated with the new `segment-rule` selector. Label synchronization is asynchronous: until every Pod converges, Pods still carrying the old label value no longer match the regenerated subGroup selector and are not counted toward `minSubGroups` or `minMember`. Gang dispatch of pending Pods may therefore stall transiently during the rename window. The window is bounded by the existing metadata synchronization path: it requires no Pod restart or PodGroup deletion, and dispatch becomes satisfiable again once the labels converge. Rename under an active PodGroup is not atomic; users should expect this transient gang accounting window.
+
 Re-adoption may change member pairing and does not guarantee seamless application-state or routing migration. Identity synchronization does not restart or delete members, and migration to a separate workload is not required. Controllers calculate desired state directly from current configuration without waiting for all old labels to be removed. Convergence after retries and restarts still requires verification.
 
 ### Test Plan
@@ -1243,8 +1252,14 @@ These scenarios verify parameter application, event propagation, and final state
 - Gang checks resource admission only and does not wait for application readiness.
 - With Volcano, verify that Pods from different roles and RIs sharing a Segment label form one subGroup. P and D instances from different Segments must not satisfy the threshold through independent role counts; admission requires at least `minSegments` complete groups with matching identities.
 - From zero, use `segBatchSize: 2, minSegments: 2` and verify that the initial target remains 2 groups and progression continues after resource admission. A final batch of 1 group does not repeat the initial-threshold check.
-- Simulate an old configuration bypassing admission and an Adapter reducing desired groups below `minSegments`. Reconciliation reports the configuration error without adjusting replicas. Insufficient resources leave Pods Pending without being misreported as an incompatible configuration.
+- Simulate an old configuration bypassing admission and an Adapter reducing desired groups below `minSegments`. Reconciliation reports the configuration error, keeps the last valid group target applied to RIS, and blocks the scale-in until the user corrects the desired group count or threshold. Insufficient resources leave Pods Pending without being misreported as an incompatible configuration.
 - Without scaling, omitted `minSegments` still requires all desired groups; non-Segment rules in the same RBG are unaffected.
+- Rename a rule while a Volcano PodGroup with `minSubGroups` is active and pending gang dispatch. Verify that the subGroup selector is regenerated with the new rule ID, Pods carrying old label values stop matching during convergence, and dispatch resumes after label synchronization completes without Pod restarts or PodGroup deletion.
+
+##### Address Discovery
+
+- While effective desired replicas violate the ratio, such as `2P:1D` with `P=5, D=2`, verify that the published address table contains no address for a residual instance such as `prefill-4` and publishes no surge identity as a base service member. The address table must track only the aligned base-group target that RBG actually applies.
+- During rolling updates and surge creation, verify that discovery output changes only with the applied base-group target and that residual or surge identities are never published as serviceable members.
 
 ##### Policy Adoption and Withdrawal
 
@@ -1266,6 +1281,7 @@ These scenarios verify parameter application, event propagation, and final state
 #### End-to-End Tests
 
 - Run a PD-disaggregated inference example and verify RI and Pod identities against the prefill/decode ratio.
+- Exercise address discovery end-to-end from the ConfigMap consumed by routers: while desired replicas violate the ratio and while surge instances exist, publish only aligned base-group identities, never residual or surge identities, and return to the corrected target after the desired replicas are fixed.
 - Scale out and in using Segment units; verify final replicas satisfy the ratio and creation batches obey progression. For both initial creation and an active Segment, verify that invalid ratios stop replica changes and processing resumes after correction.
 - Perform Segment-level rolling upgrades; verify that common partitions and group budgets constrain actual updates. With a positive budget, admitted groups do not rotate RIs using the original Policy value; a zero budget with surge still adds no unavailable instances.
 - Set non-Segment Policy `maxSurge: 2` with `replicas=4, partition=0` and initially healthy old-version instances. Cover `maxUnavailable: 0` and `2`; verify two extra RIs appear and are eventually reclaimed to 4. Reuse existing RIS surge E2E scenarios without asserting that every partition must create two extra instances.

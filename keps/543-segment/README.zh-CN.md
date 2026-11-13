@@ -66,6 +66,7 @@
         - [创建批次与 progression](#创建批次与-progression)
         - [组级更新与 surge](#组级更新与-surge)
         - [Gang 资源准入](#gang-资源准入)
+        - [地址发现](#地址发现)
         - [Policy 接管与撤销](#policy-接管与撤销)
         - [controller 降级准备](#controller-降级准备)
       - [端到端测试](#端到端测试)
@@ -153,7 +154,7 @@ PD 分离推理需要 prefill 与 decode 配对。现有 CoordinatedPolicy 能�
 - 自动推断配比、实现或强制启用 router 组感知路由。
 - 设计完整 topology API、tier、pack 或调度器翻译。
 - 保证跨对象原子操作、成员同时 Ready、无混版更新或重新分组时的应用状态无缝迁移。
-- 改造非 Segment 规则的现有地址发现。对有效 Segment，地址发现必须只发布对齐后的基础组目标，不得把剩余实例或 surge 身份发布为可服务成员。
+- 改造非 Segment 规则的现有地址发现。Segment 感知的地址发现要求在[完整 Segment 不变量](#完整-segment-不变量)中定义。
 - 新增首次创建专用 progression、“整 Segment 更新”开关、实际 surge 目标或跨 role 临时组生命周期协议。
 - 设计完整 HPA 使用方案，或增加通用 Pod 选择及业务指标采集、聚合、去重职责；本期只定义 ScalingAdapter 能力。
 - 适配 Stateless RIS，以及后续版本不再支持的 Deployment、StatefulSet、LWS 等 deprecated workload。
@@ -195,8 +196,10 @@ spec:
 
 | 组 | 成员 | RI 及其 Pod 的 `rbg.workloads.x-k8s.io/segment` 标签 |
 | --- | --- | --- |
-| Segment 0 | prefill-0、prefill-1、decode-0 | `kv-cache-0` |
-| Segment 1 | prefill-2、prefill-3、decode-1 | `kv-cache-1` |
+| Segment 0 | prefill-0、prefill-1、decode-0 | `e7652f82cdee-0` |
+| Segment 1 | prefill-2、prefill-3、decode-1 | `e7652f82cdee-1` |
+
+标签值遵循规范定义的 `<ruleID>-<groupIndex>` 方案。规则名 `kv-cache` 派生的确定性 rule ID 为 `e7652f82cdee`，即 `SHA-256("kv-cache")` 的前 12 位小写十六进制字符。
 
 各策略使用相同分组，但职责不同：
 
@@ -433,7 +436,7 @@ spec:
 | `ruleID` | 用于受管标签和选择器的确定性短身份 |
 | `instancesPerSegment` | 本 role 每组的 RI 数；同例中 prefill RIS 的值为 `1`，副本目标为 `3` |
 
-annotation 是内部传递协议，不是用户配置入口。RBG 负责维护和撤销它。具体的 `segment=kv-cache-0` 只写到对应 RI 及其 Pod，不写入 RIS 公共实例模板，因为同一 RIS 的实例分属多个组。
+annotation 是内部传递协议，不是用户配置入口。RBG 负责维护和撤销它。具体的标签值如 `rbg.workloads.x-k8s.io/segment=e7652f82cdee-0` 只写到对应 RI 及其 Pod，不写入 RIS 公共实例模板，因为同一 RIS 的实例分属多个组。
 
 #### RI 与 Pod 的 label 同步
 
@@ -744,6 +747,10 @@ B >= G
 
 Policy webhook 只检查当前 Policy 能确定的组合。RBG reconcile 还需检查 `minSegments <= 期望完整组数`、有效配比、调度器能力以及绕过准入的旧配置；Adapter 或 RBG 后续修改期望组数导致冲突时，按现有 Gang 不兼容路径报告 `GangConfigured=False`，不自动增加期望副本或抬升中间目标。配置合法但资源不足不属于配置错误，`GangConfigured` 不代替 Pod 和 PodGroup 的调度状态。
 
+缩容到 `minSegments` 以下时，现有 Gang 不兼容路径同样是用户可见的结果：RBG 报告 condition，RIS 继续保持上一次有效的组目标，不降低各 role 的副本目标。该缩容会持续阻塞，直到用户修正期望组数或门槛；controller 按现有 Gang 不兼容间隔重新入队，配置修正后恢复正常 role reconcile。
+
+`B >= G` 的 webhook 校验是有意保持静态、无状态的。对已经运行至少 `G` 个完整组的 RBG，该校验同样拒绝 `B < G`，尽管此时下一批一旦落地就达到或超过门槛。这使稳态下的扩容批量粒度与 Gang 门槛耦合：例如已运行 5 组、`minSegments: 2` 的成熟 workload，每次扩容进度必须至少增加 2 组，而不能逐组增加。这是 alpha 阶段的既定取舍，可让 Policy 准入保持确定性且无需读取 RBG 状态；将校验移到已知实际组数的 reconcile 阶段属于后续可选优化，不在本方案范围内。
+
 现有非 Segment 路径会[按 Gang minimum 抬升 scaling target](../../internal/controller/workloads/rolebasedgroup_controller.go)。Segment 不沿用该联动；非 Segment 行为保持不变。
 
 ### 与 Rolling Update 的集成
@@ -1025,6 +1032,8 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 同名 Policy 删除重建后，其 UID 已变化，应按新的 Policy 实例重新校验、接管并更新 RIS 分组描述，不沿用旧绑定或旧准入结果。`policyUID` 仅用于区分对象身份，不表示永久冻结协同关系；残留 label 也不能作为接管已完成的依据。
 
+规则重命名还存在一个 Gang 收敛边界。新规则名派生新的 `ruleID`，全集群所有受管的 `segment` 与 `segment-rule` 标签值都会重新键值，Volcano `SubGroupPolicy` 也会按新的 `segment-rule` selector 重新生成。label 同步是异步的：在所有 Pod 收敛之前，仍携带旧标签值的 Pod 不再匹配重新生成的 subGroup selector，也不会计入 `minSubGroups` 或 `minMember`，因此重命名窗口内待调度的 Pod 可能出现瞬时无法放行的情况。该窗口由现有 metadata 同步链路收敛：不需要重启 Pod 或删除 PodGroup，标签收敛后 gang 调度即可重新满足条件。活跃 PodGroup 下的重命名不是原子操作，用户应预期这一暂态的 gang 统计窗口。
+
 重新接管可能改变成员配对，不保证应用状态或路由无缝迁移。身份同步不重启或删除成员，也不要求迁移到独立 workload。控制器直接按当前配置计算期望，无需先清完旧标签；重试与重启后的收敛仍需验证。
 
 ### 测试计划
@@ -1240,8 +1249,14 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 - Gang 仅检查资源准入，不等待应用 Ready。
 - 在 Volcano 中验证同一 Segment 标签下不同 role、不同 RI 的 Pod 被划为一个 subGroup；不同 Segment 的 P、D 即使各自数量足够，也不能满足门槛，至少 `minSegments` 个身份一致且成员完整的组才可放行。
 - 从零创建时使用 `segBatchSize: 2、minSegments: 2`，验证首批目标保持为 2 组、资源准入后按 progression 推进；最后一批为 1 组时不重复要求首批门槛。
-- 模拟旧配置绕过准入以及 Adapter 将期望组数缩到 `minSegments` 以下，验证 reconcile 报告配置错误且不自动调整副本；资源不足时保持正常 Pending，不误报为配置不兼容。
+- 模拟旧配置绕过准入以及 Adapter 将期望组数缩到 `minSegments` 以下，验证 reconcile 报告配置错误、RIS 继续保持上一次有效组目标，并在用户修正期望组数或门槛前阻塞该缩容；资源不足时保持正常 Pending，不误报为配置不兼容。
 - 未配置 scaling 时省略 `minSegments` 仍要求全部期望组；同一 RBG 的非 Segment 规则不受影响。
+- 在 Volcano PodGroup 的 `minSubGroups` 处于生效且有 Pod 等待 gang 放行时重命名规则，验证 subGroup selector 按新 rule ID 重新生成、收敛期间旧标签 Pod 不再匹配，以及标签同步完成后放行恢复，全程不重启 Pod、不删除 PodGroup。
+
+##### 地址发现
+
+- 当有效期望副本违反配比（例如 `2P:1D` 且 `P=5、D=2`）时，验证发布的地址表不包含 `prefill-4` 等剩余实例的地址，也不把 surge 身份发布为基础可服务成员；地址表只能跟随 RBG 实际下发的对齐基础组目标。
+- 滚动更新和 surge 创建期间，验证地址发现输出只随实际下发的基础组目标变化，任何剩余实例或 surge 身份都不会被发布为可服务成员。
 
 ##### Policy 接管与撤销
 
@@ -1263,6 +1278,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 #### 端到端测试
 
 - 运行 PD 分离推理示例，验证 RI 与 Pod 的组身份符合 prefill / decode 配比。
+- 从 router 消费的 ConfigMap 出发端到端验证地址发现：期望副本违反配比以及存在 surge 实例期间，只发布对齐的基础组身份，不发布剩余或 surge 身份；期望副本修正后恢复为目标地址。
 - 执行 Segment 粒度扩缩，验证最终副本满足配比、创建批次遵守 progression；分别验证首次创建和已生效 Segment 的非法配比会停止副本变更，修正后恢复。
 - 执行 Segment 粒度滚动升级，验证共同 partition 和组级预算限制实际更新范围；正值预算下获准组内不按 Policy 原值轮换 RI，零值与 surge 组合仍不增加不可用实例。
 - 通过非 Segment Policy 配置 `maxSurge: 2`，在 `replicas=4、partition=0`、初始全部健康旧版本的条件下，分别覆盖 `maxUnavailable: 0` 与 `2`，验证出现两个额外 RI 并最终回收至 4 个；复用现有 RIS surge E2E 场景，不扩展为任意 partition 下必须创建两个的断言。
