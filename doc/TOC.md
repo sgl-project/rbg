@@ -9,6 +9,9 @@
   - [Helm](./install.md)
 - Quick Start
   - [Quick Start Guide](./quick_start.md)
+- Migration
+  - [v1alpha1 to v1alpha2](./migration-v1alpha1-to-v2.md)
+  - [v1alpha1 到 v1alpha2（中文）](./zh/migration-v1alpha1-to-v2.md)
 - Key Features
   - [Multi Roles](features/multiroles.md)
   - [Workload Patterns](features/patterns.md)
