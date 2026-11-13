@@ -117,8 +117,10 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 		setRestartingCondition(updateInstance)
 		// Update restart tracking for exponential backoff
 		updateRestartTracking(updateInstance)
+		reason, podName := recreateTriggerReason(updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines)
 		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
-			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v (restartCount=%d)", klog.KObj(updateInstance), updateInstance.Status.RestartCount))
+			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v (reason=%s, pod=%s, restartCount=%d)",
+				klog.KObj(updateInstance), reason, podName, updateInstance.Status.RestartCount))
 		return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods}, nil
 	}
 
@@ -328,11 +330,35 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 	return created > 0, err
 }
 
+// deletePods removes the given member Pods. Terminating and NotFound members count
+// as handled so the caller persists restart bookkeeping and skips the update path.
 func (c *realControl) deletePods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, podsToDelete []*v1.Pod) (bool, error) {
 	var modified bool
 
 	for _, pod := range podsToDelete {
-		if err := c.Delete(ctx, pod); err != nil {
+		if instance.UID != "" && !metav1.IsControlledBy(pod, instance) {
+			return modified, fmt.Errorf("refusing to delete foreign pod %s", pod.Name)
+		}
+		if pod.DeletionTimestamp != nil {
+			modified = true
+			continue
+		}
+		// Only the UID precondition: it pins the Pod incarnation, which is what the
+		// delete is addressed by (namespace + name), so a same-name replacement
+		// created between the read and the delete is never removed. The
+		// resourceVersion comes from the informer snapshot, so any concurrent Pod
+		// update (a kubelet status write is enough) would turn this delete into a 409
+		// and surface FailedDelete/FailedScale for a delete that is still safe.
+		opts := &client.DeleteOptions{}
+		if pod.UID != "" {
+			uid := pod.UID
+			opts.Preconditions = &metav1.Preconditions{UID: &uid}
+		}
+		if err := c.Delete(ctx, pod, opts); err != nil {
+			if apierrors.IsNotFound(err) {
+				modified = true
+				continue
+			}
 			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedDelete", "failed to delete pod %s: %v", pod.Name, err)
 			return modified, err
 		}
@@ -444,6 +470,9 @@ func (c *realControl) checkRestartBackoff(instance *workloadsv1alpha2.RoleInstan
 		}
 		hasFailedPods := false
 		for _, p := range allPods {
+			if hasTriggerPolicyIgnore(p) {
+				continue
+			}
 			if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
 				hasFailedPods = true
 				break
@@ -533,6 +562,9 @@ func calculateRestartDelay(baseDelaySeconds, maxDelaySeconds, restartCount int32
 	return int32(delay)
 }
 
+// This guard also blocks a second recovery before the instance becomes Ready again;
+// relaxing it for repeated pre-Ready attempts is tracked in
+// https://github.com/sgl-project/rbg/issues/563.
 // isAlreadyRestarting checks whether the instance is already undergoing a restart-policy
 // recreation. It first checks the in-memory cache (zero latency, immune to informer lag),
 // then falls back to a direct API server read to check the persisted Restarting condition.
@@ -552,10 +584,46 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 	return isInstanceRestarting(fresh)
 }
 
+// recreateTriggerReason names what is about to trigger a recreation, for the
+// ReCreateInstance event. It is only called once the decision has already been made, so
+// it repeats the trigger scan purely to produce a human-readable reason and the Pod it
+// points at; it never decides anything.
+func recreateTriggerReason(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod,
+	baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) (reason, podName string) {
+	for _, p := range pods {
+		if hasTriggerPolicyIgnore(p) {
+			continue
+		}
+		if p.DeletionTimestamp != nil {
+			if !isDesiredMember(instance, p) {
+				continue
+			}
+			return "MemberTerminating", p.Name
+		}
+		if p.Status.Phase == v1.PodFailed {
+			return "PodFailed", p.Name
+		}
+		if isPodInPlaceUpdating(p) {
+			continue
+		}
+		if containerRestarted(p) && !isContainerRestartExpected(p, baselines) {
+			return "ContainerRestarted", p.Name
+		}
+	}
+	return "Unknown", ""
+}
+
 // shouldRecreateInstance checks if the instance should be recreated (all pods deleted then recreated).
-// This applies when restartPolicy = RecreateRoleInstanceOnPodRestart AND:
-//   - Any Pod is in Failed phase, OR
-//   - Any container has restarted (RestartCount > 0)
+// This applies when restartPolicy = RecreateRoleInstanceOnPodRestart AND any trigger fires:
+//   - A desired member Pod is observed Terminating (member loss),
+//   - Any Pod is in Failed phase,
+//   - Any container has restarted (RestartCount > 0) beyond what an in-place update explains.
+//
+// Triggers fire only while the instance is armed: stable at its current generation and not
+// in the middle of a rollout. restartPolicyConfig.activateAfter decides when arming starts.
+// Ready (default) requires the instance to have been Ready at this generation, so creation
+// and scale-up keep their protection; Created arms the triggers as soon as the instance
+// exists, which also covers failures that happen before the instance first becomes Ready.
 //
 // Pods with the restart-trigger-policy annotation set to "Ignore" are excluded —
 // their failures and container restarts will not trigger instance recreation.
@@ -565,10 +633,10 @@ func (c *realControl) isAlreadyRestarting(ctx context.Context, instance *workloa
 // For restartPolicy=None, Pod Failed triggers replacement Pod
 // creation through normal reconciliation (GetActiveAndInactivePods → createPods).
 //
-// Per KEP Non-Goals: Succeeded pods are NOT handled here - they represent normal completion
-// and should not trigger Instance recreation.
-func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod, baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
-	// Only apply when restartPolicy is RecreateRoleInstanceOnPodRestart
+// Succeeded phase alone is normal completion and does not trigger recreation;
+// an observed desired-member deletion can still trigger it regardless of phase.
+func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod,
+	baselines map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline) bool {
 	if instance.Spec.GetRestartPolicy() != workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
 		return false
 	}
@@ -578,23 +646,12 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		return false
 	}
 
-	// Only trigger when Instance was previously Ready (stable state)
-	// and is NOT in the middle of any update.
-	// This avoids triggering recreate during initial creation, scaling up, or rolling/in-place updates.
-	// Exception: if there was a recent restart (within the stable threshold), a restart-policy
-	// recreation has occurred. The instance may not yet be Ready (pods still Pending after
-	// recreation), so wasInstanceReady() would return false. We bypass to prevent deadlock
-	// where a pod crash before Ready would block recreation indefinitely.
-	// This bypass is bounded: after the stable threshold (max(maxDelay*2, 10min)) elapses
-	// without a restart, hasRecentRestart returns false and the normal wasInstanceReady
-	// check resumes. LastRestartTime is preserved as a historical record.
-	if (!wasInstanceReady(instance) && !hasRecentRestart(instance)) ||
-		instance.Generation != instance.Status.ObservedGeneration {
+	if !restartTriggersArmed(instance) {
 		return false
 	}
 	// CurrentRevision != UpdateRevision means a rolling update is in progress
-	// (not all pods have converged to the target revision yet). Container restarts
-	// during this window are from the update process, not unexpected failures.
+	// (not all pods have converged to the target revision yet). Restarts and member
+	// churn during this window belong to the update, not to unexpected failures.
 	if instance.Status.CurrentRevision != instance.Status.UpdateRevision {
 		return false
 	}
@@ -603,16 +660,20 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		if hasTriggerPolicyIgnore(p) {
 			continue
 		}
-		// If this pod is currently undergoing an in-place update, skip it.
-		// The container restart is expected and should not trigger instance recreation.
-		// We continue checking other pods so that a genuine PodFailed on a sibling
-		// is not masked by one pod's in-place update state.
+		// Failed/deletion cannot be explained by an in-place update. Scale-in
+		// ordinals are not desired members. Unobserved disappearance is deferred:
+		// https://github.com/sgl-project/rbg/issues/562.
+		if p.DeletionTimestamp != nil {
+			if !isDesiredMember(instance, p) {
+				continue
+			}
+			return true
+		}
+		if p.Status.Phase == v1.PodFailed {
+			return true
+		}
 		if isPodInPlaceUpdating(p) {
 			continue
-		}
-		// Check if any Pod is in Failed phase (excluding pods being deleted)
-		if p.Status.Phase == v1.PodFailed && p.DeletionTimestamp == nil {
-			return true
 		}
 		// Check if any container has restarted beyond what's expected from in-place updates.
 		if containerRestarted(p) && !isContainerRestartExpected(p, baselines) {
@@ -620,6 +681,47 @@ func shouldRecreateInstance(instance *workloadsv1alpha2.RoleInstance, pods []*v1
 		}
 	}
 
+	return false
+}
+
+// restartTriggersArmed reports whether the instance is stable enough at its current
+// generation for the restart triggers to be live.
+//
+// The stability fact is persisted rather than read from the current Ready condition.
+// Status is written after scaling, so a fault makes the instance NotReady before the
+// restart signal becomes visible; a gate on the current condition closes first and the
+// policy never fires again. status.lastReadyGeneration records "Ready at this
+// generation" instead, and the generation check resets it on any spec change, so
+// creation, scale-up, rolling and in-place updates keep their protection by construction.
+//
+// hasRecentRestart keeps the previous bypass for the window right after a rebuild, where
+// the instance is legitimately NotReady again. It is bounded by the stable threshold.
+func restartTriggersArmed(instance *workloadsv1alpha2.RoleInstance) bool {
+	if instance.Generation != instance.Status.ObservedGeneration {
+		return false
+	}
+	if instance.Spec.GetRestartPolicyConfig().GetActivateAfter() == workloadsv1alpha2.RestartPolicyActivateAfterCreated {
+		// Armed as soon as the instance exists; only the generation guard applies.
+		return true
+	}
+	return wasInstanceReady(instance) ||
+		instance.Status.LastReadyGeneration == instance.Generation ||
+		hasRecentRestart(instance)
+}
+
+// isDesiredMember reports whether the Pod still occupies a slot the instance wants:
+// its component is declared and its ordinal is below the component size. A Pod
+// removed by scale-in has no such slot and is not member loss.
+func isDesiredMember(instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) bool {
+	id := instanceutil.GetPodComponentID(pod)
+	for _, component := range instance.Spec.Components {
+		if component.Name != instanceutil.GetPodComponentName(pod) || component.Size == nil {
+			continue
+		}
+		if id >= 0 && id < *component.Size {
+			return true
+		}
+	}
 	return false
 }
 

@@ -14,7 +14,7 @@ See the License for the specific language governing permissions and
 limitations under the License.
 */
 
-package deprecationv1a1
+package v1a1gate
 
 import (
 	"testing"
@@ -24,20 +24,20 @@ import (
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
 )
 
-// TestV1alpha1DeprecationContract runs against envtest with the production
-// manager webhook registrations and the shipped config/webhook/manifests.yaml
-// installed (rewritten to the local test server). It pins the v1alpha1 half of
-// the 0.9.0 deprecation gate end-to-end: on-the-wire Admission Warnings, the
-// Exact match policy, the new-use rejection, and unregistered DELETE behavior.
-func TestV1alpha1DeprecationContract(t *testing.T) {
+// TestV1alpha1Gate runs against envtest with production conversion webhooks
+// enabled (CRDs carry webhook conversion strategy) and the production
+// v1alpha2 validators installed. v1alpha1 requests traverse the real
+// conversion chain: v1alpha1 -> convert -> v1alpha2 validator -> convert back.
+func TestV1alpha1Gate(t *testing.T) {
 	RegisterFailHandler(Fail)
-	RunSpecs(t, "v1alpha1 Deprecation Contract Suite")
+	RunSpecs(t, "v1alpha1 Request Path Gate Suite")
 }
 
 var _ = BeforeSuite(func() {
-	// The setup also creates the contract namespace: the admission-readiness
-	// barrier submits dry-run probes into it before any spec runs.
-	testutil.SetupV1alpha1ContractTestEnv()
+	testutil.SetupV1alpha1GateTestEnv()
+	// Create the shared namespace once, before any Describe: Ginkgo randomizes
+	// top-level container order, so per-container creation is order-flaky.
+	testutil.CreateNamespace("v1a1-gate-test")
 })
 
 var _ = AfterSuite(func() {

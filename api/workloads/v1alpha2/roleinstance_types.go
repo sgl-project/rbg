@@ -187,6 +187,16 @@ type RoleInstanceStatus struct {
 	// recreation. Used to compute exponential backoff between restart attempts.
 	// +optional
 	LastRestartTime *metav1.Time `json:"lastRestartTime,omitempty"`
+
+	// LastReadyGeneration is the metadata.generation at which the instance was last
+	// observed Ready. It persists "the instance was stable on the spec it is running"
+	// independently of the current Ready condition, which a fault flips to False
+	// before the restart signal becomes visible.
+	//
+	// Starting at 0 means "never Ready at any recorded generation", so upgraded
+	// objects keep today's behavior until their next Ready.
+	// +optional
+	LastReadyGeneration int64 `json:"lastReadyGeneration,omitempty"`
 }
 
 // ContainerUpdateBaseline records the pre-update state of a container for

@@ -24,7 +24,7 @@ spec:
   versions:
   - deprecated: true
     deprecationWarning: workloads.x-k8s.io/v1alpha1 ClusterEngineRuntimeProfile is
-      deprecated; use workloads.x-k8s.io/v1alpha2 ClusterEngineRuntimeProfile
+      deprecated and will be removed in 0.10.0; use workloads.x-k8s.io/v1alpha2 ClusterEngineRuntimeProfile
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -8911,8 +8911,8 @@ spec:
       name: AGE
       type: date
     deprecated: true
-    deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroup is deprecated;
-      use workloads.x-k8s.io/v1alpha2 RoleBasedGroup
+    deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroup is deprecated and
+      will be removed in 0.10.0; use workloads.x-k8s.io/v1alpha2 RoleBasedGroup
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -32864,6 +32864,13 @@ spec:
                             RestartPolicyConfig defines the restart policy and backoff configuration.
                             Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
+                            activateAfter:
+                              description: ActivateAfter controls when the triggers
+                                of the recreate policy are armed.
+                              enum:
+                              - Ready
+                              - Created
+                              type: string
                             baseDelaySeconds:
                               default: 30
                               description: |-
@@ -34311,6 +34318,13 @@ spec:
                             RestartPolicyConfig defines the restart policy and backoff configuration.
                             Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
+                            activateAfter:
+                              description: ActivateAfter controls when the triggers
+                                of the recreate policy are armed.
+                              enum:
+                              - Ready
+                              - Created
+                              type: string
                             baseDelaySeconds:
                               default: 30
                               description: |-
@@ -49555,7 +49569,7 @@ spec:
       type: date
     deprecated: true
     deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroupScalingAdapter is
-      deprecated; use workloads.x-k8s.io/v1alpha2 RoleBasedGroupScalingAdapter
+      deprecated and will be removed in 0.10.0; use workloads.x-k8s.io/v1alpha2 RoleBasedGroupScalingAdapter
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -49774,8 +49788,8 @@ spec:
       name: AGE
       type: date
     deprecated: true
-    deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroupSet is deprecated;
-      use workloads.x-k8s.io/v1alpha2 RoleBasedGroupSet
+    deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroupSet is deprecated
+      and will be removed in 0.10.0; use workloads.x-k8s.io/v1alpha2 RoleBasedGroupSet
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -74217,6 +74231,13 @@ spec:
                                     RestartPolicyConfig defines the restart policy and backoff configuration.
                                     Its type takes precedence over the deprecated RestartPolicy field.
                                   properties:
+                                    activateAfter:
+                                      description: ActivateAfter controls when the
+                                        triggers of the recreate policy are armed.
+                                      enum:
+                                      - Ready
+                                      - Created
+                                      type: string
                                     baseDelaySeconds:
                                       default: 30
                                       description: |-
@@ -75699,6 +75720,13 @@ spec:
                                     RestartPolicyConfig defines the restart policy and backoff configuration.
                                     Its type takes precedence over the deprecated RestartPolicy field.
                                   properties:
+                                    activateAfter:
+                                      description: ActivateAfter controls when the
+                                        triggers of the recreate policy are armed.
+                                      enum:
+                                      - Ready
+                                      - Created
+                                      type: string
                                     baseDelaySeconds:
                                       default: 30
                                       description: |-
@@ -98117,6 +98145,13 @@ spec:
                   all pods within the RoleInstance. Its type takes precedence over the
                   deprecated RestartPolicy field.
                 properties:
+                  activateAfter:
+                    description: ActivateAfter controls when the triggers of the recreate
+                      policy are armed.
+                    enum:
+                    - Ready
+                    - Created
+                    type: string
                   baseDelaySeconds:
                     default: 30
                     description: |-
@@ -98268,6 +98303,12 @@ spec:
                 description: LabelSelector of a RoleInstance is a label query over
                   Pods that should match the RoleInstance.
                 type: string
+              lastReadyGeneration:
+                description: |-
+                  LastReadyGeneration is the metadata.generation at which the instance was last
+                  observed Ready.
+                format: int64
+                type: integer
               lastRestartTime:
                 description: |-
                   LastRestartTime is the timestamp of the most recent restart-policy-triggered
@@ -99019,7 +99060,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        image: rolebasedgroup/rbgs-controller:v0.9.0-d88b3186
+        image: rolebasedgroup/rbgs-controller:v0.9.0-73e05db4
         imagePullPolicy: IfNotPresent
         name: rbgs
         resources:
@@ -99156,132 +99197,6 @@ webhooks:
     - workloads.x-k8s.io
     apiVersions:
     - v1alpha2
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - rolebasedgroupsets
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: rbgs-system
-      path: /validate-workloads-x-k8s-io-v1alpha1-clusterengineruntimeprofile
-  failurePolicy: Ignore
-  matchPolicy: Exact
-  name: vclusterengineruntimeprofile-v1alpha1-deprecation.kb.io
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - clusterengineruntimeprofiles
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: rbgs-system
-      path: /validate-workloads-x-k8s-io-v1alpha1-instance
-  failurePolicy: Ignore
-  matchPolicy: Exact
-  name: vinstance-v1alpha1-deprecation.kb.io
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - instances
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: rbgs-system
-      path: /validate-workloads-x-k8s-io-v1alpha1-instanceset
-  failurePolicy: Ignore
-  matchPolicy: Exact
-  name: vinstanceset-v1alpha1-deprecation.kb.io
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - instancesets
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: rbgs-system
-      path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroup
-  failurePolicy: Fail
-  matchPolicy: Exact
-  name: vrolebasedgroup-v1alpha1-deprecation.kb.io
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - rolebasedgroups
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: rbgs-system
-      path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupscalingadapter
-  failurePolicy: Ignore
-  matchPolicy: Exact
-  name: vrolebasedgroupscalingadapter-v1alpha1-deprecation.kb.io
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha1
-    operations:
-    - CREATE
-    - UPDATE
-    resources:
-    - rolebasedgroupscalingadapters
-  sideEffects: None
-- admissionReviewVersions:
-  - v1
-  clientConfig:
-    service:
-      name: rbgs-webhook-service
-      namespace: rbgs-system
-      path: /validate-workloads-x-k8s-io-v1alpha1-rolebasedgroupset
-  failurePolicy: Fail
-  matchPolicy: Exact
-  name: vrolebasedgroupset-v1alpha1-deprecation.kb.io
-  rules:
-  - apiGroups:
-    - workloads.x-k8s.io
-    apiVersions:
-    - v1alpha1
     operations:
     - CREATE
     - UPDATE

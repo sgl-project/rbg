@@ -19,6 +19,7 @@ package roleinstance
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/openkruise/kruise/pkg/util/expectations"
@@ -141,6 +142,7 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		InPlaceUpdateContainerBaselines: deepCopyBaselines(instance.Status.InPlaceUpdateContainerBaselines),
 		RestartCount:                    instance.Status.RestartCount,
 		LastRestartTime:                 instance.Status.LastRestartTime,
+		LastReadyGeneration:             instance.Status.LastReadyGeneration,
 	}
 	*newStatus.CollisionCount = collisionCount
 
@@ -252,7 +254,13 @@ func (r *reconciler) getOwnedPods(ctx context.Context, instance *workloadsv1alph
 		Namespace:     instance.Namespace,
 		FieldSelector: fields.SelectorFromSet(fields.Set{fieldindex.IndexNameForOwnerRefUID: string(instance.UID)}),
 	}
-	return instanceutil.GetActiveAndInactivePods(ctx, r.Client, opts)
+	active, inactive, err := instanceutil.GetActiveAndInactivePods(ctx, r.Client, opts)
+	if err != nil {
+		return nil, nil, err
+	}
+	// The owner UID index includes non-controller references, which are not members.
+	foreign := func(pod *v1.Pod) bool { return !metav1.IsControlledBy(pod, instance) }
+	return slices.DeleteFunc(active, foreign), slices.DeleteFunc(inactive, foreign), nil
 }
 
 func (r *reconciler) getActiveRevisions(instance *workloadsv1alpha2.RoleInstance, revisions []*apps.ControllerRevision) (

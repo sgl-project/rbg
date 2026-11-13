@@ -24,8 +24,8 @@ spec:
       name: AGE
       type: date
     deprecated: true
-    deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroup is deprecated;
-      use workloads.x-k8s.io/v1alpha2 RoleBasedGroup
+    deprecationWarning: workloads.x-k8s.io/v1alpha1 RoleBasedGroup is deprecated and
+      will be removed in 0.10.0; use workloads.x-k8s.io/v1alpha2 RoleBasedGroup
     name: v1alpha1
     schema:
       openAPIV3Schema:
@@ -23977,6 +23977,13 @@ spec:
                             RestartPolicyConfig defines the restart policy and backoff configuration.
                             Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
+                            activateAfter:
+                              description: ActivateAfter controls when the triggers
+                                of the recreate policy are armed.
+                              enum:
+                              - Ready
+                              - Created
+                              type: string
                             baseDelaySeconds:
                               default: 30
                               description: |-
@@ -25424,6 +25431,13 @@ spec:
                             RestartPolicyConfig defines the restart policy and backoff configuration.
                             Its type takes precedence over the deprecated RestartPolicy field.
                           properties:
+                            activateAfter:
+                              description: ActivateAfter controls when the triggers
+                                of the recreate policy are armed.
+                              enum:
+                              - Ready
+                              - Created
+                              type: string
                             baseDelaySeconds:
                               default: 30
                               description: |-

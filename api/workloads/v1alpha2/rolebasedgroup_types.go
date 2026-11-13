@@ -184,6 +184,21 @@ const (
 	RecreateRoleInstanceOnPodRestart RestartPolicyType = "RecreateRoleInstanceOnPodRestart"
 )
 
+// RestartPolicyActivateAfter controls when the triggers of a recreate policy are
+// armed. RestartPolicyType describes what triggers a recreation; this describes
+// when those triggers become active.
+type RestartPolicyActivateAfter string
+
+const (
+	// RestartPolicyActivateAfterReady arms the triggers only once the instance has been
+	// Ready at its current generation, so creation and scale-up keep their protection.
+	RestartPolicyActivateAfterReady RestartPolicyActivateAfter = "Ready"
+
+	// RestartPolicyActivateAfterCreated arms the triggers as soon as the instance
+	// exists, which also covers failures before the instance first becomes Ready.
+	RestartPolicyActivateAfterCreated RestartPolicyActivateAfter = "Created"
+)
+
 // RestartPolicyConfig groups restart policy type and backoff configuration.
 // +kubebuilder:validation:XValidation:rule="!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds) || self.maxDelaySeconds >= self.baseDelaySeconds",message="maxDelaySeconds must be greater than or equal to baseDelaySeconds"
 type RestartPolicyConfig struct {
@@ -192,6 +207,20 @@ type RestartPolicyConfig struct {
 	// +kubebuilder:validation:Enum={None,RecreateRoleInstanceOnPodRestart}
 	// +optional
 	Type RestartPolicyType `json:"type,omitempty"`
+
+	// ActivateAfter controls when the triggers of the recreate policy are armed.
+	// Ready (default) arms them once the instance has been Ready at its current
+	// generation, so creation and scale-up keep their protection. Created arms them
+	// as soon as the instance exists, which also covers failures that happen before
+	// the instance first becomes Ready.
+	//
+	// The default is resolved in the getter rather than with a kubebuilder default:
+	// a CRD default would materialize on every existing role that already has a
+	// restartPolicyConfig block, rewriting its serialized template and rolling the
+	// role on upgrade.
+	// +kubebuilder:validation:Enum={Ready,Created}
+	// +optional
+	ActivateAfter RestartPolicyActivateAfter `json:"activateAfter,omitempty"`
 
 	// BaseDelaySeconds is the base delay between restart attempts (seconds).
 	// Subsequent attempts use exponential backoff: delay = min(base * 2^(restartCount-1), maxDelaySeconds).
@@ -227,6 +256,16 @@ func resolveRestartPolicyConfig(cfg *RestartPolicyConfig, legacy, defaultType Re
 	}
 	resolved.Type = defaultType
 	return resolved
+}
+
+// GetActivateAfter returns when the recreate triggers are armed, defaulting to
+// Ready. The default is resolved here and not through a CRD default so that
+// existing objects keep a byte-identical serialized template.
+func (c RestartPolicyConfig) GetActivateAfter() RestartPolicyActivateAfter {
+	if c.ActivateAfter == "" {
+		return RestartPolicyActivateAfterReady
+	}
+	return c.ActivateAfter
 }
 
 // SharedServiceSelectionPolicy defines the service policy of service per role

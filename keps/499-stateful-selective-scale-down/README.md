@@ -350,6 +350,53 @@ For roles with the exclusion annotation or non-empty skip records on the child
 RIS, one flow calculates replicas and skip ordinals and commits them in the same
 update request with a resource-version check.
 
+The writer is a conditional JSON merge patch with optimistic locking, not
+forced server-side apply (SSA). Select this path from an uncached child read
+when the role exclusion key is present, including an empty value, or the child
+retains a non-empty skip record. Verify the parent snapshot and child ownership
+before planning. The same writer synchronizes the template and managed metadata
+while preserving unrelated child controls and metadata.
+
+Every target-changing patch includes the observed child `resourceVersion`,
+`spec.replicas`, and the internal record key, even when one target field is
+unchanged. Clearing the record uses an explicit JSON null. A conflict rejects
+the complete request; retry by rereading and recalculating, never replaying the
+stale plan. Initial creation uses one create request with both target fields.
+
+Feature synchronization bypasses ordinary forced SSA, including after E is
+removed while a sparse record remains. This avoids apply omission removing
+previously owned fields. Once both E and the non-empty record are absent,
+ordinary synchronization may resume forced SSA with the observed child
+resource version as a precondition. An ordinary writer that read a dense child
+before a concurrent sparse commitment must conflict instead of overwriting the
+new target. These requirements govern controller writes and transitions; they
+do not promise protection against arbitrary external forced apply.
+
+Parent snapshot freshness uses UID and spec Generation so status-only writes
+do not reject an otherwise current plan. The child patch still requires the
+observed resource version. Reject deleting parents, deleting children and
+non-Stateful children before any target write.
+
+A child with a non-empty committed record requires the exact controller owner;
+never inherit sparse membership from an orphan or a previous parent. A dense
+child may instead use ordinary workload claimability: an ownerless child must
+carry the matching group-name label, and foreign controller ownership remains
+rejected. Adopt a claimable dense orphan by writing its controller owner,
+replicas and record together in the conditional patch, preserving other owner
+references.
+
+Create and conditional merge-patch requests record `rbg/Update` ownership,
+which is distinct from `rbg/Apply`. Before ordinary SSA, fold only the
+controller's main-resource Update fields into its Apply manager using
+`csaupgrade.UpgradeManagedFieldsPatch`. Perform this handoff after ordinary
+create and when resuming the ordinary path, including existing objects left
+with Update ownership. Keep create-only semantics so a concurrent sparse child
+cannot be overwritten. Protect the handoff with UID and resource version,
+stop on failure, and use the returned resource version for subsequent SSA.
+Do not migrate other managers or status-subresource ownership. Without this
+handoff, omitting a role label, annotation, or conditional gang flag from SSA
+can leave it owned by the Update entry and prevent removal.
+
 For example, starting with five instances `[0,1,2,3,4]`, a user changes replicas
 to 3 and E to `[1,3]` together:
 
@@ -418,8 +465,16 @@ Isolation requirements:
   and the direct merge of `role.Annotations`.
 - Do not copy the user key into RIS results or propagate it into RI or Pod
   templates.
-- Ordinary template synchronization and forced SSA must not overwrite, remove,
-  or acquire ownership of the internal result key.
+- Separately mirror current E onto child RIS metadata for new rollout surge
+  allocation. This mirror is not M and must not reinterpret base membership.
+  New surge ordinals skip E, including exclusions above the last base member.
+  Preserve existing surge identities when E changes or is removed, subject to
+  the surge count budget and normal rollout completion. Keep the mirror out of
+  revision snapshots and RI/Pod templates.
+- Feature template synchronization uses the conditional writer and must not
+  overwrite or remove committed membership independently. Ordinary forced SSA
+  must not run on that path; transitions to or from it must preserve the target
+  or fail their resource-version precondition.
 - Controller restart, removal of the role exclusion annotation, and temporary
   instance loss do not change committed membership.
 - Check object UID and ownership so a new object does not inherit membership
@@ -558,9 +613,32 @@ controller implementation or runtime verification has been completed.
   conflicts, and failed retries.
 - Preserve committed membership through controller restart, missing instances,
   and removal of the role annotation.
-- At fixed replicas, set, edit, or clear E, then repeatedly exercise both
-  annotation propagation paths and forced SSA without changing internal results
-  or M.
+- At fixed replicas, set, edit, empty, or remove E and repeatedly exercise both
+  annotation propagation paths through conditional synchronization without
+  changing internal results or M; feature writes must never use forced SSA.
+- On a real API server, establish legacy SSA managed fields before enabling the
+  feature. Assert JSON merge-patch requests carry the observed resource version,
+  replicas, and record together, including explicit null when clearing records.
+- Verify injected failures and real write conflicts leave both previous target
+  fields intact, and fresh readers can retry after controller restart.
+- With E removed but a non-empty record retained, keep using the conditional
+  writer. After both are absent, verify ordinary forced SSA resumes safely.
+- Status-only parent SSA must allow commitment from the prior typed snapshot,
+  without configuration-conflict warnings in the controller flow. Changed parent
+  UID or spec Generation must still reject the stale plan.
+- Deleting parents/children and non-Stateful children must error without patching
+  replicas or records. Orphan/re-apply must adopt a claimable dense child without
+  recreating it; reject sparse or unrelated orphans and foreign-owned children.
+- On newly created non-feature RIS objects, remove role labels, annotations,
+  and conditional gang flags and assert they disappear after ordinary SSA.
+  Repeat for legacy Update ownership and feature-to-ordinary transitions.
+- Verify ownership handoff failure or conflict stops subsequent SSA, supports
+  fresh retries, rejects same-name UID replacement, is idempotent, and preserves
+  other managers' fields and the status-subresource manager.
+- Interleave an ordinary SSA request based on an old dense snapshot with a new
+  sparse commitment: the stale apply must conflict and preserve the new target.
+  Cover metadata removal, unrelated child controls, repeated-sync convergence,
+  and replacement of a same-name child with a new UID.
 - Setting, editing, or clearing E leaves revisions, hashes, revision matching,
   and revision labels unchanged. Rollback preserves current E, including absence.
 - Cover rollout, surge cleanup, and completion for nonconsecutive members.
@@ -577,6 +655,11 @@ controller implementation or runtime verification has been completed.
   accidentally remove existing values or reset them to defaults.
 - After clearing E, continue committing replicas and records together while the
   child RIS retains non-empty skip records.
+
+The writer-transition assertions are exercised by
+`TestConditionalMembershipWithLegacyApplyOwnership` in
+`test/envtest/testcase/selective_commit/membership_test.go`; these tests do not
+claim arbitrary external forced-SSA protection.
 
 For replicas changing from 5 to 3 together with E set to `[1,3]`, assert that the
 state remains "replicas 5, empty record" before commitment and becomes "replicas

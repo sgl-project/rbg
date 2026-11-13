@@ -52,7 +52,7 @@ Leader + workers per instance (for tensor parallelism):
 | Field | Description |
 |-------|-------------|
 | `size` | *int32 — total pods per instance (1 leader + size-1 workers) |
-| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
+| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `activateAfter` (default: `Ready`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
 | `restartPolicy` | RestartPolicyType — **Deprecated**, use `restartPolicyConfig`. Honoured only when `restartPolicyConfig.type` is unset |
 | `template` | PodTemplateSpec — base pod template |
 | `templateRef` | *TemplateRef — reference to roleTemplate |
@@ -66,7 +66,7 @@ Heterogeneous pod groups per instance:
 | Field | Description |
 |-------|-------------|
 | `components` | []ComponentSpec — list of component definitions |
-| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
+| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `activateAfter` (default: `Ready`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
 | `restartPolicy` | RestartPolicyType — **Deprecated**, use `restartPolicyConfig`. Honoured only when `restartPolicyConfig.type` is unset |
 
 ### ComponentSpec
@@ -125,6 +125,9 @@ Reusable pod template at RBG level:
 |-------|-------------|
 | `None` | No automatic restart |
 | `RecreateRoleInstanceOnPodRestart` | Recreate only the role instance |
+
+See [Failure Handling](../features/failure-handling.md) for native RoleInstance activation,
+the pre-Ready `Restarting` guard limit, backend support and upgrade/rollout considerations.
 
 ## ScalingAdapter
 
@@ -259,22 +262,26 @@ restarts while base instances are being replaced.
 | Field | Description |
 |-------|-------------|
 | `updateRevision` | Target revision of the replacements |
-| `replicas` | Exclusive upper ordinal of the persisted replacement scope |
-| `partition` | Inclusive lower ordinal of the persisted replacement scope |
+| `replicas` | Recorded exclusive upper position bound when replacement intent was persisted |
+| `partition` | Recorded inclusive lower position bound when replacement intent was persisted |
 
 When maxSurge is positive, the controller persists this state before replacing
 a base instance and waits for its cache to observe the write before reconciling
-again. It clears the state when all base instances in the replacement range are
-ready at the target revision, are not terminating, and have observed their
-current generation. This can retain surge while an unrelated base instance in
-that range is unhealthy, even after the originally replaced instances recover.
+again. It clears the state when all base members in the current update range
+exist, are ready at the target revision, are not terminating, and have observed
+their current generation.
 
-A different target revision invalidates the previous scope. Changes to replicas
-or partition retain protection for the intersection of the original and current
-base ranges; an empty intersection ends protection. Only an additional actual
-replacement outside the persisted scope expands it. Pause and resume preserve
-protection. After scale-down, a former base instance may temporarily act as surge
-until an in-range replacement is ready.
+The saved position bounds are not stable member identities: gap filling can
+move a different member into the same position. Completion therefore
+conservatively checks the entire current update range, without restricting it
+to the saved bounds. No additional API fields are required. Scale-up or a
+partition decrease may retain surge for newly eligible members, even after the
+original replacements recover.
+
+A different target revision invalidates the previous state. An empty current
+update range ends protection; members outside that range no longer block it.
+Pause and resume preserve unfinished protection. After scale-down, a former
+base instance may temporarily act as surge until the current range is ready.
 
 Update the RoleInstanceSet CRD together with the controller. If replacement
 intent cannot be persisted, the controller emits a Warning event and retries

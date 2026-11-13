@@ -539,28 +539,6 @@ func newManagerOptions(webhookMode string, webhookServer webhook.Server, metrics
 	return opts
 }
 
-func setupV1alpha1DeprecationWebhooks(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool) error {
-	if err := (&workloadsv1alpha1.RoleBasedGroup{}).SetupDeprecationWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroup: %w", err)
-	}
-	if err := (&workloadsv1alpha1.RoleBasedGroupSet{}).SetupDeprecationWebhookWithManager(mgr, enableDeprecatedWorkloadTypes); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroupSet: %w", err)
-	}
-	if err := (&workloadsv1alpha1.InstanceSet{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for InstanceSet: %w", err)
-	}
-	if err := (&workloadsv1alpha1.Instance{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for Instance: %w", err)
-	}
-	if err := (&workloadsv1alpha1.RoleBasedGroupScalingAdapter{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for RoleBasedGroupScalingAdapter: %w", err)
-	}
-	if err := (&workloadsv1alpha1.ClusterEngineRuntimeProfile{}).SetupDeprecationWebhookWithManager(mgr); err != nil {
-		return fmt.Errorf("unable to create v1alpha1 deprecation webhook for ClusterEngineRuntimeProfile: %w", err)
-	}
-	return nil
-}
-
 // bootstrapWebhookCerts bootstraps the self-signed TLS certificate for the
 // conversion webhook, patches the caBundle on CRDs, and registers conversion
 // webhooks with the manager. This should only be called when webhook is enabled.
@@ -616,12 +594,6 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool,
 	}
 	if err = (&workloadsv1alpha2.RoleInstanceSet{}).SetupWebhookWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("unable to create admission webhook for RoleInstanceSet: %w", err)
-	}
-
-	// v1alpha1 remains readable and writable for existing objects, but every write
-	// returns a deprecation warning and cannot introduce a new deprecated workload type.
-	if err = setupV1alpha1DeprecationWebhooks(mgr, enableDeprecatedWorkloadTypes); err != nil {
-		return nil, fmt.Errorf("unable to create v1alpha1 deprecation webhooks: %w", err)
 	}
 
 	return &webhookBootstrapResult{certMgr: certMgr, caCert: caCert}, nil

@@ -15,6 +15,7 @@
   - [Role Dependencies](features/role-dependencies.md)
   - [Role Templates](features/role-templates.md)
   - [Autoscaling](features/autoscaler.md)
+  - [Stateful Selective Scale-Down](features/selective-scale-down.md)
   - [Update Strategy](features/update-strategy.md)
   - [Coordinated Policy](features/coordinated-policy.md)
   - [Failure Handling](features/failure-handling.md)

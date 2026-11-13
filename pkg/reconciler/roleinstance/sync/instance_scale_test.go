@@ -18,18 +18,23 @@ package sync
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -277,8 +282,8 @@ func TestShouldRecreateInstance(t *testing.T) {
 			expected: false,
 		},
 		{
-			name: "Pod being deleted - should NOT recreate",
-			desc: "Pod being deleted (with DeletionTimestamp) is not counted as Failed",
+			name: "Pod being deleted - should recreate",
+			desc: "A Terminating desired member is member loss under the default policy (#542)",
 			instance: &workloadsv1alpha2.RoleInstance{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:       "test-instance",
@@ -287,7 +292,7 @@ func TestShouldRecreateInstance(t *testing.T) {
 				Spec: workloadsv1alpha2.RoleInstanceSpec{
 					RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
 					Components: []workloadsv1alpha2.RoleInstanceComponent{
-						{Size: ptr.To[int32](1)},
+						{Name: "worker", Size: ptr.To[int32](1)},
 					},
 				},
 				Status: workloadsv1alpha2.RoleInstanceStatus{
@@ -303,12 +308,13 @@ func TestShouldRecreateInstance(t *testing.T) {
 			pods: []*corev1.Pod{
 				{
 					ObjectMeta: metav1.ObjectMeta{
+						Name:              "test-instance-worker-0",
 						DeletionTimestamp: &metav1.Time{},
 					},
 					Status: corev1.PodStatus{Phase: corev1.PodFailed},
 				},
 			},
-			expected: false,
+			expected: true,
 		},
 		{
 			name: "All pods Running - should NOT recreate",
@@ -3381,5 +3387,115 @@ func TestScaleCreatesNonCollidingSiblingsDuringNameCollision(t *testing.T) {
 	for i := range podList.Items {
 		assert.True(t, metav1.IsControlledBy(&podList.Items[i], instance),
 			"pod %s should be controlled by the new RoleInstance", podList.Items[i].Name)
+	}
+}
+
+// restartScaleFixture builds a two-member native RoleInstance whose revision has
+// converged, which is the state the restart triggers evaluate.
+func restartScaleFixture() (*workloadsv1alpha2.RoleInstance, []*corev1.Pod) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "restart-scale", Namespace: "default", UID: "restart-scale-uid", Generation: 1},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+			Components:          []workloadsv1alpha2.RoleInstanceComponent{{Name: "worker", Size: ptr.To[int32](2)}},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1, CurrentRevision: "revision-1", UpdateRevision: "revision-1"},
+	}
+	pods := make([]*corev1.Pod, 0, 2)
+	for i := 0; i < 2; i++ {
+		pods = append(pods, &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      fmt.Sprintf("restart-scale-worker-%d", i),
+				Namespace: instance.Namespace,
+				UID:       types.UID(fmt.Sprintf("pod-%d", i)),
+				Labels:    map[string]string{constants.ComponentNameLabelKey: "worker", constants.ComponentIDLabelKey: strconv.Itoa(i)},
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(instance, workloadsv1alpha2.SchemeGroupVersion.WithKind("RoleInstance")),
+				},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		})
+	}
+	return instance, pods
+}
+
+// restartScaleClient serves the fixture plus the given Pods through a fake client and
+// returns the control bound to it.
+func restartScaleClient(t *testing.T, instance *workloadsv1alpha2.RoleInstance, pods []*corev1.Pod, funcs interceptor.Funcs) (client.Client, *realControl) {
+	t.Helper()
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	objects := make([]client.Object, 0, 1+len(pods))
+	objects = append(objects, instance)
+	for _, pod := range pods {
+		objects = append(objects, pod)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(instance).
+		WithObjects(objects...).WithInterceptorFuncs(funcs).Build()
+	return c, &realControl{Client: c, apiReader: c, recorder: record.NewFakeRecorder(10)}
+}
+
+func TestScaleDoesNotRecreateForTerminatingScaleInPod(t *testing.T) {
+	for _, phase := range []corev1.PodPhase{corev1.PodRunning, corev1.PodFailed} {
+		t.Run(string(phase), func(t *testing.T) {
+			ctx := context.Background()
+			instance, pods := restartScaleFixture()
+			instance.Spec.Components[0].Size = ptr.To[int32](1)
+			instance.Status.LastReadyGeneration = instance.Generation
+			pods[1].DeletionTimestamp = ptr.To(metav1.Now())
+			pods[1].Finalizers = []string{"test.rbg.io/hold"}
+			pods[1].Status.Phase = phase
+			pods[1].Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main", RestartCount: 1}}
+			c, control := restartScaleClient(t, instance, pods, interceptor.Funcs{})
+			t.Cleanup(func() { control.ClearRestarting(instance) })
+			revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+			handled, _, err := control.Scale(ctx, instance, revision, revision, nil, pods[:1], pods[1:])
+			require.NoError(t, err)
+			require.False(t, handled)
+			require.Zero(t, instance.Status.RestartCount)
+			survivor := &corev1.Pod{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pods[0]), survivor))
+			require.Equal(t, pods[0].UID, survivor.UID)
+			require.Nil(t, survivor.DeletionTimestamp, "a scale-in shutdown must not delete a healthy desired member")
+		})
+	}
+}
+
+func TestDeletePodsTreatsGoneAndTerminatingMembersAsHandled(t *testing.T) {
+	for _, state := range []string{"gone", "terminating", "present"} {
+		t.Run(state, func(t *testing.T) {
+			instance, pods := restartScaleFixture()
+			var livePods []*corev1.Pod
+			if state != "gone" {
+				if state == "terminating" {
+					pods[0].DeletionTimestamp = ptr.To(metav1.Now())
+					pods[0].Finalizers = []string{"test.rbg.io/hold"}
+				}
+				livePods = pods[:1]
+			}
+			deletes := 0
+			_, control := restartScaleClient(t, instance, livePods, interceptor.Funcs{
+				Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+					deletes++
+					return c.Delete(ctx, obj, opts...)
+				},
+			})
+			handled, err := control.deletePods(context.Background(), instance, pods[:1])
+			require.NoError(t, err)
+			require.True(t, handled, "already deleting or absent members still count as handled")
+			if state == "terminating" {
+				require.Zero(t, deletes, "do not reissue Delete for a terminating member")
+			} else {
+				require.Equal(t, 1, deletes)
+			}
+			select {
+			case event := <-control.recorder.(*record.FakeRecorder).Events:
+				require.Equal(t, "present", state, "do not report an API deletion that was not performed")
+				require.Contains(t, event, "SuccessfulDelete")
+			default:
+				require.NotEqual(t, "present", state, "report an actual successful deletion")
+			}
+		})
 	}
 }
