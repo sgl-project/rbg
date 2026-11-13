@@ -159,7 +159,10 @@ var _ = Describe("Stateful selective scale-down", func() {
 		current := &workloadsv1alpha2.RoleInstanceSet{}
 		Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, current)).To(Succeed())
 		Expect(current.Labels[hashKey]).To(Equal(hash))
-		Expect(revisionNames()).To(Equal(revisions))
+		// A spec transition can transiently register one extra ControllerRevision
+		// before revision-history truncation removes it; the converged state, not a
+		// point-in-time sample, is the contract.
+		Eventually(revisionNames, timeout, interval).Should(Equal(revisions))
 		// Later scale-out can fill a released gap; it cannot evict a warm survivor.
 		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) { g.Spec.Roles[0].Replicas = ptr.To[int32](4) })
 		Eventually(func() []int { return getMembers(setKey) }, timeout, interval).Should(Equal([]int{0, 1, 2, 4}))
@@ -380,7 +383,11 @@ var _ = Describe("Stateful selective scale-down", func() {
 				return false
 			}
 			for _, condition := range set.Status.Conditions {
-				if condition.Type == workloadsv1alpha2.RoleInstanceSetConditionFailedScale && condition.Reason == "InvalidCommittedOrdinals" {
+				// KEP-502 reports the configuration-family blocker through the
+				// Progressing condition instead of the legacy FailedScale marker.
+				if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
+					condition.Status == corev1.ConditionTrue &&
+					condition.Reason == constants.ProgressingReasonInvalidSpec {
 					return true
 				}
 			}
@@ -429,6 +436,7 @@ var _ = Describe("Stateful selective scale-down", func() {
 			g.Expect(set.Annotations).NotTo(HaveKey(constants.ExcludedOrdinalsAnnotationKey))
 			for _, condition := range set.Status.Conditions {
 				g.Expect(condition.Reason).NotTo(Equal("InvalidCommittedOrdinals"))
+				g.Expect(condition.Reason).NotTo(Equal(constants.ProgressingReasonInvalidSpec))
 			}
 			g.Expect(instances(group.Name)).To(Equal(original))
 			cm := &corev1.ConfigMap{}

@@ -26,6 +26,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	setprogressing "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/sync"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
@@ -47,6 +48,7 @@ type realStatusUpdater struct {
 
 func (r *realStatusUpdater) UpdateInstanceSetStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) error {
 	r.calculateStatus(set, newStatus, instances)
+	setprogressing.ApplySetProgressingCondition(set, newStatus, instances)
 	if r.inconsistentStatus(set, newStatus) {
 		klog.Infof("To update InstanceSet status for  %s/%s, replicas=%d ready=%d available=%d updated=%d updatedReady=%d, revisions current=%s update=%s",
 			set.Namespace, set.Name, newStatus.Replicas, newStatus.ReadyReplicas, newStatus.AvailableReplicas, newStatus.UpdatedReplicas, newStatus.UpdatedReadyReplicas, newStatus.CurrentRevision, newStatus.UpdateRevision)
@@ -92,7 +94,8 @@ func (r *realStatusUpdater) inconsistentStatus(set *workloadsv1alpha2.RoleInstan
 		newStatus.ExpectedUpdatedReplicas != oldStatus.ExpectedUpdatedReplicas ||
 		newStatus.UpdateRevision != oldStatus.UpdateRevision ||
 		newStatus.CurrentRevision != oldStatus.CurrentRevision ||
-		newStatus.LabelSelector != oldStatus.LabelSelector
+		newStatus.LabelSelector != oldStatus.LabelSelector ||
+		setprogressing.InconsistentConditions(oldStatus.Conditions, newStatus.Conditions)
 }
 
 func (r *realStatusUpdater) calculateStatus(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {

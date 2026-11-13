@@ -28,6 +28,8 @@ import (
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleBasedGroupValidator implements admission.CustomValidator for RoleBasedGroup.
@@ -50,6 +52,32 @@ type RoleBasedGroupValidator struct {
 
 var _ admission.CustomValidator = &RoleBasedGroupValidator{}
 
+// validateRBGStaticSpec checks the deterministic local spec errors that KEP-502
+// assigns to admission: the gang-scheduling annotation mutual exclusion, role
+// templates, and template references. The controller re-runs these checks as
+// defense in depth and reports persisted violations through Progressing.
+func validateRBGStaticSpec(rbg *RoleBasedGroup) []error {
+	var errs []error
+	if rbg.Annotations[constants.GangSchedulingAnnotationKey] == "true" &&
+		rbg.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] == "true" {
+		errs = append(errs, fmt.Errorf(
+			"annotations %q and %q cannot be set simultaneously on the same RoleBasedGroup; "+
+				"use %q for group-level gang scheduling, or set %q per role via role.Annotations",
+			constants.GangSchedulingAnnotationKey,
+			constants.RoleInstanceGangSchedulingAnnotationKey,
+			constants.GangSchedulingAnnotationKey,
+			constants.RoleInstanceGangSchedulingAnnotationKey,
+		))
+	}
+	if err := ValidateRoleTemplates(rbg); err != nil {
+		errs = append(errs, fmt.Errorf("invalid role templates: %w", err))
+	}
+	if err := ValidateRoleTemplateReferences(rbg); err != nil {
+		errs = append(errs, fmt.Errorf("invalid template references: %w", err))
+	}
+	return errs
+}
+
 // ValidateCreate validates a RoleBasedGroup on creation.
 func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtime.Object) (admission.Warnings, error) {
 	rbg, ok := obj.(*RoleBasedGroup)
@@ -71,6 +99,7 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	if err := ValidateRoleDependencies(rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	allErrs = append(allErrs, validateRBGStaticSpec(rbg)...)
 	if v.EnableDeprecatedWorkloadTypes {
 		// A RoleBasedGroupSet controller replaces deleted children by re-creating
 		// them from its own template. Those children are not new user-facing uses:
@@ -89,6 +118,11 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 		}
 	}
 
+	// A single validation error is returned unwrapped so apierrors.IsInvalid and
+	// friends keep recognizing the rejection type.
+	if len(allErrs) == 1 {
+		return nil, allErrs[0]
+	}
 	return nil, utilerrors.NewAggregate(allErrs)
 }
 
@@ -195,18 +229,17 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	}
 	klog.V(4).InfoS("validating RoleBasedGroup on update", "name", rbg.Name, "namespace", rbg.Namespace)
 
-	// Removing or replacing the owner in this update must not bypass placement
-	// validation. Only the new role configuration is validated, allowing cleanup.
-	managed := isRBGSetManaged(oldRBG) || isRBGSetManaged(rbg)
-	if err := validateExcludedOrdinals(rbg, managed); err != nil {
-		return nil, err
-	}
 	var allErrs []error
-	if err := ValidateRollingUpdate(rbg); err != nil {
-		allErrs = append(allErrs, err)
-	}
-	if err := ValidateRoleDependencies(rbg); err != nil {
-		allErrs = append(allErrs, err)
+	if rbg.DeletionTimestamp != nil {
+		// The deletion flow must not be blocked by spec validation: foreground
+		// garbage collection removes finalizers through PATCHes that carry a
+		// deletionTimestamp, and objects persisted before these checks existed
+		// still need to be deletable.
+	} else {
+		// Removing or replacing the owner in this update must not bypass placement
+		// validation. Only the new role configuration is validated, allowing cleanup.
+		managed := isRBGSetManaged(oldRBG) || isRBGSetManaged(rbg)
+		allErrs = append(allErrs, ratchetUpdateableSpec(oldRBG, rbg, managed)...)
 	}
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
 		allErrs = append(allErrs, err)
@@ -221,7 +254,48 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		}
 	}
 
+	// A single validation error is returned unwrapped so apierrors.IsInvalid and
+	// friends keep recognizing the rejection type.
+	if len(allErrs) == 1 {
+		return nil, allErrs[0]
+	}
 	return nil, utilerrors.NewAggregate(allErrs)
+}
+
+// ratchetUpdateableSpec validates the locally checkable spec on update with a
+// ratchet: violations that already exist in the persisted object do not block
+// the update, so objects written before these webhook checks existed (or while
+// the webhook was unavailable) stay updatable and fixable; only newly introduced
+// violations are rejected.
+func ratchetUpdateableSpec(oldRBG, rbg *RoleBasedGroup, managed bool) []error {
+	checks := []func(*RoleBasedGroup) error{
+		func(g *RoleBasedGroup) error { return validateExcludedOrdinals(g, managed) },
+		ValidateRollingUpdate,
+		ValidateRoleDependencies,
+	}
+	var newErrs, oldErrs []error
+	for _, check := range checks {
+		if err := check(rbg); err != nil {
+			newErrs = append(newErrs, err)
+		}
+		if err := check(oldRBG); err != nil {
+			oldErrs = append(oldErrs, err)
+		}
+	}
+	newErrs = append(newErrs, validateRBGStaticSpec(rbg)...)
+	oldErrs = append(oldErrs, validateRBGStaticSpec(oldRBG)...)
+
+	oldViolation := make(map[string]bool, len(oldErrs))
+	for _, err := range oldErrs {
+		oldViolation[err.Error()] = true
+	}
+	var ratcheted []error
+	for _, err := range newErrs {
+		if !oldViolation[err.Error()] {
+			ratcheted = append(ratcheted, err)
+		}
+	}
+	return ratcheted
 }
 
 // ValidateDelete just implements admission.CustomValidator. This verb is currently no-op.

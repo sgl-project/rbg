@@ -381,7 +381,20 @@ func (c *realControl) getExistingPod(ctx context.Context, namespace, name string
 
 func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) error {
 	if err := c.Create(ctx, pod); err != nil {
-		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedCreate", "failed to create pod: %v, pod: %v", err, podinplace.DumpJSON(pod))
+		// Edge-triggered and without the full pod dump: the same failure retries
+		// repeatedly, and per-attempt events with large payloads would drain the
+		// object's event budget (KEP-502). The current blocker fact is carried by
+		// the Progressing condition; the event dedupes against its message.
+		emit := true
+		for _, condition := range instance.Status.Conditions {
+			if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Message == err.Error() {
+				emit = false
+				break
+			}
+		}
+		if emit {
+			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedCreate", "failed to create pod %s: %v", pod.Name, err)
+		}
 		return err
 	}
 	c.recorder.Eventf(instance, v1.EventTypeNormal, "SuccessfulCreate", "succeed to create pod %s", pod.Name)

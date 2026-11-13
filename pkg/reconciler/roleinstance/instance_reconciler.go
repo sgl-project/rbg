@@ -42,6 +42,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	inplaceupdatepod "sigs.k8s.io/rbgs/pkg/inplace/pod"
+	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -148,6 +150,8 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 
 	res := r.syncInstance(ctx, instance, &newStatus, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 
+	newStatus.Phase = nextRoleInstancePhase(instance.Status.Phase, r.phaseFacts(instance, &newStatus, filteredPods))
+
 	if err = r.statusUpdater.UpdateInstanceStatus(ctx, instance, &newStatus, filteredPods); err != nil {
 		logger.Error(err, "Failed to update instance status")
 		return reconcile.Result{}, err
@@ -189,10 +193,18 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 	var scaleRequeue time.Duration
 	scaling, scaleRequeue, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 	if podsScaleErr != nil {
+		// KEP-502: single operation attempts are Warning Events; the current blocker
+		// fact is carried by the Progressing condition. FailedScale/FailedUpdate are
+		// no longer written, and stale legacy entries are dropped by setInstanceConditions.
+		scaleReason := classifyPodOperationError("Create", podsScaleErr)
+		// The event carries the classification of the error that actually happened;
+		// only the condition retains a previously confirmed blocker family.
+		r.emitOperationFailureEvent(instance, scaleReason, podsScaleErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-			Type:               workloadsv1alpha2.RoleInstanceFailedScale,
+			Type:               workloadsv1alpha2.RoleInstanceProgressing,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
+			Reason:             r.stableBlockerReason(instance, scaleReason),
 			Message:            podsScaleErr.Error(),
 		})
 	}
@@ -233,10 +245,13 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 
 	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods)
 	if podsUpdateErr != nil {
+		updateReason := classifyPodOperationError("Update", podsUpdateErr)
+		r.emitOperationFailureEvent(instance, updateReason, podsUpdateErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-			Type:               workloadsv1alpha2.RoleInstanceFailedUpdate,
+			Type:               workloadsv1alpha2.RoleInstanceProgressing,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
+			Reason:             r.stableBlockerReason(instance, updateReason),
 			Message:            podsUpdateErr.Error(),
 		})
 	}
@@ -349,6 +364,92 @@ func (r *reconciler) truncateHistory(
 		}
 	}
 	return nil
+}
+
+// phaseFacts derives the controller-observed facts for the RI phase machine. External
+// readiness gates are intentionally excluded: they gate externally observed readiness
+// and parent availability, not phase completion.
+func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, pods []*v1.Pod) roleInstancePhaseFacts {
+	var expectedPods int32
+	for _, component := range instance.Spec.Components {
+		if component.Size != nil {
+			expectedPods += *component.Size
+		}
+	}
+	podsPresent := int32(len(pods)) == expectedPods
+
+	// Revision inequality does not cover component size changes: size is excluded
+	// from revision patches, so a previously ready instance whose current
+	// generation has not yet been confirmed ready is also executing a
+	// spec-driven update. Independent Pod loss keeps the generation equal to the
+	// last confirmed-ready generation and stays recovery.
+	revisionUpdate := newStatus.UpdateRevision != "" && newStatus.UpdateRevision != newStatus.CurrentRevision
+	specDrivenUpdate := instance.Status.LastReadyGeneration != 0 &&
+		instance.Generation > instance.Status.LastReadyGeneration
+	updateActive := revisionUpdate || specDrivenUpdate
+
+	readySatisfied := true
+	coreControl := instancecore.New(instance)
+	if policy := instance.Spec.ReadyPolicy; policy == "" || policy == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady {
+		for _, pod := range pods {
+			if !coreControl.IsPodUpdateReady(pod, 0) {
+				readySatisfied = false
+				break
+			}
+		}
+	} else {
+		// readyPolicy None skips pod readiness for phase completion, but the
+		// controller-owned in-place update readiness gate still gates completion;
+		// external gates remain excluded.
+		for _, pod := range pods {
+			if condition := inplaceupdatepod.GetInPlaceCondition(pod); condition != nil && condition.Status != v1.ConditionTrue {
+				readySatisfied = false
+				break
+			}
+		}
+	}
+	return roleInstancePhaseFacts{
+		updateActive:          updateActive,
+		podsPresent:           podsPresent,
+		readySatisfied:        readySatisfied,
+		previouslyEstablished: instance.Status.LastReadyGeneration != 0,
+	}
+}
+
+// emitOperationFailureEvent emits an edge-triggered Warning Event for a failed pod
+// operation. Events are diagnostic history: the current blocker fact stays in the
+// Progressing condition. The event is emitted only when the failure message changes,
+// so repeated identical failures do not drain the object's event budget.
+func (r *reconciler) emitOperationFailureEvent(instance *workloadsv1alpha2.RoleInstance, reason string, err error) {
+	for _, condition := range instance.Status.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Message == err.Error() {
+			return
+		}
+	}
+	r.recorder.Eventf(instance, v1.EventTypeWarning, reason, "%v", err)
+}
+
+// stableBlockerReason keeps a previously confirmed blocker family when a new error
+// cannot be classified: an unclassifiable error does not establish that the confirmed
+// blocker no longer holds, so the family is retained until a fresh observation clears
+// or replaces it.
+func (r *reconciler) stableBlockerReason(instance *workloadsv1alpha2.RoleInstance, reason string) string {
+	if reason != workloadsv1alpha2.ReasonPodOperationUnclassified {
+		return reason
+	}
+	for _, condition := range instance.Status.Conditions {
+		if condition.Type != workloadsv1alpha2.RoleInstanceProgressing || condition.Status != v1.ConditionTrue {
+			continue
+		}
+		// Retention applies only to a confirmed blocker family observed for the
+		// current target. Activity and child-readiness reasons are not blockers, a
+		// stale condition does not describe the current target, and an unclassified
+		// reason is not a confirmed family.
+		if condition.ObservedGeneration == instance.Generation && isInstanceBlockerReason(condition.Reason) {
+			return condition.Reason
+		}
+	}
+	return reason
 }
 
 func handleCrash(ctx context.Context, additionalHandlers ...func(interface{})) {

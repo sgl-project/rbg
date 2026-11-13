@@ -103,7 +103,7 @@ func TestInstanceReadyRequiresActiveOwnedPods(t *testing.T) {
 			c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithObjects(objects...).Build()
 			updater := &realStatusUpdater{Client: c}
 			status := &workloadsv1alpha2.RoleInstanceStatus{}
-			updater.setInstanceConditions(instance, status, nil)
+			updater.setInstanceConditions(instance, status, nil, nil)
 
 			assertReadinessTestConditions(t, status, tt.wantReady)
 		})

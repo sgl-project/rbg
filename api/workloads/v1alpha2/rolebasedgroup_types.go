@@ -570,7 +570,8 @@ type RoleBasedGroupStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// Status of individual roles
-	RoleStatuses []RoleStatus `json:"roleStatuses"`
+	// +optional
+	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`
 }
 
 // RoleStatus shows the current state of a specific role
@@ -593,6 +594,7 @@ type RoleStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="PROGRESSING",type="string",JSONPath=".status.conditions[?(@.type=='Progressing')].reason",description="Current progress or blocker reason"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:shortName={rbg}
 

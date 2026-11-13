@@ -2724,7 +2724,7 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 		{name: "updated replicas reset after scale to zero", oldUpdated: 1, newUpdated: 0, wantPatches: 1},
 		{name: "rollout progresses with stable ready replicas", replicas: 2, oldUpdated: 1, newUpdated: 2, wantPatches: 1},
 		{name: "new revision resets updated replicas", replicas: 2, oldUpdated: 2, newUpdated: 0, wantPatches: 1},
-		{name: "unchanged status skips patch", replicas: 2, oldUpdated: 2, newUpdated: 2},
+		{name: "unchanged status skips patch", replicas: 2, oldUpdated: 2, newUpdated: 2, wantPatches: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -2792,9 +2792,20 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 					return nil
 				},
 			}).Build()
+			// Register the live RoleInstanceSets: with the KEP-502 missing-child
+			// classification, an absent child plus zero-valued fresh status would
+			// otherwise be treated as prior-establishment evidence to preserve.
+			for _, role := range rbg.Spec.Roles {
+				set := &workloadsv1alpha2.RoleInstanceSet{
+					ObjectMeta: metav1.ObjectMeta{Name: rbg.GetWorkloadName(&role), Namespace: rbg.Namespace},
+				}
+				if err := c.Create(ctx, set); err != nil {
+					t.Fatal(err)
+				}
+			}
 			r := &RoleBasedGroupReconciler{client: c}
 			for i := 0; i < 2; i++ {
-				if err := r.updateRBGStatus(ctx, rbg, observed); err != nil {
+				if err := r.updateRBGStatus(ctx, rbg, observed, nil, nil); err != nil {
 					t.Fatal(err)
 				}
 				if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {
@@ -2805,5 +2816,78 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 				t.Errorf("status patches = %d, want %d", patches, tc.wantPatches)
 			}
 		})
+	}
+}
+
+// TestUpdateRBGStatusPreservesMissingChildEvidence covers the call chain KEP-502
+// relies on for missing-child recovery: ConstructRoleStatus returns a zero-valued
+// entry when the RoleInstanceSet is NotFound, while the persisted non-zero counters
+// are the durable prior-establishment evidence. updateRBGStatus must classify the
+// missing child from the persisted counters and must not overwrite them with zeros.
+func TestUpdateRBGStatusPreservesMissingChildEvidence(t *testing.T) {
+	ctx := context.Background()
+	replicas := int32(2)
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default", Generation: 1},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{
+			{Name: "prefill", Replicas: &replicas},
+			{Name: "decode", Replicas: &replicas},
+		}},
+		Status: workloadsv1alpha2.RoleBasedGroupStatus{
+			ObservedGeneration: 1,
+			RoleStatuses: []workloadsv1alpha2.RoleStatus{
+				// The decode RoleInstanceSet was established and then deleted; only
+				// these persisted counters can prove it.
+				{Name: "decode", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2},
+			},
+		},
+	}
+	// Fresh statuses as constructed for two missing RoleInstanceSets.
+	observed := []workloadsv1alpha2.RoleStatus{
+		{Name: "prefill"},
+		{Name: "decode"},
+	}
+	want := []workloadsv1alpha2.RoleStatus{
+		// Readiness is not preserved for a missing child: consumers treat
+		// readyReplicas as a serving fact, so it is zeroed while the
+		// replica/updated counters remain as prior-establishment evidence.
+		{Name: "decode", Replicas: 2, ReadyReplicas: 0, UpdatedReplicas: 2},
+		{Name: "prefill"},
+	}
+	var appliedRoleStatuses []workloadsv1alpha2.RoleStatus
+	scheme := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourcePatch: func(_ context.Context, _ client.Client, subresource string, obj client.Object, patch client.Patch, _ ...client.SubResourcePatchOption) error {
+			if subresource != "status" || patch.Type() != types.ApplyPatchType {
+				t.Fatalf("expected status SSA, got %s %s", subresource, patch.Type())
+			}
+			data, err := patch.Data(obj)
+			if err != nil {
+				return err
+			}
+			var payload struct {
+				Status struct {
+					RoleStatuses []workloadsv1alpha2.RoleStatus `json:"roleStatuses"`
+				} `json:"status"`
+			}
+			if err := json.Unmarshal(data, &payload); err != nil {
+				return err
+			}
+			appliedRoleStatuses = payload.Status.RoleStatuses
+			return nil
+		},
+	}).Build()
+	r := &RoleBasedGroupReconciler{client: c}
+	if err := r.updateRBGStatus(ctx, rbg, observed, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {
+		t.Fatalf("role statuses = %+v, want %+v", rbg.Status.RoleStatuses, want)
+	}
+	if !reflect.DeepEqual(appliedRoleStatuses, want) {
+		t.Fatalf("applied role statuses = %+v, want %+v", appliedRoleStatuses, want)
 	}
 }

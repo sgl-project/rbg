@@ -389,17 +389,17 @@ func TestReadinessLatchAcquiredAndCarriedAcrossStatusCalculations(t *testing.T) 
 	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithObjects(pods[0], pods[1]).Build()
 	updater := &realStatusUpdater{Client: c}
 	unselected := &workloadsv1alpha2.RoleInstanceStatus{}
-	updater.setInstanceConditions(instance, unselected, nil)
+	updater.setInstanceConditions(instance, unselected, nil, nil)
 	require.Zero(t, unselected.LastReadyGeneration, "no selected target revision means no stability latch")
 	ready := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "r1", UpdateRevision: "r1"}
-	updater.setInstanceConditions(instance, ready, nil)
+	updater.setInstanceConditions(instance, ready, nil, nil)
 	require.Equal(t, instance.Generation, ready.LastReadyGeneration)
 	instance.Status = *ready
 	require.NoError(t, c.Delete(context.Background(), pods[0]))
 	notReady := &workloadsv1alpha2.RoleInstanceStatus{
 		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: instance.Status.LastReadyGeneration,
 	}
-	updater.setInstanceConditions(instance, notReady, nil)
+	updater.setInstanceConditions(instance, notReady, nil, nil)
 	require.Equal(t, instance.Generation, notReady.LastReadyGeneration)
 	require.True(t, slices.ContainsFunc(notReady.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
 		return condition.Type == workloadsv1alpha2.RoleInstanceReady && condition.Status == v1.ConditionFalse
@@ -408,10 +408,10 @@ func TestReadinessLatchAcquiredAndCarriedAcrossStatusCalculations(t *testing.T) 
 	changed := &workloadsv1alpha2.RoleInstanceStatus{
 		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: notReady.LastReadyGeneration,
 	}
-	updater.setInstanceConditions(instance, changed, nil)
+	updater.setInstanceConditions(instance, changed, nil, nil)
 	require.Less(t, changed.LastReadyGeneration, instance.Generation, "the old latch must not arm the new generation")
 	require.NoError(t, c.Create(context.Background(), newReadinessTestPod(instance, "router")))
-	updater.setInstanceConditions(instance, changed, nil)
+	updater.setInstanceConditions(instance, changed, nil, nil)
 	require.Equal(t, instance.Generation, changed.LastReadyGeneration, "advance only after the new spec is ready")
 }
 

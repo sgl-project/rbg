@@ -246,6 +246,10 @@ const (
 
 	// RoleInstanceSetConditionFailedUpdate indicates RoleInstanceSet controller failed to update RoleInstances.
 	RoleInstanceSetConditionFailedUpdate RoleInstanceSetConditionType = "FailedUpdate"
+
+	// RoleInstanceSetProgressing reports progress toward the instance-set target, whether
+	// executing, waiting, or blocked.
+	RoleInstanceSetProgressing RoleInstanceSetConditionType = "Progressing"
 )
 
 // RoleInstanceSetCondition describes the state of a RoleInstanceSet at a certain point.
@@ -264,6 +268,11 @@ type RoleInstanceSetCondition struct {
 
 	// A human-readable message indicating details about the transition.
 	Message string `json:"message,omitempty"`
+
+	// ObservedGeneration is the generation of this RoleInstanceSet to which the fact applies.
+	// Its absence does not confirm the current generation.
+	// +optional
+	ObservedGeneration int64 `json:"observedGeneration,omitempty"`
 }
 
 // +genclient
@@ -280,6 +289,7 @@ type RoleInstanceSetCondition struct {
 // +kubebuilder:printcolumn:name="UPDATED_READY",type="integer",JSONPath=".status.updatedReadyReplicas",description="The number of RoleInstances updated and ready."
 // +kubebuilder:printcolumn:name="READY",type="integer",JSONPath=".status.readyReplicas",description="The number of RoleInstances ready."
 // +kubebuilder:printcolumn:name="TOTAL",type="integer",JSONPath=".status.replicas",description="The number of currently all RoleInstances."
+// +kubebuilder:printcolumn:name="PROGRESSING",type="string",JSONPath=".status.conditions[?(@.type=='Progressing')].reason",description="Current progress or blocker reason"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp",description="CreationTimestamp is a timestamp representing the server time when this object was created. It is not guaranteed to be set in happens-before order across separate operations. Clients may not set this value. It is represented in RFC3339 form and is in UTC."
 // +kubebuilder:printcolumn:name="SELECTOR",type="string",priority=1,JSONPath=".status.labelSelector",description="The selector of currently RoleInstanceSet."
 

@@ -64,6 +64,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	instancesync "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
+	setprogressing "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/scale"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	gangcommon "sigs.k8s.io/rbgs/pkg/scheduler/common"
@@ -78,6 +79,12 @@ import (
 // through the watches, so this exists for the changes that do not: a Volcano upgrade
 // or a --scheduler-name switch. It is a slow backstop rather than a retry loop.
 const incompatibleGangConfigRequeue = 5 * time.Minute
+
+// errInvalidRoleSpec marks local role-spec validation failures (dependency
+// cycles, invalid excluded ordinals) discovered by the controller when the
+// admission webhook was bypassed. KEP-502 reports them through the
+// configuration family, not as unclassifiable API-operation errors.
+var errInvalidRoleSpec = stderrors.New("invalid role spec")
 
 var (
 	runtimeController *builder.TypedBuilder[reconcile.Request]
@@ -189,8 +196,20 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 0: Pre-check validations
+	// KEP-502: snapshot the current-generation blocker confirmed at reconcile entry.
+	// The normal status path below recomputes the condition from child aggregation,
+	// which would otherwise publish an unconfirmed clearing of a controller-owned
+	// blocker before the role operations are retried; the snapshot is carried through
+	// aggregation and retained when a retry fails with an unclassifiable error.
+	entryBlocker := rbgEntryOwnBlocker(rbg)
+
+	// Step 0: Pre-check validations. Per KEP-502, preflight failures must not skip the
+	// generation write: record observedGeneration together with the configuration-family
+	// blocker before returning.
 	if err := r.preCheck(ctx, rbg); err != nil {
+		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, entryBlocker, constants.ProgressingReasonInvalidSpec, err.Error()); reportErr != nil {
+			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for preCheck failure")
+		}
 		return ctrl.Result{}, err
 	}
 
@@ -219,7 +238,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	// Step 4: Construct role statuses
-	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg)
+	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expectedRolesRevisionHash, entryBlocker)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
@@ -252,6 +271,9 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 	if gangErr != nil {
+		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, entryBlocker, classifyGangIncompatibility(gangErr), gangErr.Error()); reportErr != nil {
+			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for incompatible gang config")
+		}
 		// A gang configuration the current RBG cannot satisfy is not transient: only a
 		// user or operator change resolves it, and CR edits already re-enqueue through
 		// the watches in SetupWithManager, so the workqueue's 5ms-and-doubling error
@@ -276,6 +298,28 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// Step 8: Reconcile roles. Even a failed role must not prevent cleanup of
 	// workloads removed from the spec.
 	roleErr := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies)
+	// KEP-502: this controller's own CR-operation errors are classified and
+	// reported as blockers with observedGeneration, so a failed role reconcile
+	// is visible in status instead of only in the error return. Local spec
+	// validation failures are configuration blockers, and optimistic-lock
+	// conflicts are transient: reporting them as UnclassifiedBlocker would page
+	// anyone following the KEP's "needs attention" rule on every retry.
+	if roleErr != nil && !apierrors.IsConflict(roleErr) {
+		reason := setprogressing.ClassifySetOperationError(roleErr)
+		if stderrors.Is(roleErr, errInvalidRoleSpec) {
+			reason = constants.ProgressingReasonInvalidSpec
+		}
+		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, entryBlocker, reason, roleErr.Error()); reportErr != nil {
+			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for role reconcile failure")
+		}
+	} else if entryBlocker != nil {
+		// The previously blocked role operation succeeded: finalize the condition
+		// from a fresh observation without the carried entry blocker, so the
+		// confirmed family is cleared by the successful retry instead of persisting.
+		if err := r.finalizeRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash); err != nil {
+			log.FromContext(ctx).Error(err, "Failed to finalize Progressing condition after successful role reconcile")
+		}
+	}
 	// Step 9: Cleanup orphaned resources.
 	if err := stderrors.Join(roleErr, r.cleanup(ctx, rbg)); err != nil {
 		return ctrl.Result{}, err
@@ -521,18 +565,21 @@ func (r *RoleBasedGroupReconciler) reconcileRoles(
 	sortedRoles, err := dependencyManager.SortRoles(ctx, rbg)
 	if err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, InvalidRoleDependency, err.Error())
-		return err
+		return fmt.Errorf("%w: %w", errInvalidRoleSpec, err)
 	}
 
 	// Invalid exclusion input freezes only that role. Keep processing other
 	// dependency layers; admission still rejects invalid objects as a whole.
+	// errInvalidRoleSpec marks these local spec validation failures so the
+	// role-reconcile error is reported as the configuration family instead of an
+	// unclassifiable API error.
 	var invalidRolesErr error
 	for _, roleList := range sortedRoles {
 		var errs error
 
 		for _, role := range roleList {
 			if err := workloadsv1alpha2.ValidateRoleExcludedOrdinals(rbg, role); err != nil {
-				invalidRolesErr = stderrors.Join(invalidRolesErr, err)
+				invalidRolesErr = stderrors.Join(invalidRolesErr, fmt.Errorf("%w: %w", errInvalidRoleSpec, err))
 				continue
 			}
 			logger := log.FromContext(ctx)
@@ -697,6 +744,8 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
+	expectedRolesRevisionHash map[string]string,
+	entryBlocker *metav1.Condition,
 ) ([]workloadsv1alpha2.RoleStatus, error) {
 	roleStatuses := make([]workloadsv1alpha2.RoleStatus, 0, len(rbg.Spec.Roles))
 
@@ -728,7 +777,7 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 	}
 
 	// Always update the RBG status via SSA patch.
-	if err := r.updateRBGStatus(ctx, rbg, roleStatuses); err != nil {
+	if err := r.updateRBGStatus(ctx, rbg, roleStatuses, expectedRolesRevisionHash, entryBlocker); err != nil {
 		r.recorder.Eventf(
 			rbg, corev1.EventTypeWarning, FailedUpdateStatus,
 			"Failed to update status for %s: %v", rbg.Name, err,
@@ -773,6 +822,7 @@ func (r *RoleBasedGroupReconciler) deleteOrphanRoles(ctx context.Context, rbg *w
 
 func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, roleStatuses []workloadsv1alpha2.RoleStatus,
+	expectedRolesRevisionHash map[string]string, entryBlocker *metav1.Condition,
 ) error {
 	// Capture current status before mutation to avoid unnecessary SSA patches.
 	// Since constructAndUpdateRoleStatuses now calls this on every reconcile,
@@ -827,8 +877,30 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, readyCondition)
 	rbg.Status.ObservedGeneration = rbg.Generation
 
+	// Record the KEP-502 Progressing condition before the unchanged-status check so
+	// condition-only changes still produce an SSA patch.
+	preservedEvidence := r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash, r.observeGangWaiting(ctx, rbg), entryBlocker)
+
 	// update role status
 	for i := range roleStatuses {
+		if preservedEvidence[roleStatuses[i].Name] &&
+			roleStatuses[i].Replicas == 0 && roleStatuses[i].ReadyReplicas == 0 && roleStatuses[i].UpdatedReplicas == 0 {
+			// Keep the persisted non-zero replica and updated counters for a
+			// currently missing RoleInstanceSet: a NotFound lookup yields exactly
+			// this zero-valued fresh entry, and overwriting it would destroy the
+			// durable prior-establishment evidence that classifies the missing
+			// child as Recovering. Readiness is not preserved: consumers treat
+			// readyReplicas as a serving fact, and the child no longer exists. The
+			// entry is refreshed once the RoleInstanceSet exists again or reports
+			// non-zero facts.
+			for j := range rbg.Status.RoleStatuses {
+				if rbg.Status.RoleStatuses[j].Name == roleStatuses[i].Name {
+					rbg.Status.RoleStatuses[j].ReadyReplicas = 0
+					break
+				}
+			}
+			continue
+		}
 		found := false
 		for j, oldStatus := range rbg.Status.RoleStatuses {
 			// if found, update

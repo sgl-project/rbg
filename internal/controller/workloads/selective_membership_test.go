@@ -52,7 +52,8 @@ func TestInvalidCommittedRecordBlocksCleanupAndReportsStatus(t *testing.T) {
 				require.Equal(t, int32(3), *actual.Spec.Replicas)
 				require.Len(t, actual.Status.Conditions, 2)
 				require.Equal(t, previousReason, actual.Status.Conditions[0].Reason)
-				require.Equal(t, invalidCommittedOrdinalsReason, actual.Status.Conditions[1].Reason)
+				require.Equal(t, workloadsv1alpha2.RoleInstanceSetProgressing, actual.Status.Conditions[1].Type)
+				require.Equal(t, constants.ProgressingReasonInvalidSpec, actual.Status.Conditions[1].Reason)
 				version := actual.ResourceVersion
 				require.Error(t, r.validateCommittedMembership(ctx, actual))
 				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(set), actual))
@@ -162,9 +163,9 @@ func TestStatelessCommittedRecordBlocksCleanupAndDispatch(t *testing.T) {
 			require.Equal(t, set.Annotations, actual.Annotations)
 			require.Len(t, actual.Status.Conditions, 1)
 			condition := actual.Status.Conditions[0]
-			require.Equal(t, workloadsv1alpha2.RoleInstanceSetConditionFailedScale, condition.Type)
+			require.Equal(t, workloadsv1alpha2.RoleInstanceSetProgressing, condition.Type)
 			require.Equal(t, corev1.ConditionTrue, condition.Status)
-			require.Equal(t, "InvalidCommittedOrdinals", condition.Reason)
+			require.Equal(t, "InvalidSpec", condition.Reason)
 			require.Equal(t, message, condition.Message)
 			select {
 			case event := <-recorder.Events:
