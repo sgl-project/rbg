@@ -303,6 +303,29 @@ func TestInjectEngineRuntimeFragmentsNameCollision(t *testing.T) {
 		assert.Equal(t, []string{"engine", "shared"}, containerNames(spec))
 		assert.Empty(t, drainEvents(recorder))
 	})
+
+	t.Run("a container and a volume sharing one name are independent namespaces, silent", func(t *testing.T) {
+		// profile a delivers a container named "shared"; profile b delivers
+		// a volume with the same name. Container and volume names occupy
+		// independent namespaces, so the volume must not be mistaken for a
+		// collision with the container (and vice versa) — both land, no
+		// event. A tracker keyed by name alone would attribute the volume to
+		// profile a and either warn wrongly or suppress a real warning.
+		a := makeProfile("a", nil)
+		a.Spec.Volumes = nil
+		a.Spec.Containers = []v1.Container{{Name: "shared", Image: "a:latest"}}
+		b := makeProfile("b", nil)
+		b.Spec.Volumes[0].Name = "shared"
+		spec := renderSpec()
+		recorder := record.NewFakeRecorder(16)
+		require.NoError(t, InjectEngineRuntimeFragments(ctx, spec, []EngineRuntimeFragment{
+			{Profile: a, Runtime: workloadsv1alpha2.EngineRuntime{ProfileName: "a"}},
+			{Profile: b, Runtime: workloadsv1alpha2.EngineRuntime{ProfileName: "b"}},
+		}, "worker", recorder, basicRBG()))
+		assert.Equal(t, []string{"engine", "shared"}, containerNames(spec))
+		assert.Equal(t, []string{"shared"}, volumeNamesOf(spec))
+		assert.Empty(t, drainEvents(recorder))
+	})
 }
 
 // TestInjectEngineRuntimeFragmentsLegacyEnvMerge pins the legacy containers
