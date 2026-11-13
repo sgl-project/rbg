@@ -400,28 +400,61 @@ func TestEntryBlockerCarryAndSnapshot(t *testing.T) {
 			t.Fatalf("message must record both facts, got %s", message)
 		}
 	})
+
+	t.Run("retention does not grow the message across retries", func(t *testing.T) {
+		rbg := newProgressingRBG()
+		// The persisted entry already carries the suffix from the previous retry;
+		// appending again would grow the message until the API limit rejects it.
+		alreadySuffixed := entry
+		alreadySuffixed.Message = "rbac denied" + unclassifiedSuffixSeparator + "older timeout"
+		reason, message := retainRBGBlockerFamily(rbg, &alreadySuffixed, workloadconstants.ProgressingReasonUnclassifiedBlocker, "new timeout")
+		if reason != workloadconstants.ProgressingReasonPermissionDenied {
+			t.Fatalf("got %s", reason)
+		}
+		want := "rbac denied" + unclassifiedSuffixSeparator + "new timeout"
+		if message != want {
+			t.Fatalf("message must not grow across retries, got %q, want %q", message, want)
+		}
+	})
 }
 
 func TestPodGroupWaitingPhase(t *testing.T) {
-	podGroup := func(phase string) *unstructured.Unstructured {
-		return &unstructured.Unstructured{Object: map[string]interface{}{
+	podGroup := func(phase string, unschedulable bool) *unstructured.Unstructured {
+		object := map[string]interface{}{
 			"status": map[string]interface{}{"phase": phase},
-		}}
-	}
-	for _, apiVersion := range []string{"scheduling.volcano.sh/v1beta1", "scheduling.x-k8s.io/v1alpha1"} {
-		// Pending waits for admission and resources; Unknown means the gang is
-		// partially placed and the rest cannot be scheduled.
-		for _, phase := range []string{"Pending", "Unknown"} {
-			if !podGroupWaitingPhase(apiVersion, podGroup(phase)) {
-				t.Fatalf("%s phase %s must be a waiting fact", apiVersion, phase)
+		}
+		if unschedulable {
+			object["status"].(map[string]interface{})["conditions"] = []interface{}{
+				map[string]interface{}{
+					"type":   "Unschedulable",
+					"status": "True",
+					"reason": "NotEnoughResources",
+				},
 			}
 		}
-		// Inqueue already allows pod creation, Scheduling already placed more than
-		// minMember pods, and the terminal phases are not gang waiting.
-		for _, phase := range []string{"", "Inqueue", "Scheduling", "Running", "Completed", "Finished", "Failed"} {
-			if podGroupWaitingPhase(apiVersion, podGroup(phase)) {
-				t.Fatalf("%s phase %q must not be a waiting fact", apiVersion, phase)
-			}
+		return &unstructured.Unstructured{Object: map[string]interface{}{
+			"status": object["status"],
+		}}
+	}
+	// The Unschedulable condition is the reliable waiting signal: Volcano can
+	// hold the group in Inqueue with an Unschedulable condition while the gang
+	// cannot be filled.
+	if !podGroupWaiting(podGroup("Inqueue", true)) {
+		t.Fatal("Inqueue with an Unschedulable condition must be a waiting fact")
+	}
+	// Pending waits for admission and resources; Unknown means the gang is
+	// partially placed and the rest cannot be scheduled.
+	for _, phase := range []string{"Pending", "Unknown"} {
+		if !podGroupWaiting(podGroup(phase, false)) {
+			t.Fatalf("phase %s must be a waiting fact", phase)
+		}
+	}
+	// Inqueue without the condition already allows pod creation, Scheduling
+	// already placed more than minMember pods, and the terminal phases are not
+	// gang waiting.
+	for _, phase := range []string{"", "Inqueue", "Scheduling", "Running", "Completed", "Finished", "Failed"} {
+		if podGroupWaiting(podGroup(phase, false)) {
+			t.Fatalf("phase %q must not be a waiting fact", phase)
 		}
 	}
 }

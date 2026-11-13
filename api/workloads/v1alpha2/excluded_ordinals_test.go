@@ -23,6 +23,7 @@ import (
 	"github.com/stretchr/testify/require"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
@@ -67,7 +68,15 @@ func TestExcludedOrdinalsAdmission(t *testing.T) {
 			} else {
 				require.NoError(t, err)
 			}
+			// A violation that already exists in the persisted object must not
+			// block updates (ratchet): objects written before the check existed
+			// stay fixable, and only newly introduced violations are rejected.
 			_, err = validator.ValidateUpdate(context.Background(), rbg, rbg.DeepCopy())
+			require.NoError(t, err, "%v", err)
+			old := rbg.DeepCopy()
+			delete(old.Spec.Roles[0].Annotations, constants.ExcludedOrdinalsAnnotationKey)
+			delete(old.Spec.Roles[0].Annotations, constants.CommittedSkipOrdinalsAnnotationKey)
+			_, err = validator.ValidateUpdate(context.Background(), old, rbg)
 			if tc.bad {
 				require.True(t, apierrors.IsInvalid(err), "%v", err)
 			} else {
@@ -75,6 +84,25 @@ func TestExcludedOrdinalsAdmission(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestExcludedOrdinalsAdmissionDeletionFlow(t *testing.T) {
+	// An object persisted with violations while the webhook was unavailable must
+	// stay deletable: garbage collection removes finalizers through PATCHes that
+	// carry a deletionTimestamp, and spec validation must not block them.
+	role := RoleSpec{Name: "worker", Annotations: map[string]string{
+		constants.ExcludedOrdinalsAnnotationKey:      "3-1",
+		constants.CommittedSkipOrdinalsAnnotationKey: "1",
+	}}
+	rbg := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "group", DeletionTimestamp: ptr.To(metav1.Now())},
+		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{role}},
+	}
+	old := rbg.DeepCopy()
+	old.DeletionTimestamp = nil
+	validator := &RoleBasedGroupValidator{EnableDeprecatedWorkloadTypes: true, Client: fake.NewClientBuilder().Build()}
+	_, err := validator.ValidateUpdate(context.Background(), old, rbg)
+	require.NoError(t, err, "%v", err)
 }
 
 func TestRBGSetExcludedOrdinalsAdmission(t *testing.T) {

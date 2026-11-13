@@ -49532,8 +49532,6 @@ spec:
                   - updatedReplicas
                   type: object
                 type: array
-            required:
-            - roleStatuses
             type: object
         type: object
     served: true

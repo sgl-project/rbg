@@ -2848,7 +2848,10 @@ func TestUpdateRBGStatusPreservesMissingChildEvidence(t *testing.T) {
 		{Name: "decode"},
 	}
 	want := []workloadsv1alpha2.RoleStatus{
-		{Name: "decode", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2},
+		// Readiness is not preserved for a missing child: consumers treat
+		// readyReplicas as a serving fact, so it is zeroed while the
+		// replica/updated counters remain as prior-establishment evidence.
+		{Name: "decode", Replicas: 2, ReadyReplicas: 0, UpdatedReplicas: 2},
 		{Name: "prefill"},
 	}
 	var appliedRoleStatuses []workloadsv1alpha2.RoleStatus

@@ -78,15 +78,19 @@ func ClassifySetOperationError(err error) string {
 func classifySingleSetOperationError(err error) string {
 	switch {
 	case apierrors.IsForbidden(err):
-		// HTTP 403 is ambiguous: admission webhooks also reject with Forbidden, so
-		// the admission detail must be recognized before defaulting to RBAC.
+		// HTTP 403 is ambiguous: quota, admission, and RBAC all reject with
+		// Forbidden. Only a positive RBAC match (User "..." cannot ...) is an RBAC
+		// denial; other 403 responses are admission rejections.
 		if mentionsAdmissionWebhook(err) {
 			return workloadconstants.ProgressingReasonAdmissionDenied
 		}
 		if isQuotaExceededError(err) {
 			return workloadconstants.ProgressingReasonWaitingForQuota
 		}
-		return workloadconstants.ProgressingReasonPermissionDenied
+		if isRBACDenial(err) {
+			return workloadconstants.ProgressingReasonPermissionDenied
+		}
+		return workloadconstants.ProgressingReasonAdmissionDenied
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
 		if mentionsAdmissionWebhook(err) {
 			return workloadconstants.ProgressingReasonAdmissionDenied
@@ -135,6 +139,17 @@ func mentionsAdmissionWebhook(err error) bool {
 	msg := err.Error()
 	return strings.Contains(msg, "admission webhook") ||
 		strings.Contains(msg, "admission plugin")
+}
+
+// isRBACDenial positively matches the stable RBAC Forbidden shape
+// (User "..." cannot <verb> ...). A 403 without that shape is not assumed to be
+// an RBAC failure.
+func isRBACDenial(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, `User "`) && strings.Contains(msg, " cannot ")
 }
 
 // SetBlocker carries a blocker fact observed by this controller's own operations.
@@ -190,15 +205,19 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	// updateStatus counts them, which would hide initial creation, scale-up, and
 	// missing-instance recovery.
 	observedReplicas := int32(len(instances))
+	// A still-starting instance keeps the workflow that added it active:
+	// KEP-502 holds the activity reason until newly added instances complete
+	// startup, instead of collapsing to InstancesNotReady once the objects exist.
+	starting := anyInstanceStarting(instances)
 
-	updatePending := updateActive(set, newStatus, instances)
+	updatePending := updateActive(set, newStatus, instances, observedReplicas, target)
 
 	// Creating is used only during initial set establishment, before the RIS has
 	// established RIs for a previous target. Revisions are published on the first
 	// reconcile, so a non-empty revision is not evidence of establishment; only a
 	// previous convergence is. A zero-replica target is structurally complete at
 	// creation and never reports Creating.
-	if !setEstablished(set) && observedReplicas < target {
+	if !setEstablished(set) && (observedReplicas < target || starting) {
 		condition.Reason = workloadconstants.ProgressingReasonCreating
 		return condition
 	}
@@ -207,7 +226,8 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	// established: when the target did not grow, the missing instance is repair or
 	// replacement, not a scale-up. Update-driven replacement is excluded because
 	// it remains RoleInstanceUpdated.
-	if anyInstanceRecovering(instances) || establishedInstanceMissing(set, observedReplicas, target, updatePending) {
+	if anyInstanceRecovering(instances) || establishedInstanceMissing(set, observedReplicas, target, updatePending) ||
+		(persistedProgressingReason(set) == workloadconstants.ProgressingReasonRecovering && starting) {
 		condition.Reason = workloadconstants.ProgressingReasonRecovering
 		return condition
 	}
@@ -225,7 +245,7 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	}
 
 	switch {
-	case observedReplicas < target:
+	case observedReplicas < target || starting:
 		condition.Reason = workloadconstants.ProgressingReasonScalingUp
 		return condition
 	case observedReplicas > target:
@@ -264,11 +284,37 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 var setEstablishmentReasons = map[string]bool{
 	workloadconstants.ProgressingReasonConverged:           true,
 	workloadconstants.ProgressingReasonPaused:              true,
-	workloadconstants.ProgressingReasonInstancesNotReady:   true,
 	workloadconstants.ProgressingReasonScalingUp:           true,
 	workloadconstants.ProgressingReasonScalingDown:         true,
 	workloadconstants.ProgressingReasonRoleInstanceUpdated: true,
 	workloadconstants.ProgressingReasonRecovering:          true,
+}
+
+// persistedProgressingReason returns the persisted True-condition Progressing
+// reason, or "" when absent. It is the durable record of the workflow that was
+// last reported and is used to keep update- and recovery-driven replacement
+// attributed to their workflow across intermediate observations.
+func persistedProgressingReason(set *workloadsv1alpha2.RoleInstanceSet) string {
+	for _, condition := range set.Status.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
+			condition.Status == v1.ConditionTrue && condition.Reason != "" {
+			return condition.Reason
+		}
+	}
+	return ""
+}
+
+// anyInstanceStarting reports whether any observed instance is still in its
+// initial startup: its phase or fresh Progressing reason is Creating. Such an
+// instance keeps the workflow that created it active until it completes startup.
+func anyInstanceStarting(instances []*workloadsv1alpha2.RoleInstance) bool {
+	for _, instance := range instances {
+		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseCreating ||
+			instanceProgressingReason(instance) == workloadsv1alpha2.ReasonInstanceCreating {
+			return true
+		}
+	}
+	return false
 }
 
 // setEstablished reports whether the RoleInstanceSet has established the instances of
@@ -465,14 +511,17 @@ func EmitOperationFailureEvent(recorder record.EventRecorder, set *workloadsv1al
 	recorder.Eventf(set, v1.EventTypeWarning, reason, "%v", err)
 }
 
-// updateActive reports whether update work remains: instances below the policy's
-// expected update scope, or an instance still executing its own update.
-func updateActive(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) bool {
-	// A below-target updated count only means update work when a revision rollout
-	// is in progress. With equal revisions it reflects missing instances, which is
-	// classified as recovery or scaling, not as an update.
-	if newStatus.UpdateRevision != newStatus.CurrentRevision &&
-		newStatus.UpdatedReplicas < newStatus.ExpectedUpdatedReplicas {
+// updateActive reports whether update work remains for the current target: a
+// revision rollout in progress, an instance still executing its own update, or a
+// replacement gap that the previously reported update workflow explains.
+func updateActive(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus,
+	instances []*workloadsv1alpha2.RoleInstance, observedReplicas, target int32) bool {
+	// Differing revisions are the rollout signal regardless of the compatibility
+	// counters: during RecreatePod replacement the old instances can already be
+	// gone (stateless: updated == replicas == 0 advances current) or synthetic
+	// slots can inflate the updated count (stateful), while the replacements have
+	// not finished starting.
+	if newStatus.UpdateRevision != "" && newStatus.UpdateRevision != newStatus.CurrentRevision {
 		return true
 	}
 	for _, instance := range instances {
@@ -480,6 +529,15 @@ func updateActive(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1
 			instanceProgressingReason(instance) == workloadsv1alpha2.ReasonInstanceUpdating {
 			return true
 		}
+	}
+	// Update-driven replacement keeps its workflow reason while replacement
+	// instances are missing or still starting, even after the revisions converge:
+	// the previously reported RoleInstanceUpdated reason is the durable evidence
+	// that the missing instances belong to the rollout rather than to recovery or
+	// scale-up.
+	if persistedProgressingReason(set) == workloadconstants.ProgressingReasonRoleInstanceUpdated &&
+		(observedReplicas < target || anyInstanceStarting(instances)) {
+		return true
 	}
 	return false
 }

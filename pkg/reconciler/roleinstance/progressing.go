@@ -175,15 +175,22 @@ func classifyPodOperationError(operation string, err error) string {
 	}
 	switch {
 	case apierrors.IsForbidden(err):
-		// HTTP 403 is ambiguous: admission webhooks also reject with Forbidden, so
-		// the admission detail must be recognized before defaulting to RBAC.
+		// HTTP 403 is ambiguous: quota, admission, and RBAC all reject with
+		// Forbidden. Classify from the error details: quota identifies the exceeded
+		// quota object, admission identifies the rejecting plugin or webhook, and
+		// only a positive RBAC match (User "..." cannot ...) is an RBAC denial.
+		// Other 403 responses (PodSecurity, LimitRanger, ServiceAccount admission,
+		// NamespaceLifecycle, ValidatingAdmissionPolicy) are admission rejections.
 		if mentionsAdmissionWebhook(err) {
 			return workloadsv1alpha2.ReasonPodAdmissionRejected
 		}
 		if isQuotaExceededError(err) {
 			return "Pod" + operation + "QuotaExceeded"
 		}
-		return "Pod" + operation + "Forbidden"
+		if isRBACDenial(err) {
+			return "Pod" + operation + "Forbidden"
+		}
+		return workloadsv1alpha2.ReasonPodAdmissionRejected
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
 		// Admission rejections and invalid object errors are surfaced by the API
 		// server as Invalid/BadRequest with the rejecting plugin in the message.
@@ -194,6 +201,17 @@ func classifyPodOperationError(operation string, err error) string {
 	default:
 		return workloadsv1alpha2.ReasonPodOperationUnclassified
 	}
+}
+
+// isRBACDenial positively matches the stable RBAC Forbidden shape
+// (User "..." cannot <verb> ...). A 403 without that shape is not assumed to be
+// an RBAC failure.
+func isRBACDenial(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, `User "`) && strings.Contains(msg, " cannot ")
 }
 
 func isQuotaExceededError(err error) bool {
@@ -318,6 +336,14 @@ func insufficientResourcesMessage(pods []*v1.Pod) string {
 		for _, condition := range pod.Status.Conditions {
 			if condition.Type == v1.PodScheduled && condition.Status == v1.ConditionFalse &&
 				condition.Reason == v1.PodReasonUnschedulable {
+				// Unschedulable is a family of facts: gang holds ("pod group is
+				// not ready"), placement constraints, and insufficient capacity
+				// all report it. Only scheduler messages about insufficient
+				// resources map to the resources family; other facts stay
+				// unclassified and surface through readiness.
+				if !strings.Contains(condition.Message, "Insufficient ") {
+					continue
+				}
 				detail := fmt.Sprintf("Pod %s is unschedulable", pod.Name)
 				if condition.Message != "" {
 					detail = fmt.Sprintf("%s: %s", detail, condition.Message)

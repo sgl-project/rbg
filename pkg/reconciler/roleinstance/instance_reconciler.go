@@ -196,13 +196,15 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		// KEP-502: single operation attempts are Warning Events; the current blocker
 		// fact is carried by the Progressing condition. FailedScale/FailedUpdate are
 		// no longer written, and stale legacy entries are dropped by setInstanceConditions.
-		scaleReason := r.stableBlockerReason(instance, classifyPodOperationError("Create", podsScaleErr))
+		scaleReason := classifyPodOperationError("Create", podsScaleErr)
+		// The event carries the classification of the error that actually happened;
+		// only the condition retains a previously confirmed blocker family.
 		r.emitOperationFailureEvent(instance, scaleReason, podsScaleErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:               workloadsv1alpha2.RoleInstanceProgressing,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
-			Reason:             scaleReason,
+			Reason:             r.stableBlockerReason(instance, scaleReason),
 			Message:            podsScaleErr.Error(),
 		})
 	}
@@ -243,13 +245,13 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 
 	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods)
 	if podsUpdateErr != nil {
-		updateReason := r.stableBlockerReason(instance, classifyPodOperationError("Update", podsUpdateErr))
+		updateReason := classifyPodOperationError("Update", podsUpdateErr)
 		r.emitOperationFailureEvent(instance, updateReason, podsUpdateErr)
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:               workloadsv1alpha2.RoleInstanceProgressing,
 			Status:             v1.ConditionTrue,
 			LastTransitionTime: metav1.Now(),
-			Reason:             updateReason,
+			Reason:             r.stableBlockerReason(instance, updateReason),
 			Message:            podsUpdateErr.Error(),
 		})
 	}

@@ -570,7 +570,8 @@ type RoleBasedGroupStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// Status of individual roles
-	RoleStatuses []RoleStatus `json:"roleStatuses"`
+	// +optional
+	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`
 }
 
 // RoleStatus shows the current state of a specific role
