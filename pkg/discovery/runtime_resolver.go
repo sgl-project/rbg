@@ -18,9 +18,11 @@ package discovery
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	v1 "k8s.io/api/core/v1"
+	k8sruntime "k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -44,12 +46,16 @@ type EngineRuntimeFragment struct {
 // name set (init containers and sidecars), captured at resolve time; the
 // render pass resolves each listed name against the role-declared names
 // first, then this set — the profile-declared half of the target
-// vocabulary (D8).
+// vocabulary (D8). ReferenceIndex is the reference's index in the role's
+// engineRuntimes list — the render-side unaimed-patch warning keys its
+// dedupe by it, so two references to one profile on disjoint components
+// each keep their own warning (legal under D6).
 type EngineRuntimePatch struct {
 	ProfileName        string
 	Patches            []workloadsv1alpha2.ContainerPatch
 	Targets            []string
 	DeclaredContainers map[string]struct{}
+	ReferenceIndex     int
 }
 
 // EngineRuntimeRolePatch is one reference's role-side patches routed to one
@@ -98,21 +104,23 @@ type EngineRuntimePlan struct {
 	// unaimedWarned dedupes the render-side half of the unaimed-patch
 	// warning — entries naming only profile-declared containers — so it
 	// fires once per reference per resolve even when several templates
-	// run a stage-3 pass. Keyed by profileName.
-	unaimedWarned map[string]struct{}
+	// run a stage-3 pass. Keyed by the reference's engineRuntimes index:
+	// the warning is per reference, not per profile — two references to
+	// one profile on disjoint components (legal under D6) each get one.
+	unaimedWarned map[int]struct{}
 }
 
 // ShouldWarnUnaimed reports whether the render pass should emit the
-// unaimed-patch warning for this profile, marking it warned so only the
-// first caller per resolve returns true.
-func (p *EngineRuntimePlan) ShouldWarnUnaimed(profileName string) bool {
+// unaimed-patch warning for the reference at referenceIndex, marking it
+// warned so only the first caller per resolve returns true.
+func (p *EngineRuntimePlan) ShouldWarnUnaimed(referenceIndex int) bool {
 	if p.unaimedWarned == nil {
-		p.unaimedWarned = make(map[string]struct{}, 1)
+		p.unaimedWarned = make(map[int]struct{}, 1)
 	}
-	if _, warned := p.unaimedWarned[profileName]; warned {
+	if _, warned := p.unaimedWarned[referenceIndex]; warned {
 		return false
 	}
-	p.unaimedWarned[profileName] = struct{}{}
+	p.unaimedWarned[referenceIndex] = struct{}{}
 	return true
 }
 
@@ -156,7 +164,7 @@ func ResolveEngineRuntimes(
 		FragmentApplications:  map[string][]EngineRuntimeFragment{},
 		PatchApplications:     map[string][]EngineRuntimePatch{},
 		RolePatchApplications: map[string][]EngineRuntimeRolePatch{},
-		unaimedWarned:         map[string]struct{}{},
+		unaimedWarned:         map[int]struct{}{},
 	}
 	if len(role.EngineRuntimes) == 0 {
 		return plan, nil
@@ -185,7 +193,11 @@ func ResolveEngineRuntimes(
 	vocabulary, positions, defaults := positionVocabulary(role)
 	plan.Vocabulary = positions
 
-	for _, runtime := range role.EngineRuntimes {
+	// Computed once per resolve: the role-declared half of the
+	// targetContainers validation below, which runs per reference.
+	roleDeclaredNames := roleDeclaredContainerNames(rbg, role)
+
+	for refIndex, runtime := range role.EngineRuntimes {
 		profile := &workloadsv1alpha2.ClusterEngineRuntimeProfile{}
 		if err := k8sClient.Get(ctx, types.NamespacedName{Name: runtime.ProfileName}, profile); err != nil {
 			err = fmt.Errorf("get engine runtime %s: %w", runtime.ProfileName, err)
@@ -237,10 +249,16 @@ func ResolveEngineRuntimes(
 
 		if len(runtime.TargetContainers) == 0 {
 			if len(profile.Spec.ContainerPatches) > 0 {
+				// Under standalonePattern the reference needs no component —
+				// the single role-named component is the only scope there is.
+				remedy := "set component and list the containers in targetContainers to opt in"
+				if role.GetStandalonePattern() != nil {
+					remedy = "list the containers in targetContainers to opt in"
+				}
 				emitEngineRuntimeWarning(ctx, recorder, rbg, ReasonUnaimedContainerPatch, fmt.Sprintf(
 					"profile %q declares containerPatches but the reference lists no targetContainers; "+
-						"the patches do not fire — set component and list the containers in targetContainers to opt in",
-					runtime.ProfileName))
+						"the patches do not fire — %s",
+					runtime.ProfileName, remedy))
 			}
 		} else {
 			// The profile-declared half of this reference's target
@@ -270,24 +288,6 @@ func ResolveEngineRuntimes(
 			// pass: a name one component's template declares may still be
 			// missing from the addressed position, which is the render
 			// error the scoping suite pins.
-			roleDeclaredNames := map[string]struct{}{}
-			collectTemplateNames := func(tmpl *v1.PodTemplateSpec) {
-				if tmpl == nil {
-					return
-				}
-				for _, c := range tmpl.Spec.Containers {
-					roleDeclaredNames[c.Name] = struct{}{}
-				}
-				for _, c := range tmpl.Spec.InitContainers {
-					roleDeclaredNames[c.Name] = struct{}{}
-				}
-			}
-			collectTemplateNames(role.GetTemplate())
-			if ccp := role.GetCustomComponentsPattern(); ccp != nil {
-				for i := range ccp.Components {
-					collectTemplateNames(&ccp.Components[i].Template)
-				}
-			}
 			for _, tc := range runtime.TargetContainers {
 				if _, ok := declared[tc.Name]; ok {
 					continue
@@ -306,6 +306,7 @@ func ResolveEngineRuntimes(
 						ProfileName:        runtime.ProfileName,
 						Patches:            profile.Spec.ContainerPatches,
 						Targets:            targets,
+						ReferenceIndex:     refIndex,
 						DeclaredContainers: declared,
 					})
 			}
@@ -337,6 +338,64 @@ func ResolveEngineRuntimes(
 		}
 	}
 	return plan, nil
+}
+
+// roleDeclaredContainerNames snapshots every container name the role's own
+// templates declare or add, spanning every shape the render paths build
+// templates from — not just role.GetTemplate(): a templateRef role's
+// containers live in the referenced RoleTemplate (its patch included), and a
+// leaderWorkerPattern role's leader/worker patches can add containers the
+// base template does not declare. GetResolvedTemplate covers the inline and
+// templateRef shapes; the patch names cover the rest. A patch that fails to
+// decode here is skipped — the render fails on it later with full
+// attribution.
+func roleDeclaredContainerNames(
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+) map[string]struct{} {
+	names := map[string]struct{}{}
+	collectTemplateNames := func(tmpl *v1.PodTemplateSpec) {
+		if tmpl == nil {
+			return
+		}
+		for _, c := range tmpl.Spec.Containers {
+			names[c.Name] = struct{}{}
+		}
+		for _, c := range tmpl.Spec.InitContainers {
+			names[c.Name] = struct{}{}
+		}
+	}
+	collectPatchNames := func(patch *k8sruntime.RawExtension) {
+		if patch == nil || len(patch.Raw) == 0 {
+			return
+		}
+		// A strategic merge patch names every container it touches (merge
+		// key "name"), so the names it lists are the names it may add on
+		// top of the base template.
+		var partial v1.PodTemplateSpec
+		if err := json.Unmarshal(patch.Raw, &partial); err != nil {
+			return
+		}
+		for _, c := range partial.Spec.Containers {
+			names[c.Name] = struct{}{}
+		}
+		for _, c := range partial.Spec.InitContainers {
+			names[c.Name] = struct{}{}
+		}
+	}
+	if resolved, err := role.GetResolvedTemplate(rbg); err == nil {
+		collectTemplateNames(&resolved)
+	}
+	if lwp := role.GetLeaderWorkerPattern(); lwp != nil {
+		collectPatchNames(lwp.LeaderTemplatePatch)
+		collectPatchNames(lwp.WorkerTemplatePatch)
+	}
+	if ccp := role.GetCustomComponentsPattern(); ccp != nil {
+		for i := range ccp.Components {
+			collectTemplateNames(&ccp.Components[i].Template)
+		}
+	}
+	return names
 }
 
 // failRef emits the render-failed warning for a reference-scoped error and

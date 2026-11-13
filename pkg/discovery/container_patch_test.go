@@ -29,6 +29,7 @@ import (
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -1052,4 +1053,45 @@ func TestEngineRuntimeUnaimedRenderHalf(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, drainEvents(recorder))
 	})
+}
+
+// TestEngineRuntimeUnaimedWarnsPerReference pins the dedupe key of the
+// render-side unaimed-patch warning: the reference, not the profile —
+// two references to one profile on disjoint components (legal under D6)
+// each keep their own warning even though they share the profileName.
+// The dedupe across templates still rides the plan, keyed by the
+// reference's engineRuntimes index.
+func TestEngineRuntimeUnaimedWarnsPerReference(t *testing.T) {
+	ctx := log.IntoContext(context.Background(), klog.NewKlogr())
+
+	profile := makeProfile("p", []workloadsv1alpha2.ContainerPatch{envPatch("IK_SITE", "/opt/ik/site")})
+	profile.Spec.Containers = []v1.Container{{Name: "ik-sidecar", Image: "ik:latest"}}
+
+	role := leaderWorkerRole([]workloadsv1alpha2.EngineRuntime{
+		{ProfileName: "p", Component: string(constants.LeaderComponentType),
+			TargetContainers: []workloadsv1alpha2.EngineRuntimeTargetContainer{{Name: "ik-sidecar"}}},
+		{ProfileName: "p", Component: string(constants.WorkerComponentType),
+			TargetContainers: []workloadsv1alpha2.EngineRuntimeTargetContainer{{Name: "ik-sidecar"}}},
+	})
+	plan, recorder, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
+	require.NoError(t, err)
+	require.Len(t, plan.PatchApplications[string(constants.LeaderComponentType)], 1)
+	require.Len(t, plan.PatchApplications[string(constants.WorkerComponentType)], 1)
+	assert.NotEqual(t,
+		plan.PatchApplications[string(constants.LeaderComponentType)][0].ReferenceIndex,
+		plan.PatchApplications[string(constants.WorkerComponentType)][0].ReferenceIndex)
+
+	// one render pass per position, as the leaderWorkerPattern construct
+	// path runs them: leader first, then worker
+	for _, position := range []string{
+		string(constants.LeaderComponentType), string(constants.WorkerComponentType),
+	} {
+		spec := basePodSpec()
+		spec.Spec.Containers = append(spec.Spec.Containers, v1.Container{Name: "ik-sidecar", Image: "ik:latest"})
+		_, err := ApplyEngineRuntimePatches(ctx, spec, roleContainers("engine"), nil, "worker",
+			plan.PatchApplications[position], plan, recorder, basicRBG())
+		require.NoError(t, err)
+	}
+	assert.Equal(t, 2, countEventsContaining(t, recorder, ReasonUnaimedContainerPatch),
+		"one warning per reference, not one per profile")
 }

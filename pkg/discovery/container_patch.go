@@ -361,7 +361,7 @@ func ApplyEngineRuntimePatches(
 			return nil, err
 		}
 		if !hasRoleDeclaredTarget(roleContainerNames, roleInitContainerNames, entry.Targets) &&
-			plan != nil && plan.ShouldWarnUnaimed(entry.ProfileName) {
+			plan != nil && plan.ShouldWarnUnaimed(entry.ReferenceIndex) {
 			emitEngineRuntimeWarning(ctx, recorder, rbg, ReasonUnaimedContainerPatch, fmt.Sprintf(
 				"profile %q declares containerPatches but no targetContainers entry of the reference names a "+
 					"role-declared container; the patches do not fire — list the role-declared containers in "+
