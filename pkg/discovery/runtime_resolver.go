@@ -372,11 +372,25 @@ func positionVocabulary(role *workloadsv1alpha2.RoleSpec) (map[string]struct{}, 
 	// The write-time mapping deliberately does NOT collapse here: D6 overlap
 	// is judged on pattern semantics regardless of render path. LWS is not
 	// collapsed either: its render is a two-template (leader/worker) path,
-	// so the pattern vocabulary applies.
+	// so the pattern vocabulary applies. The one exception is a
+	// LeaderWorkerSet-typed role whose pattern is not leaderWorkerPattern —
+	// reachable only from a v1alpha1 object whose Workload field disagrees
+	// with its structure, or from a v1alpha2 author writing the
+	// system-managed role-workload-type annotation against convention. That
+	// grandfathered shape collapses to {leader, worker} with leader the
+	// default: main's LWS path injected the leader template unconditionally
+	// and skipped the worker, whatever the pattern, and KEP-531
+	// compatibility keeps that published behavior.
 	switch role.GetWorkloadType() {
 	case constants.DeploymentWorkloadType, constants.StatefulSetWorkloadType:
 		vocabulary := map[string]struct{}{role.Name: {}}
 		return vocabulary, []string{role.Name}, []string{role.Name}
+	case constants.LeaderWorkerSetWorkloadType:
+		if role.GetLeaderWorkerPattern() == nil {
+			leader := string(constants.LeaderComponentType)
+			worker := string(constants.WorkerComponentType)
+			return map[string]struct{}{leader: {}, worker: {}}, []string{leader, worker}, []string{leader}
+		}
 	}
 	switch {
 	case role.GetStandalonePattern() != nil:

@@ -724,3 +724,64 @@ func TestResolveEngineRuntimesLegacySingleTemplate(t *testing.T) {
 		assert.Empty(t, plan.Vocabulary)
 	})
 }
+
+// TestResolveEngineRuntimesLWSNonLWPPattern pins the grandfathered LWS ×
+// non-leaderWorkerPattern shape: a LeaderWorkerSet-typed role whose pattern
+// is standalone or customComponents — reachable only from a v1alpha1 object
+// whose Workload field disagrees with its structure, or a v1alpha2 author
+// writing the system-managed workload-type annotation against convention.
+// The LWS construct path reads exactly the leader and worker plan
+// positions, so the vocabulary collapses to {leader, worker} with leader
+// the absent-component default, reproducing main's published behavior
+// (leader template injected unconditionally, worker skipped) instead of
+// silently dropping all engine-runtime content.
+func TestResolveEngineRuntimesLWSNonLWPPattern(t *testing.T) {
+	profile := makeProfile("ik", nil)
+
+	t.Run("a LeaderWorkerSet-annotated standalonePattern role keys fragments to leader", func(t *testing.T) {
+		role := withDeprecatedWorkloadType(
+			standaloneRole([]workloadsv1alpha2.EngineRuntime{{ProfileName: "ik"}}),
+			constants.LeaderWorkerSetWorkloadType,
+		)
+		plan, _, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
+		require.NoError(t, err)
+		assert.Equal(t, []string{
+			string(constants.LeaderComponentType), string(constants.WorkerComponentType),
+		}, plan.Vocabulary)
+		assert.True(t, plan.HasPosition(string(constants.LeaderComponentType)))
+		assert.True(t, plan.HasPosition(string(constants.WorkerComponentType)))
+		// the absent-component default is leader — main injected the leader
+		// template and skipped the worker, whatever the pattern
+		assert.Len(t, plan.FragmentApplications[string(constants.LeaderComponentType)], 1)
+		assert.Empty(t, plan.FragmentApplications[string(constants.WorkerComponentType)])
+	})
+
+	t.Run("a LeaderWorkerSet-annotated customComponentsPattern role keys fragments to leader", func(t *testing.T) {
+		role := withDeprecatedWorkloadType(
+			componentsRole([]workloadsv1alpha2.EngineRuntime{{ProfileName: "ik"}}),
+			constants.LeaderWorkerSetWorkloadType,
+		)
+		plan, _, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
+		require.NoError(t, err)
+		assert.Equal(t, []string{
+			string(constants.LeaderComponentType), string(constants.WorkerComponentType),
+		}, plan.Vocabulary)
+		assert.Len(t, plan.FragmentApplications[string(constants.LeaderComponentType)], 1)
+		assert.Empty(t, plan.FragmentApplications["engine-comp"])
+		assert.Empty(t, plan.FragmentApplications["aux-comp"])
+	})
+
+	t.Run("a leaderWorkerPattern role on the LWS path keeps the pattern vocabulary", func(t *testing.T) {
+		role := withDeprecatedWorkloadType(
+			leaderWorkerRole([]workloadsv1alpha2.EngineRuntime{{ProfileName: "ik"}}),
+			constants.LeaderWorkerSetWorkloadType,
+		)
+		plan, _, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
+		require.NoError(t, err)
+		assert.Equal(t, []string{
+			string(constants.LeaderComponentType), string(constants.WorkerComponentType),
+		}, plan.Vocabulary)
+		assert.Len(t, plan.FragmentApplications[string(constants.LeaderComponentType)], 1)
+		assert.Empty(t, plan.FragmentApplications[string(constants.WorkerComponentType)])
+	})
+}
