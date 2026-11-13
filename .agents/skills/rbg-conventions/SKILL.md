@@ -1,6 +1,6 @@
 ---
 name: rbg-conventions
-description: Development and code-review conventions for the RBG (RoleBasedGroup) operator, distilled from past PR reviews, with kubectl checks to verify them on a cluster. Use when adding or changing API fields or CRDs (v1alpha1/v1alpha2), defaults, validation, webhooks or conversion; when changing what the controller renders or writes (RoleInstanceSet or pod templates, labels, annotations, env, status, revision hashes); when touching the Helm chart, manifests, RBAC or codegen; when writing tests or KEPs; when verifying that an upgrade or binary swap leaves workloads untouched; and when reviewing an RBG pull request or judging merge readiness.
+description: Development and code-review conventions for the RBG (RoleBasedGroup) operator, distilled from past PR reviews, with kubectl checks to verify them on a cluster. Use when adding or changing API fields or CRDs (v1alpha1/v1alpha2), defaults, validation, webhooks or conversion; when changing what the controller renders or writes (RoleInstanceSet or pod templates, labels, annotations, env, status, revision hashes); when touching the Helm chart, manifests, RBAC or codegen; when writing tests or KEPs; when verifying that an upgrade or binary swap leaves workloads untouched; and when reviewing an RBG pull request, evaluating other reviewers' comments, or judging merge readiness.
 license: Apache-2.0
 compatibility: Agent-neutral (Agent Skills format). The verification scripts need bash, kubectl and jq; the cluster cases need a namespace you own and, for controller cases, a cluster where no other RBG controller runs.
 ---
@@ -57,7 +57,11 @@ the most important rules on a cluster. Each one is described, with its last veri
     default changes behavior at upgrade time.
 11. **Every fix has a regression test that fails on the base branch.** Prove API-server behavior in
     envtest against `main`.
-12. **Verify before asserting.** Cite `file:line`, and make docs and KEPs match `main`.
+12. **Verify before asserting.** Cite `file:line`, make docs and KEPs match `main`, and test whatever
+    reading alone can't settle, against real behavior.
+13. **Review independently first, then compare.** Write down your own findings before you read other
+    reviews. Then judge every other reviewer's point on its diagnosis, severity and fix, with
+    evidence, not by who raised it. See [review-playbook.md](references/review-playbook.md).
 
 ## Checklists
 
@@ -121,12 +125,19 @@ the most important rules on a cluster. Each one is described, with its last veri
 
 ### Reviewing a pull request
 
-- [ ] Read the existing threads and Copilot's review first, and don't duplicate them.
+- [ ] Do your own pass before reading any other review: the PR description, the linked issue or
+      KEP, the diff and the code around it. Write your findings down, each marked settled or open.
+      If you were handed another review's points, read only those until you have your own view.
 - [ ] Walk the checklists above for every area the diff touches.
-- [ ] Reproduce blocking findings with envtest A/B against `main` or on a cluster, and state the
-      evidence level of each finding.
-- [ ] Write a verdict line, a findings table with `file:line` and a concrete fix, what you verified,
-      and what you didn't run.
+- [ ] Then read every other review: maintainers, Copilot and other bots, the author's replies and
+      earlier rounds. Judge each point on its diagnosis, severity and fix, work out why you missed
+      what they found, and add to an existing thread instead of duplicating it.
+- [ ] Test every open point, yours or theirs, with the cheapest check that decides it: a direct
+      reproduction, a unit test, envtest A/B against `main`, or a cluster when kubelet, scheduler or
+      GC matter. Use real outputs and show that the test can fail. State each finding's evidence
+      level, and name the test for anything you couldn't run.
+- [ ] Write a verdict line, a findings table with `file:line` and a concrete fix, your verdict on
+      each other reviewer's point, what you verified, and what you didn't run.
 - [ ] Keep it a draft. Post, approve or merge only on explicit instruction, and write GitHub comments
       in English.
 
@@ -138,7 +149,7 @@ the most important rules on a cluster. Each one is described, with its last veri
 | [api-and-admission.md](references/api-and-admission.md) | API shape, validation and CEL, conversion, webhooks, status and conditions, codegen markers |
 | [controller-patterns.md](references/controller-patterns.md) | reconciler write paths, SSA and managedFields, preconditions, requeues, events, adoption, watches, cache |
 | [build-test-release.md](references/build-test-release.md) | codegen, Helm chart, manifests, RBAC, make targets and CI, test expectations, commits and PRs |
-| [review-playbook.md](references/review-playbook.md) | reviewing a PR or KEP, judging merge readiness, posting comments |
+| [review-playbook.md](references/review-playbook.md) | reviewing a PR or KEP: your own pass first, then comparing with and testing other reviewers' points; output format, posting, merge readiness |
 | [verification-cases.md](references/verification-cases.md) | proving a rule on a real cluster or a local API server: the cases, how to run the scripts safely, and what each one last showed |
 
 ## Maintaining this skill

@@ -21,6 +21,16 @@ The rule that matters most: upgrading the controller must not change the rendere
 revision hashes of existing objects that don't use a new feature. Otherwise every existing
 workload rolls on upgrade.
 
+## Reviewing pull requests
+
+- Review independently first: write down your own findings before you read other reviews,
+  including Copilot's.
+- Then compare: judge every other reviewer's point on its diagnosis, severity and proposed fix,
+  with evidence, not by who raised it.
+- Test whatever reading can't settle, against real behavior, before you assert it.
+
+The details are in the skill's `references/review-playbook.md`.
+
 ## Verifying on a cluster
 
 The skill ships kubectl checks in `.agents/skills/rbg-conventions/scripts/`, described in its

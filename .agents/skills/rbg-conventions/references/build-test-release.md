@@ -72,6 +72,9 @@ Envtest defaults to Kubernetes 1.31 (`ENVTEST_K8S_VERSION`).
   - LWS ≤ v0.8.0 never sets `observedGeneration` (#510).
   - A "foreign owner" fixture needs an ownerReference (#500).
   - No assertions that are always true (#553).
+  - Error messages and API responses are captured from the real tool or server, not written from
+    memory. In #568, a test used an error message kubectl never prints, so it passed while the code
+    it covered was broken.
 - **Know your test labels and environment:**
   - `Label("serial")` is not `ginkgo.Serial` (#494).
   - Multi-node specs are skipped on single-node Kind (#532).
