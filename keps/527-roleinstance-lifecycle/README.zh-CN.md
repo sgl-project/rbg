@@ -84,7 +84,8 @@ executor 负责业务重试、退避和幂等恢复。hook marker 不参与 RI R
 - 前置 hooks 的未清除 marker 阻塞实际负载操作，controller 不执行业务动作或调度业务重试。
 - `postReady` 统一覆盖创建、恢复和更新后的实例验收与业务注册，但不阻塞 phase、RI Ready 或后续操作。
 - 保留旧 RIS lifecycle 协议，并新增 RoleInstance lifecycle 协议。
-- 未配置 lifecycle hooks 的负载保持现有行为。
+- 未配置 lifecycle hooks 的负载保持现有行为，唯一例外是 feature gate
+  开启期间集群级拒绝 Foreground 删除。
 
 ### 非目标
 
@@ -253,6 +254,12 @@ controller 不得推进，executor 不得执行，诊断必须暴露非法值，
 
 controller 只在进入前置 hook 阶段时写入一次 marker，等待期间不得在每次 reconcile 重新写入。
 进入 postReady 时可幂等写入已有 marker；executor 只负责清除，不负责首次添加，也不在处理完成后加回。
+
+executor 清除 marker 前必须重读 RI，只有当前 `hook-state` 仍匹配自己执行的
+hook 且 RI UID 未变化时才执行清除。如果 `hook-state` 已推进或改变，该
+marker 属于其他 hook 或调用——例如记录清空后 key 被重新分配给
+`preDelete`——executor 必须保留它交给 controller。marker key 记录清空只能
+证明 label 已清理，不能证明被取代的执行已停止。
 
 以下示例展示用户从 RBG Role 进入配置的 API 形状。拟新增字段路径为
 `RoleBasedGroup.spec.roles[].lifecycle`，不表示该字段已经存在：
@@ -577,7 +584,9 @@ Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放�
 `DeleteOptions.propagationPolicy`，且不依赖 informer 缓存：cache miss
 和成功 lookup 都无法证明没有可达 RI 启用 preDelete，因为新建 RI 或刚启用
 的 hook 可能已提交而 watch 事件尚未到达。客户端可以改用 background
-传播重试。foreground GC 可能在 hook 放行前删除 dependent Pods。
+传播重试。该拒绝在 gate 开启期间是集群级的：同样作用于未配置 hooks 的
+负载，这些负载其余行为不变，gate 关闭后恢复 Foreground 删除。
+foreground GC 可能在 hook 放行前删除 dependent Pods。
 namespace 删除不在存活引擎保证范围内：namespace controller 可能直接删除
 成员 Pods；若保留 RI finalizer 残留，运维需要使用 break-glass 流程。
 外部直接删除 Pod 后 deletionTimestamp 无法撤销，该路径仍属于 Recovery，
@@ -725,7 +734,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 
 #### 前置测试补充
 
-建立未配置 lifecycle hooks 时的创建、更新、component 扩缩容、Recovery、Ready 和删除回归基线。
+建立未配置 lifecycle hooks 时的创建、更新、component 扩缩容、Recovery、Ready 和删除回归基线，
+并注明 gate 开启期间对这类负载的唯一变化是 Foreground 删除被拒绝。
 保留旧 RIS lifecycle 行为测试，并区分工作负载后端。
 
 #### 单元测试
@@ -753,6 +763,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - controller 在进入前置 hook 阶段时只写入一次 marker，等待期间不重复补回；
   postReady 支持幂等写入已有 marker。
 - executor 只在阶段和 marker 匹配时处理，前置 hooks 放行后清除，postReady 后台完成或取消后清除。
+- executor 只在 `hook-state` 仍匹配自身调用且 RI UID 未变化时清除 marker；
+  key 被重新分配且记录清空后，迟到的 postReady 清理无法删除 preDelete marker。
 - preUpdate marker 未清除时不更新 Pod，preRecover marker 未清除时不恢复 Pod；
   preDelete marker 未清除时不删除 Pod。
 - postReady 仅在目标完成且工作负载 Ready 后触发，普通 Ready 抖动不重复触发。
@@ -800,8 +812,9 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - RI 保留 finalizer 的添加、preDelete 等待期间保持，以及成员 Pod 删除完成后的移除。
 - 新建 RI 的创建请求包含保留 finalizer；存量启用先加 finalizer 再暴露 hook，
   RI 已开始删除时不暴露该 hook，删除继续且不触发 preDelete。
-- 默认 background 删除在 preDelete 放行前保留成员 Pod，准入拒绝包括 RBGSet
-  在内所有受影响祖先的 foreground 删除，并明确 namespace 删除不提供存活引擎保证。
+- 默认 background 删除在 preDelete 放行前保留成员 Pod，gate 开启期间准入
+  拒绝 RBGSet、RBG、RIS 和 RI 所有删除入口的 foreground 删除，并明确
+  namespace 删除不提供存活引擎保证。
 - Update 和 Recovery 内部替换 Pod 时不执行 preDelete，也不使用成员 Pod finalizer。
 - 禁用 hook 后，下一次 reconcile 起停止 marker 匹配，
   清理遗留运行时 labels、其 Pod 镜像和 RI 上的保留 finalizer，
@@ -833,7 +846,8 @@ controller 写入与 executor 清除的信号标签协作，完成核心测试�
 
 ### 升级与降级策略
 
-未配置 lifecycle hooks 时保持行为不变。存量 RI 启用功能不会仅因当前
+未配置 lifecycle hooks 时保持行为不变，唯一例外是 feature gate 开启期间
+Foreground 删除被拒绝。存量 RI 启用功能不会仅因当前
 Ready 或历史更新而重放 postReady／preUpdate；这些 hooks 只由受控操作触发。
 启用 preDelete 时，controller 按前述规则为存量稳定 RI 补充保留 finalizer。
 

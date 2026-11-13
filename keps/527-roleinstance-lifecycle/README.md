@@ -111,7 +111,8 @@ RBG does not need to embed application logic or create a Job for every hook.
 - Preserve the legacy RIS lifecycle protocol while adding the new RoleInstance
   lifecycle protocol.
 - Preserve existing behavior for workloads that do not configure lifecycle
-  hooks.
+  hooks, except that Foreground deletion is rejected cluster-wide while the
+  feature gate is enabled.
 
 ### Non-Goals
 
@@ -344,6 +345,14 @@ phase. It must not rewrite the marker on every reconcile while waiting.
 When entering `postReady`, it may idempotently write an already-present
 marker. The executor only removes markers; it does not create them initially
 or restore them after processing.
+
+Before removing a marker, the executor re-reads the RI and removes the
+marker only when the current `hook-state` still matches the hook it executed
+and the RI UID is unchanged. If `hook-state` has advanced or changed, the
+marker belongs to a different hook or invocation — for example, a key
+reassigned to `preDelete` after its record was cleaned — and the executor
+must leave it for the controller. An emptied marker-key record proves only
+that the label was cleaned, not that a superseded execution has stopped.
 
 The following example shows the proposed API shape for configuration on an
 RBG Role. `RoleBasedGroup.spec.roles[].lifecycle` is a proposed new field
@@ -743,7 +752,10 @@ requests. The webhook checks `DeleteOptions.propagationPolicy` and does not
 depend on informer caches: neither a cache miss nor a successful lookup can
 prove that no reachable RI has `preDelete` in effect, because RI creation or
 hook enablement may have committed before its watch event arrived. The client
-may retry with background propagation. Foreground GC may delete dependent
+may retry with background propagation. This rejection is cluster-wide while
+the gate is enabled: it also applies to workloads that configure no hooks,
+which otherwise keep their existing behavior and regain Foreground deletion
+when the gate is disabled. Foreground GC may delete dependent
 Pods before the hook is released. Namespace teardown is outside the
 live-engine guarantee:
 the namespace controller may delete member Pods directly, and an operator must
@@ -1005,6 +1017,10 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
 - The executor acts only when phase and marker match. It removes
   pre-operation markers to release the operation and removes `postReady`
   markers after background completion or cancellation.
+- An executor removes a marker only while `hook-state` still matches its own
+  invocation and the RI UID is unchanged; after a key is reassigned and its
+  record cleaned, a delayed `postReady` cleanup cannot remove a `preDelete`
+  marker.
 - A pending preUpdate marker prevents Pod updates, a pending preRecover
   marker prevents Pod recovery, and a pending preDelete marker prevents Pod
   deletion.
@@ -1080,9 +1096,9 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   it before exposing the hook, and an RI already being deleted never exposes
   the hook; that deletion continues without `preDelete`.
 - Default background deletion retains member Pods until `preDelete` is
-  released, admission rejects foreground deletion at every affected ancestor
-  including RBGSet, and namespace teardown is documented as outside the
-  live-engine guarantee.
+  released, admission rejects foreground deletion at every RBGSet, RBG, RIS,
+  and RI entry while the feature gate is enabled, and namespace teardown is
+  documented as outside the live-engine guarantee.
 - Update and Recovery replace Pods during internal replacement without
   executing `preDelete` and without member Pod finalizers.
 - Hook disablement stops marker matching on the next reconciliation and
