@@ -127,7 +127,7 @@ Reusable pod template at RBG level:
 | `RecreateRoleInstanceOnPodRestart` | Recreate only the role instance |
 
 See [Failure Handling](../features/failure-handling.md) for native RoleInstance activation,
-the pre-Ready `Restarting` guard limit, backend support and upgrade/rollout considerations.
+wave-scoped `Restarting` guard semantics, backend support and upgrade/rollout considerations.
 
 ## ScalingAdapter
 

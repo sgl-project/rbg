@@ -153,11 +153,23 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 		return reconcile.Result{}, err
 	}
 
-	// Clear the in-memory restarting cache when instance becomes Ready
+	// Clear the in-memory restarting cache when the instance becomes Ready, but
+	// only when no restart wave is in progress: a trigger can fire while the pod
+	// snapshot is still Ready (for example a container restart), and clearing the
+	// marker on that snapshot would disarm the wave that just started.
+	restartingInProgress := false
 	for _, cond := range newStatus.Conditions {
-		if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
-			r.syncControl.ClearRestarting(instance)
+		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue {
+			restartingInProgress = true
 			break
+		}
+	}
+	if !restartingInProgress {
+		for _, cond := range newStatus.Conditions {
+			if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue {
+				r.syncControl.ClearRestarting(instance)
+				break
+			}
 		}
 	}
 
@@ -188,6 +200,15 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 
 	var scaleRequeue time.Duration
 	scaling, scaleRequeue, podsScaleErr = r.syncControl.Scale(ctx, updateInstance, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
+	// Remove a stale Restarting condition from the informer copy when the
+	// revision-patched copy (synced with the fresh API state) holds none:
+	// setInstanceConditions carries conditions not present in newStatus forward
+	// from this object, so a stale entry here could resurrect a Restarting state
+	// the API has already left. Value changes are deliberately NOT mirrored: the
+	// propagation loop below writes the authoritative value into newStatus, and
+	// leaving the old value on this copy is what lets inconsistentStatus detect
+	// and persist the completion transition.
+	removeStaleRestartingCondition(instance, updateInstance)
 	if podsScaleErr != nil {
 		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 			Type:               workloadsv1alpha2.RoleInstanceFailedScale,
@@ -196,17 +217,19 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 			Message:            podsScaleErr.Error(),
 		})
 	}
-	if scaling {
-		// Propagate Restarting condition only when scaling is active (restart-policy
-		// triggered deletion or pod creation is still in progress). Once scaling
-		// completes (scaling=false), the condition is no longer propagated so that
-		// setInstanceConditions can clear it when the instance becomes Ready.
-		for _, cond := range updateInstance.Status.Conditions {
-			if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue {
-				newStatus.Conditions = append(newStatus.Conditions, cond)
-				break
-			}
+	// Propagate the Restarting condition mutated during Scale: True while a
+	// recreation wave is in progress, and False (RestartCompleted) once every
+	// pre-restart Pod is gone. Propagate it regardless of the scaling state so a
+	// completed wave persists even when pod creation has already finished; it does
+	// not wait for the instance to become Ready. setInstanceConditions carries it
+	// only when absent here, and drops it once the instance is Ready.
+	for _, cond := range updateInstance.Status.Conditions {
+		if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
+			newStatus.Conditions = append(newStatus.Conditions, cond)
+			break
 		}
+	}
+	if scaling {
 		// Propagate restart tracking only when updateRestartTracking modified
 		// the values during Scale (i.e., a restart-policy-triggered deletion
 		// was triggered). ApplyRevision produces zero-value status fields, so
@@ -221,12 +244,10 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		return syncResult{err: podsScaleErr}
 	}
 	// Restart backoff: delay not elapsed, skip Update and just requeue.
-	// Do NOT propagate the Restarting condition here. The Restarting condition
-	// should only be set when a restart is actually in progress (scaling=true
-	// for deletion/creation). Propagating it during backoff causes the Ready
-	// condition to become False (pods are Failed), which then prevents
-	// shouldRecreateInstance from triggering on the next reconcile because
-	// wasInstanceReady() returns false.
+	// The Restarting condition was already propagated above, regardless of the
+	// scaling state: backoff only applies after a wave completed, so the condition
+	// is False (RestartCompleted) here; setInstanceConditions drops it when the
+	// instance becomes Ready.
 	if scaleRequeue > 0 {
 		return syncResult{requeue: scaleRequeue}
 	}
@@ -247,6 +268,32 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 			podsScaleErr, podsUpdateErr,
 		}),
 	}
+}
+
+// removeStaleRestartingCondition removes the Restarting condition from dst when
+// src holds none. src is the authoritative in-reconcile view (synced from a
+// fresh API read); when it has no condition, the informer copy must not
+// resurrect one through setInstanceConditions' carry-forward. When src does
+// hold a condition, its value is written to newStatus by the propagation loop
+// and must stay unmirrored on dst so inconsistentStatus detects the change.
+func removeStaleRestartingCondition(dst, src *workloadsv1alpha2.RoleInstance) {
+	var srcCond *workloadsv1alpha2.RoleInstanceCondition
+	for i := range src.Status.Conditions {
+		if src.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceRestarting {
+			srcCond = &src.Status.Conditions[i]
+			break
+		}
+	}
+	if srcCond != nil {
+		return
+	}
+	filtered := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(dst.Status.Conditions))
+	for _, cond := range dst.Status.Conditions {
+		if cond.Type != workloadsv1alpha2.RoleInstanceRestarting {
+			filtered = append(filtered, cond)
+		}
+	}
+	dst.Status.Conditions = filtered
 }
 
 func (r *reconciler) getOwnedPods(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) ([]*v1.Pod, []*v1.Pod, error) {

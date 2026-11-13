@@ -83,8 +83,10 @@ func (r *realStatusUpdater) UpdateInstanceStatus(ctx context.Context, instance *
 //     reports a failure. Their absence means no failure was reported in this
 //     reconcile: the operation succeeded or was not attempted. Either way,
 //     setInstanceConditions drops stale copies from the live object.
-//   - Restarting has an explicit lifecycle and is cleared by setInstanceConditions
-//     once the instance becomes Ready.
+//   - Restarting has an explicit lifecycle: it is set when a restart wave starts,
+//     flips to False (RestartCompleted) when the wave completes (all pre-restart
+//     Pods are gone, see sync.releaseCompletedRestartWave), and is dropped when
+//     the instance becomes Ready.
 //   - RoleInstanceInPlaceUpdateReady and RoleInstanceCustomReady are written by
 //     external controllers, but setInstanceConditions always copies them from
 //     instance.Status into newStatus (via getInstanceInplaceUpdateReadyCondition and
@@ -205,6 +207,22 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 	// The latch keeps recovery armed if this generation later becomes NotReady.
 	if instanceReady && newStatus.UpdateRevision != "" && newStatus.CurrentRevision == newStatus.UpdateRevision {
 		newStatus.LastReadyGeneration = instance.Generation
+	}
+	// Clear the completed Restarting condition (False/RestartCompleted) when the
+	// instance becomes Ready, whether it was propagated by syncInstance or would
+	// be carried forward from the live object below. An in-progress wave
+	// (Restarting=True) must survive a Ready pod snapshot: a trigger can fire
+	// while the snapshot is still Ready (for example a container restart), and
+	// dropping the condition there would disarm the wave that just started.
+	if instanceReady {
+		filtered := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(conditions))
+		for _, c := range conditions {
+			if c.Type == workloadsv1alpha2.RoleInstanceRestarting && c.Status != v1.ConditionTrue {
+				continue
+			}
+			filtered = append(filtered, c)
+		}
+		conditions = filtered
 	}
 
 	innerConditionTypes := sets.New[workloadsv1alpha2.RoleInstanceConditionType]()

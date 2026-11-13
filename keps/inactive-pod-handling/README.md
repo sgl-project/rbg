@@ -73,10 +73,10 @@ mode #542 reports, and LeaderWorkerSet already behaves this way under the same p
   Creation and scale-up therefore keep the protection from #348/#349, and any spec change
   (which bumps the generation) re-arms that protection by construction.
 - `Created` — triggers are armed as soon as the instance exists, which also covers
-  failures that happen before the instance first becomes Ready. **At most one whole-instance
-  recreation before Ready is allowed due to the `Restarting` guard**, which is cleared only
-  on Ready. Repeated pre-Ready recovery is deferred to
-  [#563](https://github.com/sgl-project/rbg/issues/563).
+  failures that happen before the instance first becomes Ready. The `Restarting`
+  guard is scoped to one recreation wave: it releases once the pre-restart Pods are
+  gone, so repeated pre-Ready recreations are bounded by the exponential backoff
+  ([#563](https://github.com/sgl-project/rbg/issues/563)).
 
 The stability fact is persisted as `status.lastReadyGeneration`, the `metadata.generation`
 at which the instance was last Ready. Gating on the live `RoleInstanceReady` condition
@@ -351,9 +351,11 @@ This is an outline, not replacement source code. The current implementation live
 5. Skip container-restart detection for a Pod with `InPlaceUpdateReady=False`. For other
    Pods, check ordinary-container restarts against recorded in-place-update baselines.
    Init-container and native-sidecar restarts do not count.
-6. The `Restarting` guard blocks another whole-instance recreation until Ready, including
-   with `Created` ([#563](https://github.com/sgl-project/rbg/issues/563)). Existing backoff
-   delays eligible subsequent attempts; it does not override that guard.
+6. The `Restarting` guard is scoped to one recreation wave: it blocks only while the
+   pre-restart Pods are still being deleted, including with `Created`. Once they are all
+   gone the wave is complete, the guard is released and a new failure may start another
+   recreation, bounded by the existing backoff
+   ([#563](https://github.com/sgl-project/rbg/issues/563)).
 
 #### How Pod Failed → Replacement Pod Works (Two Levels)
 
@@ -406,7 +408,7 @@ activation, generation/revision, backoff and `Restarting` guards described above
 | Failed Pod | Delete Failed Pod, then replace individually | Recreate the affected whole Instance when armed |
 | Desired member observed Terminating (any phase) | Normal individual Pod reconciliation | Recreate the affected whole Instance when armed |
 | Unexpected ordinary-container restart | Let the container restart naturally | Recreate the affected whole Instance when armed; apply the Pod-level in-place-update exemption and baselines |
-| Before first Ready | Normal Pod reconciliation | Default `Ready` is not armed; `Created` permits at most one whole-instance recreation before Ready |
+| Before first Ready | Normal Pod reconciliation | Default `Ready` is not armed; `Created` permits repeated whole-instance recreations, bounded by backoff once the prior wave's pre-restart Pods are gone |
 | Succeeded phase alone, Pending or NotReady alone | No restart-policy action | No whole-instance trigger |
 | Pod annotated with exact `Ignore` | Normal Pod reconciliation | Cannot initiate recreation, but is rebuilt if a sibling triggers it |
 

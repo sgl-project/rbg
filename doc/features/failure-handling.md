@@ -55,10 +55,17 @@ a fault flips the condition to False before the restart signal becomes visible, 
 policy would then never fire again. The `Ready` gate also retains the existing current-Ready
 and recent-restart bypasses, subject to the generation and revision guards.
 
-**With `Created`, there is at most one whole-instance recreation before Ready due to the
-`Restarting` guard.** The guard is cleared only when the instance becomes Ready; it prevents
-another whole-instance recovery if the replacement also fails before Ready. Repeated
-pre-Ready recovery is deferred to [#563](https://github.com/sgl-project/rbg/issues/563).
+**A replacement that also fails before Ready is recovered again, with either activation
+mode.** The `Restarting` guard is scoped to one recreation wave: it blocks only while the
+pre-restart Pods are still being deleted. Once they are all gone the wave completes, the
+guard is released and the next failure starts another whole-instance recreation, bounded
+by the exponential backoff ([#563](https://github.com/sgl-project/rbg/issues/563)). With
+the default `Ready` activation this applies through the latched `lastReadyGeneration`
+and the recent-restart bypass; with `Created` it applies from instance creation. The
+exact release point holds for the in-memory wave marker; after a controller restart
+mid-wave, the persisted fallback uses creation timestamps with second granularity and
+may release the guard early for a same-second pre-restart Pod, allowing at most one
+extra backoff-bounded recreation.
 
 `activateAfter` is supported by native RoleInstanceSet workloads. LeaderWorkerSet-backed
 roles keep the policy they had; their behavior is already ungated (LWS recreates the group on
@@ -169,8 +176,10 @@ When the resolved restart policy type is `RecreateRoleInstanceOnPodRestart`, sub
 
 The stability window is `max(maxDelaySeconds * 2, 10 minutes)`. If the instance remains stable (no crashes) for longer than this window, `restartCount` resets to 0 and the next crash starts with immediate recreation again.
 
-Backoff does not override activation or the `Restarting` guard. In particular, `Created`
-does not repeatedly recreate a replacement that fails before Ready ([#563](https://github.com/sgl-project/rbg/issues/563)).
+Backoff does not override activation. The `Restarting` guard only absorbs the triggers
+produced while the pre-restart Pods of the in-flight recreation are deleted; once that wave
+completes, backoff bounds any further recreations, including pre-Ready failures with
+`Created` ([#563](https://github.com/sgl-project/rbg/issues/563)).
 
 ### Default Behavior Change
 
@@ -180,7 +189,7 @@ does not repeatedly recreate a replacement that fails before Ready ([#563](https
 
 ### Disabling Backoff
 
-To disable backoff delays for eligible recreations, set both `baseDelaySeconds` and `maxDelaySeconds` to `0`. Activation and `Restarting` guards still apply:
+To disable backoff delays for eligible recreations, set both `baseDelaySeconds` and `maxDelaySeconds` to `0`. Activation arming still applies, but nothing delays recreations: a rebuilt group that keeps failing (before or after Ready) is recreated repeatedly, paced only by each wave's Pod deletion and creation cycle, and `RestartCount` grows unboundedly. Keep the defaults enabled if the workload can enter a crash-looping state:
 
 ```yaml
 restartPolicyConfig:
@@ -253,7 +262,7 @@ When this annotation has the exact value `"Ignore"` on a component's pod templat
 ## Use Cases
 
 - **`RecreateRoleInstanceOnPodRestart`**: tightly coupled workloads needing whole-instance recovery from unexpected ordinary-container restarts, Failed Pods, or a desired member observed Terminating; armed after Ready by default.
-- **`activateAfter: Created`**: instances that also need a recovery attempt before first Ready, such as a role whose startup can fail and then hang in a rendezvous. The `Restarting` guard limits this to at most one whole-instance recreation before Ready ([#563](https://github.com/sgl-project/rbg/issues/563)).
+- **`activateAfter: Created`**: instances that also need a recovery attempt before first Ready, such as a role whose startup can fail and then hang in a rendezvous. Repeated pre-Ready failures trigger repeated whole-instance recreations, bounded by the exponential backoff ([#563](https://github.com/sgl-project/rbg/issues/563)).
 - **None**: Monitoring/logging sidecars that don't affect the main workload. Failed pods are replaced individually.
 - **restart-trigger-policy: "Ignore"** (annotation): Auxiliary components within a multi-component instance whose pod failures should not trigger the role's restart policy for the entire instance.
 

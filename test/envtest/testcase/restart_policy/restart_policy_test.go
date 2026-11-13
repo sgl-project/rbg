@@ -949,6 +949,116 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 		})
 	})
 
+	Context("Restart wave completion (#563)", func() {
+		It("should recreate again when the rebuilt group fails before Ready", func() {
+			rbgName := "test-wave-second-failure"
+			roleName := defaultRoleName
+
+			rbg := wrappersv2.BuildBasicRoleBasedGroup(rbgName, testNs).WithRoles(
+				[]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildLeaderWorkerRole(roleName).
+						WithReplicas(1).
+						WithSize(2).
+						WithRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart).
+						WithBaseDelaySeconds(1).
+						WithMaxDelaySeconds(2).
+						Obj(),
+				}).Obj()
+
+			Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).Should(Succeed())
+
+			waitForPods(rbgName, roleName, 2)
+			makePodsReady(rbgName, roleName)
+			waitForRoleInstanceReady(rbgName, roleName)
+
+			// First failure: trigger the first whole-instance recreation.
+			podList := listRolePods(rbgName, roleName)
+			firstGeneration := getPodUIDs(podList)
+			freshPod := &corev1.Pod{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
+			freshPod.Status.Phase = corev1.PodFailed
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+
+			// The first wave completes: every pre-restart Pod is gone and both
+			// replacements exist. The instance is intentionally NOT made Ready.
+			Eventually(func(g Gomega) {
+				for name, oldUID := range firstGeneration {
+					pod := &corev1.Pod{}
+					g.Expect(testutil.K8sClient.Get(testutil.Ctx,
+						types.NamespacedName{Name: name, Namespace: testNs}, pod)).Should(Succeed())
+					g.Expect(pod.UID).NotTo(BeEmpty())
+					g.Expect(pod.UID).NotTo(Equal(oldUID))
+					g.Expect(pod.DeletionTimestamp).To(BeNil())
+				}
+				ri := getRoleInstance(rbgName, roleName)
+				g.Expect(ri).NotTo(BeNil())
+				g.Expect(ri.Status.RestartCount).To(Equal(int32(1)))
+				// Pin the #563 scenario: the rebuilt group is not Ready yet, and
+				// the completed wave must have released its guard persistently.
+				ready := false
+				var restartingCond *workloadsv1alpha2.RoleInstanceCondition
+				for _, cond := range ri.Status.Conditions {
+					if cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == corev1.ConditionTrue {
+						ready = true
+					}
+					if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
+						restartingCond = &cond
+					}
+				}
+				g.Expect(ready).To(BeFalse(),
+					"the second failure must be injected before the rebuilt group becomes Ready")
+				g.Expect(restartingCond).NotTo(BeNil(),
+					"the completed restart wave must persist a Restarting condition")
+				if restartingCond != nil {
+					g.Expect(restartingCond.Status).To(Equal(corev1.ConditionFalse),
+						"the completed wave must persist Restarting=False")
+					g.Expect(restartingCond.Reason).To(Equal("RestartCompleted"),
+						"the completed wave must persist the RestartCompleted reason")
+				}
+			}, timeout, interval).Should(Succeed(),
+				"the first recreation must finish before the second fault is injected")
+
+			// Before the fix, the Restarting guard stayed armed until Ready, so this
+			// pre-Ready failure could never start a second recreation (#563).
+			secondGeneration := getPodUIDs(listRolePods(rbgName, roleName))
+
+			// The completed wave's own cascade must not silently re-trigger:
+			// no further recreation happens until the next fault is injected.
+			Consistently(func(g Gomega) {
+				ri := getRoleInstance(rbgName, roleName)
+				g.Expect(ri).NotTo(BeNil())
+				g.Expect(ri.Status.RestartCount).To(Equal(int32(1)))
+				g.Expect(getPodUIDs(listRolePods(rbgName, roleName))).To(Equal(secondGeneration))
+			}, 2*time.Second, interval).Should(Succeed(),
+				"the completed wave must not re-trigger itself")
+
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				if len(pod.Status.ContainerStatuses) == 0 {
+					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main"}}
+				}
+				pod.Status.ContainerStatuses[0].RestartCount = 1
+			})
+
+			// Backoff for the second recreation is baseDelay * 2^(RestartCount-1) = 1s,
+			// measured from the first recreation. The second wave must eventually run.
+			Eventually(func(g Gomega) {
+				for name, oldUID := range secondGeneration {
+					pod := &corev1.Pod{}
+					g.Expect(testutil.K8sClient.Get(testutil.Ctx,
+						types.NamespacedName{Name: name, Namespace: testNs}, pod)).Should(Succeed())
+					g.Expect(pod.UID).NotTo(BeEmpty())
+					g.Expect(pod.UID).NotTo(Equal(oldUID))
+					g.Expect(pod.DeletionTimestamp).To(BeNil())
+				}
+				ri := getRoleInstance(rbgName, roleName)
+				g.Expect(ri).NotTo(BeNil())
+				g.Expect(ri.Status.RestartCount).To(Equal(int32(2)))
+			}, timeout, interval).Should(Succeed(),
+				"a pre-Ready failure of the rebuilt group must trigger a second recreation")
+		})
+	})
+
 	Context("Exponential Backoff", func() {
 		It("should track RestartCount and LastRestartTime after recreation", func() {
 			rbgName := "test-backoff-tracking"
