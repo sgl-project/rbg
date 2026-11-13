@@ -523,11 +523,15 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			survivorName := podList.Items[1].Name
 			survivorUID := podList.Items[1].UID
 
-			failPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), failPod)).Should(Succeed())
-			failPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, failPod)).Should(Succeed())
+			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+				failPod := &corev1.Pod{}
+				if err := testutil.K8sClient.Get(testutil.Ctx,
+					client.ObjectKeyFromObject(&podList.Items[0]), failPod); err != nil {
+					return err
+				}
+				failPod.Status.Phase = corev1.PodFailed
+				return testutil.K8sClient.Status().Update(testutil.Ctx, failPod)
+			})).Should(Succeed())
 
 			// Verify the surviving pod is NOT deleted
 			Consistently(func() types.UID {
