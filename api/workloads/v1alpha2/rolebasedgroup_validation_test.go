@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -1284,6 +1285,36 @@ func TestValidateEngineRuntimes(t *testing.T) {
 			assert.NoError(t, err)
 		})
 	}
+}
+
+// TestValidateEngineRuntimesOverlapErrorCap pins the bound on the pairwise
+// D6 loop: the engineRuntimes list is uncapped by API contract, so a
+// pathological object holding many same-profile overlapping references must
+// not allocate an error per overlapping pair (O(n^2)) in admission or the
+// render-time re-run — every overlap is still rejected, but the error list
+// stops at the cap.
+func TestValidateEngineRuntimesOverlapErrorCap(t *testing.T) {
+	role := &RoleSpec{
+		Name:    "r",
+		Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+	}
+	// 100 scoped references to one profile, all defaulting to the leader
+	// component: every pair overlaps.
+	runtimes := make([]EngineRuntime, 100)
+	for i := range runtimes {
+		runtimes[i] = EngineRuntime{
+			ProfileName: "p", Component: "leader",
+			TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}},
+		}
+	}
+	role.EngineRuntimes = runtimes
+
+	err := ValidateEngineRuntimes(role)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not have overlapping effective component sets")
+	aggregate, ok := err.(utilerrors.Aggregate)
+	require.True(t, ok, "expected an aggregate error")
+	assert.LessOrEqual(t, len(aggregate.Errors()), 20)
 }
 
 // TestRoleBasedGroupValidator_EngineRuntimes pins the webhook call sites:

@@ -570,6 +570,48 @@ func TestEngineRuntimeCrossProfileEnvResolution(t *testing.T) {
 	})
 }
 
+// TestEngineRuntimeEnvOwnershipAfterDefault pins the ownership rule across
+// stacked profiles: after one profile defaults a role-owned name at /env/0
+// (the sanctioned default), a second profile's /env/- append onto that name
+// must be a render error. The default is not a creation, so it must not
+// grant later profiles the cross-profile exemption — profile content never
+// wins a same-name contest with role content.
+func TestEngineRuntimeEnvOwnershipAfterDefault(t *testing.T) {
+	spec := basePodSpec()
+	spec.Spec.Containers[0].Env = []v1.EnvVar{{Name: "X", Value: "role"}}
+	entries := []EngineRuntimePatch{
+		{ProfileName: "first", Targets: []string{"engine"},
+			Patches: []workloadsv1alpha2.ContainerPatch{jp("/env/0", v1.EnvVar{Name: "X", Value: "first-default"})}},
+		{ProfileName: "second", Targets: []string{"engine"},
+			Patches: []workloadsv1alpha2.ContainerPatch{jp("/env/-", v1.EnvVar{Name: "X", Value: "second-appended"})}},
+	}
+	ctx := log.IntoContext(context.Background(), klog.NewKlogr())
+	_, err := ApplyEngineRuntimePatches(ctx, spec, roleContainers("engine"), nil, "worker", entries, nil, nil, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "may only default a role-owned name")
+	assert.Contains(t, err.Error(), `profile "second"`)
+}
+
+// The same-shape control: a first profile that genuinely creates the name
+// still grants the cross-profile exemption — the second profile's append is
+// the legal cross-profile positional resolution.
+func TestEngineRuntimeEnvOwnershipAfterCreation(t *testing.T) {
+	spec := basePodSpec()
+	entries := []EngineRuntimePatch{
+		{ProfileName: "first", Targets: []string{"engine"},
+			Patches: []workloadsv1alpha2.ContainerPatch{jp("/env/-", v1.EnvVar{Name: "X", Value: "first-created"})}},
+		{ProfileName: "second", Targets: []string{"engine"},
+			Patches: []workloadsv1alpha2.ContainerPatch{jp("/env/-", v1.EnvVar{Name: "X", Value: "second-appended"})}},
+	}
+	ctx := log.IntoContext(context.Background(), klog.NewKlogr())
+	_, err := ApplyEngineRuntimePatches(ctx, spec, roleContainers("engine"), nil, "worker", entries, nil, nil, nil)
+	require.NoError(t, err)
+	env := spec.Spec.Containers[0].Env
+	require.Len(t, env, 2)
+	assert.Equal(t, "first-created", env[0].Value)
+	assert.Equal(t, "second-appended", env[1].Value) // the later append wins
+}
+
 func TestApplyContainerPatchVolumeMounts(t *testing.T) {
 	ctx := log.IntoContext(context.Background(), klog.NewKlogr())
 	ikMount := v1.VolumeMount{Name: "role-vol", MountPath: "/opt/p", ReadOnly: true}
