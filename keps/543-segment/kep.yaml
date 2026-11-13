@@ -1,0 +1,15 @@
+title: Segment as the Cross-Role Service Unit
+kep-number: 543
+authors:
+  - "@diw-zw"
+status: provisional
+creation-date: 2026-11-03
+reviewers: []
+approvers: []
+see-also:
+  - https://github.com/sgl-project/rbg/issues/543
+stage: alpha
+feature-gates: []
+# Segment is data-driven: it activates only when a policy rule carries segment.
+# Safe disablement removes the rule or field; existing labels are inert.
+disable-supported: true
