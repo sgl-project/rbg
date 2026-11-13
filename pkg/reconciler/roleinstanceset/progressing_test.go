@@ -363,6 +363,113 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			wantReason: workloadconstants.ProgressingReasonRecovering,
 			wantStatus: corev1.ConditionTrue,
 		},
+		{
+			name: "creating persists while the initial instances are starting",
+			// KEP-502 keeps the workflow reason until the instances it added
+			// complete startup; the reason must not collapse to InstancesNotReady
+			// once the objects exist.
+			set: newTestSet(3),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+			},
+			instances:  append(bareInstances(2), instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseCreating)),
+			wantReason: workloadconstants.ProgressingReasonCreating,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "scaling up persists while the new instances are starting",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+				set.Status.ExpectedUpdatedReplicas = 2
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "rev", "rev"
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+			},
+			instances:  append(bareInstances(2), instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseCreating)),
+			wantReason: workloadconstants.ProgressingReasonScalingUp,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "recreate pod replacement gap keeps role instance updated",
+			// After all old instances are deleted, stateless mode can already
+			// report current == update with zero replicas; the persisted
+			// RoleInstanceUpdated reason keeps the gap attributed to the rollout.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(2)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+				set.Status.ExpectedUpdatedReplicas = 2
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "new", "new"
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				CurrentRevision: "new", UpdateRevision: "new",
+			},
+			instances:  nil,
+			wantReason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "replacement startup after revisions converge keeps role instance updated",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(2)
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "new", "new"
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, CurrentRevision: "new", UpdateRevision: "new", ExpectedUpdatedReplicas: 2,
+			},
+			instances:  bareInstances(1),
+			wantReason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "surge cleanup stays role instance updated instead of scaling down",
+			// One old-revision instance is still pending deletion after the update
+			// scope is complete; the revisions have not converged yet, so the
+			// deletion belongs to the rollout, not to a scale-down.
+			set: newTestSet(2),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "old", UpdateRevision: "new",
+				UpdatedReplicas: 2, ExpectedUpdatedReplicas: 2,
+			},
+			instances:  bareInstances(3),
+			wantReason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "never-ready set stays creating after losing an instance",
+			// A persisted InstancesNotReady condition is written before the set
+			// has ever been ready, so it must not count as establishment evidence.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "rev", "rev"
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonInstancesNotReady,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+			},
+			instances:  bareInstances(2),
+			wantReason: workloadconstants.ProgressingReasonCreating,
+			wantStatus: corev1.ConditionTrue,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -517,7 +624,8 @@ func TestClassifySetOperationError(t *testing.T) {
 		t.Fatalf("got %s", got)
 	}
 	forbiddenRBAC := apierrors.NewForbidden(
-		corev1.Resource("roleinstances"), "ri-0", apierrors.NewBadRequest("denied"))
+		corev1.Resource("roleinstances"), "ri-0", apierrors.NewBadRequest(
+			`User "alice" cannot create resource "roleinstances" in API group "workloads.x-k8s.io" in the namespace "default"`))
 	if got := ClassifySetOperationError(forbiddenRBAC); got != workloadconstants.ProgressingReasonPermissionDenied {
 		t.Fatalf("got %s", got)
 	}
@@ -532,7 +640,8 @@ func TestClassifySetOperationError(t *testing.T) {
 	// A joined role-operation error must be classified per constituent error; the
 	// Forbidden status of one role must not borrow another role's quota message.
 	joined := stderrors.Join(
-		apierrors.NewForbidden(corev1.Resource("roleinstances"), "ri-a", apierrors.NewBadRequest("denied")),
+		apierrors.NewForbidden(corev1.Resource("roleinstances"), "ri-a", apierrors.NewBadRequest(
+			`User "alice" cannot create resource "roleinstances" in API group "workloads.x-k8s.io" in the namespace "default"`)),
 		apierrors.NewForbidden(corev1.Resource("roleinstances"), "ri-b", apierrors.NewBadRequest("exceeded quota")))
 	if got := ClassifySetOperationError(joined); got != workloadconstants.ProgressingReasonPermissionDenied {
 		t.Fatalf("permission must outrank quota in a joined error, got %s", got)

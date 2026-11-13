@@ -83,7 +83,8 @@ func TestClassifyPodOperationError(t *testing.T) {
 	forbiddenQuota := apierrors.NewForbidden(
 		corev1.Resource("pods"), "ri-0", apierrors.NewBadRequest("pods \"ri-0\" is forbidden: exceeded quota"))
 	forbiddenRBAC := apierrors.NewForbidden(
-		corev1.Resource("pods"), "ri-0", apierrors.NewBadRequest("pods \"ri-0\" is forbidden: user cannot create"))
+		corev1.Resource("pods"), "ri-0", apierrors.NewBadRequest(
+			`User "alice" cannot create resource "pods" in API group "" in the namespace "default"`))
 	admission := &apierrors.StatusError{ErrStatus: metav1.Status{
 		Status:  metav1.StatusFailure,
 		Code:    422,
@@ -105,6 +106,9 @@ func TestClassifyPodOperationError(t *testing.T) {
 			apierrors.NewBadRequest(`admission webhook "example" denied the request`)),
 			workloadsv1alpha2.ReasonPodAdmissionRejected},
 		{"unclassified", apierrors.NewServerTimeout(corev1.Resource("pods"), "POST", 1), workloadsv1alpha2.ReasonPodOperationUnclassified},
+		{"pod security admission via forbidden", apierrors.NewForbidden(
+			corev1.Resource("pods"), "ri-0", apierrors.NewBadRequest(`violates PodSecurity "restricted:latest"`)),
+			workloadsv1alpha2.ReasonPodAdmissionRejected},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -369,11 +373,24 @@ func TestInsufficientResourcesMessage(t *testing.T) {
 	t.Run("unschedulable pods are described", func(t *testing.T) {
 		pods := []*corev1.Pod{
 			unschedulable("ri-0", "0/2 nodes are available: 2 Insufficient cpu."),
-			unschedulable("ri-1", ""),
+			unschedulable("ri-1", "0/2 nodes are available: 2 Insufficient memory."),
 		}
-		want := "Pod ri-0 is unschedulable: 0/2 nodes are available: 2 Insufficient cpu.; Pod ri-1 is unschedulable"
+		want := "Pod ri-0 is unschedulable: 0/2 nodes are available: 2 Insufficient cpu.; " +
+			"Pod ri-1 is unschedulable: 0/2 nodes are available: 2 Insufficient memory."
 		if got := insufficientResourcesMessage(pods); got != want {
 			t.Fatalf("got %q, want %q", got, want)
+		}
+	})
+
+	t.Run("non-resource unschedulable facts are not resources blockers", func(t *testing.T) {
+		// A gang hold or a placement constraint is also Unschedulable, but it is
+		// not an insufficient-resources fact and must not point users at capacity.
+		pods := []*corev1.Pod{
+			unschedulable("ri-0", "0/2 nodes are available: 2 pod group is not ready."),
+			unschedulable("ri-1", "0/2 nodes are available: 2 node(s) didn't match node selector."),
+		}
+		if got := insufficientResourcesMessage(pods); got != "" {
+			t.Fatalf("got %q", got)
 		}
 	})
 }

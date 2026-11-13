@@ -32,6 +32,7 @@ import (
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	gangcommon "sigs.k8s.io/rbgs/pkg/scheduler/common"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -221,9 +222,25 @@ func retainRBGBlockerFamily(rbg *workloadsv1alpha2.RoleBasedGroup, entryBlocker 
 			!isRBGBlockerFamily(source.Reason) {
 			continue
 		}
-		return source.Reason, fmt.Sprintf("%s; latest unclassified error: %s", source.Message, message)
+		return source.Reason, fmt.Sprintf("%s%s%s",
+			stripUnclassifiedSuffix(source.Message), unclassifiedSuffixSeparator, message)
 	}
 	return reason, message
+}
+
+// unclassifiedSuffixSeparator separates a retained blocker's base message from
+// the latest unclassified error appended to it.
+const unclassifiedSuffixSeparator = "; latest unclassified error: "
+
+// stripUnclassifiedSuffix removes a previously appended latest-error suffix.
+// Retention is evaluated against the persisted entry condition, whose message
+// already carries the suffix from the previous retry; without stripping it the
+// message would grow on every reconcile until the API limit rejects the write.
+func stripUnclassifiedSuffix(message string) string {
+	if index := strings.Index(message, unclassifiedSuffixSeparator); index >= 0 {
+		return message[:index]
+	}
+	return message
 }
 
 // rbgEntryOwnBlocker returns the Progressing blocker confirmed for the RBG's current
@@ -283,11 +300,21 @@ var gangPodGroupGVKs = [][2]string{
 }
 
 // observeGangWaiting reports whether the gang is waiting from runtime gang-scheduling
-// state. A missing PodGroup before its first reconcile is not a waiting fact, and a
-// same-name PodGroup that is not controlled by this RBG is never this RBG's fact.
+// state. The observation is gated on the RBG's gang strategy: RBGs without gang
+// scheduling make no PodGroup requests at all, because each unstructured lookup
+// would otherwise be two uncached API-server round trips on every status
+// computation. A missing PodGroup before its first reconcile is not a waiting
+// fact, and a same-name PodGroup that is not controlled by this RBG is never
+// this RBG's fact.
 func (r *RoleBasedGroupReconciler) observeGangWaiting(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) bool {
 	if r.apiReader == nil {
 		// No gang observation is available; do not report a waiting fact.
+		return false
+	}
+	strategy, err := gangcommon.GetGangStrategy(ctx, r.client, rbg)
+	if err != nil || strategy == nil {
+		// Gang scheduling is not enabled, or the strategy cannot be determined;
+		// neither is a waiting fact.
 		return false
 	}
 	for _, gvk := range gangPodGroupGVKs {
@@ -300,7 +327,7 @@ func (r *RoleBasedGroupReconciler) observeGangWaiting(ctx context.Context, rbg *
 		if !podGroupControlledByRBG(podGroup, rbg) {
 			continue
 		}
-		return podGroupWaitingPhase(gvk[0], podGroup)
+		return podGroupWaiting(podGroup)
 	}
 	return false
 }
@@ -326,20 +353,29 @@ func podGroupControlledByRBG(podGroup *unstructured.Unstructured, rbg *workloads
 	return false
 }
 
-// podGroupWaitingPhase classifies backend-specific waiting phases. Not every
-// non-Running phase waits for gang admission: Volcano's Inqueue already allows pod
-// creation, scheduler-plugins' Scheduling already placed more than minMember pods,
-// and Completed / Finished / Failed are terminal states.
-func podGroupWaitingPhase(apiVersion string, podGroup *unstructured.Unstructured) bool {
-	phase, _, _ := unstructured.NestedString(podGroup.Object, "status", "phase")
-	switch apiVersion {
-	case "scheduling.volcano.sh/v1beta1", "scheduling.x-k8s.io/v1alpha1":
-		// Pending waits for admission and resources; Unknown means part of the
-		// gang is placed but the rest cannot be scheduled.
-		return phase == "Pending" || phase == "Unknown"
-	default:
-		return false
+// podGroupWaiting classifies gang waiting from the runtime facts. The
+// Unschedulable condition is the reliable signal: Volcano can hold the group in
+// Inqueue with an Unschedulable condition while the gang cannot be filled. As a
+// phase-level fallback, Pending waits for admission and Unknown means part of
+// the gang cannot be scheduled; Inqueue, scheduler-plugins' Scheduling, Running,
+// and the terminal phases do not wait.
+func podGroupWaiting(podGroup *unstructured.Unstructured) bool {
+	conditions, ok, _ := unstructured.NestedSlice(podGroup.Object, "status", "conditions")
+	if ok {
+		for _, raw := range conditions {
+			condition, valid := raw.(map[string]interface{})
+			if !valid {
+				continue
+			}
+			conditionType, _, _ := unstructured.NestedString(condition, "type")
+			status, _, _ := unstructured.NestedString(condition, "status")
+			if conditionType == "Unschedulable" && status == "True" {
+				return true
+			}
+		}
 	}
+	phase, _, _ := unstructured.NestedString(podGroup.Object, "status", "phase")
+	return phase == "Pending" || phase == "Unknown"
 }
 
 // classifyGangIncompatibility distinguishes missing scheduler capability from an

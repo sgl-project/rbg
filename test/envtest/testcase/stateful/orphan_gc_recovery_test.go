@@ -91,7 +91,8 @@ var _ = Describe("Stateful RoleInstance orphan Pod recovery", func() {
 				// the blocked creation is reported through the Progressing
 				// condition with PodOperationUnclassified instead of FailedScale.
 				if condition.Type == workloadsv1alpha2.RoleInstanceProgressing &&
-					condition.Status == corev1.ConditionTrue {
+					condition.Status == corev1.ConditionTrue &&
+					condition.Reason == workloadsv1alpha2.ReasonPodOperationUnclassified {
 					return true, nil
 				}
 			}
