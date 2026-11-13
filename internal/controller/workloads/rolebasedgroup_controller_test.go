@@ -2805,7 +2805,7 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 			}
 			r := &RoleBasedGroupReconciler{client: c}
 			for i := 0; i < 2; i++ {
-				if err := r.updateRBGStatus(ctx, rbg, observed, nil); err != nil {
+				if err := r.updateRBGStatus(ctx, rbg, observed, nil, nil); err != nil {
 					t.Fatal(err)
 				}
 				if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {
@@ -2878,7 +2878,7 @@ func TestUpdateRBGStatusPreservesMissingChildEvidence(t *testing.T) {
 		},
 	}).Build()
 	r := &RoleBasedGroupReconciler{client: c}
-	if err := r.updateRBGStatus(ctx, rbg, observed, nil); err != nil {
+	if err := r.updateRBGStatus(ctx, rbg, observed, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {

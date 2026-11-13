@@ -42,6 +42,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	inplaceupdatepod "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
@@ -375,13 +376,31 @@ func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newSta
 	}
 	podsPresent := int32(len(pods)) == expectedPods
 
-	updateActive := newStatus.UpdateRevision != "" && newStatus.UpdateRevision != newStatus.CurrentRevision
+	// Revision inequality does not cover component size changes: size is excluded
+	// from revision patches, so a previously ready instance whose current
+	// generation has not yet been confirmed ready is also executing a
+	// spec-driven update. Independent Pod loss keeps the generation equal to the
+	// last confirmed-ready generation and stays recovery.
+	revisionUpdate := newStatus.UpdateRevision != "" && newStatus.UpdateRevision != newStatus.CurrentRevision
+	specDrivenUpdate := instance.Status.LastReadyGeneration != 0 &&
+		instance.Generation > instance.Status.LastReadyGeneration
+	updateActive := revisionUpdate || specDrivenUpdate
 
 	readySatisfied := true
+	coreControl := instancecore.New(instance)
 	if policy := instance.Spec.ReadyPolicy; policy == "" || policy == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady {
-		coreControl := instancecore.New(instance)
 		for _, pod := range pods {
 			if !coreControl.IsPodUpdateReady(pod, 0) {
+				readySatisfied = false
+				break
+			}
+		}
+	} else {
+		// readyPolicy None skips pod readiness for phase completion, but the
+		// controller-owned in-place update readiness gate still gates completion;
+		// external gates remain excluded.
+		for _, pod := range pods {
+			if condition := inplaceupdatepod.GetInPlaceCondition(pod); condition != nil && condition.Status != v1.ConditionTrue {
 				readySatisfied = false
 				break
 			}

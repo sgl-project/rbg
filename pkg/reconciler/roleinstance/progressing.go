@@ -68,6 +68,28 @@ func isInstanceBlockerReason(reason string) bool {
 	return instanceBlockerReasons[reason]
 }
 
+// instanceBlockerFamilyPriority orders the RI blocker families for selection when a
+// single reconcile records several operation failures. Create and Update variants
+// share a family, so both list entries map to the same family priority.
+var instanceBlockerFamilyPriority = []string{
+	workloadsv1alpha2.ReasonPodCreateForbidden,
+	workloadsv1alpha2.ReasonPodUpdateForbidden,
+	workloadsv1alpha2.ReasonPodAdmissionRejected,
+	workloadsv1alpha2.ReasonPodCreateQuotaExceeded,
+	workloadsv1alpha2.ReasonPodUpdateQuotaExceeded,
+	workloadsv1alpha2.ReasonInstanceInsufficientResources,
+	workloadsv1alpha2.ReasonPodOperationUnclassified,
+}
+
+func instanceBlockerPriority(reason string) int {
+	for i, family := range instanceBlockerFamilyPriority {
+		if reason == family {
+			return i
+		}
+	}
+	return len(instanceBlockerFamilyPriority)
+}
+
 // nextRoleInstancePhase implements the allowed phase edges from KEP-502:
 //
 //   - no phase returns to Creating; Creating exits only to Running,
@@ -153,6 +175,11 @@ func classifyPodOperationError(operation string, err error) string {
 	}
 	switch {
 	case apierrors.IsForbidden(err):
+		// HTTP 403 is ambiguous: admission webhooks also reject with Forbidden, so
+		// the admission detail must be recognized before defaulting to RBAC.
+		if mentionsAdmissionWebhook(err) {
+			return workloadsv1alpha2.ReasonPodAdmissionRejected
+		}
 		if isQuotaExceededError(err) {
 			return "Pod" + operation + "QuotaExceeded"
 		}
@@ -187,16 +214,23 @@ func mentionsAdmissionWebhook(err error) bool {
 		strings.Contains(msg, "admission plugin")
 }
 
-// instanceProgressingBlocker returns the blocker Progressing condition recorded by
-// this reconcile, if any. A confirmed blocker always outranks activity reasons.
+// instanceProgressingBlocker returns the highest-priority blocker Progressing
+// condition recorded by this reconcile, if any: scale and update operations can both
+// fail in one reconcile, and a lower-priority failure appended first must not hide a
+// later permission failure. A confirmed blocker always outranks activity reasons.
 func instanceProgressingBlocker(conditions []workloadsv1alpha2.RoleInstanceCondition) *workloadsv1alpha2.RoleInstanceCondition {
+	selected, selectedPriority := (*workloadsv1alpha2.RoleInstanceCondition)(nil), len(instanceBlockerFamilyPriority)+1
 	for i := range conditions {
-		if conditions[i].Type == workloadsv1alpha2.RoleInstanceProgressing &&
-			conditions[i].Status == v1.ConditionTrue && conditions[i].Reason != "" {
-			return &conditions[i]
+		condition := &conditions[i]
+		if condition.Type != workloadsv1alpha2.RoleInstanceProgressing ||
+			condition.Status != v1.ConditionTrue || condition.Reason == "" {
+			continue
+		}
+		if priority := instanceBlockerPriority(condition.Reason); priority < selectedPriority {
+			selected, selectedPriority = condition, priority
 		}
 	}
-	return nil
+	return selected
 }
 
 // instanceProgressingActivityReason selects the activity reason from the phase.

@@ -17,6 +17,7 @@ limitations under the License.
 package roleinstanceset
 
 import (
+	stderrors "errors"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -45,6 +46,16 @@ func instanceWithProgressing(reason string, phase workloadsv1alpha2.RoleInstance
 			}},
 		},
 	}
+}
+
+// bareInstances returns observed RoleInstance objects without status; the
+// structural instance count comes from observed instances, not the counters.
+func bareInstances(replicas int32) []*workloadsv1alpha2.RoleInstance {
+	instances := make([]*workloadsv1alpha2.RoleInstance, replicas)
+	for i := range instances {
+		instances[i] = &workloadsv1alpha2.RoleInstance{}
+	}
+	return instances
 }
 
 func TestComputeSetProgressingCondition(t *testing.T) {
@@ -131,6 +142,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				Replicas: 3, CurrentRevision: "old", UpdateRevision: "new",
 				UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
 			},
+			instances:  bareInstances(3),
 			wantReason: workloadconstants.ProgressingReasonPaused,
 			wantStatus: corev1.ConditionFalse,
 		},
@@ -147,6 +159,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				Replicas: 2, CurrentRevision: "old", UpdateRevision: "new",
 				UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
 			},
+			instances:  bareInstances(2),
 			wantReason: workloadconstants.ProgressingReasonScalingUp,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -161,9 +174,8 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				Replicas: 3, CurrentRevision: "old", UpdateRevision: "new",
 				UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
 			},
-			instances: []*workloadsv1alpha2.RoleInstance{
-				instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseRecovering),
-			},
+			instances: append(bareInstances(2),
+				instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseRecovering)),
 			wantReason: workloadconstants.ProgressingReasonRecovering,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -178,6 +190,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
 				Replicas: 2, UpdatedReplicas: 2, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 2,
 			},
+			instances:  bareInstances(2),
 			wantReason: workloadconstants.ProgressingReasonScalingUp,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -187,6 +200,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
 				Replicas: 3, UpdatedReplicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
 			},
+			instances:  bareInstances(3),
 			wantReason: workloadconstants.ProgressingReasonScalingDown,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -196,6 +210,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
 				Replicas: 3, CurrentRevision: "old", UpdateRevision: "new", UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
 			},
+			instances:  bareInstances(3),
 			wantReason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -205,9 +220,8 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
 				Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
 			},
-			instances: []*workloadsv1alpha2.RoleInstance{
-				instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseRecovering),
-			},
+			instances: append(bareInstances(2),
+				instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseRecovering)),
 			wantReason: workloadconstants.ProgressingReasonRecovering,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -222,6 +236,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
 				Replicas: 2, UpdatedReplicas: 2, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
 			},
+			instances:  bareInstances(2),
 			wantReason: workloadconstants.ProgressingReasonRecovering,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -243,19 +258,13 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
 				Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
 			},
-			instances: []*workloadsv1alpha2.RoleInstance{{
-				ObjectMeta: metav1.ObjectMeta{Generation: 7},
-				Status: workloadsv1alpha2.RoleInstanceStatus{
-					Phase: workloadsv1alpha2.RoleInstancePhaseRunning,
-					Conditions: []workloadsv1alpha2.RoleInstanceCondition{{
-						Type:               workloadsv1alpha2.RoleInstanceProgressing,
-						Status:             corev1.ConditionTrue,
-						Reason:             workloadsv1alpha2.ReasonInstanceInsufficientResources,
-						Message:            "Pod ri-0 is unschedulable: 3 Insufficient cpu",
-						ObservedGeneration: 7,
-					}},
-				},
-			}},
+			instances: append(bareInstances(2), func() *workloadsv1alpha2.RoleInstance {
+				instance := instanceWithProgressing(workloadsv1alpha2.ReasonInstanceInsufficientResources, workloadsv1alpha2.RoleInstancePhaseRunning)
+				instance.ObjectMeta = metav1.ObjectMeta{Generation: 7}
+				instance.Status.Conditions[0].Message = "Pod ri-0 is unschedulable: 3 Insufficient cpu"
+				instance.Status.Conditions[0].ObservedGeneration = 7
+				return instance
+			}()),
 			wantReason: workloadconstants.ProgressingReasonWaitingForResources,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -265,6 +274,7 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
 				Replicas: 3, ReadyReplicas: 2, UpdatedReplicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
 			},
+			instances:  bareInstances(3),
 			wantReason: workloadconstants.ProgressingReasonInstancesNotReady,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -272,10 +282,86 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			name: "converged",
 			set:  newTestSet(3),
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
-				Replicas: 3, ReadyReplicas: 3, UpdatedReplicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+				Replicas: 3, ReadyReplicas: 3, AvailableReplicas: 3, UpdatedReplicas: 3,
+				CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
 			},
+			instances:  bareInstances(3),
 			wantReason: workloadconstants.ProgressingReasonConverged,
 			wantStatus: corev1.ConditionFalse,
+		},
+		{
+			name: "stateful synthetic slots do not hide initial creation",
+			// updateStatefulInstanceSet fills missing slots with synthetic
+			// RoleInstances and updateStatus counts them: newStatus.Replicas already
+			// reports the target while only one instance is observed.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 1, 1, 1
+				set.Status.ExpectedUpdatedReplicas = 3
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "rev", "rev"
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+			},
+			instances:  bareInstances(1),
+			wantReason: workloadconstants.ProgressingReasonCreating,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "stateful synthetic slots do not hide missing-instance recovery",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 3, 3, 3
+				set.Status.ExpectedUpdatedReplicas = 3
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "rev", "rev"
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+			},
+			instances:  bareInstances(2),
+			wantReason: workloadconstants.ProgressingReasonRecovering,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "minReadySeconds keeps the set progressing before availability",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 3, 3, 3
+				set.Status.ExpectedUpdatedReplicas = 3
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, ReadyReplicas: 3, AvailableReplicas: 1, UpdatedReplicas: 3,
+				CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+			},
+			instances:  bareInstances(3),
+			wantReason: workloadconstants.ProgressingReasonInstancesNotReady,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "persisted recovering reason keeps replacement stable after counters decay",
+			// The first shortage write lowers persisted Replicas below the target;
+			// the persisted Recovering reason proves replacement is in progress.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+				set.Status.ExpectedUpdatedReplicas = 3
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "rev", "rev"
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonRecovering,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, UpdatedReplicas: 2, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+			},
+			instances:  bareInstances(2),
+			wantReason: workloadconstants.ProgressingReasonRecovering,
+			wantStatus: corev1.ConditionTrue,
 		},
 	}
 	for _, tc := range cases {
@@ -326,6 +412,13 @@ func TestCurrentSetBlockerRetainsPriorFamily(t *testing.T) {
 	reason, _ = currentSetBlocker(nil, prior, nil)
 	if reason != "" {
 		t.Fatalf("successful observation must clear the prior blocker, got %s", reason)
+	}
+
+	// The retained family must carry the latest operation error so diagnostics and
+	// event deduplication follow the current attempt.
+	_, message := currentSetBlocker(own, prior, nil)
+	if message != "server timeout" {
+		t.Fatalf("retained blocker must record the latest error, got %q", message)
 	}
 }
 
@@ -427,6 +520,22 @@ func TestClassifySetOperationError(t *testing.T) {
 		corev1.Resource("roleinstances"), "ri-0", apierrors.NewBadRequest("denied"))
 	if got := ClassifySetOperationError(forbiddenRBAC); got != workloadconstants.ProgressingReasonPermissionDenied {
 		t.Fatalf("got %s", got)
+	}
+	// Admission webhooks can reject with HTTP 403; the detail must be recognized
+	// before defaulting to RBAC.
+	forbiddenAdmission := apierrors.NewForbidden(
+		corev1.Resource("roleinstances"), "ri-0",
+		apierrors.NewBadRequest(`admission webhook "example" denied the request`))
+	if got := ClassifySetOperationError(forbiddenAdmission); got != workloadconstants.ProgressingReasonAdmissionDenied {
+		t.Fatalf("got %s", got)
+	}
+	// A joined role-operation error must be classified per constituent error; the
+	// Forbidden status of one role must not borrow another role's quota message.
+	joined := stderrors.Join(
+		apierrors.NewForbidden(corev1.Resource("roleinstances"), "ri-a", apierrors.NewBadRequest("denied")),
+		apierrors.NewForbidden(corev1.Resource("roleinstances"), "ri-b", apierrors.NewBadRequest("exceeded quota")))
+	if got := ClassifySetOperationError(joined); got != workloadconstants.ProgressingReasonPermissionDenied {
+		t.Fatalf("permission must outrank quota in a joined error, got %s", got)
 	}
 	if got := ClassifySetOperationError(nil); got != "" {
 		t.Fatalf("got %s", got)

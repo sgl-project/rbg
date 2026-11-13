@@ -17,15 +17,22 @@ limitations under the License.
 package workloads
 
 import (
+	"context"
 	stderrors "errors"
 	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/reconciler"
 )
 
 func newProgressingRBG() *workloadsv1alpha2.RoleBasedGroup {
@@ -143,6 +150,16 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 				"prefill": observation(workloadconstants.ProgressingReasonWaitingForResources, corev1.ConditionTrue, "hash"),
 			},
 			wantReason: workloadconstants.ProgressingReasonWaitingForResources,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
+			name: "ris invalid spec aggregates as the highest-priority blocker",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonInvalidSpec, corev1.ConditionTrue, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonWaitingForQuota, corev1.ConditionTrue, "hash"),
+			},
+			wantReason: workloadconstants.ProgressingReasonInvalidSpec,
 			wantStatus: metav1.ConditionTrue,
 		},
 		{
@@ -274,6 +291,18 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 			wantStatus: metav1.ConditionFalse,
 		},
 		{
+			name:         "stale paused condition does not report paused",
+			rbg:          newProgressingRBG(),
+			roleStatuses: readyRoleStatuses(),
+			observations: map[string]risObservation{
+				"prefill": observationWithGeneration(workloadconstants.ProgressingReasonPaused, corev1.ConditionFalse, "hash", 5, 4),
+				"decode":  observationWithGeneration(workloadconstants.ProgressingReasonPaused, corev1.ConditionFalse, "hash", 5, 5),
+			},
+			expected:   expectedRevisions(),
+			wantReason: workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
 			name: "paused and converged roles report paused",
 			rbg:  newProgressingRBG(),
 			observations: map[string]risObservation{
@@ -296,7 +325,7 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeRBGProgressingCondition(tc.rbg, tc.roleStatuses, tc.observations, tc.expected, tc.gangWaiting, tc.depsNotReady)
+			got := computeRBGProgressingCondition(tc.rbg, tc.roleStatuses, tc.observations, tc.expected, tc.gangWaiting, tc.depsNotReady, nil)
 			if got.Reason != tc.wantReason || got.Status != tc.wantStatus {
 				t.Fatalf("got status=%s reason=%s message=%s, want status=%s reason=%s", got.Status, got.Reason, got.Message, tc.wantStatus, tc.wantReason)
 			}
@@ -307,22 +336,170 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 	}
 }
 
+func TestEntryBlockerCarryAndSnapshot(t *testing.T) {
+	entry := metav1.Condition{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+		Status:             metav1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonPermissionDenied,
+		Message:            "rbac denied",
+		ObservedGeneration: 6,
+	}
+
+	t.Run("entry blocker is carried when children report no family", func(t *testing.T) {
+		rbg := newProgressingRBG()
+		// Children are healthy: without the carry, the aggregation would publish an
+		// unconfirmed clearing before the role operation is retried.
+		observations := map[string]risObservation{
+			"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+			"decode":  observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+		}
+		got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), false, nil, &entry)
+		if got.Status != metav1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonPermissionDenied {
+			t.Fatalf("got status=%s reason=%s", got.Status, got.Reason)
+		}
+		if got.Message != "rbac denied" {
+			t.Fatalf("entry message must be preserved, got %q", got.Message)
+		}
+	})
+
+	t.Run("rbgEntryOwnBlocker snapshots current-generation blockers only", func(t *testing.T) {
+		rbg := newProgressingRBG()
+		rbg.Status.Conditions = []metav1.Condition{entry}
+		if got := rbgEntryOwnBlocker(rbg); got == nil || got.Reason != workloadconstants.ProgressingReasonPermissionDenied {
+			t.Fatalf("got %+v", got)
+		}
+		stale := entry
+		stale.ObservedGeneration = rbg.Generation - 1
+		rbg.Status.Conditions = []metav1.Condition{stale}
+		if got := rbgEntryOwnBlocker(rbg); got != nil {
+			t.Fatalf("stale blocker must not be carried, got %+v", got)
+		}
+		activity := entry
+		activity.Reason = workloadconstants.ProgressingReasonRoleInstanceSetUpdated
+		rbg.Status.Conditions = []metav1.Condition{activity}
+		if got := rbgEntryOwnBlocker(rbg); got != nil {
+			t.Fatalf("activity reason must not be carried, got %+v", got)
+		}
+	})
+
+	t.Run("entry snapshot is preferred over the overwritten current condition", func(t *testing.T) {
+		rbg := newProgressingRBG()
+		// The normal status path already overwrote the persisted condition with the
+		// child aggregation; retention must still find the entry blocker.
+		rbg.Status.Conditions = []metav1.Condition{{
+			Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+			Status:             metav1.ConditionTrue,
+			Reason:             workloadconstants.ProgressingReasonRoleInstanceSetUpdated,
+			ObservedGeneration: rbg.Generation,
+		}}
+		reason, message := retainRBGBlockerFamily(rbg, &entry, workloadconstants.ProgressingReasonUnclassifiedBlocker, "server timeout")
+		if reason != workloadconstants.ProgressingReasonPermissionDenied {
+			t.Fatalf("got %s", reason)
+		}
+		if !strings.Contains(message, "rbac denied") || !strings.Contains(message, "server timeout") {
+			t.Fatalf("message must record both facts, got %s", message)
+		}
+	})
+}
+
+func TestPodGroupWaitingPhase(t *testing.T) {
+	podGroup := func(phase string) *unstructured.Unstructured {
+		return &unstructured.Unstructured{Object: map[string]interface{}{
+			"status": map[string]interface{}{"phase": phase},
+		}}
+	}
+	for _, apiVersion := range []string{"scheduling.volcano.sh/v1beta1", "scheduling.x-k8s.io/v1alpha1"} {
+		// Pending waits for admission and resources; Unknown means the gang is
+		// partially placed and the rest cannot be scheduled.
+		for _, phase := range []string{"Pending", "Unknown"} {
+			if !podGroupWaitingPhase(apiVersion, podGroup(phase)) {
+				t.Fatalf("%s phase %s must be a waiting fact", apiVersion, phase)
+			}
+		}
+		// Inqueue already allows pod creation, Scheduling already placed more than
+		// minMember pods, and the terminal phases are not gang waiting.
+		for _, phase := range []string{"", "Inqueue", "Scheduling", "Running", "Completed", "Finished", "Failed"} {
+			if podGroupWaitingPhase(apiVersion, podGroup(phase)) {
+				t.Fatalf("%s phase %q must not be a waiting fact", apiVersion, phase)
+			}
+		}
+	}
+}
+
+func TestPodGroupControlledByRBG(t *testing.T) {
+	rbg := newProgressingRBG()
+	rbg.UID = "rbg-uid"
+	podGroup := func(controller bool, uid string) *unstructured.Unstructured {
+		reference := map[string]interface{}{
+			"controller": controller,
+			"uid":        uid,
+			"kind":       "RoleBasedGroup",
+		}
+		return &unstructured.Unstructured{Object: map[string]interface{}{
+			"metadata": map[string]interface{}{
+				"ownerReferences": []interface{}{reference},
+			},
+		}}
+	}
+	if !podGroupControlledByRBG(podGroup(true, string(rbg.UID)), rbg) {
+		t.Fatal("controller reference matching the RBG UID must be owned")
+	}
+	if podGroupControlledByRBG(podGroup(true, "other-uid"), rbg) {
+		t.Fatal("a controller reference for another owner must not be owned")
+	}
+	if podGroupControlledByRBG(podGroup(false, string(rbg.UID)), rbg) {
+		t.Fatal("a non-controller reference must not be owned")
+	}
+	orphan := &unstructured.Unstructured{Object: map[string]interface{}{
+		"metadata": map[string]interface{}{},
+	}}
+	if podGroupControlledByRBG(orphan, rbg) {
+		t.Fatal("a PodGroup without references must not be owned")
+	}
+}
+
 func TestUnreadyDependencies(t *testing.T) {
+	ctx := context.Background()
 	rbg := newProgressingRBG()
 	rbg.Spec.Roles[1].Dependencies = []string{"prefill"}
-	notReady := unreadyDependencies(rbg, []workloadsv1alpha2.RoleStatus{
-		{Name: "prefill", Replicas: 2, ReadyReplicas: 1},
-		{Name: "decode", Replicas: 2, ReadyReplicas: 2},
-	})
+
+	scheme := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	seedRIS := func(specReplicas, readyReplicas int32) client.Client {
+		set := &workloadsv1alpha2.RoleInstanceSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+				Namespace: rbg.Namespace,
+				Labels:    map[string]string{workloadconstants.GroupNameLabelKey: rbg.Name},
+			},
+			Spec:   workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To(specReplicas)},
+			Status: workloadsv1alpha2.RoleInstanceSetStatus{ReadyReplicas: readyReplicas},
+		}
+		return fake.NewClientBuilder().WithScheme(scheme).WithObjects(set).Build()
+	}
+	newReconciler := func(c client.Client) *RoleBasedGroupReconciler {
+		return &RoleBasedGroupReconciler{client: c, scheme: scheme, workloadReconciler: map[string]reconciler.WorkloadReconciler{}}
+	}
+
+	// The dependency gate observes the dispatched child replicas, not the RBG's
+	// final target: a coordinated step of 1/1 must not report the dependency as
+	// blocked while the final target is three.
+	ready := newReconciler(seedRIS(1, 1)).unreadyDependencies(ctx, rbg)
+	if len(ready) != 0 {
+		t.Fatalf("dispatched dependency replicas must satisfy the gate, got %v", ready)
+	}
+
+	notReady := newReconciler(seedRIS(1, 0)).unreadyDependencies(ctx, rbg)
 	if len(notReady) != 1 || notReady[0] != "decode" {
 		t.Fatalf("got %v", notReady)
 	}
-	ready := unreadyDependencies(rbg, []workloadsv1alpha2.RoleStatus{
-		{Name: "prefill", Replicas: 2, ReadyReplicas: 2},
-		{Name: "decode", Replicas: 2, ReadyReplicas: 2},
-	})
-	if len(ready) != 0 {
-		t.Fatalf("got %v", ready)
+
+	// A missing dependency child is a fact: the dependency is not ready.
+	missing := newReconciler(fake.NewClientBuilder().WithScheme(scheme).Build()).unreadyDependencies(ctx, rbg)
+	if len(missing) != 1 || missing[0] != "decode" {
+		t.Fatalf("missing dependency child must be not ready, got %v", missing)
 	}
 }
 
@@ -342,7 +519,7 @@ func TestRetainRBGBlockerFamily(t *testing.T) {
 		rbg.Status.Conditions = []metav1.Condition{
 			progressing(workloadconstants.ProgressingReasonPermissionDenied, rbg.Generation),
 		}
-		reason, message := retainRBGBlockerFamily(rbg, workloadconstants.ProgressingReasonUnclassifiedBlocker, "server timeout")
+		reason, message := retainRBGBlockerFamily(rbg, nil, workloadconstants.ProgressingReasonUnclassifiedBlocker, "server timeout")
 		if reason != workloadconstants.ProgressingReasonPermissionDenied {
 			t.Fatalf("got %s", reason)
 		}
@@ -356,13 +533,13 @@ func TestRetainRBGBlockerFamily(t *testing.T) {
 		rbg.Status.Conditions = []metav1.Condition{
 			progressing(workloadconstants.ProgressingReasonPermissionDenied, rbg.Generation-1),
 		}
-		if reason, _ := retainRBGBlockerFamily(rbg, workloadconstants.ProgressingReasonUnclassifiedBlocker, "timeout"); reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
+		if reason, _ := retainRBGBlockerFamily(rbg, nil, workloadconstants.ProgressingReasonUnclassifiedBlocker, "timeout"); reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
 			t.Fatalf("stale blocker must not be retained, got %s", reason)
 		}
 		rbg.Status.Conditions = []metav1.Condition{
 			progressing(workloadconstants.ProgressingReasonRoleInstanceSetUpdated, rbg.Generation),
 		}
-		if reason, _ := retainRBGBlockerFamily(rbg, workloadconstants.ProgressingReasonUnclassifiedBlocker, "timeout"); reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
+		if reason, _ := retainRBGBlockerFamily(rbg, nil, workloadconstants.ProgressingReasonUnclassifiedBlocker, "timeout"); reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
 			t.Fatalf("activity reason must not be retained, got %s", reason)
 		}
 	})
@@ -372,7 +549,7 @@ func TestRetainRBGBlockerFamily(t *testing.T) {
 		rbg.Status.Conditions = []metav1.Condition{
 			progressing(workloadconstants.ProgressingReasonPermissionDenied, rbg.Generation),
 		}
-		if reason, _ := retainRBGBlockerFamily(rbg, workloadconstants.ProgressingReasonWaitingForQuota, "exceeded quota"); reason != workloadconstants.ProgressingReasonWaitingForQuota {
+		if reason, _ := retainRBGBlockerFamily(rbg, nil, workloadconstants.ProgressingReasonWaitingForQuota, "exceeded quota"); reason != workloadconstants.ProgressingReasonWaitingForQuota {
 			t.Fatalf("specific error must win, got %s", reason)
 		}
 	})
