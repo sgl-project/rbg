@@ -29,7 +29,7 @@ rejected in `0.9.0`.
 
 | Key | Description | Default |
 | --- | ----------- | ------- |
-| `controller.deprecatedWorkloadTypes.enabled` | Compatibility mode for existing deprecated workloads. Recommended: `false` for new installations and for clusters with no remaining deprecated roles; keep `true` only while roles still use a deprecated workload type. | `true` (see [choosing a value](#choosing-a-value)) |
+| `controller.deprecatedWorkloadTypes.enabled` | Compatibility mode for existing deprecated workloads. Recommended: `false` for new installations and for clusters where migration is complete — no deprecated roles remain, reconciliation has finished, and old RBG-owned workloads are gone; keep `true` only while migration and cleanup are still in progress. | `true` (see [choosing a value](#choosing-a-value)) |
 
 ### Choosing a value
 
@@ -39,16 +39,21 @@ Decide by whether the cluster still has deprecated roles:
 - **Upgraded cluster, migration complete**: set `false`. The inventory below is empty, reconciliation has finished, and no RBG-owned legacy workloads remain.
 - **Upgraded cluster with deprecated roles**: keep `true` until the migration is complete, then switch to `false`.
 
-Take the inventory to find remaining role specs (empty output means no role still selects a deprecated workload type):
+Take the inventory to find remaining role specs. The command must exit successfully; only then does empty output mean no role still selects a deprecated or unsupported legacy workload type:
 
 ```bash
-kubectl get rbg,rbgs -A -o json | jq -r '.items[] | . as $o
+inventory="$(kubectl get rbg,rbgs -A -o json)" &&
+printf '%s' "$inventory" | jq -r '.items[] | . as $o
   | (.spec.roles // .spec.groupTemplate.spec.roles // .spec.template.roles // [])[]
-  | ((.annotations // {})["rbg.workloads.x-k8s.io/role-workload-type"]
-     // (if .workload.kind then "\(.workload.apiVersion)/\(.workload.kind)" else "" end)) as $wt
-  | select($wt | test("/(Deployment|StatefulSet|LeaderWorkerSet)$"))
+  | (if .workload.kind then "\(.workload.apiVersion)/\(.workload.kind)"
+     else ((.annotations // {})["rbg.workloads.x-k8s.io/role-workload-type"] // "")
+     end) as $wt
+  | select(($wt | test("/(Deployment|StatefulSet|LeaderWorkerSet)$"))
+           or $wt == "workloads.x-k8s.io/v1alpha1/InstanceSet")
   | "\($o.kind) \($o.metadata.namespace)/\($o.metadata.name) role=\(.name) \($wt)"'
 ```
+
+Lines ending in `Deployment`, `StatefulSet`, or `LeaderWorkerSet` can remain during compatibility mode while they are migrated. A `workloads.x-k8s.io/v1alpha1/InstanceSet` line is different: the v1alpha2 controller has no InstanceSet reconciler, and the compatibility toggle does not preserve support for it. Migrate that role and its old InstanceSet workload to `RoleInstanceSet` before upgrading.
 
 While the value is `true`, the controller retains RBAC, watches, and orphan cleanup so existing roles can be reconciled and manually migrated (migrate `RoleBasedGroupSet` templates before their children). New deprecated workload uses are rejected during this transition, except children a RoleBasedGroupSet creates from its existing legacy template.
 
@@ -142,7 +147,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `controller.features.portAllocator.strategy` | Port allocation strategy (`random`) | `random` |
 | `controller.features.portAllocator.startPort` | Starting port of the allocatable range | `30000` |
 | `controller.features.portAllocator.portRange` | Size of the allocatable port range | `5000` |
-| `controller.deprecatedWorkloadTypes.enabled` | Compatibility for existing deprecated workloads — `false` recommended unless deprecated roles remain — see [Deprecated workload types](#deprecated-workload-types) | `true` |
+| `controller.deprecatedWorkloadTypes.enabled` | Compatibility for existing deprecated workloads — `false` recommended for new installations and completed migrations — see [Deprecated workload types](#deprecated-workload-types) | `true` |
 
 ### CRD Upgrader
 

@@ -98,7 +98,7 @@ Every `v1alpha1` request returns a deprecation warning; `v1alpha1` will be remov
 Choose by whether the cluster still has deprecated roles:
 
 - **New installation**: use `false`. This is the recommended starting point; only `RoleInstanceSet` is accepted, with the constraint enforced by the controller rather than by convention.
-- **Upgraded cluster with no remaining deprecated roles**: use `false`.
+- **Upgraded cluster with migration complete**: use `false` — no deprecated roles remain, reconciliation has finished, and old RBG-owned workloads are deleted.
 - **Upgraded cluster with deprecated roles**: keep `true` until those roles are migrated to `RoleInstanceSet`, reconciliation completes, and the old RBG-owned workloads are deleted; then switch to `false`. While `true`, the controller keeps RBAC, watches, and orphan cleanup for the deprecated types so the remaining roles stay reconcilable.
 
 > **v1alpha1 defaults to a deprecated workload type.** The `v1alpha1` schema defaults
