@@ -53,6 +53,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
+	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
 	"sigs.k8s.io/rbgs/pkg/scheduler/common"
 
@@ -2490,6 +2491,91 @@ func TestReconcileIncompatibleGangConfig(t *testing.T) {
 	require.Error(t, err)
 	assert.Zero(t, result.RequeueAfter)
 	assert.Contains(t, drainEvents(), "Warning FailedReconcilePodGroup podgroup apiserver hiccup")
+}
+
+// TestReconcileEngineRuntimeRenderEvents pins the KEP-531 validation layer
+// split for engine runtime render failures: a render failure surfaces as a
+// warning event plus the returned reconcile error, never as a status
+// condition — a status condition is future work. A successful render stays
+// silent.
+func TestReconcileEngineRuntimeRenderEvents(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(testScheme))
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].EngineRuntimes = []workloadsv1alpha2.EngineRuntime{
+		{ProfileName: "test-profile"},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(testScheme).
+		WithObjects(rbg).
+		WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroup{}).
+		Build()
+	recorder := record.NewFakeRecorder(100)
+
+	r := &RoleBasedGroupReconciler{
+		client:             fakeClient,
+		apiReader:          fakeClient,
+		scheme:             testScheme,
+		recorder:           recorder,
+		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
+		gangScheduler:      &stubGangScheduler{},
+	}
+	ctx := ctrl.LoggerInto(context.TODO(), zap.New().WithValues("env", "unit-test"))
+	request := reconcile.Request{NamespacedName: types.NamespacedName{Name: "test-rbg", Namespace: "default"}}
+
+	renderFailedCondition := func() *metav1.Condition {
+		got := &workloadsv1alpha2.RoleBasedGroup{}
+		require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, got))
+		for i := range got.Status.Conditions {
+			if got.Status.Conditions[i].Reason == discovery.ReasonEngineRuntimeRenderFailed {
+				return &got.Status.Conditions[i]
+			}
+		}
+		return nil
+	}
+	drainEvents := func() []string {
+		var events []string
+		for {
+			select {
+			case e := <-recorder.Events:
+				events = append(events, e)
+			default:
+				return events
+			}
+		}
+	}
+	hasEventContaining := func(substr string) bool {
+		for _, e := range drainEvents() {
+			if strings.Contains(e, substr) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// The referenced profile does not exist: the render fails, the reconcile
+	// requeues on the returned error, and the failure surfaces as a warning
+	// event — never as a status condition.
+	_, err := r.Reconcile(ctx, request)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "test-profile")
+	assert.Nil(t, renderFailedCondition(),
+		"render outcomes are warning events only, never conditions")
+	assert.True(t, hasEventContaining("Warning EngineRuntimeRenderFailed"),
+		"expected the render-failed warning event")
+
+	// The profile appears: the render succeeds and the failure goes quiet.
+	profile := &workloadsv1alpha2.ClusterEngineRuntimeProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-profile"},
+	}
+	require.NoError(t, fakeClient.Create(ctx, profile))
+	_, err = r.Reconcile(ctx, request)
+	require.NoError(t, err)
+	assert.False(t, hasEventContaining("Warning EngineRuntimeRenderFailed"),
+		"no render-failed event after a successful render")
 }
 
 // OrderScheduled must wait for every Pod in the current replica batch, including

@@ -71,6 +71,9 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	if err := ValidateRoleDependencies(rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	if err := validateRolesEngineRuntimes(rbg); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if v.EnableDeprecatedWorkloadTypes {
 		// A RoleBasedGroupSet controller replaces deleted children by re-creating
 		// them from its own template. Those children are not new user-facing uses:
@@ -129,7 +132,7 @@ func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 	}
 
 	owner := metav1.GetControllerOfNoCopy(rbg)
-	if owner == nil || owner.Kind != "RoleBasedGroupSet" || owner.APIVersion != GroupVersion.String() {
+	if owner == nil || owner.Kind != roleBasedGroupSetKind || owner.APIVersion != GroupVersion.String() {
 		return nil, nil
 	}
 
@@ -211,6 +214,9 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	if err := validateRolesEngineRuntimes(rbg); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoNewDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRBG.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
@@ -227,4 +233,18 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 // ValidateDelete just implements admission.CustomValidator. This verb is currently no-op.
 func (v *RoleBasedGroupValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
+}
+
+// validateRolesEngineRuntimes runs the shared engine-runtime validation
+// function over every role — the webhook call site; the render-time
+// resolver re-runs the same function per role as the authoritative gate
+// (KEP-531 Validation Layer Split).
+func validateRolesEngineRuntimes(rbg *RoleBasedGroup) error {
+	var allErrs []error
+	for i := range rbg.Spec.Roles {
+		if err := ValidateEngineRuntimes(&rbg.Spec.Roles[i]); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
 }

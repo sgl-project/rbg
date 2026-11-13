@@ -443,6 +443,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	cerpReconciler := workloadscontroller.NewClusterEngineRuntimeProfileReconciler(mgr)
+	if err = cerpReconciler.SetupWithManager(mgr, options); err != nil {
+		setupLog.Error(err, "unable to create controller", "controller", "ClusterEngineRuntimeProfile")
+		os.Exit(1)
+	}
+
 	setupLog.Info("register field index")
 	if err = fieldindex.RegisterFieldIndexes(mgr.GetCache()); err != nil {
 		setupLog.Error(err, "failed to register field index")
@@ -591,6 +597,9 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool,
 	}
 	if err = (&workloadsv1alpha2.CoordinatedPolicy{}).SetupWebhookWithManager(mgr, perRoleGangMinimumsSupported); err != nil {
 		return nil, fmt.Errorf("unable to create admission webhook for CoordinatedPolicy: %w", err)
+	}
+	if err = (&workloadsv1alpha2.ClusterEngineRuntimeProfile{}).SetupWebhookWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("unable to create admission webhook for ClusterEngineRuntimeProfile: %w", err)
 	}
 	if err = (&workloadsv1alpha2.RoleInstanceSet{}).SetupWebhookWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("unable to create admission webhook for RoleInstanceSet: %w", err)

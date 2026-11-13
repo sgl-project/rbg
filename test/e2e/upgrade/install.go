@@ -137,12 +137,19 @@ func installFromRelease(f *framework.Framework) {
 	// schema, so passing paths from the wrong layout here would be accepted as
 	// inert keys and would quietly install the chart's own default images instead
 	// of the pinned ones.
-	args := make([]string, 0, 8+len(fromProfile().installValues))
+	args := make([]string, 0, 10+len(fromProfile().installValues))
 	args = append(args,
 		"install", helmRelease(), chart,
 		"--create-namespace", "--namespace", controllerNamespace(),
 	)
 	args = append(args, fromProfile().installValues...)
+	// RBGS_IMAGE_PULL_SECRET must reach the from-install too, on the
+	// release's own value path: a cluster whose registry needs
+	// authentication would otherwise time out before the upgrade runs.
+	// --set-string keeps names that parse as scalars as strings.
+	if name := envOr("RBGS_IMAGE_PULL_SECRET", ""); name != "" {
+		args = append(args, "--set-string", fromProfile().pullSecretPath+"[0].name="+name)
+	}
 	args = append(args, "--wait", "--timeout", helmTimeout())
 
 	ginkgo.By("running helm " + strings.Join(args, " "))

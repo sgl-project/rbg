@@ -32,10 +32,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
@@ -44,6 +46,7 @@ type DeploymentReconciler struct {
 	scheme        *runtime.Scheme
 	client        client.Client
 	gangScheduler scheduler.GangScheduler
+	recorder      record.EventRecorder
 }
 
 var _ WorkloadReconciler = &DeploymentReconciler{}
@@ -55,6 +58,11 @@ func NewDeploymentReconciler(scheme *runtime.Scheme, client client.Client) *Depl
 // SetGangScheduler implements GangSchedulerSetter.
 func (r *DeploymentReconciler) SetGangScheduler(m scheduler.GangScheduler) {
 	r.gangScheduler = m
+}
+
+// SetRecorder implements RecorderSetter.
+func (r *DeploymentReconciler) SetRecorder(recorder record.EventRecorder) {
+	r.recorder = recorder
 }
 
 func (r *DeploymentReconciler) Validate(
@@ -140,6 +148,16 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 
 	podReconciler := NewPodReconciler(r.scheme, r.client)
 	podReconciler.SetGangScheduler(r.gangScheduler)
+	podReconciler.SetRecorder(r.recorder)
+	engineRuntimePlan, err := discovery.ResolveEngineRuntimes(ctx, r.client, r.recorder, rbg, role)
+	if err != nil {
+		return nil, err
+	}
+	// The legacy single-template render: the resolver collapses the
+	// vocabulary to the role-named position for Deployment/StatefulSet
+	// roles, so scenario-1 references key by role.Name whatever the
+	// role's pattern (KEP-531 compatibility — main's behavior verbatim).
+	podReconciler.SetEngineRuntimePlan(role.Name, engineRuntimePlan)
 	podTemplateApplyConfiguration, err := podReconciler.ConstructPodTemplateSpecApplyConfiguration(
 		ctx, rbg, role, maps.Clone(matchLabels),
 	)

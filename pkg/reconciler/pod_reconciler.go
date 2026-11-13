@@ -22,12 +22,14 @@ import (
 	"fmt"
 	"reflect"
 	"sort"
+	"strings"
 
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/kubernetes/pkg/api/legacyscheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -40,7 +42,6 @@ import (
 
 const (
 	configInjector    = "config"
-	sidecarInjector   = "sidecar"
 	commonEnvInjector = "common_env"
 	lwpEnvInjector    = "lwp_env"
 )
@@ -50,6 +51,19 @@ type PodReconciler struct {
 	client        client.Client
 	injectObjects []string
 	gangScheduler scheduler.GangScheduler
+	recorder      record.EventRecorder
+	// engineRuntimePlan is the role-level resolver output; engineRuntimePosition
+	// names which template this reconciler renders ("leader", "worker", a
+	// component name, or the role's own name under standalonePattern). Both
+	// are set together; a nil plan means the role renders no engine runtimes.
+	engineRuntimePosition string
+	engineRuntimePlan     *discovery.EngineRuntimePlan
+	// engineRuntimePositionGate arms the pattern-vocabulary check below. The
+	// KEP scopes it to the RoleInstanceSet path; the deprecated LWS and
+	// Deployment/StatefulSet renders keep main's behavior — an unmatched
+	// position silently skips the plan's content for that template, as it
+	// always did.
+	engineRuntimePositionGate bool
 }
 
 func NewPodReconciler(scheme *runtime.Scheme, client client.Client) *PodReconciler {
@@ -67,6 +81,38 @@ func (r *PodReconciler) SetInjectors(injectObjects []string) {
 // labels/annotations into pod templates.
 func (r *PodReconciler) SetGangScheduler(m scheduler.GangScheduler) {
 	r.gangScheduler = m
+}
+
+// SetRecorder configures the event recorder used to emit render-time warning
+// events (engine runtime render failures). Nil means no events.
+func (r *PodReconciler) SetRecorder(recorder record.EventRecorder) {
+	r.recorder = recorder
+}
+
+// SetEngineRuntimePlan wires the per-role resolver output for the one
+// position's template this reconciler renders. Call it before
+// ConstructPodTemplateSpecApplyConfiguration.
+func (r *PodReconciler) SetEngineRuntimePlan(position string, plan *discovery.EngineRuntimePlan) {
+	r.engineRuntimePosition = position
+	r.engineRuntimePlan = plan
+}
+
+// EnableEngineRuntimePositionGate arms the position-vocabulary check, the
+// RoleInstanceSet-path gate of KEP-531; deprecated render paths leave it off.
+func (r *PodReconciler) EnableEngineRuntimePositionGate() {
+	r.engineRuntimePositionGate = true
+}
+
+// failRender records a KEP-531 render failure the one way the contract
+// allows: a ReasonEngineRuntimeRenderFailed warning event on the RBG plus a
+// RenderError return, so the reconciler surfaces render outcomes as events,
+// never as status conditions (a condition is future work).
+func (r *PodReconciler) failRender(rbg *workloadsv1alpha2.RoleBasedGroup, err error) error {
+	if r.recorder != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, discovery.ReasonEngineRuntimeRenderFailed,
+			fmt.Sprintf("engine runtime render failed: %s", err.Error()))
+	}
+	return discovery.NewRenderError(err)
 }
 
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
@@ -91,20 +137,63 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	if podAnnotations == nil {
 		podAnnotations = make(map[string]string)
 	}
+	var roleContainerNames, roleInitContainerNames map[string]struct{}
 	// inject objects
 	injector := discovery.NewDefaultInjector(r.scheme, r.client)
 	if r.injectObjects == nil {
-		r.injectObjects = []string{configInjector, sidecarInjector, commonEnvInjector}
+		r.injectObjects = []string{configInjector, commonEnvInjector}
 	}
 	if utils.ContainsString(r.injectObjects, configInjector) {
 		if err := injector.InjectConfig(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject config: %w", err)
 		}
 	}
-	if utils.ContainsString(r.injectObjects, sidecarInjector) {
-		// The sidecar containers also need rbg-related envs, so inject them first
-		if err := injector.InjectSidecar(ctx, &podTemplateSpec, rbg, role); err != nil {
-			return nil, fmt.Errorf("failed to inject sidecar: %w", err)
+	if r.engineRuntimePlan != nil {
+		if r.engineRuntimePosition == "" {
+			return nil, fmt.Errorf("engine runtime plan is set but the template's position is not")
+		}
+		if r.engineRuntimePositionGate && !r.engineRuntimePlan.HasPosition(r.engineRuntimePosition) {
+			// The resolver keys the plan by the role pattern's position
+			// vocabulary; a position outside it means the role's pattern and
+			// the rendered workload type do not match. Rendering would
+			// silently drop all engine runtime content — fail loudly instead.
+			err := fmt.Errorf(
+				"engine runtime position %q is not defined by role %q's pattern (its positions are %v): "+
+					"the pattern and the rendered workload type do not match, and rendering would "+
+					"silently drop the role's engine runtime content",
+				r.engineRuntimePosition, role.Name, r.engineRuntimePlan.Vocabulary,
+			)
+			return nil, r.failRender(rbg, err)
+		}
+		// The role-declared container and init-container names, captured
+		// before the fragment pass, are the role-owned half of the D8
+		// targeting boundary for both patch passes: a role-declared name
+		// always resolves to the role-owned container, and the second half
+		// is the reference's own profile declarations. Role content flowing
+		// into a profile-declared container is the role author's explicit
+		// decision (KEP-531 D9) — no one-way guard exists.
+		roleContainerNames = make(map[string]struct{}, len(podTemplateSpec.Spec.Containers))
+		for _, c := range podTemplateSpec.Spec.Containers {
+			roleContainerNames[c.Name] = struct{}{}
+		}
+		roleInitContainerNames = make(map[string]struct{}, len(podTemplateSpec.Spec.InitContainers))
+		for _, c := range podTemplateSpec.Spec.InitContainers {
+			roleInitContainerNames[c.Name] = struct{}{}
+		}
+		// The fragment pass runs stages 1 and 2 interleaved per reference
+		// (pod-level append, then that reference's legacy containers
+		// env/args merge — main's behavior verbatim, including the plain
+		// append with no conflict check). A cross-profile container or
+		// volume name collision skips the later profile's entry and emits
+		// an EngineRuntimeNameCollision warning (KEP-531 Duplicate
+		// Delivery).
+		if err := discovery.InjectEngineRuntimeFragments(
+			ctx, &podTemplateSpec,
+			r.engineRuntimePlan.FragmentApplications[r.engineRuntimePosition],
+			r.engineRuntimePlan.RoleName,
+			r.recorder, rbg,
+		); err != nil {
+			return nil, r.failRender(rbg, fmt.Errorf("failed to inject engine runtime fragments: %w", err))
 		}
 	}
 	if utils.ContainsString(r.injectObjects, commonEnvInjector) {
@@ -115,6 +204,48 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	if utils.ContainsString(r.injectObjects, lwpEnvInjector) {
 		if err := injector.InjectLeaderWorkerSetEnv(ctx, &podTemplateSpec, rbg, role); err != nil {
 			return nil, fmt.Errorf("failed to inject env vars: %w", err)
+		}
+	}
+	if r.engineRuntimePlan != nil {
+		// KEP-531 render pipeline: the patch passes run after the full
+		// built-in injector chain, so a patch-appended env entry is never
+		// dropped or reordered by the built-in env dedup, and the patch
+		// duplicate-name check also sees the built-in RBG_* entries.
+		// The pass also records which containers took a positional
+		// (numeric-index) insert on the command root — the profile-side
+		// half of the D10 wrap-shadowing report.
+		profilePositionalInserts, err := discovery.ApplyEngineRuntimePatches(
+			ctx, &podTemplateSpec, roleContainerNames, roleInitContainerNames,
+			r.engineRuntimePlan.RoleName,
+			r.engineRuntimePlan.PatchApplications[r.engineRuntimePosition],
+			r.engineRuntimePlan, r.recorder, rbg,
+		)
+		if err != nil {
+			return nil, r.failRender(rbg, fmt.Errorf("failed to apply engine runtime patches: %w", err))
+		}
+		// KEP-531 application order: the role-side extraPatches pass
+		// applies last — what the role writes lands where it is written.
+		// Its report names the containers where the role's positional
+		// inserts landed ahead of the profile-side pass's.
+		shadowed, err := discovery.ApplyRoleEngineRuntimePatches(
+			ctx, &podTemplateSpec, roleContainerNames, roleInitContainerNames,
+			r.engineRuntimePlan.RolePatchApplications[r.engineRuntimePosition],
+			r.engineRuntimePlan.RoleName,
+			profilePositionalInserts,
+			r.recorder, rbg,
+		)
+		if err != nil {
+			return nil, r.failRender(rbg, fmt.Errorf("failed to apply role engine runtime patches: %w", err))
+		}
+		// KEP-531 D10, second clause: a role-side positional insert landing
+		// ahead of a profile-side one on the same container's command root
+		// shadows it — the role-side pass runs last, so its insert lands at
+		// the written index and shifts profile-side content at or after it.
+		// The render succeeded; the warning event exists so the shadowing
+		// is never silent, naming the container(s) for the role author to
+		// review.
+		if len(shadowed) > 0 && r.recorder != nil {
+			r.emitWrapShadowedWarning(rbg, role.Name, shadowed)
 		}
 	}
 
@@ -154,6 +285,31 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 
 	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)
 	return podTemplateApplyConfiguration, nil
+}
+
+// emitWrapShadowedWarning emits the KEP-531 D10 second-clause event: a
+// role-side positional insert landing ahead of a profile-side one on the same
+// container's command root shadows it — the role-side pass runs last, so its
+// insert lands at the written index and shifts profile-side content at or
+// after it. The render succeeded; the warning exists so the shadowing is
+// never silent, naming the container(s) for the role author to review.
+func (r *PodReconciler) emitWrapShadowedWarning(
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	roleName string,
+	shadowed map[string]struct{},
+) {
+	names := make([]string, 0, len(shadowed))
+	for name := range shadowed {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	r.recorder.Event(rbg, corev1.EventTypeWarning, discovery.ReasonEngineRuntimeWrapShadowed,
+		fmt.Sprintf(
+			"role %q: role-side command inserts landed ahead of profile-side ones on container(s) %s; "+
+				"the render succeeded, but the role-side patch pass runs last (KEP-531 D10), so its index "+
+				"insert shifts profile-side content at or after it — verify the profile's command wrap "+
+				"still lands as intended",
+			roleName, strings.Join(names, ", ")))
 }
 
 func podTemplateSpecEqual(template1, template2 corev1.PodTemplateSpec) (bool, error) {
