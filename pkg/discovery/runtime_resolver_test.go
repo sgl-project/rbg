@@ -785,3 +785,54 @@ func TestResolveEngineRuntimesLWSNonLWPPattern(t *testing.T) {
 		assert.Empty(t, plan.FragmentApplications[string(constants.WorkerComponentType)])
 	})
 }
+
+// TestResolveEngineRuntimesConsentOnlyTargetValidation pins the consent-only
+// half of the target boundary: every listed targetContainers entry is
+// validated at resolve time even when no patch will fire for it, so a name
+// no role template or component template declares — and the reference's own
+// profile does not declare either — is a render error, not a silent pass.
+func TestResolveEngineRuntimesConsentOnlyTargetValidation(t *testing.T) {
+	profile := makeProfile("ik", nil)
+
+	t.Run("a consent-only entry naming an unknown container is a render error", func(t *testing.T) {
+		// no containerPatches and no extraPatches: nothing would ever
+		// resolve the name, so the resolve-time check is its only guard
+		role := leaderWorkerRole([]workloadsv1alpha2.EngineRuntime{{
+			ProfileName: "ik", Component: string(constants.LeaderComponentType),
+			TargetContainers: []workloadsv1alpha2.EngineRuntimeTargetContainer{{Name: "typo-container"}},
+		}})
+		plan, recorder, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
+		require.Error(t, err)
+		assert.True(t, isRenderError(err))
+		assert.Contains(t, err.Error(), "typo-container")
+		assert.Equal(t, 1, countEventsContaining(t, recorder, ReasonEngineRuntimeRenderFailed))
+		// nothing is applied for the failed reference
+		assert.Empty(t, plan.PatchApplications[string(constants.LeaderComponentType)])
+		assert.Empty(t, plan.RolePatchApplications[string(constants.LeaderComponentType)])
+	})
+
+	t.Run("a consent-only entry naming a role-declared container passes", func(t *testing.T) {
+		role := leaderWorkerRole([]workloadsv1alpha2.EngineRuntime{{
+			ProfileName: "ik", Component: string(constants.LeaderComponentType),
+			TargetContainers: []workloadsv1alpha2.EngineRuntimeTargetContainer{{Name: "engine"}},
+		}})
+		plan, recorder, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
+		require.NoError(t, err)
+		assert.Empty(t, collectEvents(t, recorder))
+		assert.Empty(t, plan.PatchApplications[string(constants.LeaderComponentType)])
+		assert.Empty(t, plan.RolePatchApplications[string(constants.LeaderComponentType)])
+	})
+
+	t.Run("a consent-only entry naming a profile-declared container passes", func(t *testing.T) {
+		sidecar := makeProfile("ik", nil)
+		sidecar.Spec.Containers = []corev1.Container{{Name: "profile-sidecar", Image: "sidecar:latest"}}
+		role := leaderWorkerRole([]workloadsv1alpha2.EngineRuntime{{
+			ProfileName: "ik", Component: string(constants.LeaderComponentType),
+			TargetContainers: []workloadsv1alpha2.EngineRuntimeTargetContainer{{Name: "profile-sidecar"}},
+		}})
+		plan, recorder, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{sidecar}, role)
+		require.NoError(t, err)
+		assert.Empty(t, plan.PatchApplications[string(constants.LeaderComponentType)])
+		assert.Empty(t, collectEvents(t, recorder))
+	})
+}

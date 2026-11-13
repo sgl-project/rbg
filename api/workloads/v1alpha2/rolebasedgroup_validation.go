@@ -315,9 +315,17 @@ func validateEngineRuntimeTargetContainersPresence(role *RoleSpec) []error {
 // all lacking component and carrying no targetContainers — which keeps
 // main's duplicate-reference semantics verbatim.
 func validateEngineRuntimeScopeOwnership(role *RoleSpec) []error {
+	// The list is uncapped by API contract, so a pathological object could
+	// otherwise allocate an error per overlapping pair (O(n^2)); the cap
+	// keeps admission and the render-time re-run bounded — every overlap
+	// is rejected either way, only the first few carry a message.
+	const maxScopeOwnershipErrors = 20
 	var allErrs []error
 	for i := range role.EngineRuntimes {
 		for j := i + 1; j < len(role.EngineRuntimes); j++ {
+			if len(allErrs) >= maxScopeOwnershipErrors {
+				return allErrs
+			}
 			a, b := &role.EngineRuntimes[i], &role.EngineRuntimes[j]
 			if a.ProfileName != b.ProfileName {
 				continue

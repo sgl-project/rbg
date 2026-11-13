@@ -261,6 +261,44 @@ func ResolveEngineRuntimes(
 			for i, tc := range runtime.TargetContainers {
 				targets[i] = tc.Name
 			}
+			// Every listed target is validated even when no patch will fire
+			// for it (consent-only entries): a name no role template and no
+			// component template declares, nor this reference's profile,
+			// would otherwise render successfully despite the documented
+			// target boundary — the render pass only resolves names it has
+			// patches to land. Per-position presence stays with the render
+			// pass: a name one component's template declares may still be
+			// missing from the addressed position, which is the render
+			// error the scoping suite pins.
+			roleDeclaredNames := map[string]struct{}{}
+			collectTemplateNames := func(tmpl *v1.PodTemplateSpec) {
+				if tmpl == nil {
+					return
+				}
+				for _, c := range tmpl.Spec.Containers {
+					roleDeclaredNames[c.Name] = struct{}{}
+				}
+				for _, c := range tmpl.Spec.InitContainers {
+					roleDeclaredNames[c.Name] = struct{}{}
+				}
+			}
+			collectTemplateNames(role.GetTemplate())
+			if ccp := role.GetCustomComponentsPattern(); ccp != nil {
+				for i := range ccp.Components {
+					collectTemplateNames(&ccp.Components[i].Template)
+				}
+			}
+			for _, tc := range runtime.TargetContainers {
+				if _, ok := declared[tc.Name]; ok {
+					continue
+				}
+				if _, ok := roleDeclaredNames[tc.Name]; ok {
+					continue
+				}
+				return plan, failRef(ctx, recorder, rbg, runtime, fmt.Errorf(
+					"role %q reference %q targetContainers[%q]: no role template or component template declares a container with that name, and profile %q does not declare it either",
+					role.Name, runtime.ProfileName, tc.Name, runtime.ProfileName))
+			}
 			if len(profile.Spec.ContainerPatches) > 0 {
 				plan.PatchApplications[patchPosition] = append(
 					plan.PatchApplications[patchPosition],

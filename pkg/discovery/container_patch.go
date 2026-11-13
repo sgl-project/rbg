@@ -842,7 +842,13 @@ func applyEnvPatch(
 				source.describe(), idx, rule.Path, env.Name, pc.containerName,
 			)
 		}
-		pc.appendedEnv.record(pc.containerName, env.Name)
+		// Only a genuinely created name is recorded: a head-insert onto a
+		// role-owned name is the sanctioned default, not a creation, so it
+		// must not grant later profiles a free append onto that name —
+		// profile content never wins a same-name contest with role content.
+		if !hasEnvName(container.Env, env.Name) {
+			pc.appendedEnv.record(pc.containerName, env.Name)
+		}
 	}
 	// The role side needs no same-name check: role patches land last, so
 	// a same-named append is the override gesture — the positional win
