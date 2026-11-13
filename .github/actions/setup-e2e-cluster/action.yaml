@@ -58,7 +58,10 @@ inputs:
     required: false
     default: v0.32.7
   image_registry:
-    description: Registry used to pull e2e workload images (docker.io or aliyun)
+    description: >-
+      Registry used to pull e2e workload images (docker.io or aliyun). It also
+      selects the e2e default image, which is exported as E2E_DEFAULT_IMAGE for
+      the later steps of the job.
     required: false
     default: docker.io
 

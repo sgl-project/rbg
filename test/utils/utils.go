@@ -18,6 +18,7 @@ package utils
 
 import (
 	"context"
+	"os"
 	"time"
 
 	"github.com/onsi/gomega"
@@ -35,9 +36,21 @@ const (
 	Timeout  = 150 * time.Second
 	Interval = time.Millisecond * 250
 
-	DefaultImage                    = "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
 	DefaultEngineRuntimeProfileName = "patio-runtime"
 )
+
+// DefaultImage is the main container image of the e2e workloads. It defaults to
+// docker.io nginx:latest and can be overridden with E2E_DEFAULT_IMAGE, for
+// example to use a registry mirror. hack/preload-e2e-images.sh preloads the
+// image into the Kind cluster and exports E2E_DEFAULT_IMAGE for its registry mode.
+var DefaultImage = defaultImage()
+
+func defaultImage() string {
+	if image := os.Getenv("E2E_DEFAULT_IMAGE"); image != "" {
+		return image
+	}
+	return "nginx:latest"
+}
 
 func CreatePatioRuntime(ctx context.Context, rclient client.Client) error {
 	runtime := workloadsv1alpha1.ClusterEngineRuntimeProfile{

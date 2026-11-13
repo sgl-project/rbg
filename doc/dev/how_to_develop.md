@@ -234,6 +234,16 @@ Execute following command from project root to run integration tests:
 make test-e2e
 ```
 
+The e2e specs expect their workload images to be present in the Kind cluster. Preload them with:
+
+```shell
+# E2E_IMAGE_REGISTRY=aliyun pulls from Aliyun mirrors instead of docker.io (e.g. in mainland China).
+KIND_CLUSTER_NAME=<kind-cluster-name> E2E_IMAGE_REGISTRY=docker.io hack/preload-e2e-images.sh
+```
+
+Most e2e pods run `nginx:latest` by default. Set `E2E_DEFAULT_IMAGE` to use another image, such as the
+mirror printed by the preload script in aliyun mode, and make sure that image is available in the cluster.
+
 ### Running RGB Controller Locally
 
 The RGB controller supports local operation or debugging. Before running the controller locally, it is necessary to configure kubeconfig in advance in the local environment (configured through the `KUBECONFIG` environment variable or through the `$HOME/.kube/config` file) and be able to access a Kubernetes cluster normally.
