@@ -68,7 +68,7 @@ scheduler.
 | `rbg.workloads.x-k8s.io/role-size` | The size of the role (managed by controller). |
 | `rbg.workloads.x-k8s.io/role-disable-exclusive` | Set to `"true"` to skip exclusive-topology affinity injection for that role. |
 | `rbg.workloads.x-k8s.io/excluded-ordinals` | Optional Stateful RIS scaling reference: prefer these ordinals on scale-down and skip them on scale-up. [Usage and scope](../features/selective-scale-down.md). |
-| `rbg.workloads.x-k8s.io/role-workload-type` | Deprecated workload-type compatibility annotation. New uses are rejected in 0.9.0; review and migrate it manually using the [v1alpha1 migration guide](../migration-v1alpha1-to-v2.md). |
+| `rbg.workloads.x-k8s.io/role-workload-type` | Deprecated workload-type compatibility annotation. New uses are rejected in 0.9.0; review and migrate it manually using the [v1alpha1 migration guide](../migration-v1alpha1-to-v1alpha2.md). |
 
 ### RoleInstanceSet Internal Annotations
 

@@ -53,7 +53,7 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
   | "\($o.kind) \($o.metadata.namespace)/\($o.metadata.name) role=\(.name) \($wt)"'
 ```
 
-Lines ending in `Deployment`, `StatefulSet`, or `LeaderWorkerSet` can remain during compatibility mode while they are migrated. A `workloads.x-k8s.io/v1alpha1/InstanceSet` line is different: InstanceSet roles have not been reconciled since v0.7.0 in either mode, and they stop the whole RoleBasedGroup from reconciling. Migrate the role to `RoleInstanceSet` (when coming from v0.6.0 or earlier, right after the upgrade, since RoleInstanceSet first ships in v0.7.0), then delete the old InstanceSet yourself; orphan cleanup does not cover it. See the [migration guide](../../../doc/migration-v1alpha1-to-v2.md) for the full procedure.
+Lines ending in `Deployment`, `StatefulSet`, or `LeaderWorkerSet` can remain during compatibility mode while they are migrated. A `workloads.x-k8s.io/v1alpha1/InstanceSet` line is different: InstanceSet roles have not been reconciled since v0.7.0 in either mode, and they stop the whole RoleBasedGroup from reconciling. Migrate the role to `RoleInstanceSet` (when coming from v0.6.0 or earlier, right after the upgrade, since RoleInstanceSet first ships in v0.7.0), then delete the old InstanceSet yourself; orphan cleanup does not cover it. See the [migration guide](../../../doc/migration-v1alpha1-to-v1alpha2.md) for the full procedure.
 
 While the value is `true`, the controller retains RBAC, watches, and orphan cleanup so existing roles can be reconciled and manually migrated (migrate `RoleBasedGroupSet` templates before their children). New deprecated workload uses are rejected during this transition, except children a RoleBasedGroupSet creates from its existing legacy template.
 
@@ -83,7 +83,7 @@ Rejected writes include:
 Every `v1alpha1` request returns a CRD deprecation warning; `v1alpha1` will be removed in
 `0.10.0`.
 
-See the [manual v1alpha1-to-v1alpha2 migration guide](../../../doc/migration-v1alpha1-to-v2.md) for
+See the [manual v1alpha1-to-v1alpha2 migration guide](../../../doc/migration-v1alpha1-to-v1alpha2.md) for
 role inventory, per-role rollout, rollback procedure, InstanceSet cleanup, and storage-version
 migration.
 
@@ -179,7 +179,7 @@ kubectl delete -f config/crd/bases/
 `helm upgrade` is supported. Review [Deprecated workload types](#deprecated-workload-types) and take
 the inventory before upgrading: if it is empty and the old RBG-owned workloads are gone, set
 `controller.deprecatedWorkloadTypes.enabled=false` with the upgrade; otherwise keep `true`, migrate
-the listed roles using the [migration guide](../../../doc/migration-v1alpha1-to-v2.md), and switch
+the listed roles using the [migration guide](../../../doc/migration-v1alpha1-to-v1alpha2.md), and switch
 to `false` only after reconciliation has completed and the legacy workloads have been deleted.
 
 ### Breaking change: values regrouped in chart v0.8.0

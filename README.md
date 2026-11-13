@@ -101,7 +101,7 @@ Choose by whether the cluster still has deprecated roles:
 - **Upgraded cluster with migration complete**: use `false` — no deprecated roles remain, reconciliation has finished, and old RBG-owned workloads are deleted.
 - **Upgraded cluster with deprecated roles**: keep `true` until those roles are migrated to `RoleInstanceSet`, reconciliation completes, and the old RBG-owned workloads are deleted; then switch to `false`. While `true`, the controller keeps RBAC, watches, and orphan cleanup for the deprecated types so the remaining roles stay reconcilable.
 
-See the [manual v1alpha1-to-v1alpha2 migration guide](doc/migration-v1alpha1-to-v2.md) for role inventory, per-role rollout, RoleBasedGroupSet ordering, rollback, InstanceSet cleanup, and storage-version migration.
+See the [manual v1alpha1-to-v1alpha2 migration guide](doc/migration-v1alpha1-to-v1alpha2.md) for role inventory, per-role rollout, RoleBasedGroupSet ordering, rollback, InstanceSet cleanup, and storage-version migration.
 
 > **v1alpha1 defaults to a deprecated workload type.** The `v1alpha1` schema defaults
 > `spec.roles[].workload` to `apps/v1 StatefulSet`, so a new `v1alpha1` object that never mentions
