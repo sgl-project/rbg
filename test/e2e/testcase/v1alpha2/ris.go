@@ -46,7 +46,7 @@ func buildPodTemplateWithStartupDelay(delaySeconds int32, failureThreshold int32
 			Containers: []corev1.Container{
 				{
 					Name:            "nginx",
-					Image:           "nginx:latest",
+					Image:           utils.DefaultImage,
 					ImagePullPolicy: corev1.PullIfNotPresent,
 					StartupProbe: &corev1.Probe{
 						InitialDelaySeconds: delaySeconds,

@@ -878,6 +878,12 @@ func TestRoleInstanceSetReconciler_RestartPolicyUpgrade(t *testing.T) {
 	}
 }
 
+// restartPolicyUpgradeFixtureImage is the container image recorded in the
+// restart-policy-upgrade fixtures (the test wrappers' default when they were
+// generated). It is pinned so the fixtures keep matching whatever
+// utils.DefaultImage / E2E_DEFAULT_IMAGE resolve to.
+const restartPolicyUpgradeFixtureImage = "registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest"
+
 func restartPolicyUpgradeRole(customComponents, backoff bool) workloadsv1alpha2.RoleSpec {
 	builder := wrappersv2.BuildLeaderWorkerRole("inference")
 	if backoff {
@@ -887,6 +893,9 @@ func restartPolicyUpgradeRole(customComponents, backoff bool) workloadsv1alpha2.
 		builder = builder.WithLegacyRestartPolicy(workloadsv1alpha2.RecreateRoleInstanceOnPodRestart)
 	}
 	role := builder.Obj()
+	for i := range role.LeaderWorkerPattern.Template.Spec.Containers {
+		role.LeaderWorkerPattern.Template.Spec.Containers[i].Image = restartPolicyUpgradeFixtureImage
+	}
 	if customComponents {
 		pattern := role.LeaderWorkerPattern
 		role.CustomComponentsPattern = &workloadsv1alpha2.CustomComponentsPattern{

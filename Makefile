@@ -111,6 +111,8 @@ test-e2e-matrix-coverage: ## Verify that the E2E matrix slices cover the legacy 
 E2E_LABEL_FILTER ?= !volcano && !scheduler-plugins
 E2E_TIMEOUT ?= 45m
 E2E_FAIL_FAST ?= true
+# The e2e pods run nginx:latest unless E2E_DEFAULT_IMAGE is set; hack/preload-e2e-images.sh
+# loads the e2e images into Kind and prints the E2E_DEFAULT_IMAGE to use for its registry mode.
 
 .PHONY: test-e2e
 test-e2e:  ## Run the full default-scheduler e2e suite by default; override E2E_LABEL_FILTER for focused runs.
