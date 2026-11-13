@@ -452,6 +452,10 @@ type RoleBasedGroupStatus struct {
 
 	// Status of individual roles
 	RoleStatuses []RoleStatus `json:"roleStatuses"`
+
+	// ObservedRolloutRequest identifies the last completed controller-requested rollout.
+	// +optional
+	ObservedRolloutRequest string `json:"observedRolloutRequest,omitempty"`
 }
 
 // RoleStatus shows the current state of a specific role

@@ -29,6 +29,8 @@ import (
 // before copying the template into child RBGs, but that only heals the children:
 // this defaulter heals the stored template itself, so the set stays writable and
 // the template stops diverging from the normalized children it produces.
+// It also defaults an empty group-set strategy type without enabling rolling updates
+// for sets whose rolloutStrategy is unset.
 //
 // +kubebuilder:object:generate=false
 type RoleBasedGroupSetDefaulter struct{}
@@ -40,6 +42,9 @@ func (d *RoleBasedGroupSetDefaulter) Default(_ context.Context, obj runtime.Obje
 	rbgset, ok := obj.(*RoleBasedGroupSet)
 	if !ok {
 		return fmt.Errorf("expected *RoleBasedGroupSet but got %T", obj)
+	}
+	if strategy := rbgset.Spec.RolloutStrategy; strategy != nil && strategy.Type == "" {
+		strategy.Type = InPlaceUpdateStrategyType
 	}
 	for i := range rbgset.Spec.GroupTemplate.Spec.Roles {
 		ru := rbgset.Spec.GroupTemplate.Spec.Roles[i].RolloutStrategy

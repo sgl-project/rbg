@@ -18,10 +18,13 @@ package workloads
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -548,6 +551,66 @@ func TestRoleBasedGroupSetReconciler_needsUpdate(t *testing.T) {
 	}
 }
 
+func TestRoleBasedGroupSetReconciler_NeedsUpdateEmptyRoleTemplates(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		template string
+	}{
+		{name: "env", template: `{"spec":{"containers":[{"name":"worker","image":"test:v1","env":[]}]}}`},
+		{name: "nodeSelector", template: `{"spec":{"nodeSelector":{}}}`},
+		{name: "tolerations", template: `{"spec":{"tolerations":[]}}`},
+		{name: "labels", template: `{"metadata":{"labels":{}}}`},
+		{name: "annotations", template: `{"metadata":{"annotations":{}}}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			set := &workloadsv1alpha2.RoleBasedGroupSet{}
+			set.Spec.GroupTemplate.Spec.RoleTemplates = []workloadsv1alpha2.RoleTemplate{{
+				Name: "worker",
+				Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{Name: "worker", Image: "test:v1"}},
+				}},
+			}}
+			require.NoError(t, json.Unmarshal([]byte(tt.template), &set.Spec.GroupTemplate.Spec.RoleTemplates[0].Template))
+			original := set.DeepCopy()
+			data, err := json.Marshal(newRBGForSet(set, 0))
+			require.NoError(t, err)
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			require.NoError(t, json.Unmarshal(data, child))
+			require.NotEqual(t, set.Spec.GroupTemplate.Spec.RoleTemplates, child.Spec.RoleTemplates,
+				"the JSON round trip must omit the explicit empty collection")
+
+			r := &RoleBasedGroupSetReconciler{}
+			assert.False(t, r.needsUpdate(set, child))
+			assert.Equal(t, original, set, "comparison must not mutate the template")
+			child.Spec.RoleTemplates[0].Template.Spec.Containers[0].Image = "test:v2"
+			assert.True(t, r.needsUpdate(set, child), "real template changes must still require an update")
+		})
+	}
+}
+
+func TestRoleBasedGroupSetReconciler_NeedsUpdateRoleTemplateOrder(t *testing.T) {
+	set := &workloadsv1alpha2.RoleBasedGroupSet{}
+	set.Spec.GroupTemplate.Spec.RoleTemplates = []workloadsv1alpha2.RoleTemplate{
+		{Name: "prefill", Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "worker", Image: "test:v1"}},
+		}}},
+		{Name: "decode", Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+			Containers: []corev1.Container{{Name: "worker", Image: "test:v2"}},
+		}}},
+	}
+	child := newRBGForSet(set, 0)
+	child.Spec.RoleTemplates[0], child.Spec.RoleTemplates[1] = child.Spec.RoleTemplates[1], child.Spec.RoleTemplates[0]
+	setBefore, childBefore := set.DeepCopy(), child.DeepCopy()
+
+	r := &RoleBasedGroupSetReconciler{}
+	assert.False(t, r.needsUpdate(set, child), "template order must not read as a change")
+	assert.Equal(t, setBefore, set, "comparison must not reorder the template")
+	assert.Equal(t, childBefore, child, "comparison must not reorder the child")
+
+	child.Spec.RoleTemplates[0].Template.Spec.Containers[0].Image = "test:v3"
+	assert.True(t, r.needsUpdate(set, child), "real template changes must still require an update")
+}
+
 // TestRoleBasedGroupSetReconciler_needsTemplateAnnotationUpdate tests the needsTemplateAnnotationUpdate method.
 func TestRoleBasedGroupSetReconciler_needsTemplateAnnotationUpdate(t *testing.T) {
 	tests := []struct {
@@ -622,6 +685,20 @@ func TestRoleBasedGroupSetReconciler_needsTemplateAnnotationUpdate(t *testing.T)
 				},
 			},
 			rbg:            &workloadsv1alpha2.RoleBasedGroup{},
+			expectedUpdate: false,
+		},
+		{
+			name: "RBG carries a controller-owned annotation the template lacks",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{constants.DiscoveryConfigModeAnnotationKey: "refine"},
+				},
+			},
 			expectedUpdate: false,
 		},
 	}
@@ -1082,6 +1159,60 @@ func TestSyncRBGMetadata(t *testing.T) {
 				"env":                           "prod",
 			},
 			expectedAnnotations: nil,
+		},
+		{
+			name: "Preserves controller-owned annotations while clearing the rest",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Annotations: map[string]string{"app.io/env": "prod"},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{
+						constants.DiscoveryConfigModeAnnotationKey: "refine",
+						"stale-annotation":                         "value",
+					},
+				},
+			},
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "0",
+			},
+			expectedAnnotations: map[string]string{
+				constants.DiscoveryConfigModeAnnotationKey: "refine",
+				"app.io/env": "prod",
+			},
+		},
+		{
+			name: "Keeps a controller-owned annotation when the template has none",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{constants.DiscoveryConfigModeAnnotationKey: "legacy"},
+				},
+			},
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "0",
+			},
+			expectedAnnotations: map[string]string{constants.DiscoveryConfigModeAnnotationKey: "legacy"},
 		},
 	}
 
