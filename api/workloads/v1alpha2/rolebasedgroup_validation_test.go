@@ -18,7 +18,9 @@ package v1alpha2
 
 import (
 	"context"
+	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -1315,6 +1317,31 @@ func TestValidateEngineRuntimesOverlapErrorCap(t *testing.T) {
 	aggregate, ok := err.(utilerrors.Aggregate)
 	require.True(t, ok, "expected an aggregate error")
 	assert.LessOrEqual(t, len(aggregate.Errors()), 20)
+}
+
+// TestValidateEngineRuntimesScopeOwnershipLinear pins the complexity of the
+// D6 check: references are grouped by profileName and indexed per covered
+// component, so an uncapped list with no same-profile overlap validates in
+// linear time. A pairwise scan walks n^2/2 comparisons before concluding
+// nothing overlaps — ~5e9 for the object below — which this test turns into
+// a failure. The overlap semantics themselves are pinned by the D6 table
+// above and the error-cap test.
+func TestValidateEngineRuntimesScopeOwnershipLinear(t *testing.T) {
+	role := &RoleSpec{
+		Name:    "r",
+		Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+	}
+	const n = 100_000
+	runtimes := make([]EngineRuntime, n)
+	for i := range runtimes {
+		runtimes[i] = EngineRuntime{ProfileName: fmt.Sprintf("p-%d", i)}
+	}
+	role.EngineRuntimes = runtimes
+
+	start := time.Now()
+	require.NoError(t, ValidateEngineRuntimes(role))
+	assert.Less(t, time.Since(start), 2*time.Second,
+		"the scope-ownership check must stay linear in the engineRuntimes list")
 }
 
 // TestRoleBasedGroupValidator_EngineRuntimes pins the webhook call sites:

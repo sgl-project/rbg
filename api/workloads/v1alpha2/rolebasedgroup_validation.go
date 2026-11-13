@@ -314,36 +314,88 @@ func validateEngineRuntimeTargetContainersPresence(role *RoleSpec) []error {
 // error, except the pure compatibility shape — any number of references
 // all lacking component and carrying no targetContainers — which keeps
 // main's duplicate-reference semantics verbatim.
+//
+// The engineRuntimes list is uncapped by API contract, so the check is
+// indexed instead of pairwise: references are grouped by profileName and
+// recorded under each component of their effective set, and a component
+// recorded by two references is the overlap. That keeps admission and
+// the render-time re-run linear in the list (a pairwise scan pays n^2/2
+// comparisons even when nothing overlaps). For every admissible shape the
+// reported pairs match the pairwise scan's — a non-compat reference
+// covers one component, or the pattern's default set with a singleton —
+// the one divergence being references that default with targetContainers
+// under customComponentsPattern, which cover the whole default set and
+// would report one error per shared component; that shape is rejected by
+// the presence rule in the same validation pass. Only the first
+// maxScopeOwnershipErrors overlaps carry a message.
 func validateEngineRuntimeScopeOwnership(role *RoleSpec) []error {
-	// The list is uncapped by API contract, so a pathological object could
-	// otherwise allocate an error per overlapping pair (O(n^2)); the cap
-	// keeps admission and the render-time re-run bounded — every overlap
-	// is rejected either way, only the first few carry a message.
 	const maxScopeOwnershipErrors = 20
-	var allErrs []error
+
+	// scopeCover marks one reference's coverage of one component; compat
+	// flags the pure compatibility shape, whose pairs are exempt.
+	type scopeCover struct {
+		index  int
+		compat bool
+	}
+	coverage := make(map[string]map[string][]scopeCover)
 	for i := range role.EngineRuntimes {
-		for j := i + 1; j < len(role.EngineRuntimes); j++ {
-			if len(allErrs) >= maxScopeOwnershipErrors {
-				return allErrs
-			}
-			a, b := &role.EngineRuntimes[i], &role.EngineRuntimes[j]
-			if a.ProfileName != b.ProfileName {
+		er := &role.EngineRuntimes[i]
+		components, ok := coverage[er.ProfileName]
+		if !ok {
+			components = make(map[string][]scopeCover)
+			coverage[er.ProfileName] = components
+		}
+		compat := er.Component == "" && len(er.TargetContainers) == 0
+		for component := range engineRuntimeEffectiveComponents(role, er) {
+			components[component] = append(components[component], scopeCover{index: i, compat: compat})
+		}
+	}
+
+	var allErrs []error
+	for profileName, components := range coverage {
+		for component, covers := range components {
+			if len(covers) < 2 {
 				continue
 			}
-			if a.Component == "" && b.Component == "" &&
-				len(a.TargetContainers) == 0 && len(b.TargetContainers) == 0 {
+			// Every pair mixing in a non-compat reference overlaps on this
+			// component, so split first: an all-compat list can never error
+			// and is skipped without walking its pairs.
+			nonCompat := make([]int, 0, len(covers))
+			compatRefs := make([]int, 0, len(covers))
+			for _, c := range covers {
+				if c.compat {
+					compatRefs = append(compatRefs, c.index)
+				} else {
+					nonCompat = append(nonCompat, c.index)
+				}
+			}
+			if len(nonCompat) == 0 {
 				continue
 			}
-			aSet := engineRuntimeEffectiveComponents(role, a)
-			bSet := engineRuntimeEffectiveComponents(role, b)
-			for component := range aSet {
-				if _, ok := bSet[component]; !ok {
-					continue
+			report := func(i, j int) {
+				if len(allErrs) >= maxScopeOwnershipErrors {
+					return
+				}
+				if i > j {
+					i, j = j, i
 				}
 				allErrs = append(allErrs, fmt.Errorf(
 					"role %q reference %q: component %q is covered by both engineRuntimes[%d] and engineRuntimes[%d] — same-profile references must not have overlapping effective component sets",
-					role.Name, a.ProfileName, component, i, j))
-				break
+					role.Name, profileName, component, i, j))
+			}
+			for a := 0; a < len(nonCompat); a++ {
+				for b := a + 1; b < len(nonCompat); b++ {
+					if len(allErrs) >= maxScopeOwnershipErrors {
+						return allErrs
+					}
+					report(nonCompat[a], nonCompat[b])
+				}
+				for _, compatIndex := range compatRefs {
+					if len(allErrs) >= maxScopeOwnershipErrors {
+						return allErrs
+					}
+					report(nonCompat[a], compatIndex)
+				}
 			}
 		}
 	}

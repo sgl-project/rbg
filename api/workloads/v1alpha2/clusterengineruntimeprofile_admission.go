@@ -50,7 +50,10 @@ type ClusterEngineRuntimeProfileValidator struct {
 
 var _ admission.CustomValidator = &ClusterEngineRuntimeProfileValidator{}
 
-// ValidateCreate lets profile creation through unrestricted.
+// ValidateCreate lets profile creation through unrestricted. The webhook
+// registration intercepts UPDATE and DELETE only (KEP-531), so this method
+// exists to satisfy the admission.CustomValidator interface and is never
+// routed a CREATE request.
 func (v *ClusterEngineRuntimeProfileValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
 	profile, ok := obj.(*ClusterEngineRuntimeProfile)
 	if !ok {

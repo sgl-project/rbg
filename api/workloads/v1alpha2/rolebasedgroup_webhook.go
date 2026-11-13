@@ -57,7 +57,11 @@ func (r *CoordinatedPolicy) SetupWebhookWithManager(mgr ctrl.Manager, perRoleGan
 // ClusterEngineRuntimeProfile with the Manager. The validator reads
 // references through the uncached API reader so a reference the
 // informer cache has not caught up with still freezes the profile.
-// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-clusterengineruntimeprofile,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=create;update;delete,versions=v1alpha2,name=vclusterengineruntimeprofile.kb.io,admissionReviewVersions=v1
+// CREATE is deliberately not intercepted (KEP-531: create stays
+// unrestricted): ValidateCreate is a no-op, so routing CREATE would
+// only make profile creation depend on webhook availability under
+// failurePolicy: Fail with no enforcement benefit.
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-clusterengineruntimeprofile,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=update;delete,versions=v1alpha2,name=vclusterengineruntimeprofile.kb.io,admissionReviewVersions=v1
 
 func (r *ClusterEngineRuntimeProfile) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).

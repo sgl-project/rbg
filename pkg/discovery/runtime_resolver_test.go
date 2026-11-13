@@ -835,4 +835,74 @@ func TestResolveEngineRuntimesConsentOnlyTargetValidation(t *testing.T) {
 		assert.Empty(t, plan.PatchApplications[string(constants.LeaderComponentType)])
 		assert.Empty(t, collectEvents(t, recorder))
 	})
+
+	// The role-declared half of the target vocabulary must span every shape
+	// the render paths build templates from, not just role.GetTemplate() —
+	// a templateRef role's containers live in the referenced RoleTemplate,
+	// and a leaderWorkerPattern role's patches can add containers the base
+	// template does not declare. A resolver reading only GetTemplate()
+	// rejects every target of a templateRef role (its GetTemplate() is nil)
+	// and every patch-declared container — a regression of shapes that
+	// render fine when the check is absent.
+	t.Run("a consent-only entry on a templateRef role resolves the referenced template", func(t *testing.T) {
+		profile := makeProfile("ik", nil)
+		role := &workloadsv1alpha2.RoleSpec{
+			Name: "standalone",
+			Pattern: workloadsv1alpha2.Pattern{
+				StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+					TemplateSource: workloadsv1alpha2.TemplateSource{
+						TemplateRef: &workloadsv1alpha2.TemplateRef{
+							Name: "base",
+							Patch: &runtime.RawExtension{
+								Raw: []byte(`{"spec":{"containers":[{"name":"patch-only","image":"patched:latest"}]}}`),
+							},
+						},
+					},
+				},
+			},
+			EngineRuntimes: []workloadsv1alpha2.EngineRuntime{{
+				ProfileName: "ik",
+				TargetContainers: []workloadsv1alpha2.EngineRuntimeTargetContainer{
+					{Name: "engine"}, {Name: "patch-only"},
+				},
+			}},
+		}
+		rbg := basicRBG()
+		rbg.Spec.RoleTemplates = []workloadsv1alpha2.RoleTemplate{{
+			Name: "base",
+			Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+				Containers: []corev1.Container{{Name: "engine"}},
+			}},
+		}}
+
+		cli := fake.NewClientBuilder().WithScheme(resolveScheme()).WithObjects(profile).Build()
+		recorder := record.NewFakeRecorder(16)
+		plan, err := ResolveEngineRuntimes(context.Background(), cli, recorder, rbg, role)
+		require.NoError(t, err)
+		assert.Empty(t, collectEvents(t, recorder))
+		// the reference carries neither profile patches nor extraPatches:
+		// consent-only, nothing to apply, and the listed targets resolve
+		// — "engine" through the referenced template's containers and
+		// "patch-only" through its templateRef patch.
+		require.Len(t, plan.FragmentApplications[role.Name], 1)
+		assert.Empty(t, plan.PatchApplications)
+		assert.Empty(t, plan.RolePatchApplications)
+	})
+
+	t.Run("a consent-only entry naming a leader/worker patch-declared container passes", func(t *testing.T) {
+		profile := makeProfile("ik", nil)
+		role := leaderWorkerRole([]workloadsv1alpha2.EngineRuntime{{
+			ProfileName: "ik", Component: string(constants.LeaderComponentType),
+			TargetContainers: []workloadsv1alpha2.EngineRuntimeTargetContainer{{Name: "leader-extra"}},
+		}})
+		role.LeaderWorkerPattern.LeaderTemplatePatch = &runtime.RawExtension{
+			Raw: []byte(`{"spec":{"containers":[{"name":"leader-extra","image":"extra:latest"}]}}`),
+		}
+
+		plan, recorder, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
+		require.NoError(t, err)
+		assert.Empty(t, collectEvents(t, recorder))
+		assert.Empty(t, plan.PatchApplications[string(constants.LeaderComponentType)])
+		assert.Empty(t, plan.RolePatchApplications[string(constants.LeaderComponentType)])
+	})
 }

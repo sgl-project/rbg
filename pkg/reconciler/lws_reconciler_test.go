@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
@@ -30,6 +31,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -590,4 +593,107 @@ func TestConstructLWSApplyConfiguration_LabelsAndAnnotations(t *testing.T) {
 			assert.Equal(t, tt.expectedAnnotations, result.Annotations)
 		})
 	}
+}
+
+// TestReview_LWSNonLWPPatternFragmentRouting pins the render-path contract
+// of the grandfathered LWS × non-leaderWorkerPattern shape (KEP-531
+// compatibility guarantee #1 — references that set only profileName render
+// identically to main): a LeaderWorkerSet-typed role whose pattern is
+// standalonePattern keeps main's published LWS behavior, where the leader
+// template is injected unconditionally and the worker template is not. The
+// profile's sidecar and volume land in the leader template only, the worker
+// template stays as the role wrote it, with no warning and no error. A
+// vocabulary keyed by the pattern (the standalone role name) would miss the
+// leader/worker positions this construct path renders and silently drop
+// every engine-runtime fragment.
+func TestReview_LWSNonLWPPatternFragmentRouting(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	profile := &workloadsv1alpha2.ClusterEngineRuntimeProfile{
+		ObjectMeta: metav1.ObjectMeta{Name: "ik"},
+		Spec: workloadsv1alpha2.ClusterEngineRuntimeProfileSpec{
+			Volumes: []corev1.Volume{{
+				Name:         "ik-vol",
+				VolumeSource: corev1.VolumeSource{EmptyDir: &corev1.EmptyDirVolumeSource{}},
+			}},
+			Containers: []corev1.Container{{Name: "ik-sidecar", Image: "ik:latest"}},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(profile).Build()
+	reconciler := NewLeaderWorkerSetReconciler(scheme, fakeClient)
+	recorder := record.NewFakeRecorder(16)
+	reconciler.SetRecorder(recorder)
+
+	tmpl := corev1.PodTemplateSpec{Spec: corev1.PodSpec{
+		Containers: []corev1.Container{{Name: "engine", Image: "engine:latest"}},
+	}}
+	role := &workloadsv1alpha2.RoleSpec{
+		Name:     "sgl",
+		Replicas: ptr.To(int32(2)),
+		Pattern: workloadsv1alpha2.Pattern{
+			StandalonePattern: &workloadsv1alpha2.StandalonePattern{
+				TemplateSource: workloadsv1alpha2.TemplateSource{Template: &tmpl},
+			},
+		},
+		EngineRuntimes: []workloadsv1alpha2.EngineRuntime{{ProfileName: "ik"}},
+	}
+	// the grandfathered shape: the role's workload-type annotation routes
+	// it through the LWS render path while its pattern stays standalone
+	role.Annotations = map[string]string{
+		constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType,
+	}
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "lws-rbg", Namespace: "default"},
+		Spec:       workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{*role}},
+	}
+
+	result, err := reconciler.constructLWSApplyConfiguration(
+		context.Background(), rbg, role, nil, expectedRevisionHash)
+	require.NoError(t, err)
+
+	names := func(spec *coreapplyv1.PodSpecApplyConfiguration) map[string]bool {
+		found := map[string]bool{}
+		if spec == nil {
+			return found
+		}
+		for _, c := range spec.Containers {
+			if c.Name != nil {
+				found[*c.Name] = true
+			}
+		}
+		return found
+	}
+	volumes := func(spec *coreapplyv1.PodSpecApplyConfiguration) map[string]bool {
+		found := map[string]bool{}
+		if spec == nil {
+			return found
+		}
+		for _, v := range spec.Volumes {
+			if v.Name != nil {
+				found[*v.Name] = true
+			}
+		}
+		return found
+	}
+
+	lwt := result.Spec.LeaderWorkerTemplate
+	require.NotNil(t, lwt.LeaderTemplate)
+	require.NotNil(t, lwt.WorkerTemplate)
+
+	// main's behavior: the leader template carries the fragments
+	assert.True(t, names(lwt.LeaderTemplate.Spec)["ik-sidecar"],
+		"the profile's sidecar lands in the leader template")
+	assert.True(t, volumes(lwt.LeaderTemplate.Spec)["ik-vol"],
+		"the profile's volume lands in the leader template")
+
+	// the worker template is skipped, as on main
+	assert.False(t, names(lwt.WorkerTemplate.Spec)["ik-sidecar"],
+		"the worker template stays without the profile's sidecar")
+	assert.False(t, volumes(lwt.WorkerTemplate.Spec)["ik-vol"],
+		"the worker template stays without the profile's volume")
+
+	assert.Empty(t, len(recorder.Events), "no warning events — the render is main's behavior")
 }

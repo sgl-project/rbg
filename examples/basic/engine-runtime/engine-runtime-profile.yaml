@@ -1,43 +1,53 @@
 # Example: ClusterEngineRuntimeProfile with RoleBasedGroup (v1alpha2)
 # ClusterEngineRuntimeProfile defines a cluster-scoped reusable sidecar/init-container profile
 # that can be injected into role pods via the engineRuntimes field.
-# Useful for injecting GPU drivers, monitoring sidecars, or shared runtime dependencies.
+# Useful for injecting entrypoint wrappers, monitoring sidecars, or shared runtime
+# dependencies. This example runs on any ordinary cluster (e.g. kind): every image
+# below is the acs-sample nginx the repo's own e2e suite uses (test/utils DefaultImage)
+# — publicly pullable, carrying sh, sleep and a foreground nginx — and no GPU nodes
+# or other special hardware are required.
 ---
 # Step 1: Create a ClusterEngineRuntimeProfile (cluster-scoped resource)
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: ClusterEngineRuntimeProfile
 metadata:
-  name: nvidia-runtime-profile
+  name: wrap-runtime-profile
 spec:
   initContainers:
-    - name: gpu-driver-init
-      image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+    - name: wrap-init
+      image: registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest
       # Installs the wrapper the containerPatches below prepend: the shared
-      # volume is mounted at /opt/gpu by the patched containers too, so
-      # /opt/gpu/wrap resolves to this file and the rendered worker command
-      # ["/opt/gpu/wrap", "exec", "nginx"] actually starts nginx.
+      # volume is mounted at /opt/wrap/bin by the patched containers too, so
+      # /opt/wrap/bin/wrap resolves to this file and the rendered worker
+      # command ["/opt/wrap/bin/wrap", "exec", "nginx"] actually starts nginx.
       command:
         - /bin/sh
         - -c
         - >
-          printf '#!/bin/sh\n[ "$1" = exec ] && shift\nexec "$@"\n' > /usr/local/lib/gpu/wrap &&
-          chmod +x /usr/local/lib/gpu/wrap &&
-          echo 'GPU driver initialized'
+          printf '#!/bin/sh\n[ "$1" = exec ] && shift\nexec "$@"\n' > /opt/wrap/bin/wrap &&
+          chmod +x /opt/wrap/bin/wrap &&
+          echo 'wrap installed'
       volumeMounts:
-        - name: gpu-lib
-          mountPath: /usr/local/lib/gpu
+        - name: wrap-bin
+          mountPath: /opt/wrap/bin
   containers:
-    - name: gpu-monitor
-      image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+    # A stand-in for a metrics exporter: the declared port is where a real
+    # agent would listen. It carries its own command because the pod's
+    # network namespace is shared — the patched main container below
+    # already binds port 80, so letting this sidecar fall back to the
+    # image's default nginx command would collide and crash-loop it.
+    - name: metrics-agent
+      image: registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest
+      command: ["sh", "-c", "sleep 3600"]
       ports:
         - containerPort: 9090
           name: metrics
       resources:
         requests:
-          cpu: "100m"
-          memory: "128Mi"
+          cpu: "10m"
+          memory: "16Mi"
   volumes:
-    - name: gpu-lib
+    - name: wrap-bin
       emptyDir: {}
   # containerPatches: the profile-side patch list — target-less RFC 6902
   # `add` ops, each firing at every targetContainers address the
@@ -46,7 +56,7 @@ spec:
   # capabilities are role-side-only roots. `/X/0` head-inserts stack with
   # the later rule leftmost, so a multi-element command prepend is written
   # in reverse (the rendered command below is
-  # ["/opt/gpu/wrap", "exec", "nginx"]).
+  # ["/opt/wrap/bin/wrap", "exec", "nginx"]).
   containerPatches:
     - jsonPatch:
         op: add
@@ -55,26 +65,26 @@ spec:
     - jsonPatch:
         op: add
         path: /command/0
-        value: "/opt/gpu/wrap"
+        value: "/opt/wrap/bin/wrap"
     - jsonPatch:
         op: add
         path: /env/-
         value:
-          name: GPU_WRAPPER_SITE
-          value: /opt/gpu/site
+          name: WRAP_SITE
+          value: /opt/wrap/site
     - jsonPatch:
         op: add
         path: /volumeMounts/-
         value:
-          name: gpu-lib
-          mountPath: /opt/gpu
+          name: wrap-bin
+          mountPath: /opt/wrap/bin
 
 ---
 # Step 2: Create a RoleBasedGroup referencing the engine runtime profile
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
-  name: gpu-inference
+  name: inference-serving
   namespace: default
 spec:
   roles:
@@ -89,7 +99,7 @@ spec:
       # (targetContainers requires component). Capabilities and args are
       # role-side-only roots, so the SYS_RESOURCE append lives here.
       engineRuntimes:
-        - profileName: nvidia-runtime-profile
+        - profileName: wrap-runtime-profile
           component: worker
           targetContainers:
             - name: prefill-main
@@ -104,22 +114,32 @@ spec:
           spec:
             containers:
               # A patch may only prepend to a declared command — creating one
-              # would silently discard the image ENTRYPOINT — so declare it.
+              # would silently discard the image's default Cmd — so declare
+              # it. Declaring command also drops the image's default args
+              # ("nginx -g daemon off;"), so daemon-off must be re-declared
+              # via args or nginx daemonizes, PID 1 exits and the pod
+              # crash-loops. The rendered argv is
+              #   /opt/wrap/bin/wrap exec nginx -g 'daemon off;'
+              # — the wrap shifts "exec" away and execs nginx as PID 1, which
+              # then serves on port 80 in the foreground.
               - name: prefill-main
-                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                image: registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest
                 command: ["nginx"]
+                args: ["-g", "daemon off;"]
                 ports:
-                  - containerPort: 8080
+                  - containerPort: 80
+                    name: http
                 resources:
                   requests:
-                    nvidia.com/gpu: "1"
-                  limits:
-                    nvidia.com/gpu: "1"
+                    cpu: "100m"
+                    memory: "128Mi"
+                  # A GPU-flavored workload would request here instead:
+                  #   nvidia.com/gpu: "1"
 
     - name: decode
       replicas: 4
       engineRuntimes:
-        - profileName: nvidia-runtime-profile
+        - profileName: wrap-runtime-profile
           component: worker
           targetContainers:
             - name: decode-main
@@ -134,12 +154,15 @@ spec:
           spec:
             containers:
               - name: decode-main
-                image: anolis-registry.cn-zhangjiakou.cr.aliyuncs.com/openanolis/nginx:1.14.1-8.6
+                image: registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest
                 command: ["nginx"]
+                args: ["-g", "daemon off;"]
                 ports:
-                  - containerPort: 8081
+                  - containerPort: 80
+                    name: http
                 resources:
                   requests:
-                    nvidia.com/gpu: "1"
-                  limits:
-                    nvidia.com/gpu: "1"
+                    cpu: "100m"
+                    memory: "128Mi"
+                  # A GPU-flavored workload would request here instead:
+                  #   nvidia.com/gpu: "1"
