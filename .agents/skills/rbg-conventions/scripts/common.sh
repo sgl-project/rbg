@@ -41,8 +41,9 @@ KC_SENT='unexpected EOF|connection reset by peer|client connection lost|broken p
 #   connection (a refused connection, a dial or TLS handshake error), no error shows that a request
 #   may have been sent, the API server returned no error of its own, and kubectl reported no object
 #   as written, so a multi-object apply is never replayed either. Any other failed write is returned
-#   at once, after printing what kubectl reported as written. Deletes go through delete_with_uid,
-#   which is safe to repeat.
+#   at once, after printing what kubectl reported as written. Deletes go through delete_with_uid and
+#   creates of the scripts' own namespace and CRD through create_once, which resolve an unknown
+#   outcome safely.
 # kubectl's stdout is passed through untouched, so it can be piped into jq; warnings go to stderr.
 # Input given as "-f -" is buffered so that a retry sends it again. RBG_VERIFY_RETRY_DELAY sets the
 # backoff step in seconds (default 2).
@@ -126,6 +127,55 @@ delete_with_uid() {
     *) cat "$derr" "$gerr" >&2 ;;
   esac
   rm -f "$derr" "$gerr"
+  return 1
+}
+
+# What kubectl prints when the API server refused a request for good: it was understood and
+# rejected, so sending it again can't succeed.
+KC_REFUSED_FINAL='Error from server \((BadRequest|Forbidden)\)| is invalid: |You must be logged in to the server'
+
+# create_once KIND NAME [TOKEN] creates the object in the manifest on stdin and prints its UID.
+# Only the caller may know NAME (a random name) or TOKEN (the manifest's OWNER_LABEL value), so an
+# object found under NAME that carries TOKEN is the caller's. A create that failed may still have
+# succeeded, or may still be in progress at the API server (a lost response, a server timeout), so
+# the object is read back after every failed attempt. While it is absent, the create is sent again,
+# three attempts in all, and it is read back once more after the last backoff. Sending it again is
+# safe: a duplicate of a create that already happened is refused as AlreadyExists and changes
+# nothing. Only a final refusal of the first attempt ends this early, since no earlier attempt can
+# be in progress then. Returns 1 when the object can't be created or confirmed, in which case it
+# may still appear later, or when it exists without TOKEN.
+create_once() {
+  local kind=$1 name=$2 token=${3:-} manifest uid got round cerr
+  manifest=$(cat)
+  cerr=$(mktemp)
+  for round in 1 2 3 4; do
+    if [ "$round" -le 3 ]; then
+      if uid=$(printf '%s\n' "$manifest" | kc create -o 'jsonpath={.metadata.uid}' -f - 2>"$cerr") &&
+        [ -n "$uid" ]; then
+        cat "$cerr" >&2
+        rm -f "$cerr"
+        printf '%s\n' "$uid"
+        return 0
+      fi
+      cat "$cerr" >&2
+      if [ "$round" -eq 1 ] && grep -qE "$KC_REFUSED_FINAL" "$cerr"; then
+        break
+      fi
+    fi
+    got=$(kc get "$kind" "$name" --ignore-not-found \
+      -o "jsonpath={.metadata.labels.$OWNER_LABEL} {.metadata.uid}") || break
+    if [ -n "$got" ]; then
+      rm -f "$cerr"
+      if [ -n "$token" ] && [ "${got%% *}" != "$token" ]; then
+        echo "error: $kind $name exists, but this run did not create it" >&2
+        return 1
+      fi
+      printf '%s\n' "${got#* }"
+      return 0
+    fi
+    [ "$round" -eq 4 ] || sleep $((round * ${RBG_VERIFY_RETRY_DELAY:-2}))
+  done
+  rm -f "$cerr"
   return 1
 }
 

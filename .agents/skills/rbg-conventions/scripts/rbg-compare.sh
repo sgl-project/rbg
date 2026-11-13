@@ -53,6 +53,7 @@ report=$(awk '
       print "C\tremoved  " k
       if (k ~ /#(label|annotation):/) note("Labels or annotations were removed from existing objects.")
       else if (k ~ /^pod\//) note("Pods were deleted: the controller rolled or recreated workloads.")
+      else if (k ~ /^cr\//) note("ControllerRevisions were deleted: revision history was pruned, which happens after new revisions are created.")
     }
     for (k in a) if (!(k in b)) {
       print "C\tadded    " k
@@ -75,6 +76,8 @@ report=$(awk '
         if (name == "images" || name == "initImages") note("Container images changed.")
         if (name == "updateRevision") note("A RoleInstanceSet moved to a new update revision; its instances roll to it.")
         if (name == "revision" && k ~ /^(pod|ri)\//) note("Pods or RoleInstances moved to a new revision (rolled, possibly in place).")
+        if (name == "revision" && k ~ /^cr\//) note("A ControllerRevision was renumbered: a stored template became the current one again (a revert, or rendering that alternates between two templates).")
+        if (name == "owner" && k ~ /^cr\//) note("A ControllerRevision changed owner: it was adopted or orphaned.")
         if (name == "roleHash") note("A role revision hash changed: the role or its roleTemplate serialized differently.")
         if (name == "generation") note("A spec was rewritten (generation bumped).")
         if (name == "selector" || name == "ports" || name == "type") note("A Service was rewritten (selector, ports or type).")

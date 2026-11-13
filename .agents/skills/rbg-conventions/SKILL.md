@@ -82,8 +82,8 @@ the most important rules on a cluster. Each one is described, with its last veri
 - [ ] Unknown values fail validation instead of being ignored.
 - [ ] Conversion doesn't materialize defaults, and a v1alpha2 → v1alpha1 → v1alpha2 round trip
       leaves the stored object unchanged (`scripts/v1alpha1-roundtrip.sh`). On `main` today it
-      doesn't: accepted writes rewrite every role and lose configured backoff delays, and
-      customComponentsPattern roles are rejected outright (VC-5).
+      doesn't: accepted writes rewrite every role and lose configured backoff delays and
+      `activateAfter`, and customComponentsPattern roles are rejected outright (VC-5, #580).
 - [ ] `make manifests generate` has been run, the chart and kubectl manifests are updated, and new
       verbs have RBAC markers.
 - [ ] The docs (`README.md` and `README-zh_CN.md`) and the release note describe what happens to

@@ -16,9 +16,10 @@
 #
 # Usage: rbg-snapshot.sh -n NAMESPACE [--settle SECONDS] [--timeout SECONDS]
 #   --settle S  take snapshots S seconds apart until two in a row are identical, and print that
-#               one. Use it after a restart or swap so a late reconcile isn't missed. Exits 3 if
-#               the state hasn't settled within --timeout (default 600).
-# Any failed query fails the script; it never prints a partial snapshot.
+#               one. Use it after a restart or swap so a late reconcile isn't missed. If the state
+#               hasn't settled within --timeout (default 600), it prints nothing on stdout, shows
+#               the lines that were still changing on stderr, and exits 3.
+# Any failed query fails the script (exit 2); it never prints a partial or an unsettled snapshot.
 set -euo pipefail
 # shellcheck source-path=SCRIPTDIR source=common.sh
 . "$(dirname "$0")/common.sh"
@@ -33,7 +34,7 @@ while [ $# -gt 0 ]; do
     -n | --namespace) ns=$2; shift 2 ;;
     --settle) settle=$2; shift 2 ;;
     --timeout) timeout=$2; shift 2 ;;
-    *) sed -n '2,21p' "$0" >&2; exit 2 ;;
+    *) sed -n '2,22p' "$0" >&2; exit 2 ;;
   esac
 done
 [ -n "$ns" ] || die "-n NAMESPACE is required"
@@ -42,10 +43,18 @@ kinds=rolebasedgroups.workloads.x-k8s.io,rolebasedgroupsets.workloads.x-k8s.io
 kinds=$kinds,roleinstancesets.workloads.x-k8s.io,roleinstances.workloads.x-k8s.io
 kinds=$kinds,controllerrevisions.apps,statefulsets.apps,deployments.apps,pods,services
 # Include LeaderWorkerSets when the API exists. A raw discovery probe is used because
-# `kubectl api-resources` fails on clusters where any aggregated API is unhealthy.
-if kc get --raw /apis/leaderworkerset.x-k8s.io >/dev/null 2>&1; then
+# `kubectl api-resources` fails on clusters where any aggregated API is unhealthy. Only NotFound
+# means the API is absent. Any other failure (Forbidden, a transport error) fails the snapshot:
+# skipping LeaderWorkerSets in both snapshots would hide every change to them.
+probe_err=$(mktemp)
+if kc get --raw /apis/leaderworkerset.x-k8s.io >/dev/null 2>"$probe_err"; then
   kinds=$kinds,leaderworkersets.leaderworkerset.x-k8s.io
+elif ! grep -q '(NotFound)' "$probe_err"; then
+  cat "$probe_err" >&2
+  rm -f "$probe_err"
+  die "cannot tell whether the LeaderWorkerSet API exists"
 fi
+rm -f "$probe_err"
 
 # shellcheck disable=SC2016 # jq programs, not shell expansions
 objects_jq='
@@ -134,8 +143,12 @@ while :; do
     exit 0
   fi
   if [ "$(date +%s)" -ge "$deadline" ]; then
-    printf '%s\n' "$cur"
-    echo "error: state did not settle within ${timeout}s" >&2
+    # Print no snapshot: a caller that redirects stdout and misses the exit status must not be
+    # left with a file that rbg-compare.sh accepts.
+    {
+      echo "error: state did not settle within ${timeout}s; lines still changing between the last two snapshots:"
+      diff <(printf '%s\n' "$prev") <(printf '%s\n' "$cur") || true
+    } >&2
     exit 3
   fi
   prev=$cur

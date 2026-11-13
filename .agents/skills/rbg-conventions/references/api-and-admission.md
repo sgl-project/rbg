@@ -70,11 +70,12 @@
   `upgrade-compatibility.md`. Test the full v1alpha2 → v1alpha1 → v1alpha2 round trip for any new
   field with `scripts/v1alpha1-roundtrip.sh`.
 - **Know what a v1alpha1 round trip does on `main` today** (measured, VC-5 in
-  [verification-cases.md](verification-cases.md)). When the API server accepts a no-op read and
-  write through v1alpha1, the write:
+  [verification-cases.md](verification-cases.md); tracked in #580). When the API server accepts a
+  no-op read and write through v1alpha1, the write:
   - adds the `role-workload-type` annotation to every role, so every role hash changes
   - replaces the deprecated `restartPolicy` string with a defaulted `restartPolicyConfig`
-  - resets configured backoff delays to the defaults, because v1alpha1 has no field for them
+  - resets configured backoff delays to the defaults and drops `activateAfter`, because v1alpha1
+    has no fields for them
 
   For customComponentsPattern roles the write is rejected instead: the converted object fails
   v1alpha1 validation, so v1alpha1 clients can't update those RBGs at all. Don't claim a lossless
@@ -100,11 +101,12 @@
     version, after conversion. Put shared validation there, once.
   - `Equivalent` doesn't bridge different resources: `instancesets` (v1alpha1) and
     `roleinstancesets` (v1alpha2) are separate CRDs.
-  - The v1alpha1 deprecation gates (`api/workloads/v1alpha1/deprecation_webhook.go`) deliberately
-    use `matchPolicy: Exact`, so they fire only for requests made in v1alpha1.
+  - There are no v1alpha1 admission webhooks since #556. v1alpha1 writes reach the v1alpha2
+    validators only through conversion, and the CRD's `deprecationWarning` is the only
+    deprecation warning they get.
   - Before adding a webhook, check whether an existing webhook or the CRD's `deprecationWarning`
     already covers the case. Duplicates drift apart, and the user only sees the first rejection
-    (#552).
+    (#552). #556 removed the v1alpha1 deprecation webhooks for that reason.
 - **Use `failurePolicy: Fail` for gates that must hold, and `Ignore` for warn-only webhooks.** A
   `Fail` webhook on a path the running image doesn't serve blocks all writes (#524, #552).
 - **Validate statically at admission** (#528). The controller must still fail safely on invalid

@@ -7,8 +7,10 @@
 #
 # apply creates NAMESPACE with a random owner token and records the token and the namespace UID
 # locally; it reuses an existing namespace only if that record matches, so it never writes into
-# someone else's namespace. It then applies the fixtures with __IMAGE__ replaced. IMAGE defaults to
-# $RBG_FIXTURE_IMAGE or busybox:1.36; any image with `sh` and `sleep` the nodes can pull works.
+# someone else's namespace. If the outcome of the create is unknown (its response was lost), it
+# reads the namespace back and adopts it only if it carries this run's token. It then applies the
+# fixtures with __IMAGE__ replaced. IMAGE defaults to $RBG_FIXTURE_IMAGE or busybox:1.36; any
+# image with `sh` and `sleep` the nodes can pull works.
 # --wait waits until every RoleBasedGroup is Ready, which needs nodes that run pods.
 # delete removes NAMESPACE only if the local ownership record matches it. The delete carries the
 # recorded UID as a precondition, so a namespace recreated under the same name is never deleted.
@@ -19,7 +21,7 @@ need jq
 need "$KUBECTL"
 
 usage() {
-  sed -n '2,14p' "$0" >&2
+  sed -n '2,16p' "$0" >&2
   exit 2
 }
 
@@ -41,16 +43,21 @@ done
 
 case $cmd in
   apply)
+    # The image is substituted into the fixtures with sed, so accept only the characters an image
+    # reference can contain.
+    case $image in
+      '' | *[!A-Za-z0-9._/:@-]*) die "--image '$image' is not a valid image reference" ;;
+    esac
     existing=$(kc get namespace "$ns" --ignore-not-found -o name) || die "cannot read namespace $ns"
     if [ -n "$existing" ]; then
       require_owned_namespace "$ns"
     else
       token=$(random_token)
-      uid=$(kc create -o 'jsonpath={.metadata.uid}' -f - <<EOF
+      uid=$(create_once namespace "$ns" "$token" <<EOF
 {"apiVersion": "v1", "kind": "Namespace",
  "metadata": {"name": "$ns", "labels": {"$MARKER_LABEL": "true", "$OWNER_LABEL": "$token"}}}
 EOF
-      ) || die "cannot create namespace $ns"
+      ) || die "cannot create namespace $ns; if it exists or appears later with label $OWNER_LABEL=$token, this run created it: delete it by hand"
       printf '%s %s\n' "$token" "$uid" >"$(state_file "$ns")"
       echo "created namespace $ns (owner token recorded in $(state_file "$ns"))"
     fi

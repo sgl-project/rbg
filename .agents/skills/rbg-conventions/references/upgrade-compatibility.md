@@ -18,7 +18,7 @@ this way is a blocker.
 
 | Level | Built by | Hashed input | Effect of a new hash |
 |---|---|---|---|
-| RoleBasedGroup | `NewRevision` → `getRBGPatch` (`pkg/utils/revision_utils.go`) | typed `spec.roles` + `spec.roleTemplates`, replicas stripped | new RBG ControllerRevision |
+| RoleBasedGroup | `NewRevision` → `getRBGPatch` (`pkg/utils/revision_utils.go`) | typed `spec.roles` + `spec.roleTemplates`, with replicas and the selective scale-down annotations stripped (#538) | new RBG ControllerRevision |
 | Role | `GetRolesRevisionHash` (same file) | fnv32a of each role's JSON plus the referenced roleTemplate's `template` | rewrites the `rbg.workloads.x-k8s.io/role-revision-<role>` label on the workload's metadata (not on the pod template). On the RoleInstanceSet path that alone rolls nothing (VC-4). On the deprecated StatefulSet path, a hash change alone is treated as the start of a rolling update (partition reset, may add `maxSurge` replicas) even when the pod template is unchanged |
 | RoleInstanceSet | `getPatch` (`roleinstanceset/statelessmode/revision/revision.go`, `statefulmode/stateful_instance_set_helper.go`) | `spec.roleInstanceTemplate` only | new update revision; RoleInstances roll to it according to the update strategy and partition |
 | RoleInstance | `buildPatch` (`pkg/reconciler/roleinstance/revision/instance_revision.go`) | `spec.components` minus `size` | Pods recreated, or updated in place when only metadata changed: then UIDs and restart counts stay and only `controller-revision-hash` moves (VC-3) |
@@ -87,7 +87,8 @@ more.
 | New field without `omitempty`, or a non-pointer struct (encodes as `{}` even with `omitempty`), under an already-stored parent | Drift. Absorbed at upgrade, then new hashes for every affected role at the next revision | Pointer + `omitempty` |
 | `+kubebuilder:default` on a new field whose parent exists in stored objects | Changes every such object, on read. Defaults nested under an absent optional parent are not materialized | No schema default; default in a Go getter |
 | Controller renders new content into `spec.roleInstanceTemplate` (fields, labels, annotations, env, sidecars, injected scheduling fields) for every role | New RoleInstanceSet revision; instances roll | Render it only when the user set it |
-| Re-ordering rendered list items (env, containers, volumes) | Rolls Pods | Keep render order stable; de-duplicate deterministically (#548) |
+| Re-ordering rendered list items (env, containers, volumes), or adding or dropping a de-duplication step | Rolls Pods | Keep render order and existing merges stable; keep same-name env entries where they are (KEP-531, #548) |
+| A role annotation that operations rewrite without a template change (e.g. excluded ordinals) | New RBG revision and role hash on every such write | Strip it from the hash input in `getRBGPatch` (#538) |
 | Changing how an unset field is interpreted | Rewrites derived objects | Keep the old interpretation for existing objects; make the new one opt-in |
 | Renaming a JSON key or changing a field's type | Changes every object | Add a new field and deprecate the old one, keeping its wire shape |
 | Re-ordering Go struct fields | No change (revision input is re-marshaled from maps with sorted keys) | n/a |
@@ -123,9 +124,10 @@ more.
    - Measured (VC-5): a no-op v1alpha1 read and write of a leader/worker role on the
      RoleInstanceSet path moves the RoleInstanceSet to a new revision and updates every
      RoleInstance. In envtest that update was in place, and no recorded Pod field changed.
-   - Every accepted round trip also adds an annotation to every role, and it resets configured
-     backoff delays to the defaults. For customComponentsPattern roles the write is rejected
-     outright. See VC-5 in [verification-cases.md](verification-cases.md).
+   - Every accepted round trip also adds an annotation to every role, resets configured backoff
+     delays to the defaults and drops `activateAfter`. For customComponentsPattern roles the write
+     is rejected outright. See VC-5 in [verification-cases.md](verification-cases.md); tracked in
+     #580.
    - The upgrade suite tolerates the flip only because its v1alpha1 round-trip fixtures are
      reconciled into LeaderWorkerSets (`foldRestartPolicyShape` in `snapshot.go`).
    - For any new field, test the full v1alpha2 → v1alpha1 → v1alpha2 round trip

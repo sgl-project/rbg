@@ -77,8 +77,12 @@ and push back with evidence where it is wrong.
   of writing what you expect it to return. In #568, an offline test used an error message kubectl
   never prints for a refused connection, so it passed while the retry it covered was broken. An
   independent reviewer caught it by running the real kubectl against a closed port.
+- **Run it the way the code runs.** bash 3.2 runs the EXIT trap when SIGPIPE kills a script file,
+  but not a `bash -c` string. In #568, a `bash -c` experiment gave the opposite answer from the
+  scripts, and only the scripts' own test exposed it.
 - **Make sure the test can fail:** show it failing on the broken code or the base branch before you
-  trust a pass, as the negative control VC-3 does.
+  trust a pass, as the negative control VC-3 does. In #568, a test that a discovery error fails the
+  snapshot also passed on the broken script, because a later query failed the same way.
 - **If you can't test it,** say so, name the test that would settle it, and phrase the point as a
   question or a risk, not as a fact.
 - **Label each finding with its evidence level:** cluster, envtest, unit test, direct reproduction

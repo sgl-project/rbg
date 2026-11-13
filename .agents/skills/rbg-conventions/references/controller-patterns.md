@@ -12,15 +12,33 @@
   - Check with `kubectl get <obj> -o yaml --show-managed-fields`.
   - Add a regression test: remove a label from a role and assert that it disappears from a newly
     created RoleInstanceSet.
-  - To fix, create through SSA, or migrate ownership with `csaupgrade.UpgradeManagedFieldsPatch`
-    (`k8s.io/client-go/util/csaupgrade`).
+  - To fix, create through SSA, or migrate ownership right after the create with
+    `csaupgrade.UpgradeManagedFieldsPatch` (`k8s.io/client-go/util/csaupgrade`), as
+    `upgradeRoleInstanceSetOwnership` in `pkg/reconciler/roleinstanceset_reconciler.go` does
+    (#538). Guard that patch with the object's UID, so a replacement under the same name can't
+    inherit the migration.
 - **Elsewhere, follow the object's existing writer.** For example, the RoleInstanceSet controllers
   manage RoleInstances with typed create/update and patches, and several status writers use
   `Status().Update`. Don't introduce a second style for the same fields.
 - **Add every new status field to every writer of that status,** whether it is an SSA apply
   configuration or a `Status().Update`.
-- **SSA rejects duplicate keys in list-maps,** such as two env vars with the same name.
-  De-duplicate deterministically before applying (#548).
+- **SSA rejects duplicate keys only in list-maps the schema declares,** so whether two `env`
+  entries with the same name get through depends on where they are (measured, see
+  [verification-cases.md](verification-cases.md)):
+  - Pods and StatefulSets: create accepts them with a warning; server-side apply rejects them.
+  - RoleBasedGroup: create and apply reject them in the typed pod templates (`standalonePattern`,
+    `leaderWorkerPattern` and `roleTemplates`). The schemaless fields store them verbatim: the
+    customComponentsPattern component templates and the template patches.
+  - RoleInstanceSet: `roleInstanceTemplate` is schemaless, so create and apply store them verbatim.
+  - So don't rely on admission to catch them. A role can carry them into the render, and the
+    deprecated StatefulSet path, which applies with SSA (`pkg/reconciler/sts_reconciler.go`), then
+    fails.
+  - Don't de-duplicate or reorder a rendered env list to get past this. Position decides which
+    entry wins (the last one) and what `$(VAR)` expands to (earlier entries only), and KEP-531
+    keeps same-name entries where they are (#548).
+  - Keep existing merges exactly as they are, de-duplication included: `mergeEnvVars` in
+    `pkg/discovery/injector.go` keeps the last entry per name (#214). Changing what a merge emits
+    re-renders existing roles.
 
 ## Preconditions and conflicts
 
@@ -105,5 +123,5 @@
 - **Don't type-assert informers.** `statefulmode` asserts that the RoleInstanceSet and RoleInstance
   informers are `SharedIndexInformer`s. With a namespace-restricted cache (`DefaultNamespaces`)
   controller-runtime returns a `multiNamespaceInformer`, and the manager panics at startup
-  (observed while running VC-2). A "watch only these namespaces" option needs that fixed first.
-  Field selectors keep plain informers.
+  (observed while running VC-2, tracked in #581). A "watch only these namespaces" option needs
+  that fixed first. Field selectors keep plain informers.

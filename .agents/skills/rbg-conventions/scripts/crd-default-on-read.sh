@@ -11,8 +11,9 @@
 #
 # It creates a throwaway cluster-scoped CRD with a unique name per run (defaultprobes.<random>.
 # rbg-conventions.example.com) and touches no RBG resources, so it is safe on a shared cluster. It
-# deletes only the CRD it created: the delete carries the CRD's UID as a precondition. A failed
-# cleanup makes the script exit non-zero.
+# deletes only the CRD it created: the delete carries the CRD's UID as a precondition. Cleanup also
+# runs when the script fails, or when its output is piped into a reader that exits early (such as
+# head); a failed cleanup makes the script exit non-zero.
 #
 # Usage: crd-default-on-read.sh [--keep]
 set -euo pipefail
@@ -62,7 +63,18 @@ EOF
 # shellcheck disable=SC2329 # invoked by the EXIT trap
 cleanup() {
   local status=$?
-  [ "$keep" = true ] && { echo "kept $crd"; return; }
+  # The name is unique to this run, so a CRD under it is this run's, also when the response to the
+  # create was lost.
+  if [ -z "$crd_uid" ] &&
+    ! crd_uid=$(kc get "crd/$crd" --ignore-not-found -o 'jsonpath={.metadata.uid}'); then
+    echo "error: cannot tell whether $crd exists; if it does, delete it by hand" >&2
+    exit 2
+  fi
+  [ -n "$crd_uid" ] || exit "$status"
+  if [ "$keep" = true ]; then
+    echo "kept $crd"
+    exit "$status"
+  fi
   delete_with_uid "/apis/apiextensions.k8s.io/v1/customresourcedefinitions/$crd" "$crd_uid" || {
     echo "error: cleanup of $crd failed; see the message above" >&2
     exit 2
@@ -70,11 +82,23 @@ cleanup() {
   exit "$status"
 }
 
-echo "creating $crd without defaults"
-crd_uid=$(crd_manifest base | kc create -o 'jsonpath={.metadata.uid}' -f -) ||
-  die "cannot create $crd (if it exists anyway, delete it by hand)"
+# Arm cleanup before the create, so it also covers a create whose response is lost, and output
+# that fails because its reader has exited (bash runs the EXIT trap when SIGPIPE kills a script).
 trap cleanup EXIT
-kc wait --for=condition=Established "crd/$crd" --timeout=60s >/dev/null
+
+echo "creating $crd without defaults"
+crd_uid=$(crd_manifest base | create_once crd "$crd") ||
+  die "cannot create $crd; if it appears later, delete it by hand"
+# Poll rather than use kubectl wait: until the API server has processed a new CRD, its
+# status.conditions is null, and kubectl wait then fails at once instead of waiting.
+established=''
+for _ in $(seq 1 30); do
+  established=$(kc get "crd/$crd" -o json |
+    jq -r '[(.status.conditions // [])[] | select(.type == "Established") | .status][0] // ""')
+  [ "$established" = True ] && break
+  sleep 2
+done
+[ "$established" = True ] || die "$crd is not Established after 60s"
 
 echo "creating object 'before' with spec.parent set and spec.optionalParent unset"
 kc create -f - >/dev/null <<EOF

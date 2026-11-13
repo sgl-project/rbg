@@ -15,8 +15,12 @@ Clusters used for this are often shared with other people's tests.
     not touch another tester's verification namespace either.
   - Namespaces and the throwaway CRD are deleted with their UID as a delete precondition, so an
     object recreated under the same name is never deleted.
-  - A write is retried only when it provably never reached the API server, so it is never
-    replayed.
+  - `kc` retries a write only when it provably never reached the API server, so a write is never
+    replayed. When the outcome of creating the run's own namespace or CRD is unknown (a lost
+    response, a server timeout), the scripts read the object back and, while it is absent, send
+    the create again, three attempts in all. A duplicate create is refused as AlreadyExists, so it
+    changes nothing. If the outcome is still unknown after that, the script fails and names the
+    namespace's owner token; the CRD is looked up again by its unique name on exit.
 - **Never run a second controller next to one that is already running.** The RBG controller
   watches every namespace and has no namespace flag, so two of them fight over every
   RoleBasedGroup.
@@ -25,7 +29,7 @@ Clusters used for this are often shared with other people's tests.
     in `cmd/rbgs/main.go`, set
     `DefaultFieldSelector: fields.OneTermEqualSelector("metadata.namespace", "<ns>")`.
   - Don't use `DefaultNamespaces` for this: it hands `statefulmode` a `multiNamespaceInformer`, and
-    its `SharedIndexInformer` type assertion panics at startup.
+    its `SharedIndexInformer` type assertion panics at startup (#581).
 - **Never delete the RBG CRDs on a shared cluster.** Other sessions can start depending on them at
   any moment; that happened during the first run of these cases.
   - If the CRDs are missing, install them only with the cluster owner's agreement, and leave them
@@ -71,8 +75,9 @@ gate rejects new uses of those deprecated types.
 ## Testing the scripts
 
 `scripts/selftest.sh` runs the scripts against a fake kubectl and needs only bash and jq. It
-covers the retry rules of `kc`, the UID-checked deletes and the snapshot/compare pair. Run it after
-changing any script.
+covers the retry rules of `kc`, the UID-checked deletes, the recovery of lost create responses,
+the waits and probes that must fail closed, and the snapshot/compare pair. Run it after changing
+any script, and check that a new test fails on the old script.
 
 ## Cases
 
@@ -85,27 +90,33 @@ changing any script.
   only the CRD it created (by UID precondition), and touches no RBG resources, so it is safe on any
   cluster.
 - **Pass:** A1–A4 print PASS, and the script exits 0. It exits non-zero if cleanup fails.
-- **Last verified:** 2026-11-12 on a Kubernetes 1.37 cluster: 4/4 PASS (also twice on 2026-11-11).
+- **Last verified:** 2026-11-13, with the polling wait for `Established`, on a Kubernetes 1.37
+  cluster and on envtest (kube-apiserver 1.31.0): 4/4 PASS on both (also on 2026-11-11 and
+  2026-11-12 with `kubectl wait`).
 
 ### VC-2: A controller restart or binary swap changes nothing
 
 - **Proves:** golden rule 1 for the build under test.
 - **Run:**
   1. `scripts/rbg-fixtures.sh apply -n <ns> --image <image> --wait 420` with the old build running.
-  2. `scripts/rbg-snapshot.sh -n <ns> --settle 20 > before.txt`.
+  2. `scripts/rbg-snapshot.sh -n <ns> --settle 20 > before.txt`. Exit status 3 means the state
+     didn't settle: stdout stays empty and stderr shows what kept changing. Find out why before
+     comparing.
   3. Stop the old build and start the new one (or the same build again, for a restart).
   4. `scripts/rbg-snapshot.sh -n <ns> --settle 20 > after.txt`.
   5. `scripts/rbg-compare.sh before.txt after.txt`.
   6. `scripts/rbg-fixtures.sh delete -n <ns>` when done.
 - **Pass:** `PASS: nothing changed`. A diff in any revision, label, annotation, UID, image, restart
   count, Service field or endpoint is a finding.
-- **Last verified:** 2026-11-11, `main` (fd160cc9) restarted cold:
+- **Last verified:** 2026-11-13, `main` (ea5e82ae, after #538 and #556) restarted cold on envtest
+  with the production webhooks: PASS, 373 records, snapshot format v2. Earlier, 2026-11-11, `main`
+  (fd160cc9) restarted cold:
   - Kubernetes 1.37 cluster with running Pods, controller scoped with the field-selector patch:
     PASS, 352 records.
   - envtest with the production webhooks: PASS, 302 records.
 
-  These runs used snapshot format v1. Format v2 only adds init-container fields, and the fixtures
-  have no init containers, so the results of VC-2 to VC-4 are unaffected.
+  The 2026-11-11 runs used snapshot format v1. Format v2 only adds init-container fields, and the
+  fixtures have no init containers, so the results of VC-2 to VC-4 are unaffected.
 
 ### VC-3: The detector catches template stamping (negative control)
 
@@ -152,11 +163,14 @@ changing any script.
   - The script refuses to run unless the CRD converts through a webhook. With `conversion: None` a
     v1alpha1 write would prune fields instead of exercising the production conversion; that is
     why this case was not run on the cluster, whose CRDs had no conversion webhook.
-  - On envtest, register the API types in the scheme before starting the environment, as
-    `test/envtest/testutil/v1alpha1_contract_setup.go` does, so the real conversion webhook is used.
+  - On envtest, register both API versions in the scheme before starting the environment, as
+    `test/envtest/testutil/v1a1gate_setup.go` does. envtest then installs every convertible CRD
+    with the conversion webhook, so the real conversion is used.
 - **Pass:** exit status 0 for every fixture.
-- **Last verified:** 2026-11-11, `main` (fd160cc9), envtest (kube-apiserver 1.31.0) with the
-  production conversion and admission webhooks, run twice with the same result.
+- **Last verified:** 2026-11-13, `main` (ea5e82ae), envtest (kube-apiserver 1.31.0) with the
+  production conversion webhook and the v1alpha2 admission webhooks (the v1alpha1 ones were removed
+  in #556), and a controller running. Same result as on fd160cc9 (2026-11-11, run twice); tracked
+  in #580.
 
   **FAIL: no fixture passes.** Five writes were accepted and changed the stored object (exit 1).
   One was rejected (exit 3).
@@ -174,6 +188,11 @@ changing any script.
     and it also appears on the RoleInstanceSet's metadata.
   - "No recorded Pod field changed" covers UID, labels, annotations, images and revision. envtest
     has no kubelet, so restart counts aren't observable there.
+  - An extra leaderWorkerPattern role with `activateAfter: Created`, `baseDelaySeconds: 10` and
+    `maxDelaySeconds: 300` lost all three (exit 1, same downstream effect): the role falls back to
+    the default `Ready` and to 30/600. It isn't in the fixtures: CRDs from before #559 don't have
+    the field, so the API server would reject that object (strict field validation), and
+    `rbg-fixtures.sh apply` would fail against them.
 
 ## What the runs changed in the skill
 
@@ -181,8 +200,24 @@ changing any script.
   at Pod UIDs (VC-3).
 - The v1alpha1 conversion claims are now measured, not inferred (VC-5).
 - Running a scoped controller on a shared cluster needs the field-selector patch above
-  (`DefaultNamespaces` panics).
+  (`DefaultNamespaces` panics, #581).
 - The scripts guard ownership with per-run tokens, delete only by UID precondition, retry a write
-  only when it provably never reached the server, and fail instead of printing a partial snapshot.
+  only when it provably never reached the server, read a create with an unknown outcome back
+  before trusting or repeating it, and fail instead of printing a partial snapshot.
 - Snapshots include init and sidecar containers: on the cluster, a native sidecar restart left the
   Pod UID and its regular containers unchanged, and the v1 snapshot compared it as PASS.
+- `kubectl wait --for=condition=...` fails at once, with kubectl 1.31 and 1.37 alike, when
+  `status.conditions` is null, which a new CRD has until the API server processes it. VC-1 polls
+  for `Established` instead.
+- The duplicate-env advice was wrong. With two `env` entries of the same name, server-side dry
+  runs on Kubernetes 1.37 and real writes on envtest 1.31 showed that SSA rejects them in Pods and
+  StatefulSets, and the RoleBasedGroup CRD in its typed pod templates, while RoleInstanceSet
+  templates keep them verbatim. Dry runs on 1.37 showed that RoleBasedGroup component templates
+  and `workerTemplatePatch` keep them too. So the skill no longer says to de-duplicate
+  ([controller-patterns.md](controller-patterns.md)).
+- A create whose response is lost may still be in progress at the API server. The scripts read
+  the object back and send the create again while it is absent; with the first create made to
+  report a lost connection before or after it was sent, the namespace and CRD were adopted or
+  created once in every case, on the cluster. bash 3.2 runs the EXIT trap when SIGPIPE kills a
+  script file, so VC-1 cleans up also when its output goes to `head -n 1` (measured on the
+  cluster), but not when the same code runs as `bash -c`.
