@@ -106,6 +106,15 @@ spec:
     - jsonPatch: {op: add, path: /command/0, value: /opt/ik/wrap}
 ```
 
+A `/command/0` insert requires the target container to **declare `command`**: the insert would
+otherwise create one, silently discarding the image's ENTRYPOINT, so the renderer rejects it with
+an error naming the container and asking for the declaration. Declaring `command` in Kubernetes
+replaces the image's ENTRYPOINT *and* drops its default Cmd — a container whose image carried
+default arguments (`nginx -g 'daemon off;'`) re-declares them through `args`, which kubelet
+concatenates after `command` into one argv. The same opt-in rule guards `/args`: an append onto a
+container declaring neither `command` nor `args` is rejected, since it would drop the default
+Cmd's arguments the container never opted out of.
+
 ### Consent and targets: the reference side
 
 Patches fire only where the role consents. A reference's `targetContainers` organizes its container surface **per container**: one entry per container the reference touches, keyed by `name` — role-declared or profile-declared. Listing a name is the **consent**: the profile's `containerPatches` fire at that container, and the entry's own `extraPatches` carry the role's patch rules for that same container, landing after the profile's. Consent, address and the role's own patches sit in one place, and removing the reference leaves no residue in the role template.
@@ -332,6 +341,11 @@ This results in worker pods with:
 - The `inference-engine` container mounting `nvidia-lib` through the consented profile patch, plus the role's own env entry applied after it
 
 The leader component renders from its own template unchanged: the reference's `component` scope keeps both the fragments and the patches out of it.
+
+The example above is illustrative — its images assume GPU nodes. A complete variant of the same
+shape verified to run on any ordinary cluster (publicly pullable images, a wrapper the profile's
+init container actually installs, and the image's default arguments re-declared through `args`) is
+checked in at [examples/basic/engine-runtime](../../examples/basic/engine-runtime/engine-runtime-profile.yaml).
 
 ## Profile Mutability
 
