@@ -16,7 +16,8 @@ limitations under the License.
 
 // Package chart renders the rbgs Helm chart with `helm template` and asserts that
 // the controller.deprecatedWorkloadTypes.enabled toggle changes exactly what it is
-// meant to and nothing else.
+// meant to and nothing else. It also checks the manager Deployment's health probes
+// and preStop drain in both the chart and the kustomize base in config/.
 //
 // This complements the pure-function tests in hack/gen-helm-rbac (which never render
 // the chart) and the live e2e suite in test/e2e/apicompat (which needs a cluster).
