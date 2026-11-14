@@ -119,12 +119,21 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	}
 
 	// Set Exclusive topology
+	var extraLabels map[string]string
 	if topologyKey, found := rbg.GetExclusiveKey(); found {
 		if podAnnotations[constants.DisableExclusiveKeyAnnotationKey] == "" {
-			podAnnotations[constants.GroupExclusiveTopologyKey] = topologyKey
 			uniqueKey := rbg.GenGroupUniqueKey()
+			value, hasGroupUID := podLabels[constants.GroupUIDLabelKey]
+			if hasGroupUID && value != uniqueKey {
+				return nil, fmt.Errorf("exclusive topology for role %q: workload selector %s=%q conflicts with group identity %q",
+					role.Name, constants.GroupUIDLabelKey, value, uniqueKey)
+			}
+			if !hasGroupUID {
+				extraLabels = map[string]string{constants.GroupUIDLabelKey: uniqueKey}
+			}
+			podAnnotations[constants.GroupExclusiveTopologyKey] = topologyKey
 			err := setExclusiveAffinities(
-				&podTemplateSpec, uniqueKey, topologyKey, constants.GroupUniqueHashLabelKey,
+				&podTemplateSpec, uniqueKey, topologyKey, constants.GroupUIDLabelKey,
 			)
 			if err != nil {
 				return nil, err
@@ -152,7 +161,7 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		r.gangScheduler.InjectPodSchedulingFields(rbg, role, gangStrategy, podTemplateApplyConfiguration)
 	}
 
-	podTemplateApplyConfiguration.WithLabels(podLabels).WithAnnotations(podAnnotations)
+	podTemplateApplyConfiguration.WithLabels(podLabels).WithLabels(extraLabels).WithAnnotations(podAnnotations)
 	return podTemplateApplyConfiguration, nil
 }
 

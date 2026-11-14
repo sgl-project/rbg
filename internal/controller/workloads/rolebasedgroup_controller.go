@@ -1732,7 +1732,10 @@ func RBGPredicate() predicate.Funcs {
 			oldRbg, ok1 := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroup)
 			newRbg, ok2 := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroup)
 			if ok1 && ok2 {
-				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) {
+				oldTopology, oldHasTopology := oldRbg.Annotations[constants.GroupExclusiveTopologyKey]
+				newTopology, newHasTopology := newRbg.Annotations[constants.GroupExclusiveTopologyKey]
+				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) ||
+					oldHasTopology != newHasTopology || oldTopology != newTopology {
 					ctrl.Log.Info("enqueue: rbg update event", "rbg", klog.KObj(e.ObjectOld))
 					return true
 				}

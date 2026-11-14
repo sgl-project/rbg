@@ -9,11 +9,10 @@ metadata:
 spec:
   replicas: 3
   groupTemplate:
-    metadata:
-      labels:
-        app: inference-cluster
-      annotations:
-        rolebasedgroup.workloads.x-k8s.io/group-exclusive-topology: "kubernetes.io/hostname"
+    labels:
+      app: inference-cluster
+    annotations:
+      rbg.workloads.x-k8s.io/group-exclusive-topology: "kubernetes.io/hostname"
     spec:
       roles:
         - name: prefill
