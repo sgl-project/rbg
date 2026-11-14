@@ -24,6 +24,7 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: rbgs-controller-sa
+      terminationGracePeriodSeconds: 35
       securityContext:
         {{- toYaml .Values.controller.podSecurityContext | nindent 8 }}
       containers:
@@ -79,6 +80,10 @@ spec:
               containerPort: {{ $pprof.containerPort | default 6060 }}
               protocol: TCP
           {{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sleep", "5"]
           livenessProbe:
             httpGet:
               path: /healthz

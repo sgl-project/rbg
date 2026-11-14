@@ -99062,6 +99062,12 @@ spec:
               fieldPath: metadata.namespace
         image: rolebasedgroup/rbgs-controller:v0.9.0-73e05db4
         imagePullPolicy: IfNotPresent
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sleep
+              - "5"
         livenessProbe:
           httpGet:
             path: /healthz
@@ -99083,6 +99089,7 @@ spec:
             cpu: 100m
             memory: 256Mi
       serviceAccountName: rbgs-controller-sa
+      terminationGracePeriodSeconds: 35
 ---
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration

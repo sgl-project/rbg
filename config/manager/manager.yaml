@@ -29,6 +29,7 @@ spec:
         app.kubernetes.io/name: rbgs
     spec:
       serviceAccountName: controller-sa
+      terminationGracePeriodSeconds: 35
       containers:
         - name: rbgs
           args:
@@ -44,6 +45,10 @@ spec:
             - /manager
           image: controller:latest
           imagePullPolicy: IfNotPresent
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sleep", "5"]
           livenessProbe:
             httpGet:
               path: /healthz
