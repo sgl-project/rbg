@@ -29,10 +29,23 @@ source "${CODEGEN_PKG}/kube_codegen.sh"
 GOFLAGS=-mod=mod kube::codegen::gen_helpers ${REPO_ROOT}/api \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"
 
+# applyconfiguration-gen embeds a structured-merge-diff schema in
+# client-go/applyconfiguration/internal, which Extract<Kind> and
+# fake.NewClientset() use to track field ownership. It must match the schema
+# kube-apiserver uses for server-side apply on the RBG custom resources, so
+# hack/models-schema derives it from the CRDs in config/crd/bases (written by
+# `make manifests`) instead of from the Go types.
+OPENAPI_TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${OPENAPI_TMP_DIR}"' EXIT
+
+GOFLAGS=-mod=mod "${GO_CMD}" run ./hack/models-schema \
+    --crd-dir "${REPO_ROOT}/config/crd/bases" > "${OPENAPI_TMP_DIR}/swagger.json"
+
 GOFLAGS=-mod=mod kube::codegen::gen_client ${REPO_ROOT}/api \
     --with-watch \
     --with-applyconfig \
     --applyconfig-externals "k8s.io/api/core/v1.PodTemplateSpec:k8s.io/client-go/applyconfigurations/core/v1" \
+    --applyconfig-openapi-schema "${OPENAPI_TMP_DIR}/swagger.json" \
     --output-dir "$REPO_ROOT"/client-go \
     --output-pkg sigs.k8s.io/rbgs/client-go \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"

@@ -20,7 +20,10 @@ package v1alpha2
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
+	managedfields "k8s.io/apimachinery/pkg/util/managedfields"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	internal "sigs.k8s.io/rbgs/client-go/applyconfiguration/internal"
 )
 
 // RoleInstanceSetApplyConfiguration represents a declarative configuration of the RoleInstanceSet type for use
@@ -41,6 +44,42 @@ func RoleInstanceSet(name, namespace string) *RoleInstanceSetApplyConfiguration 
 	b.WithKind("RoleInstanceSet")
 	b.WithAPIVersion("workloads.x-k8s.io/v1alpha2")
 	return b
+}
+
+// ExtractRoleInstanceSet extracts the applied configuration owned by fieldManager from
+// roleInstanceSet. If no managedFields are found in roleInstanceSet for fieldManager, a
+// RoleInstanceSetApplyConfiguration is returned with only the Name, Namespace (if applicable),
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
+// field managers have taken ownership of all the fields previously owned by fieldManager, or because
+// the fieldManager never owned fields any fields.
+// roleInstanceSet must be a unmodified RoleInstanceSet API object that was retrieved from the Kubernetes API.
+// ExtractRoleInstanceSet provides a way to perform a extract/modify-in-place/apply workflow.
+// Note that an extracted apply configuration will contain fewer fields than what the fieldManager previously
+// applied if another fieldManager has updated or force applied any of the previously applied fields.
+// Experimental!
+func ExtractRoleInstanceSet(roleInstanceSet *workloadsv1alpha2.RoleInstanceSet, fieldManager string) (*RoleInstanceSetApplyConfiguration, error) {
+	return extractRoleInstanceSet(roleInstanceSet, fieldManager, "")
+}
+
+// ExtractRoleInstanceSetStatus is the same as ExtractRoleInstanceSet except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractRoleInstanceSetStatus(roleInstanceSet *workloadsv1alpha2.RoleInstanceSet, fieldManager string) (*RoleInstanceSetApplyConfiguration, error) {
+	return extractRoleInstanceSet(roleInstanceSet, fieldManager, "status")
+}
+
+func extractRoleInstanceSet(roleInstanceSet *workloadsv1alpha2.RoleInstanceSet, fieldManager string, subresource string) (*RoleInstanceSetApplyConfiguration, error) {
+	b := &RoleInstanceSetApplyConfiguration{}
+	err := managedfields.ExtractInto(roleInstanceSet, internal.Parser().Type("io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleInstanceSet"), fieldManager, b, subresource)
+	if err != nil {
+		return nil, err
+	}
+	b.WithName(roleInstanceSet.Name)
+	b.WithNamespace(roleInstanceSet.Namespace)
+
+	b.WithKind("RoleInstanceSet")
+	b.WithAPIVersion("workloads.x-k8s.io/v1alpha2")
+	return b, nil
 }
 func (b RoleInstanceSetApplyConfiguration) IsApplyConfiguration() {}
 

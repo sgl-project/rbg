@@ -67,7 +67,7 @@ manifests: controller-gen kustomize ## Generate WebhookConfiguration, CustomReso
 	$(KUSTOMIZE) build config/default > deploy/kubectl/manifests.yaml
 
 .PHONY: generate
-generate: controller-gen code-generator ## Generate code containing DeepCopy, DeepCopyInto, and DeepCopyObject method implementations.
+generate: controller-gen code-generator manifests ## Generate DeepCopy methods and the client in client-go/. Its apply configurations are derived from the CRDs, hence manifests.
 	$(CONTROLLER_GEN) object:headerFile="hack/boilerplate.go.txt" paths="./..."
 	./hack/update-codegen.sh $(GO_CMD) $(PROJECT_DIR)/bin
 
