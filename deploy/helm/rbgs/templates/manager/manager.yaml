@@ -24,6 +24,9 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: rbgs-controller-sa
+      # The preStop sleep keeps the webhooks serving for 5s after SIGTERM while
+      # the Pod leaves the webhook Service's endpoints. The grace period covers
+      # that sleep plus the manager's 30s graceful shutdown (5 + 30).
       terminationGracePeriodSeconds: 35
       securityContext:
         {{- toYaml .Values.controller.podSecurityContext | nindent 8 }}

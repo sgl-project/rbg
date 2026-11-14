@@ -26,7 +26,8 @@ import (
 )
 
 // managerGracefulShutdownSeconds is controller-runtime's default
-// GracefulShutdownTimeout, which cmd/rbgs does not override.
+// GracefulShutdownTimeout, which cmd/rbgs does not override;
+// TestManagerOptionsKeepDefaultGracefulShutdownTimeout in cmd/rbgs fails if it does.
 const managerGracefulShutdownSeconds = 30
 
 // assertManagerDrainsBeforeShutdown checks that the manager container sleeps in a

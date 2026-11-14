@@ -26,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
@@ -80,4 +81,15 @@ func TestMainSchemeRegistration(t *testing.T) {
 	assert.True(t, scheme.Recognizes(corev1.SchemeGroupVersion.WithKind("Pod")))
 	assert.True(t, scheme.Recognizes(appsv1.SchemeGroupVersion.WithKind("StatefulSet")))
 	assert.True(t, scheme.Recognizes(workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")))
+}
+
+// The manager Deployment's terminationGracePeriodSeconds in the Helm chart and
+// config/manager is the preStop sleep plus controller-runtime's default 30s
+// graceful shutdown (asserted in test/chart/manager_shutdown_test.go). If the
+// manager sets its own GracefulShutdownTimeout, raise that grace period to match.
+func TestManagerOptionsKeepDefaultGracefulShutdownTimeout(t *testing.T) {
+	for _, mode := range []string{WebhookModeAll, WebhookModeNone} {
+		opts := newManagerOptions(mode, nil, metricsserver.Options{}, ":8081", true)
+		assert.Nil(t, opts.GracefulShutdownTimeout, "enable-webhooks=%s", mode)
+	}
 }
