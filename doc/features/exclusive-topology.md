@@ -1,10 +1,19 @@
 # Exclusive Topology
 
-Exclusive topology is a feature that allows you to specify a topology domain for a RoleBasedGroup or RoleBasedGroupSet, ensuring that all pods belonging to the same group are scheduled on the same topology domain (e.g., the same node, rack, or zone). This is particularly useful for distributed applications that require low-latency communication between roles or need to ensure data locality.
+Exclusive topology lets a RoleBasedGroup or RoleBasedGroupSet constrain participating Pods to a topology domain, such as a node, rack, or zone. This is useful for distributed applications that require low-latency communication between roles or need to ensure data locality.
 
 ## How It Works
 
-The exclusive topology feature uses Kubernetes topology keys to define scheduling constraints. When you specify an exclusive topology key, all pods within the same RoleBasedGroup or RoleBasedGroupSet will be scheduled on nodes that share the same value for that topology key. This ensures co-location of related workloads for better performance and reduced network latency.
+The controller uses the Pod label `rbg.workloads.x-k8s.io/group-uid` to identify a group. For roles
+with exclusive topology enabled, it adds required Pod affinity for the same group and required Pod
+anti-affinity for other groups with that label. In the same namespace, this prevents another
+RoleBasedGroup from sharing the topology domain, even if that group does not enable exclusive topology.
+The cluster needs enough topology domains for these constraints.
+
+The rules do not exclude Pods without `group-uid` or Pods in other namespaces. They apply when Pods
+are scheduled and do not evict already running Pods if conditions later change. A topology domain can
+be a node, zone, or other domain defined by a node label; some clusters restrict required Pod
+anti-affinity to `kubernetes.io/hostname`.
 
 ## Annotation
 
@@ -28,6 +37,10 @@ To skip exclusive-topology affinity injection for a specific role, add this anno
 rbg.workloads.x-k8s.io/role-disable-exclusive: "true"
 ```
 
+That role keeps its group label, so its Pods can still be affinity targets for enabled roles in the
+same group. If same-group Pods already occupy multiple topology domains, enabled roles may follow
+any of those domains.
+
 ## Example: RoleBasedGroup with Exclusive Topology
 
 The [rbg-with-exclusive-topology example](../../examples/basic/rbg/scheduling/exclusive-topology.yaml) demonstrates how to use exclusive topology with a RoleBasedGroup, ensuring all roles are scheduled on the same node.
@@ -40,9 +53,19 @@ RoleBasedGroupSet extends the exclusive topology feature to multiple groups, whe
 
 In this example:
 
-- 2 RoleBasedGroups will be created (as specified by `replicas: 2`)
+- 3 RoleBasedGroups will be created (as specified by `replicas: 3`)
 - Each RoleBasedGroup will have its pods scheduled on a separate node
 - All pods within each individual RoleBasedGroup will be co-located on the same node
+
+## Existing workloads
+
+Enabling or changing exclusive topology on a running RBG changes its Pod templates and may replace
+Pods. Upgrading the controller can also replace Pods of RBGs already configured for exclusive
+topology, because the affinity selector changes from `group-unique-hash` to `group-uid`.
+
+Existing workload selectors are preserved. If a selector requires a different `group-uid`, the
+controller reports a conflict. When both required Pod affinity and anti-affinity already use the
+topology key, the controller keeps them without adding its own; check their selectors.
 
 ## Use Cases
 

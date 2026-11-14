@@ -17,8 +17,12 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -308,8 +312,201 @@ func RunRbgControllerTestCases(f *framework.Framework) {
 					f.ExpectWorkloadV2ExclusiveTopology(rbg, rbg.Spec.Roles[2], topologyKey)
 				},
 			)
+
+			registerExclusiveTopologySchedulingCases(f)
+			registerExclusiveTopologyConfigurationCases(f)
 		},
 	)
+}
+
+func registerExclusiveTopologySchedulingCases(f *framework.Framework) {
+	ginkgo.It("schedules exclusive groups together and blocks other groups on the same node", func() {
+		topologyKey := corev1.LabelHostname
+		group := wrappersv2.BuildBasicRoleBasedGroup("exclusive-a", f.Namespace).
+			WithAnnotations(map[string]string{constants.GroupExclusiveTopologyKey: topologyKey}).
+			WithRoles([]workloadsv1alpha2.RoleSpec{
+				wrappersv2.BuildStandaloneRole("frontend").Obj(),
+				wrappersv2.BuildStandaloneRole("backend").Obj(),
+			}).Obj()
+		f.RegisterDebugFn(func() { dumpDebugInfo(f, group) })
+		gomega.Expect(f.Client.Create(f.Ctx, group)).To(gomega.Succeed())
+
+		var nodeName string
+		gomega.Eventually(func() error {
+			pods := &corev1.PodList{}
+			if err := f.Client.List(f.Ctx, pods, client.InNamespace(f.Namespace),
+				client.MatchingLabels{constants.GroupNameLabelKey: group.Name}); err != nil {
+				return err
+			}
+			if len(pods.Items) != 2 {
+				return fmt.Errorf("expected two pods, got %d", len(pods.Items))
+			}
+			nodeName = pods.Items[0].Spec.NodeName
+			if nodeName == "" || pods.Items[1].Spec.NodeName != nodeName {
+				return fmt.Errorf("pods are not scheduled on the same node")
+			}
+			for _, pod := range pods.Items {
+				if pod.Labels[constants.GroupUIDLabelKey] != group.GenGroupUniqueKey() {
+					return fmt.Errorf("pod %s does not have the group identity label", pod.Name)
+				}
+			}
+			return nil
+		}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+
+		node := &corev1.Node{}
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Name: nodeName}, node)).To(gomega.Succeed())
+		hostname := node.Labels[topologyKey]
+		gomega.Expect(hostname).NotTo(gomega.BeEmpty())
+		for _, tc := range []struct {
+			name      string
+			exclusive bool
+		}{
+			{name: "ordinary-b"},
+			{name: "exclusive-c", exclusive: true},
+		} {
+			other := wrappersv2.BuildBasicRoleBasedGroup(tc.name, f.Namespace).Obj()
+			if tc.exclusive {
+				other.Annotations = map[string]string{constants.GroupExclusiveTopologyKey: topologyKey}
+			}
+			other.Spec.Roles[0].GetTemplate().Spec.NodeSelector = map[string]string{topologyKey: hostname}
+			gomega.Expect(f.Client.Create(f.Ctx, other)).To(gomega.Succeed())
+			expectGroupBlockedByAntiAffinity(f, other.Name)
+		}
+	})
+
+	ginkgo.It("blocks an exclusive group from a node occupied by an ordinary group", func() {
+		ordinary := wrappersv2.BuildBasicRoleBasedGroup("ordinary-first", f.Namespace).Obj()
+		gomega.Expect(f.Client.Create(f.Ctx, ordinary)).To(gomega.Succeed())
+
+		var nodeName string
+		gomega.Eventually(func() error {
+			pods := &corev1.PodList{}
+			if err := f.Client.List(f.Ctx, pods, client.InNamespace(f.Namespace),
+				client.MatchingLabels{constants.GroupNameLabelKey: ordinary.Name}); err != nil {
+				return err
+			}
+			if len(pods.Items) != 1 || pods.Items[0].Spec.NodeName == "" {
+				return fmt.Errorf("expected one scheduled pod for %s", ordinary.Name)
+			}
+			nodeName = pods.Items[0].Spec.NodeName
+			return nil
+		}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+
+		node := &corev1.Node{}
+		gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Name: nodeName}, node)).To(gomega.Succeed())
+		hostname := node.Labels[corev1.LabelHostname]
+		gomega.Expect(hostname).NotTo(gomega.BeEmpty())
+		exclusive := wrappersv2.BuildBasicRoleBasedGroup("exclusive-second", f.Namespace).
+			WithAnnotations(map[string]string{constants.GroupExclusiveTopologyKey: corev1.LabelHostname}).Obj()
+		exclusive.Spec.Roles[0].GetTemplate().Spec.NodeSelector = map[string]string{corev1.LabelHostname: hostname}
+		gomega.Expect(f.Client.Create(f.Ctx, exclusive)).To(gomega.Succeed())
+		expectGroupBlockedByAntiAffinity(f, exclusive.Name)
+	})
+}
+
+func registerExclusiveTopologyConfigurationCases(f *framework.Framework) {
+	ginkgo.It("uses a disabled role as a same-group affinity target", func() {
+		disabled := wrappersv2.BuildStandaloneRole("disabled").Obj()
+		disabled.GetTemplate().Annotations = map[string]string{constants.DisableExclusiveKeyAnnotationKey: "true"}
+		enabled := wrappersv2.BuildStandaloneRole("enabled").WithDependencies([]string{"disabled"}).Obj()
+		group := wrappersv2.BuildBasicRoleBasedGroup("disabled-anchor", f.Namespace).
+			WithAnnotations(map[string]string{constants.GroupExclusiveTopologyKey: corev1.LabelHostname}).
+			WithRoles([]workloadsv1alpha2.RoleSpec{disabled, enabled}).Obj()
+		gomega.Expect(f.Client.Create(f.Ctx, group)).To(gomega.Succeed())
+
+		gomega.Eventually(func() error {
+			pods := &corev1.PodList{}
+			if err := f.Client.List(f.Ctx, pods, client.InNamespace(f.Namespace),
+				client.MatchingLabels{constants.GroupNameLabelKey: group.Name}); err != nil {
+				return err
+			}
+			if len(pods.Items) != 2 || pods.Items[0].Spec.NodeName == "" ||
+				pods.Items[0].Spec.NodeName != pods.Items[1].Spec.NodeName {
+				return fmt.Errorf("expected both roles on the disabled role's node")
+			}
+			for _, pod := range pods.Items {
+				if pod.Labels[constants.GroupUIDLabelKey] != group.GenGroupUniqueKey() {
+					return fmt.Errorf("pod %s is missing the group identity label", pod.Name)
+				}
+				if pod.Labels[constants.RoleNameLabelKey] == disabled.Name && pod.Spec.Affinity != nil {
+					return fmt.Errorf("disabled role unexpectedly has injected affinity")
+				}
+			}
+			return nil
+		}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("reconciles exclusive topology annotation changes on an existing group", func() {
+		group := wrappersv2.BuildBasicRoleBasedGroup("toggle-exclusive", f.Namespace).Obj()
+		gomega.Expect(f.Client.Create(f.Ctx, group)).To(gomega.Succeed())
+		groupPods := func() (*corev1.PodList, error) {
+			pods := &corev1.PodList{}
+			err := f.Client.List(f.Ctx, pods, client.InNamespace(f.Namespace),
+				client.MatchingLabels{constants.GroupNameLabelKey: group.Name})
+			return pods, err
+		}
+		gomega.Eventually(func() bool {
+			pods, err := groupPods()
+			return err == nil && len(pods.Items) == 1 && pods.Items[0].Status.Phase == corev1.PodRunning
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+
+		setTopology := func(value string) {
+			updateRbgV2(f, group, func(current *workloadsv1alpha2.RoleBasedGroup) {
+				if current.Annotations == nil {
+					current.Annotations = map[string]string{}
+				}
+				if value == "" {
+					delete(current.Annotations, constants.GroupExclusiveTopologyKey)
+				} else {
+					current.Annotations[constants.GroupExclusiveTopologyKey] = value
+				}
+			})
+		}
+
+		setTopology(corev1.LabelHostname)
+		gomega.Eventually(func() bool {
+			pods, err := groupPods()
+			if err != nil || len(pods.Items) != 1 || pods.Items[0].Spec.Affinity == nil ||
+				pods.Items[0].Spec.Affinity.PodAffinity == nil {
+				return false
+			}
+			terms := pods.Items[0].Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution
+			return len(terms) == 1 && terms[0].LabelSelector != nil &&
+				len(terms[0].LabelSelector.MatchExpressions) == 1 &&
+				terms[0].LabelSelector.MatchExpressions[0].Key == constants.GroupUIDLabelKey
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+
+		setTopology("")
+		gomega.Eventually(func() bool {
+			pods, err := groupPods()
+			return err == nil && len(pods.Items) == 1 && pods.Items[0].Spec.Affinity == nil
+		}, utils.Timeout, utils.Interval).Should(gomega.BeTrue())
+	})
+}
+
+func expectGroupBlockedByAntiAffinity(f *framework.Framework, groupName string) {
+	ginkgo.GinkgoHelper()
+	gomega.Eventually(func() error {
+		pods := &corev1.PodList{}
+		if err := f.Client.List(f.Ctx, pods, client.InNamespace(f.Namespace),
+			client.MatchingLabels{constants.GroupNameLabelKey: groupName}); err != nil {
+			return err
+		}
+		if len(pods.Items) != 1 || pods.Items[0].Spec.NodeName != "" {
+			return fmt.Errorf("expected one unscheduled pod for %s", groupName)
+		}
+		events := &corev1.EventList{}
+		if err := f.Client.List(f.Ctx, events, client.InNamespace(f.Namespace)); err != nil {
+			return err
+		}
+		for _, event := range events.Items {
+			if event.InvolvedObject.UID == pods.Items[0].UID && event.Reason == "FailedScheduling" &&
+				strings.Contains(event.Message, "anti-affinity") {
+				return nil
+			}
+		}
+		return fmt.Errorf("no anti-affinity scheduling event for %s", pods.Items[0].Name)
+	}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
 }
 
 // updateRbgV2 updates a v1alpha2 RoleBasedGroup with the given update function.
