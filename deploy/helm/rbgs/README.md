@@ -7,6 +7,8 @@ CRD upgrade Job into your Kubernetes cluster.
 ## What Gets Installed
 
 - **Controller manager** (`rbgs-controller-manager` Deployment) reconciling RBG workloads.
+- **PodDisruptionBudget** (optional, enabled by default) that limits voluntary evictions, such as
+  node drains, to one controller pod at a time.
 - **RBAC**: ServiceAccounts, ClusterRole/ClusterRoleBinding, and cert Role/RoleBinding.
 - **Webhooks**: validating and mutating webhook configurations and the webhook Service
   (certificates are bootstrapped by the controller itself, no cert-manager required).
@@ -132,6 +134,9 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `controller.resources` | Controller container resources | see `values.yaml` |
 | `controller.nodeSelector` | Controller pod node selector | `{}` |
 | `controller.tolerations` | Controller pod tolerations | `[]` |
+| `controller.affinity` | Controller pod affinity | `{}` |
+| `controller.topologySpreadConstraints` | Controller pod topology spread constraints. The default prefers one replica per node (`kubernetes.io/hostname`, `ScheduleAnyway`); `[]` removes it | see `values.yaml` |
+| `controller.podDisruptionBudget.enabled` | Create a PodDisruptionBudget for the controller pods (`maxUnavailable: 1`, `unhealthyPodEvictionPolicy: AlwaysAllow`) | `true` |
 | `controller.podAnnotations` | Controller pod annotations | `{}` |
 | `controller.podSecurityContext` | Controller pod security context | `{}` |
 | `controller.securityContext` | Controller container security context | `{}` |

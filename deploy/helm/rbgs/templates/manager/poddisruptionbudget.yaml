@@ -1,0 +1,16 @@
+{{- $pdb := .Values.controller.podDisruptionBudget | default dict }}
+{{- if $pdb.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: rbgs-controller-manager
+  namespace: {{ .Release.Namespace }}
+  labels:
+    control-plane: rbgs-controller
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      control-plane: rbgs-controller
+  unhealthyPodEvictionPolicy: AlwaysAllow
+{{- end }}
