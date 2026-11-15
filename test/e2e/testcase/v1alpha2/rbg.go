@@ -500,6 +500,7 @@ func expectGroupBlockedByAntiAffinity(f *framework.Framework, groupName string) 
 			return err
 		}
 		for _, event := range events.Items {
+			// The scheduler's message identifies the constraint behind FailedScheduling.
 			if event.InvolvedObject.UID == pods.Items[0].UID && event.Reason == "FailedScheduling" &&
 				strings.Contains(event.Message, "anti-affinity") {
 				return nil

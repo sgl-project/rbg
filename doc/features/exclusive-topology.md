@@ -8,7 +8,9 @@ The controller uses the Pod label `rbg.workloads.x-k8s.io/group-uid` to identify
 with exclusive topology enabled, it adds required Pod affinity for the same group and required Pod
 anti-affinity for other groups with that label. In the same namespace, this prevents another
 RoleBasedGroup from sharing the topology domain, even if that group does not enable exclusive topology.
-The cluster needs enough topology domains for these constraints.
+Plan for one eligible topology domain per concurrent exclusive group, in addition to domains
+already occupied by other groups in the namespace. An ordinary group that schedules first can
+leave an exclusive group Pending if it occupies the last eligible domain.
 
 The rules do not exclude Pods without `group-uid` or Pods in other namespaces. They apply when Pods
 are scheduled and do not evict already running Pods if conditions later change. A topology domain can
@@ -60,12 +62,17 @@ In this example:
 ## Existing workloads
 
 Enabling or changing exclusive topology on a running RBG changes its Pod templates and may replace
-Pods. Upgrading the controller can also replace Pods of RBGs already configured for exclusive
-topology, because the affinity selector changes from `group-unique-hash` to `group-uid`.
+Pods. The controller upgrade replaces the generated `group-unique-hash` affinity selector with
+`group-uid` on already-configured RoleInstanceSet, Deployment, StatefulSet, and LeaderWorkerSet
+workloads. This may replace their Pods, including running Pods whose templates carry the old
+label as a workaround. The upgrade activates the namespace-scoped mutual exclusion for newly
+scheduled Pods, including Pods of groups without the annotation.
 
-Existing workload selectors are preserved. If a selector requires a different `group-uid`, the
-controller reports a conflict. When both required Pod affinity and anti-affinity already use the
-topology key, the controller keeps them without adding its own; check their selectors.
+Existing workload selectors are preserved. If an existing selector pins a conflicting `group-uid`,
+reconciliation for that role stops before applying the workload and the controller reports the
+conflict in a `FailedReconcileWorkload` Warning event on the RoleBasedGroup. Disable exclusive
+topology for the affected role to resume reconciliation with that selector. When both required Pod
+affinity and anti-affinity already use the topology key, the controller uses those rules as written.
 
 ## Use Cases
 

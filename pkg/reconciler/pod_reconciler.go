@@ -24,6 +24,7 @@ import (
 	"sort"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/strategicpatch"
@@ -168,6 +169,12 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 func podTemplateSpecEqual(template1, template2 corev1.PodTemplateSpec) (bool, error) {
 	if equal, err := objectMetaEqual(template1.ObjectMeta, template2.ObjectMeta); !equal {
 		return false, fmt.Errorf("objectMeta not equal: %s", err.Error())
+	}
+
+	// The generated affinity can change without changing the role revision.
+	if template2.Annotations[constants.GroupExclusiveTopologyKey] != "" &&
+		!apiequality.Semantic.DeepEqual(template1.Spec.Affinity, template2.Spec.Affinity) {
+		return false, fmt.Errorf("podTemplate affinity not equal")
 	}
 
 	if equal, err := podSpecEqual(template1.Spec, template2.Spec); !equal {

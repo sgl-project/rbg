@@ -22,6 +22,7 @@ import (
 	"github.com/onsi/ginkgo/v2"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 )
@@ -57,6 +58,10 @@ type releaseProfile struct {
 	// rewrites records what the hop from this release is expected to change.
 	// See recordedRewrites.
 	rewrites recordedRewrites
+
+	// exclusiveTopologyFromLabel is the generated selector key in the from-release.
+	// Its replacement is allowed to roll only the isolated exclusive-topology fixture.
+	exclusiveTopologyFromLabel string
 }
 
 // bundleMarker identifies one observable difference between the CRD bundle of the
@@ -124,8 +129,9 @@ func v070Profile() *releaseProfile {
 				return crdExists(f, warmupCRDName)
 			},
 		},
-		prunesRestartPolicyConfig: true,
-		rewrites:                  rewrites,
+		prunesRestartPolicyConfig:  true,
+		rewrites:                   rewrites,
+		exclusiveTopologyFromLabel: constants.GroupUniqueHashLabelKey,
 	}
 }
 
@@ -151,8 +157,9 @@ func v080Profile() *releaseProfile {
 			description: "the update strategy type enum on CRD " + risCRDName,
 			present:     risStrategyEnumPresent,
 		},
-		prunesRestartPolicyConfig: false,
-		rewrites:                  strategyHealRewrites(),
+		prunesRestartPolicyConfig:  false,
+		rewrites:                   strategyHealRewrites(),
+		exclusiveTopologyFromLabel: constants.GroupUniqueHashLabelKey,
 	}
 }
 

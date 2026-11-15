@@ -24,6 +24,7 @@ import (
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -92,6 +93,9 @@ func RunUpgradeSpecs(f *framework.Framework) {
 		// is a claim midRollPodsBefore cannot express because part of that set is meant to
 		// have been replaced by then.
 		midRollPodsAtPartition map[string]PodFacts
+
+		exclusiveGroup  *workloadsv1alpha2.RoleBasedGroup
+		exclusiveBefore exclusiveTopologySnapshot
 	)
 
 	ginkgo.BeforeAll(
@@ -102,6 +106,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			pending = buildPendingFixture(f.Namespace)
 			legacySet = buildV1alpha1SetFixture(f.Namespace)
 			legacySetV2 = buildLegacySetFixture(f.Namespace)
+			exclusiveGroup = createExclusiveTopologyFixture(f, fromProfile().exclusiveTopologyFromLabel)
 		},
 	)
 
@@ -244,6 +249,13 @@ func RunUpgradeSpecs(f *framework.Framework) {
 		},
 	)
 
+	ginkgo.It("[phase 1] records a running group using the legacy exclusive topology selector", func() {
+		legacyLabel := fromProfile().exclusiveTopologyFromLabel
+		gomega.Eventually(func(g gomega.Gomega) {
+			exclusiveBefore = captureExclusiveTopology(g, f, exclusiveGroup, legacyLabel)
+		}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	})
+
 	// ---------------------------------------------------------------------------
 	// Phase 2: perform the upgrade.
 	// ---------------------------------------------------------------------------
@@ -333,6 +345,20 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			fs.report()
 		},
 	)
+
+	ginkgo.It("[phase 3] migrates the generated exclusive topology selector", func() {
+		want := exclusiveBefore.ris.Spec.DeepCopy()
+		want.RoleInstanceTemplate.Components[0].Template.Spec.Affinity = exclusiveTopologyAffinity(exclusiveGroup, constants.GroupUIDLabelKey)
+		gomega.Eventually(func(g gomega.Gomega) {
+			after := captureExclusiveTopology(g, f, exclusiveGroup, constants.GroupUIDLabelKey)
+			g.Expect(after.ris.UID).To(gomega.Equal(exclusiveBefore.ris.UID))
+			g.Expect(storedSpecDiff(want, after.ris.Spec)).To(gomega.BeEmpty())
+			g.Expect(after.ris.Status.UpdateRevision).NotTo(gomega.Equal(exclusiveBefore.ris.Status.UpdateRevision))
+			g.Expect(after.pod.UID).NotTo(gomega.Equal(exclusiveBefore.pod.UID))
+			g.Expect(after.pod.Labels[appsv1.ControllerRevisionHashLabelKey]).NotTo(
+				gomega.Equal(exclusiveBefore.pod.Labels[appsv1.ControllerRevisionHashLabelKey]))
+		}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	})
 
 	ginkgo.It(
 		fmt.Sprintf("[phase 3] leaves the stored spec of %s objects as it was written", fromGitTag()), func() {
@@ -519,6 +545,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			// by the hop, so narrowing it again here would be a finding.
 			mark := metav1.Now()
 			baseline := captureAll(gomega.Default, f)
+			exclusiveBaseline := captureExclusiveTopology(gomega.Default, f, exclusiveGroup, constants.GroupUIDLabelKey)
 
 			restartController(f, fxV1alpha1)
 
@@ -528,6 +555,12 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			fs := &findings{}
 			runDetectors(fs, f, baseline, captureAll(gomega.Default, f), mark, recordedRewrites{}, nil)
 			fs.report()
+			after := captureExclusiveTopology(gomega.Default, f, exclusiveGroup, constants.GroupUIDLabelKey)
+			gomega.Expect(after.ris.Generation).To(gomega.Equal(exclusiveBaseline.ris.Generation))
+			gomega.Expect(after.ris.Status.UpdateRevision).To(gomega.Equal(exclusiveBaseline.ris.Status.UpdateRevision))
+			gomega.Expect(after.pod.UID).To(gomega.Equal(exclusiveBaseline.pod.UID))
+			gomega.Expect(after.pod.Labels[appsv1.ControllerRevisionHashLabelKey]).To(
+				gomega.Equal(exclusiveBaseline.pod.Labels[appsv1.ControllerRevisionHashLabelKey]))
 		},
 	)
 
