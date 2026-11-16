@@ -51,37 +51,43 @@ func usesSelectiveScaleDown(role *workloadsv1alpha2.RoleSpec, set *workloadsv1al
 // one conditional writer while selective scaling is active. Ordinary SSA and its
 // ownership handoff resume only after E and the sparse record are cleared.
 // Conflicts return to the workqueue for a fresh parent/child read and plan.
-func (r *RoleInstanceSetReconciler) reconcileSelectiveMembership(ctx context.Context, observed *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, strategy *workloadsv1alpha2.RollingUpdate, revision string) error {
+func (r *RoleInstanceSetReconciler) reconcileSelectiveMembership(ctx context.Context, observed *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, strategy *workloadsv1alpha2.RollingUpdate, revision string) (*workloadsv1alpha2.RoleInstanceSet, error) {
 	parent, err := r.readSelectiveParent(ctx, observed, role)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	old, exists, err := r.readSelectiveChild(ctx, parent, role)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	next, err := planSelectiveMembership(old, exists, role)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	record := ordinals.Record(next)
 	desired, err := r.buildSelectiveTarget(ctx, parent, role, strategy, revision, old, record)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if !exists {
-		return r.client.Create(ctx, desired, client.FieldOwner(utils.FieldManager))
+		if err := r.client.Create(ctx, desired, client.FieldOwner(utils.FieldManager)); err != nil {
+			return nil, err
+		}
+		return desired, nil
 	}
 	updated := mergeSelectiveTarget(old, desired, record)
 	if apiequality.Semantic.DeepEqual(old.Spec, updated.Spec) && apiequality.Semantic.DeepEqual(old.Annotations, updated.Annotations) &&
 		apiequality.Semantic.DeepEqual(old.Labels, updated.Labels) && apiequality.Semantic.DeepEqual(old.OwnerReferences, updated.OwnerReferences) {
-		return nil
+		return old, nil
 	}
 	patch, err := buildSelectivePatch(old, updated, record)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	return r.client.Patch(ctx, updated, client.RawPatch(types.MergePatchType, patch), client.FieldOwner(utils.FieldManager))
+	if err := r.client.Patch(ctx, updated, client.RawPatch(types.MergePatchType, patch), client.FieldOwner(utils.FieldManager)); err != nil {
+		return nil, err
+	}
+	return updated, nil
 }
 
 func (r *RoleInstanceSetReconciler) readSelectiveParent(ctx context.Context, observed *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec) (*workloadsv1alpha2.RoleBasedGroup, error) {

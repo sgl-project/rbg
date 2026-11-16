@@ -1125,7 +1125,7 @@ func TestReconcileStatefulSet_ReadFailureDoesNotScaleToZero(t *testing.T) {
 		},
 	}).Build()
 
-	err = NewStatefulSetReconciler(scheme, c).reconcileStatefulSet(ctx, rbg, role, nil, revisionKey)
+	_, err = NewStatefulSetReconciler(scheme, c).reconcileStatefulSet(ctx, rbg, role, nil, revisionKey)
 	assert.True(t, apierrors.IsForbidden(err), "expected the Pod List error to propagate, got %v", err)
 	assert.Empty(t, writes, "StatefulSet must not be written when a rollout read fails")
 

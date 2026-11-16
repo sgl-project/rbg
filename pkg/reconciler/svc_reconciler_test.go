@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -98,10 +99,11 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 	).Build()
 
 	reconciler := NewServiceReconciler(cl)
+	workloads := []client.Object{statefulset, roleInstanceSet, leaderOnlyRoleInstanceSet}
 
 	t.Run("successful reconciliation", func(t *testing.T) {
 		for i := 0; i < len(rbg.Spec.Roles); i++ {
-			err := reconciler.reconcileHeadlessService(context.TODO(), rbg, &rbg.Spec.Roles[i])
+			err := reconciler.reconcileHeadlessService(context.TODO(), rbg, &rbg.Spec.Roles[i], workloads[i])
 			assert.NoError(t, err)
 
 			// Check that service was created
@@ -126,6 +128,66 @@ func TestServiceReconciler_reconcileHeadlessService(t *testing.T) {
 			assert.Equal(t, rbg.GetWorkloadName(&rbg.Spec.Roles[i]), svc.OwnerReferences[0].Name)
 		}
 	})
+}
+
+func TestServiceReconciler_reconcileHeadlessService_UsesProvidedWorkload(t *testing.T) {
+	s := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(s))
+	require.NoError(t, appsv1.AddToScheme(s))
+	require.NoError(t, corev1.AddToScheme(s))
+
+	tests := []struct {
+		name     string
+		role     workloadsv1alpha2.RoleSpec
+		workload client.Object
+	}{
+		{
+			name: "role instance set",
+			role: wrappersv2.BuildStandaloneRole("ris-role").
+				WithWorkload("workloads.x-k8s.io/v1alpha2", "RoleInstanceSet").Obj(),
+			workload: &workloadsv1alpha2.RoleInstanceSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-rbg-ris-role", Namespace: "default", UID: "ris-uid",
+				},
+			},
+		},
+		{
+			name: "stateful set",
+			role: wrappersv2.BuildStandaloneRole("sts-role").
+				WithWorkload("apps/v1", "StatefulSet").Obj(),
+			workload: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-rbg-sts-role", Namespace: "default", UID: "sts-uid",
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+				WithRoles([]workloadsv1alpha2.RoleSpec{tt.role}).Obj()
+			backend := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg).Build()
+			reconciler := NewServiceReconciler(backend)
+
+			require.NoError(t, reconciler.reconcileHeadlessService(
+				context.Background(), rbg, &rbg.Spec.Roles[0], tt.workload,
+			))
+
+			svcName, err := utils.GetCompatibleHeadlessServiceName(
+				context.Background(), backend, rbg, &rbg.Spec.Roles[0],
+			)
+			require.NoError(t, err)
+			svc := &corev1.Service{}
+			require.NoError(t, backend.Get(context.Background(), client.ObjectKey{
+				Name: svcName, Namespace: rbg.Namespace,
+			}, svc))
+			require.Len(t, svc.OwnerReferences, 1)
+			assert.Equal(t, tt.workload.GetUID(), svc.OwnerReferences[0].UID)
+			assert.Equal(t, tt.role.GetWorkloadSpec().APIVersion, svc.OwnerReferences[0].APIVersion)
+			assert.Equal(t, tt.role.GetWorkloadSpec().Kind, svc.OwnerReferences[0].Kind)
+		})
+	}
 }
 
 func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace(t *testing.T) {
@@ -158,7 +220,7 @@ func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace(t *te
 	reconciler := NewServiceReconciler(cl)
 
 	roleRef := &rbg.Spec.Roles[0]
-	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef))
+	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef, roleInstanceSet))
 
 	svcName, err := utils.GetCompatibleHeadlessServiceName(context.Background(), cl, rbg, roleRef)
 	require.NoError(t, err)
@@ -170,7 +232,7 @@ func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace(t *te
 	roleRef.LeaderWorkerPattern.SharedServiceSelection = ptr.To(
 		workloadsv1alpha2.SharedServiceSelectionLeaderOnly,
 	)
-	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef))
+	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef, roleInstanceSet))
 
 	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, svc))
 	assert.Equal(t, "leader", svc.Spec.Selector[constants.ComponentNameLabelKey])
@@ -208,7 +270,7 @@ func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace_Rever
 	roleRef := &rbg.Spec.Roles[0]
 
 	// Start with LeaderOnly — should have component label in selector
-	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef))
+	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef, roleInstanceSet))
 
 	svcName, err := utils.GetCompatibleHeadlessServiceName(context.Background(), cl, rbg, roleRef)
 	require.NoError(t, err)
@@ -221,7 +283,7 @@ func TestServiceReconciler_reconcileHeadlessService_UpdatesSelectorInPlace_Rever
 	roleRef.LeaderWorkerPattern.SharedServiceSelection = ptr.To(
 		workloadsv1alpha2.SharedServiceSelectionAll,
 	)
-	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef))
+	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef, roleInstanceSet))
 
 	require.NoError(t, cl.Get(context.Background(), types.NamespacedName{Name: svcName, Namespace: rbg.Namespace}, svc))
 	assert.NotContains(t, svc.Spec.Selector, constants.ComponentNameLabelKey)
@@ -258,7 +320,7 @@ func TestServiceReconciler_reconcileHeadlessService_StatefulSetLeaderWorkerKeeps
 	reconciler := NewServiceReconciler(cl)
 
 	roleRef := &rbg.Spec.Roles[0]
-	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef))
+	require.NoError(t, reconciler.reconcileHeadlessService(context.Background(), rbg, roleRef, statefulset))
 
 	svcName, err := utils.GetCompatibleHeadlessServiceName(context.Background(), cl, rbg, roleRef)
 	require.NoError(t, err)

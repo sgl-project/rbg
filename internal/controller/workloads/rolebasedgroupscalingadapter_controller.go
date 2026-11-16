@@ -158,8 +158,8 @@ func (r *RoleBasedGroupScalingAdapterReconciler) Reconcile(ctx context.Context, 
 		rbgScalingAdapterSpecApplyConfig := ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter).
 			WithSpec(spec)
 
-		if err := utils.PatchObjectApplyConfiguration(
-			ctx, r.client, rbgScalingAdapterSpecApplyConfig, utils.PatchSpec,
+		if _, err := utils.ApplyObjectConfiguration(
+			ctx, r.client, rbgScalingAdapterSpecApplyConfig, utils.ApplySpec,
 		); err != nil {
 			logger.Error(err, "Failed to init spec.replicas", "rbgScalingAdapterName", rbgScalingAdapterName)
 			return ctrl.Result{}, err
@@ -269,7 +269,8 @@ func (r *RoleBasedGroupScalingAdapterReconciler) UpdateAdapterOwnerReference(
 			WithUID(rbg.GetUID()).
 			WithBlockOwnerDeletion(true),
 	)
-	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchSpec)
+	_, err := utils.ApplyObjectConfiguration(ctx, r.client, rbgScalingAdapterApplyConfig, utils.ApplySpec)
+	return err
 }
 
 func ToRoleBasedGroupScalingAdapterApplyConfiguration(rbgScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter) *applyconfiguration.RoleBasedGroupScalingAdapterApplyConfiguration {
@@ -334,7 +335,8 @@ func (r *RoleBasedGroupScalingAdapterReconciler) patchAdapterStatus(
 
 	rbgScalingAdapterApplyConfig := ToRoleBasedGroupScalingAdapterStatusPatchApplyConfiguration(rbgScalingAdapter).
 		WithStatus(statusApplyConfig)
-	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgScalingAdapterApplyConfig, utils.PatchStatus)
+	_, err = utils.ApplyObjectConfiguration(ctx, r.client, rbgScalingAdapterApplyConfig, utils.ApplyStatus)
+	return err
 }
 
 func (r *RoleBasedGroupScalingAdapterReconciler) getLatestAdapterStatus(
