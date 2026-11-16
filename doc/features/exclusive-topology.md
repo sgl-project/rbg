@@ -68,6 +68,14 @@ workloads. This may replace their Pods, including running Pods whose templates c
 label as a workaround. The upgrade activates the namespace-scoped mutual exclusion for newly
 scheduled Pods, including Pods of groups without the annotation.
 
+Before upgrading, verify that replacement Pods can satisfy both the same-group affinity and the
+cross-group anti-affinity for the configured topology key. A group using the `group-unique-hash`
+workaround may already share its domain with another RBG in the same namespace. After the upgrade,
+the other RBG's Pods can prevent a replacement Pod from scheduling in that domain. If no eligible
+domain satisfies both rules, the replacement stays Pending and a single-replica role can become
+unavailable. A free domain elsewhere may still be unusable while same-group Pods remain in the
+shared domain, because the required affinity follows those Pods.
+
 Existing workload selectors are preserved. If an existing selector pins a conflicting `group-uid`,
 reconciliation for that role stops before applying the workload and the controller reports the
 conflict in a `FailedReconcileWorkload` Warning event on the RoleBasedGroup. Disable exclusive
