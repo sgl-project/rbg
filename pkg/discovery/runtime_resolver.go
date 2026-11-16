@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
 
 	v1 "k8s.io/api/core/v1"
 	k8sruntime "k8s.io/apimachinery/pkg/runtime"
@@ -522,15 +523,83 @@ func positionVocabulary(role *workloadsv1alpha2.RoleSpec) (map[string]struct{}, 
 	}
 }
 
+// successfulRenderWarningReasons are the warnings a healthy, successfully
+// rendering object still carries (KEP-531 chose events over conditions for
+// alpha). They are deduped across reconciles; render failures are live
+// state and keep firing every reconcile.
+var successfulRenderWarningReasons = map[string]struct{}{
+	ReasonUnaimedContainerPatch:      {},
+	ReasonEngineRuntimeNameCollision: {},
+	ReasonEngineRuntimeEnvCollision:  {},
+}
+
+// renderWarningLedger dedupes the successful-render warning events across
+// reconciles, keyed by object UID, generation and message: events fire on
+// transitions, not on every resync of an unchanged object (#528/#510). The
+// generation covers reference-set changes — the references live in the
+// spec, and every spec write bumps it — while a profile-content change
+// surfaces as a new message and re-fires. Objects without a UID (direct
+// test fixtures) skip the dedupe: without identity there is nothing to
+// dedupe against.
+var renderWarningLedger = &engineRuntimeWarningLedger{
+	seen: make(map[types.UID]*engineRuntimeObjectWarnings),
+}
+
+const warningLedgerMaxObjects = 4096
+
+type engineRuntimeWarningLedger struct {
+	mu   sync.Mutex
+	seen map[types.UID]*engineRuntimeObjectWarnings
+}
+
+type engineRuntimeObjectWarnings struct {
+	generation int64
+	messages   map[string]struct{}
+}
+
+func (l *engineRuntimeWarningLedger) shouldEmit(uid types.UID, generation int64, fingerprint string) bool {
+	if uid == "" {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	w, ok := l.seen[uid]
+	if !ok {
+		if len(l.seen) >= warningLedgerMaxObjects {
+			// Bound memory without tracking recency: drop the ledger and
+			// re-arm every warning once. The worst case is re-emission,
+			// which is exactly the undeduped behavior.
+			l.seen = make(map[types.UID]*engineRuntimeObjectWarnings)
+		}
+		w = &engineRuntimeObjectWarnings{generation: generation, messages: make(map[string]struct{})}
+		l.seen[uid] = w
+	}
+	if w.generation != generation {
+		w.generation = generation
+		w.messages = make(map[string]struct{})
+	}
+	if _, dup := w.messages[fingerprint]; dup {
+		return false
+	}
+	w.messages[fingerprint] = struct{}{}
+	return true
+}
+
 // emitEngineRuntimeWarning logs the warning and, when a recorder is set,
 // emits a v1.EventTypeWarning event on the referencing RBG. Nil recorder is
-// tolerated (log-only).
+// tolerated (log-only). Successful-render warnings are deduped across
+// reconciles through renderWarningLedger; the log line always fires.
 func emitEngineRuntimeWarning(
 	ctx context.Context, recorder record.EventRecorder,
 	rbg *workloadsv1alpha2.RoleBasedGroup, reason, message string,
 ) {
 	log.FromContext(ctx).Info(message)
-	if recorder != nil {
-		recorder.Event(rbg, v1.EventTypeWarning, reason, message)
+	if recorder == nil {
+		return
 	}
+	if _, ok := successfulRenderWarningReasons[reason]; ok &&
+		!renderWarningLedger.shouldEmit(rbg.UID, rbg.Generation, reason+": "+message) {
+		return
+	}
+	recorder.Event(rbg, v1.EventTypeWarning, reason, message)
 }

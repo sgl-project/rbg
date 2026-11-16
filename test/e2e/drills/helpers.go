@@ -347,8 +347,9 @@ func sampleLWPRenders(f *framework.Framework) map[string]corev1.PodTemplateSpec 
 }
 
 // engineRuntimeEvent reports whether a warning event with the given reason was
-// recorded for the fixture, and its message. Events repeat on every reconcile
-// by design, so presence — never a count — is the assertion surface.
+// recorded for the fixture, and its message. Successful-render warnings are
+// deduped per object generation, so presence — never a count — is the
+// assertion surface.
 func engineRuntimeEvent(f *framework.Framework, objName, reason string) (bool, string) {
 	events := &corev1.EventList{}
 	if err := f.Client.List(f.Ctx, events, client.InNamespace(f.Namespace)); err != nil {

@@ -906,3 +906,56 @@ func TestResolveEngineRuntimesConsentOnlyTargetValidation(t *testing.T) {
 		assert.Empty(t, plan.RolePatchApplications[string(constants.LeaderComponentType)])
 	})
 }
+
+// TestResolveEngineRuntimesSuccessfulRenderWarningDedupe pins the
+// cross-reconcile dedupe of the successful-render warnings: an
+// unchanged object re-reconciled must not re-emit the same warning
+// (events fire on transitions, #528/#510), a spec write re-arms it, and
+// render failures keep firing every reconcile.
+func TestResolveEngineRuntimesSuccessfulRenderWarningDedupe(t *testing.T) {
+	profile := makeProfile("p", []workloadsv1alpha2.ContainerPatch{envPatch("IK_SITE", "/opt/ik/site")})
+	role := leaderWorkerRole([]workloadsv1alpha2.EngineRuntime{{ProfileName: "p", Component: string(constants.LeaderComponentType)}})
+	rbg := basicRBG()
+	rbg.UID = "dedupe-uid"
+	rbg.Generation = 1
+
+	resolve := func() *record.FakeRecorder {
+		recorder := record.NewFakeRecorder(16)
+		cli := fake.NewClientBuilder().WithScheme(resolveScheme()).WithObjects(profile).Build()
+		_, err := ResolveEngineRuntimes(context.Background(), cli, recorder, rbg, role)
+		require.NoError(t, err)
+		return recorder
+	}
+
+	recorder := resolve()
+	assert.Equal(t, 1, countEventsContaining(t, recorder, ReasonUnaimedContainerPatch),
+		"the first resolve emits the unaimed warning")
+
+	recorder = resolve()
+	assert.Equal(t, 0, countEventsContaining(t, recorder, ReasonUnaimedContainerPatch),
+		"a re-reconcile of the unchanged object must not re-emit the warning")
+
+	rbg.Generation = 2
+	recorder = resolve()
+	assert.Equal(t, 1, countEventsContaining(t, recorder, ReasonUnaimedContainerPatch),
+		"a spec write (generation bump) re-arms the warning")
+}
+
+// TestResolveEngineRuntimesRenderFailureNotDeduped pins that the
+// render-failure event is not part of the successful-render dedupe: a
+// failing render is live state and must fire on every reconcile.
+func TestResolveEngineRuntimesRenderFailureNotDeduped(t *testing.T) {
+	role := leaderWorkerRole([]workloadsv1alpha2.EngineRuntime{{ProfileName: "ghost"}})
+	rbg := basicRBG()
+	rbg.UID = "dedupe-fail-uid"
+	rbg.Generation = 1
+
+	for i := 0; i < 2; i++ {
+		recorder := record.NewFakeRecorder(16)
+		cli := fake.NewClientBuilder().WithScheme(resolveScheme()).Build()
+		_, err := ResolveEngineRuntimes(context.Background(), cli, recorder, rbg, role)
+		require.Error(t, err)
+		assert.Equal(t, 1, countEventsContaining(t, recorder, ReasonEngineRuntimeRenderFailed),
+			"render failure %d must keep firing per reconcile", i+1)
+	}
+}
