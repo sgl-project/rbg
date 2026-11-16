@@ -1361,6 +1361,18 @@ func TestRoleBasedGroupValidator_EngineRuntimes(t *testing.T) {
 			}}},
 		}
 	}
+	cleanRBG := func() *RoleBasedGroup {
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+			Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime", Component: "worker"},
+				},
+			}}},
+		}
+	}
 
 	v := &RoleBasedGroupValidator{
 		Client:                        newFakeValidatorClient(t),
@@ -1371,7 +1383,18 @@ func TestRoleBasedGroupValidator_EngineRuntimes(t *testing.T) {
 	assert.Contains(t, err.Error(), `role "lg" reference "vllm-runtime"`)
 	assert.Contains(t, err.Error(), `component "worker"`)
 
+	// An update that re-submits the stored object verbatim does not newly
+	// introduce the violation, so it is exempt (old-vs-new semantics); an
+	// update that introduces the overlapping reference against a clean old
+	// object is rejected.
 	_, err = v.ValidateUpdate(context.Background(), newRBG(), newRBG())
+	assert.NoError(t, err)
+
+	newlyInvalid := newRBG()
+	newlyInvalid.Spec.Roles[0].EngineRuntimes = append(
+		newlyInvalid.Spec.Roles[0].EngineRuntimes,
+		EngineRuntime{ProfileName: "other", Component: "worker"})
+	_, err = v.ValidateUpdate(context.Background(), cleanRBG(), newlyInvalid)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), `role "lg" reference "vllm-runtime"`)
 	assert.Contains(t, err.Error(), `component "worker"`)
@@ -1393,3 +1416,107 @@ func TestRoleBasedGroupValidator_EngineRuntimes(t *testing.T) {
 	_, err = v.ValidateUpdate(context.Background(), clean, clean)
 	assert.NoError(t, err)
 }
+
+func TestRoleBasedGroupValidator_EngineRuntimesUpdateExemption(t *testing.T) {
+	// An object written while the webhook was absent can carry an invalid
+	// engine-runtime reference (targetContainers without component). An
+	// update must reject only what it newly introduces, so an update that
+	// leaves the role's engine-runtime surface untouched passes, while one
+	// that introduces the violation — or changes the surface — is rejected.
+	wedgedRBG := func() *RoleBasedGroup {
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+			Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName:      "vllm-runtime",
+					TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}},
+				}},
+			}}},
+		}
+	}
+	v := &RoleBasedGroupValidator{
+		Client:                        newFakeValidatorClient(t),
+		EnableDeprecatedWorkloadTypes: true,
+	}
+
+	t.Run("label-only update on wedged object passes", func(t *testing.T) {
+		oldObj := wedgedRBG()
+		newObj := wedgedRBG()
+		newObj.Labels = map[string]string{"app": "x"}
+		_, err := v.ValidateUpdate(context.Background(), oldObj, newObj)
+		assert.NoError(t, err)
+	})
+
+	t.Run("adding a clean role alongside the wedged one passes", func(t *testing.T) {
+		newObj := wedgedRBG()
+		newObj.Spec.Roles = append(newObj.Spec.Roles, RoleSpec{
+			Name:           "aux",
+			Pattern:        Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+			EngineRuntimes: []EngineRuntime{{ProfileName: "other", Component: "worker"}},
+		})
+		_, err := v.ValidateUpdate(context.Background(), wedgedRBG(), newObj)
+		assert.NoError(t, err)
+	})
+
+	t.Run("newly introduced violation is rejected", func(t *testing.T) {
+		oldObj := wedgedRBG()
+		newObj := wedgedRBG()
+		newObj.Spec.Roles[0].EngineRuntimes = append(newObj.Spec.Roles[0].EngineRuntimes,
+			EngineRuntime{ProfileName: "p2", TargetContainers: []EngineRuntimeTargetContainer{{Name: "c"}}})
+		_, err := v.ValidateUpdate(context.Background(), oldObj, newObj)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reference "p2"`)
+	})
+
+	t.Run("changed surface on the wedged role is still rejected", func(t *testing.T) {
+		newObj := wedgedRBG()
+		newObj.Spec.Roles[0].EngineRuntimes[0].ProfileName = "renamed"
+		_, err := v.ValidateUpdate(context.Background(), wedgedRBG(), newObj)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reference "renamed"`)
+	})
+}
+
+func TestRoleBasedGroupSetValidator_EngineRuntimesUpdateExemption(t *testing.T) {
+	wedgedRBGS := func() *RoleBasedGroupSet {
+		return &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+			Spec: RoleBasedGroupSetSpec{GroupTemplate: RoleBasedGroupTemplateSpec{
+				Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+					Name:    "lg",
+					Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+					EngineRuntimes: []EngineRuntime{{
+						ProfileName:      "vllm-runtime",
+						TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}},
+					}},
+				}}},
+			}},
+		}
+	}
+	v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+
+	t.Run("label-only update on wedged object passes", func(t *testing.T) {
+		newObj := wedgedRBGS()
+		newObj.Labels = map[string]string{"app": "x"}
+		_, err := v.ValidateUpdate(context.Background(), wedgedRBGS(), newObj)
+		assert.NoError(t, err)
+	})
+
+	t.Run("newly introduced violation is rejected", func(t *testing.T) {
+		newObj := wedgedRBGS()
+		newObj.Spec.GroupTemplate.Spec.Roles[0].EngineRuntimes = append(
+			newObj.Spec.GroupTemplate.Spec.Roles[0].EngineRuntimes,
+			EngineRuntime{ProfileName: "p2", TargetContainers: []EngineRuntimeTargetContainer{{Name: "c"}}})
+		_, err := v.ValidateUpdate(context.Background(), wedgedRBGS(), newObj)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reference "p2"`)
+	})
+}
+
+// TestValidateEngineRuntimesScopeOwnershipErrorOrder pins the D6
+// aggregate's error order: the (profile, component) keys the check
+// indexes by are Go maps, so an unsorted walk reports — and caps — a
+// different subset run-to-run. The reported pairs must come back in a
+// deterministic ascending order.

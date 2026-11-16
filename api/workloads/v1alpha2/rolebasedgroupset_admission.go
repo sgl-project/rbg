@@ -54,7 +54,7 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
-	if err := validateGroupTemplateEngineRuntimes(rbgs); err != nil {
+	if err := validateNoNewEngineRuntimeViolations(rbgs.Spec.GroupTemplate.Spec.Roles, nil); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {
@@ -89,7 +89,7 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj ru
 	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
-	if err := validateGroupTemplateEngineRuntimes(rbgs); err != nil {
+	if err := validateNoNewEngineRuntimeViolations(rbgs.Spec.GroupTemplate.Spec.Roles, oldRBGS.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {
@@ -115,20 +115,4 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj ru
 // ValidateDelete just implements admission.CustomValidator. This verb is currently no-op.
 func (v *RoleBasedGroupSetValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
-}
-
-// validateGroupTemplateEngineRuntimes runs the shared engine-runtime
-// validation function over every role of the group template — the
-// RoleBasedGroupSet webhook call site; children propagate the fields
-// with the same semantics as a directly written RoleBasedGroup, so the
-// same invariants must hold at write time (KEP-531 Validation Layer
-// Split).
-func validateGroupTemplateEngineRuntimes(rbgs *RoleBasedGroupSet) error {
-	var allErrs []error
-	for i := range rbgs.Spec.GroupTemplate.Spec.Roles {
-		if err := ValidateEngineRuntimes(&rbgs.Spec.GroupTemplate.Spec.Roles[i]); err != nil {
-			allErrs = append(allErrs, err)
-		}
-	}
-	return utilerrors.NewAggregate(allErrs)
 }

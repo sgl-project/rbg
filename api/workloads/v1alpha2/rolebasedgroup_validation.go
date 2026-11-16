@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -283,6 +284,64 @@ func ValidateEngineRuntimes(role *RoleSpec) error {
 	allErrs = append(allErrs, validateEngineRuntimeComponentVocabulary(role)...)
 	allErrs = append(allErrs, validateEngineRuntimeEnvCreation(role)...)
 	allErrs = append(allErrs, validateEngineRuntimeNewFieldsOnDeprecatedSurface(role)...)
+	return utilerrors.NewAggregate(allErrs)
+}
+
+// engineRuntimeRoleSurface is the slice of RoleSpec that
+// ValidateEngineRuntimes reads: the references themselves, the role's
+// name, the three pattern fields, and the workload type. An update that
+// leaves all of these untouched cannot have changed any engine-runtime
+// validation outcome for that role.
+type engineRuntimeRoleSurface struct {
+	name                    string
+	workloadType            string
+	engineRuntimes          []EngineRuntime
+	standalonePattern       *StandalonePattern
+	leaderWorkerPattern     *LeaderWorkerPattern
+	customComponentsPattern *CustomComponentsPattern
+}
+
+func engineRuntimeRoleSurfaceOf(role *RoleSpec) engineRuntimeRoleSurface {
+	return engineRuntimeRoleSurface{
+		name:                    role.Name,
+		workloadType:            role.GetWorkloadType(),
+		engineRuntimes:          role.EngineRuntimes,
+		standalonePattern:       role.StandalonePattern,
+		leaderWorkerPattern:     role.LeaderWorkerPattern,
+		customComponentsPattern: role.CustomComponentsPattern,
+	}
+}
+
+// validateNoNewEngineRuntimeViolations runs the shared engine-runtime
+// validation over the roles of a write, exempting roles whose
+// engine-runtime surface is unchanged from oldRoles — the old-vs-new
+// exemption style of validateNoNewDeprecatedWorkloadTypes, so an update
+// rejects only what it newly introduces. Without it, an object written
+// while the webhook was absent (--enable-webhooks=none, or the
+// old-controller window with the new CRDs) carrying e.g.
+// targetContainers without component would wedge: every update, even a
+// label-only one, would be rejected until a corrective spec write. The
+// render-time resolver remains the authoritative gate for the stored
+// violation. Roles are keyed by name, mirroring
+// validateNoNewDeprecatedWorkloadTypes; a nil oldRoles slice validates
+// every role, which is the create path.
+func validateNoNewEngineRuntimeViolations(roles, oldRoles []RoleSpec) error {
+	oldSurfaces := make(map[string]engineRuntimeRoleSurface, len(oldRoles))
+	for i := range oldRoles {
+		oldSurfaces[oldRoles[i].Name] = engineRuntimeRoleSurfaceOf(&oldRoles[i])
+	}
+
+	var allErrs []error
+	for i := range roles {
+		role := &roles[i]
+		if old, existed := oldSurfaces[role.Name]; existed &&
+			reflect.DeepEqual(old, engineRuntimeRoleSurfaceOf(role)) {
+			continue
+		}
+		if err := ValidateEngineRuntimes(role); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
 	return utilerrors.NewAggregate(allErrs)
 }
 

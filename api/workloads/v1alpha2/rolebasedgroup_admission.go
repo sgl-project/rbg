@@ -71,7 +71,7 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	if err := ValidateRoleDependencies(rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
-	if err := validateRolesEngineRuntimes(rbg); err != nil {
+	if err := validateNoNewEngineRuntimeViolations(rbg.Spec.Roles, nil); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {
@@ -214,7 +214,7 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
-	if err := validateRolesEngineRuntimes(rbg); err != nil {
+	if err := validateNoNewEngineRuntimeViolations(rbg.Spec.Roles, oldRBG.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {
@@ -233,18 +233,4 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 // ValidateDelete just implements admission.CustomValidator. This verb is currently no-op.
 func (v *RoleBasedGroupValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
-}
-
-// validateRolesEngineRuntimes runs the shared engine-runtime validation
-// function over every role — the webhook call site; the render-time
-// resolver re-runs the same function per role as the authoritative gate
-// (KEP-531 Validation Layer Split).
-func validateRolesEngineRuntimes(rbg *RoleBasedGroup) error {
-	var allErrs []error
-	for i := range rbg.Spec.Roles {
-		if err := ValidateEngineRuntimes(&rbg.Spec.Roles[i]); err != nil {
-			allErrs = append(allErrs, err)
-		}
-	}
-	return utilerrors.NewAggregate(allErrs)
 }
