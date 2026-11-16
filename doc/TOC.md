@@ -31,6 +31,7 @@
   - [RoleBasedGroup API](reference/api.md)
 - Development
   - [How to Develop](dev/how_to_develop.md)
+  - [Architecture](dev/architecture/README.md)
   - [How to Release](dev/how_to_release.md)
 - Examples
   - Basic Examples

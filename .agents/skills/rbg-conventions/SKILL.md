@@ -152,12 +152,18 @@ the most important rules on a cluster. Each one is described, with its last veri
 | [review-playbook.md](references/review-playbook.md) | reviewing a PR or KEP: your own pass first, then comparing with and testing other reviewers' points; output format, posting, merge readiness |
 | [verification-cases.md](references/verification-cases.md) | proving a rule on a real cluster or a local API server: the cases, how to run the scripts safely, and what each one last showed |
 
+For how the code works (reconcile flows, code locations, labels and other data contracts), read the
+architecture pages in [doc/dev/architecture/](../../../doc/dev/architecture/README.md). They describe
+facts and point back here for the rules.
+
 ## Maintaining this skill
 
 - The skill lives in `.agents/skills/` so that agents other than one vendor's find it. The root
   `AGENTS.md` points here for agents that don't load skills. Keep the text free of
   agent-specific tool names.
 - Add a rule only when it applies beyond one PR, and cite that PR (`#NNN`) as evidence.
+- Keep descriptions of how the code works in `doc/dev/architecture/`, and keep rules here; link
+  between them instead of copying.
 - Point to files and functions on `main`, not line numbers, and re-check the pointers when code
   moves.
 - When you rerun a verification case, update its "Last verified" entry.

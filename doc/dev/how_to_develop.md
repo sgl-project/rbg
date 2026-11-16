@@ -1,5 +1,10 @@
 # Developer Guide
 
+To learn how the code is organized and how the controllers work before you change them, read the
+[architecture docs](architecture/README.md). The development and review rules that apply to every
+change, for people and AI agents alike, are in the
+[rbg-conventions skill](../../.agents/skills/rbg-conventions/SKILL.md).
+
 ## Requirements
 
 - Git

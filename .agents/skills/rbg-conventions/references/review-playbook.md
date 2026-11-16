@@ -16,6 +16,9 @@ judge them.
   directions: is anything the KEP promises missing, and is there scope the KEP doesn't cover?
 - Use the task checklists in `SKILL.md` to decide which reference applies, such as API field,
   rendering, write path, chart, or docs.
+- Read the architecture page for every subsystem the diff touches;
+  [doc/dev/architecture/README.md](../../../../doc/dev/architecture/README.md) maps changed paths to
+  pages.
 - Don't open the review threads yet: not the maintainers', not Copilot's or other bots', and not the
   author's replies to them.
 
