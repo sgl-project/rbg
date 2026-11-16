@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sort"
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
@@ -410,9 +411,25 @@ func validateEngineRuntimeScopeOwnership(role *RoleSpec) []error {
 		}
 	}
 
+	// Walk the profile and component keys in sorted order so the reported
+	// pairs — and which pairs survive the maxScopeOwnershipErrors cap — are
+	// deterministic despite the maps.
+	profileNames := make([]string, 0, len(coverage))
+	for profileName := range coverage {
+		profileNames = append(profileNames, profileName)
+	}
+	sort.Strings(profileNames)
+
 	var allErrs []error
-	for profileName, components := range coverage {
-		for component, covers := range components {
+	for _, profileName := range profileNames {
+		components := coverage[profileName]
+		componentNames := make([]string, 0, len(components))
+		for component := range components {
+			componentNames = append(componentNames, component)
+		}
+		sort.Strings(componentNames)
+		for _, component := range componentNames {
+			covers := components[component]
 			if len(covers) < 2 {
 				continue
 			}

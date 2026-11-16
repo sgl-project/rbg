@@ -19,6 +19,7 @@ package v1alpha2
 import (
 	"context"
 	"fmt"
+	"sort"
 	"testing"
 	"time"
 
@@ -1520,3 +1521,45 @@ func TestRoleBasedGroupSetValidator_EngineRuntimesUpdateExemption(t *testing.T) 
 // indexes by are Go maps, so an unsorted walk reports — and caps — a
 // different subset run-to-run. The reported pairs must come back in a
 // deterministic ascending order.
+func TestValidateEngineRuntimesScopeOwnershipErrorOrder(t *testing.T) {
+	role := &RoleSpec{
+		Name:    "r",
+		Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+	}
+	runtimes := make([]EngineRuntime, 0, 15)
+	for i := 0; i < 6; i++ {
+		name := fmt.Sprintf("p-%d", i)
+		runtimes = append(runtimes,
+			EngineRuntime{ProfileName: name, Component: "leader", TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}}},
+			EngineRuntime{ProfileName: name, Component: "leader", TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}}},
+		)
+	}
+	// One profile overlapping on two components: two scoped references
+	// plus a bare compat reference defaulting to the full {leader, worker} set.
+	runtimes = append(runtimes,
+		EngineRuntime{ProfileName: "multi", Component: "leader", TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}}},
+		EngineRuntime{ProfileName: "multi", Component: "worker", TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}}},
+		EngineRuntime{ProfileName: "multi"},
+	)
+	role.EngineRuntimes = runtimes
+
+	var first []string
+	for run := 0; run < 20; run++ {
+		err := ValidateEngineRuntimes(role)
+		agg, ok := err.(utilerrors.Aggregate)
+		require.True(t, ok, "expected an aggregate error")
+		msgs := make([]string, len(agg.Errors()))
+		for i, e := range agg.Errors() {
+			msgs[i] = e.Error()
+		}
+		sorted := append([]string(nil), msgs...)
+		sort.Strings(sorted)
+		assert.Equal(t, sorted, msgs,
+			"scope-ownership errors must be reported in ascending (profile, component) order")
+		if first == nil {
+			first = msgs
+			continue
+		}
+		assert.Equal(t, first, msgs, "error order must be stable across runs")
+	}
+}
