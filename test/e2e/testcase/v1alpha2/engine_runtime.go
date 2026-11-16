@@ -44,17 +44,17 @@ import (
 // data) live in engine_runtime_ecosystem.go behind RBGS_E2E_ECOSYSTEM=1.
 
 const (
-	// engineRuntimeImage runs a shell and sleep: the fixtures need a
-	// declared command (the /command root's precondition) that keeps the
-	// pod alive after the patch passes transform the argv. The suite's
-	// default image (acs-sample nginx) carries sh and sleep and is pullable
-	// by both the kind CI clusters and the China-region clusters the manual
-	// runs use.
-	engineRuntimeImage = utils.DefaultImage
-
 	engineContainerName = "engine"
 	roleEnvMarker       = "PYTHONPATH"
 )
+
+// engineRuntimeImage runs a shell and sleep: the fixtures need a
+// declared command (the /command root's precondition) that keeps the
+// pod alive after the patch passes transform the argv. The suite's
+// default image carries sh and sleep; it is a var on main (picked per
+// environment through E2E_DEFAULT_IMAGE), so it cannot sit in the
+// const block above.
+var engineRuntimeImage = utils.DefaultImage
 
 // jsonPatchValue marshals v once, mirroring how the apiserver delivers
 // authored YAML inside RawExtension.
