@@ -333,11 +333,9 @@ func convertContainerJSONPatchV1alpha1ToV2(in *ContainerJSONPatch) *v2.Container
 		return nil
 	}
 	return &v2.ContainerJSONPatch{
-		Op:   in.Op,
-		Path: in.Path,
-		Value: runtime.RawExtension{
-			Raw: append([]byte(nil), in.Value.Raw...),
-		},
+		Op:    in.Op,
+		Path:  in.Path,
+		Value: *in.Value.DeepCopy(),
 	}
 }
 
@@ -554,11 +552,9 @@ func convertContainerJSONPatchV2ToV1alpha1(in *v2.ContainerJSONPatch) *Container
 		return nil
 	}
 	return &ContainerJSONPatch{
-		Op:   in.Op,
-		Path: in.Path,
-		Value: runtime.RawExtension{
-			Raw: append([]byte(nil), in.Value.Raw...),
-		},
+		Op:    in.Op,
+		Path:  in.Path,
+		Value: *in.Value.DeepCopy(),
 	}
 }
 

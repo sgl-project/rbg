@@ -1409,3 +1409,26 @@ func TestExcludedOrdinalsSurviveVersionConversion(t *testing.T) {
 	require.NoError(t, restored.ConvertFrom(converted))
 	require.Equal(t, "1,3-5", restored.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey])
 }
+
+func TestContainerJSONPatchConversionPreservesObjectBackedValue(t *testing.T) {
+	obj := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "engine"}}}}
+
+	v1Patch := &ContainerJSONPatch{
+		Op:    "add",
+		Path:  "/env/0",
+		Value: runtime.RawExtension{Object: obj},
+	}
+	converted := convertContainerJSONPatchV1alpha1ToV2(v1Patch)
+	require.NotNil(t, converted.Value.Object,
+		"ConvertTo must deep-copy the complete RawExtension, not just Raw")
+	assert.Equal(t, obj, converted.Value.Object)
+	assert.NotSame(t, obj, converted.Value.Object,
+		"ConvertTo must not alias the source Object")
+
+	back := convertContainerJSONPatchV2ToV1alpha1(converted)
+	require.NotNil(t, back.Value.Object,
+		"ConvertFrom must deep-copy the complete RawExtension, not just Raw")
+	assert.Equal(t, obj, back.Value.Object)
+	assert.NotSame(t, obj, back.Value.Object,
+		"ConvertFrom must not alias the source Object")
+}
