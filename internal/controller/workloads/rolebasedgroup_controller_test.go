@@ -51,6 +51,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
@@ -64,6 +65,30 @@ import (
 	"sigs.k8s.io/rbgs/test/wrappers"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
+
+func TestRBGPredicateExclusiveTopologyAnnotation(t *testing.T) {
+	key := constants.GroupExclusiveTopologyKey
+	for _, tt := range []struct {
+		name string
+		old  map[string]string
+		new  map[string]string
+		want bool
+	}{
+		{name: "added", new: map[string]string{key: "kubernetes.io/hostname"}, want: true},
+		{name: "removed", old: map[string]string{key: "kubernetes.io/hostname"}, want: true},
+		{name: "changed", old: map[string]string{key: "old"}, new: map[string]string{key: "new"}, want: true},
+		{name: "empty value added", new: map[string]string{key: ""}, want: true},
+		{name: "unchanged", old: map[string]string{key: "node"}, new: map[string]string{key: "node"}},
+		{name: "unrelated annotation", new: map[string]string{"example.com/key": "value"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			old := &workloadsv1alpha2.RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Annotations: tt.old}}
+			new := &workloadsv1alpha2.RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Annotations: tt.new}}
+			got := RBGPredicate().Update(event.UpdateEvent{ObjectOld: old, ObjectNew: new})
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
 
 func Test_CalculateNextRollingTarget_WithNormalCases(t *testing.T) {
 	type testCase struct {

@@ -70,7 +70,7 @@ func semanticallyEqualAffinity(affinity *corev1.Affinity, topologyKey string, un
 		}
 
 		for _, expression := range term.LabelSelector.MatchExpressions {
-			if expression.Key != constants.GroupUniqueHashLabelKey ||
+			if expression.Key != constants.GroupUIDLabelKey ||
 				expression.Operator != v1.LabelSelectorOpIn ||
 				expression.Values[0] != uniqueKey {
 				return fmt.Errorf("PodAffinity.LabelSelector.MatchExpressions not equal")
@@ -88,7 +88,7 @@ func semanticallyEqualAffinity(affinity *corev1.Affinity, topologyKey string, un
 		}
 
 		for _, expression := range term.LabelSelector.MatchExpressions {
-			if expression.Key != constants.GroupUniqueHashLabelKey {
+			if expression.Key != constants.GroupUIDLabelKey {
 				return fmt.Errorf("PodAntiAffinity.LabelSelector.MatchExpressions.Key not equal")
 			}
 			if expression.Operator != v1.LabelSelectorOpNotIn && expression.Operator != v1.LabelSelectorOpExists {
