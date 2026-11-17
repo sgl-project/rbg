@@ -116,6 +116,7 @@ func (r *PodReconciler) failRender(rbg *workloadsv1alpha2.RoleBasedGroup, err er
 	return discovery.NewRenderError(err)
 }
 
+// nolint:gocyclo
 func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
