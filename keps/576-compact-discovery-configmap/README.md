@@ -117,8 +117,9 @@ This is the state on `main` today, which any new design must model accurately:
    rewritten on every reconcile (`reconcileRefinedDiscoveryConfigMap`), holding
    the **full enumeration**: one `address` entry per pod plus per-entry copies
    of the role's `servicePorts`.
-4. **Addresses are relative**: `<workload>-<ordinal>...s-<rbg>-<role>` —
-   no namespace, no `svc.cluster.local` suffix (`pkg/discovery/config_builder.go`,
+4. **Addresses are relative `<pod>.<service>` names** — for example
+   `<rbg>-<role>-0.s-<rbg>-<role>` — with no namespace or
+   `svc.cluster.local` suffix (`pkg/discovery/config_builder.go`,
    `buildInstances`). They resolve via the pod's DNS search path.
 5. **Membership selection is conditional.** `ConfigBuilder.memberOrdinals`
    does not unconditionally read the child. Before child creation, it uses
@@ -235,16 +236,15 @@ controller's storage format.
 
 ### ConfigMap Publication
 
-The compact source is additive. While the `CompactDiscoverySource` feature
-gate is enabled, the controller publishes the compact source in addition to
-the existing `<rbg>` ConfigMap. The existing discovery mode annotation and
-mounted volume remain unchanged.
+The compact source is additive. A controller that implements this KEP
+publishes the compact source in addition to the existing `<rbg>` ConfigMap.
+The existing discovery mode annotation and mounted volume remain unchanged.
 
 | Population | Existing behavior | Compact source |
 |---|---|---|
 | pre-#134 `legacy` | historical per-role objects; v0.7+ injectors mount `<rbg>` even though only `refine` creates it | not published in this KEP |
-| post-#134 `refine` | ConfigMap `<rbg>`, full enumeration, direct mount | published when the feature gate is enabled |
-| new RBGs | ConfigMap `<rbg>`, full enumeration, direct mount | published when the feature gate is enabled |
+| post-#134 `refine` | ConfigMap `<rbg>`, full enumeration, direct mount | published |
+| new RBGs | ConfigMap `<rbg>`, full enumeration, direct mount | published |
 
 The compact source lives in a **separate object** derived from the RBG name and
 UID (see [Source Object Naming](#source-object-naming)). The controller
@@ -256,15 +256,19 @@ never rewritten or deleted by this KEP.
 The source ConfigMap name is:
 
 ```text
-truncate(rbg.name, 213) + "-source-" + lowerHex(sha256(rbg.uid)[:16])
+<rbg>-source-<uid-hash>
 ```
 
-The UID suffix makes the generated name collision-resistant across RBGs whose
-names would otherwise produce the same source name. The name is stable for the
-RBG's lifetime because the UID is stable. Before any create, update, or delete,
-the controller verifies that the existing object's controller owner UID matches
-the RBG; on mismatch it emits a Warning Event and refuses to write. The owner
-UID check is mandatory even though hash collisions are not expected.
+`<uid-hash>` is the first 16 bytes of `sha256(rbg.uid)`, encoded as lowercase
+hex. If the full derived name would exceed Kubernetes' 253-character name
+limit, the controller truncates the RBG-name prefix before appending
+`-source-<uid-hash>`.
+
+The UID suffix keeps the generated name distinct across RBGs whose names would
+otherwise produce the same source name. The name is stable for the RBG's
+lifetime because the UID is stable. Before any create, update, or delete, the
+controller verifies that the existing object's controller owner UID matches
+the RBG; on mismatch it emits a Warning Event and refuses to write.
 
 ### Compact Format
 
@@ -275,13 +279,13 @@ group: pd-inference
 
 roles:                            # array, spec declaration order
 - name: prefill                  # unique per RBG (CRD-validated)
-  replicas: 500                   # member count; see below
+  members: 500                    # member count; see below
   skipOrdinals: "3,17"            # committed skip ranges; see below
   components:                     # array, spec declaration order
   - name: leader
     size: 1                       # pods of this component per instance
     base: "pd-inference-prefill-{role_index}-leader-{component_index}.s-pd-inference-prefill"
-    ports:                        # declared servicePorts, component-level
+    ports:                        # role servicePorts copied to each component
       http: 8080
       grpc: 50000
   - name: worker
@@ -289,6 +293,7 @@ roles:                            # array, spec declaration order
     base: "pd-inference-prefill-{role_index}-worker-{component_index}.s-pd-inference-prefill"
     ports:
       http: 8080
+      grpc: 50000
 ```
 
 Field reference:
@@ -299,14 +304,14 @@ Field reference:
 | `namespace` / `group` | string | Namespace and RBG name |
 | `roles` | array | Role entries in **spec declaration order**; `group.roles` preserves this order |
 | `roles[].name` | string | Role name |
-| `roles[].replicas` | int | Number of encoded members (see [Membership Encoding](#membership-encoding)) |
+| `roles[].members` | int | Number of encoded members (see [Membership Encoding](#membership-encoding)) |
 | `roles[].skipOrdinals` | string | Optional, normalized comma-separated inclusive ranges (`3`, `3,17`, `0-99999`); never expanded into one element per ordinal |
 | `roles[].components` | array | Component entries in spec declaration order |
 | `roles[].components[].name` | string | Component name |
 | `roles[].components[].size` | int | Pod count of the component within one instance |
 | `roles[].components[].offset` | int | Optional, default `0`; first `component_index` of the component |
 | `roles[].components[].base` | string | Relative address template containing `{role_index}` and/or `{component_index}` |
-| `roles[].components[].ports` | map | Statically declared `servicePorts`; currently identical across components of a role |
+| `roles[].components[].ports` | map | The role's `servicePorts`, copied to every component |
 
 ### Address Templates
 
@@ -375,17 +380,17 @@ conditional:
    - otherwise use dense `[0, role.replicas)`.
 
 In the steady state, the controller evaluates that algorithm and encodes the
-selected member list without expanding it:
+selected member count and holes without expanding the member list:
 
-- `replicas` is `len(members)`;
+- `members` is the number of selected ordinals;
 - `skipOrdinals` is `ordinals.Record(members)`, the normalized inclusive
   ranges for the holes below the last member.
 
 A consumer reconstructs membership with range jumping: emit the first
-`replicas` ordinals not contained in `skipOrdinals`, using the same `Next`
+`members` ordinals not contained in `skipOrdinals`, using the same `Next`
 semantics as `ordinals.Ranges.Members`. It never expands the skip ranges.
 After a reconcile converges, this reproduces the shipped behavior, including
-members with ordinal `>= replicas` (replicas 3, skips `1,3` → members
+members with ordinal `>= members` (members 3, skips `1,3` → members
 `[0,2,4]`) and freeze-on-invalid-input when a child already exists.
 
 ### Source Publication
@@ -403,8 +408,8 @@ The guardrail applies to the **serialized compact ConfigMap object**
 
 - Threshold: 512 KiB (headroom below the 1 MiB limit).
 - On breach with an existing object: keep the last good content and emit a
-  Warning Event.
-- On breach at first creation: do not create the object, emit a Warning
+  Warning Event when the guardrail state changes.
+- On breach at first creation: do not create the object and emit one Warning
   Event.
 
 A guardrail breach does not block role reconciliation.
@@ -418,10 +423,10 @@ range.
 
 The compact source is additive:
 
-| Controller state | Existing behavior | Compact source |
+| Controller | Existing behavior | Compact source |
 |---|---|---|
-| feature gate off | unchanged | not published |
-| feature gate on | unchanged | published in addition to `<rbg>` |
+| without compact-source support | unchanged | not published |
+| with compact-source support | unchanged | published in addition to `<rbg>` |
 
 No Pod template, volume, or mount changes. A later KEP can define consumer
 delivery and migration.
@@ -435,7 +440,7 @@ collects it with the RBG.
 In scope:
 
 - The compact source schema.
-- Additive source object publication behind `CompactDiscoverySource`.
+- Additive source object publication.
 - Conditional membership encoding.
 - Stored-object size guardrail.
 
@@ -466,7 +471,7 @@ None.
   relative (not FQDN) address output.
 - Membership encoding: dense fallback, conditional child-target selection,
   projected pre-child exclusions, invalid input without a child, skips
-  producing members `>= replicas`, and freeze-on-invalid-input with a child.
+  producing members `>= members`, and freeze-on-invalid-input with a child.
 - Size guardrail: threshold behavior on update and first create.
 - Long skip ranges: a one-member source with skip range `0-99999` stays far
   below the stored-object guardrail and encodes member `100000`.
@@ -477,8 +482,6 @@ None.
 
 ##### Integration tests
 
-- Feature gate: with the gate enabled, the controller publishes the source;
-  with it disabled, it does not.
 - Additive behavior: the mounted `<rbg>` ConfigMap and Pod templates are
   unchanged when the source is published.
 - Source-publication failure: a write failure emits a Warning Event and
@@ -490,9 +493,9 @@ None.
 
 ##### e2e tests
 
-- Extend `test/e2e/testcase/v1alpha2/discovery_configmap.go`: when the feature
-  gate is enabled, the compact source exists, the mounted `<rbg>` ConfigMap is
-  unchanged, and no Pod template changes.
+- Extend `test/e2e/testcase/v1alpha2/discovery_configmap.go`: the compact
+  source exists, the mounted `<rbg>` ConfigMap is unchanged, and no Pod
+  template changes.
 - Membership scenarios: KEP-499 drain and invalid exclusion input are encoded
   as specified.
 - Downgrade drill: an older controller ignores the source object.
@@ -501,16 +504,13 @@ None.
 
 #### Alpha
 
-- Feature gate, compact format, and guardrail implemented behind the
-  `CompactDiscoverySource` feature gate. The gate defaults to **off**; new
-  RBGs keep the existing discovery behavior until an operator enables it.
+- Compact source publication, format, and guardrail implemented.
 - Unit, integration, and e2e coverage as above.
 - A large-scale (2000+ instance) scale test showing the stored ConfigMap
   stays well under the guardrail and reconciliation does not fail.
 
 #### Beta
 
-- `CompactDiscoverySource` defaults to on.
 - Docs for direct compact-source consumption.
 - No reports of compact-source divergence.
 
@@ -540,9 +540,8 @@ controllers never read or write.
 
 ###### How can this feature be enabled / disabled in a live cluster?
 
-Enabled with the `CompactDiscoverySource` feature gate. At alpha the gate
-defaults to off; turning it on publishes the compact source in addition to the
-existing ConfigMap.
+Install a controller release that implements this KEP. The controller then
+publishes the compact source in addition to the existing ConfigMap.
 
 ###### Does enabling the feature change any default behavior?
 
@@ -551,18 +550,19 @@ unchanged.
 
 ###### Can the feature be disabled once it has been enabled (i.e. can we roll back the enablement)?
 
-Turn the feature gate off. The controller stops updating the source object;
-workloads are unaffected. The source object remains until the RBG is deleted,
-and an operator may delete it manually.
+Roll back to a controller release without compact-source support. Workloads
+are unaffected. The source object remains until the RBG is deleted, and an
+operator may delete it manually.
 
-###### What happens if we reenable the feature if it was previously rolled back?
+###### What happens if we reinstall the feature after rolling it back?
 
 The controller rebuilds the compact source deterministically from the same
 conditional membership algorithm as the shipped builder.
 
-###### Are there any tests for feature enablement/disablement?
+###### Are there any tests for enablement/disablement?
 
-Yes: integration tests for feature-gate behavior and additive publication.
+Yes: integration and e2e tests for additive publication and the downgrade
+drill.
 
 ### Rollout, Upgrade and Rollback Planning
 
@@ -674,7 +674,7 @@ Inspect RBG Warning Events and controller logs, then
   controller publication. Corrected the shipped baseline, conditional
   membership selection, role-map ordering, and Summary arithmetic. Skip
   ordinals use normalized ranges; the source name is collision-resistant.
-  Added the `CompactDiscoverySource` feature gate and stored-object guardrail.
+  Added the stored-object guardrail.
 
 Merge-order note: PR #577, which marks KEP-133 replaced by this KEP, must not
 merge before this KEP is accepted. Merge this KEP first, or land both
@@ -682,7 +682,7 @@ together.
 
 ## Drawbacks
 
-- Adds one ConfigMap per RBG while the feature gate is enabled.
+- Adds one ConfigMap per RBG.
 - The compact source and the existing enumeration coexist until a consumer
   migration is designed.
 
