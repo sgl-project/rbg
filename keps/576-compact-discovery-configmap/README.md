@@ -3,6 +3,7 @@
 <!-- toc -->
 - [Release Signoff Checklist](#release-signoff-checklist)
 - [Summary](#summary)
+    - [Terms](#terms)
 - [Motivation](#motivation)
     - [Shipped Baseline](#shipped-baseline)
     - [Goals](#goals)
@@ -15,7 +16,7 @@
     - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
     - [ConfigMap Publication](#configmap-publication)
-    - [Source Object Naming](#source-object-naming)
+    - [Compact Source ConfigMap Naming](#compact-source-configmap-naming)
     - [Compact Format](#compact-format)
     - [Address Templates](#address-templates)
     - [Component Indexing](#component-indexing)
@@ -67,8 +68,11 @@ Items marked as (R) are required prior to targeting a milestone / release.
 
 ## Summary
 
-This KEP proposes a **compact, declarative source format** for the RBG service
-discovery ConfigMap.
+Audience: RBG maintainers and contributors implementing discovery.
+Assumptions: the reader knows Kubernetes ConfigMaps and the RBG
+RoleInstanceSet model.
+
+This KEP defines a compact source for RBG service-discovery data.
 
 The shipped `refine` mode (see [Shipped Baseline](#shipped-baseline)) stores a
 full enumeration of every instance address in a single RBG-level ConfigMap.
@@ -77,23 +81,35 @@ With the example names used in this KEP, one serialized pod entry is roughly
 crosses the 1 MiB ConfigMap limit. Every scale event rewrites the whole object
 to every node that mounts it.
 
-The compact source stores a **controller-computed address template plus
-declarative parameters** per role/component, so its size is
-`O(roles x components)`, independent of replica count. Stored content size
-grows only with the number of normalized skip ranges during drains, which
-KEP-499 bounds.
+The compact source stores one address template per component and one
+membership summary per role. The controller computes the template; the source
+records the member count and normalized skip ranges. Stored size therefore
+grows with the number of role and component definitions, not with replica
+count.
 
 The compact source is additive. The controller publishes it in a separate
 ConfigMap, and the mounted `<rbg>` ConfigMap keeps its current format and
 behavior. Pod-level delivery and consumer migration are follow-up work.
 
-Scope: the compact format targets **RoleInstanceSet** roles only. The
+Scope: the compact source targets **RoleInstanceSet** roles only. The
 deprecated workload types (Deployment, StatefulSet, LeaderWorkerSet) are out
 of scope: new uses are rejected at admission, and those populations stay on
 `legacy`/`refine` behavior.
 
 This KEP replaces KEP-133, whose compact-format proposal was never implemented
 and whose text no longer describes what shipped.
+
+### Terms
+
+- **Compact source**: the ConfigMap defined by this KEP. It stores discovery
+  data as templates and membership parameters instead of a full address list,
+  in a single data key named `source.yaml`.
+- **Member**: a role-instance ordinal selected for discovery.
+- **Component**: one named pod group inside a RoleInstanceSet instance.
+- **Skip range**: an inclusive range of ordinals excluded from membership.
+- **Range jumping**: skip from one allowed ordinal to the next without
+  materializing every excluded ordinal.
+- `<rbg>`: the RBG object's name.
 
 ## Motivation
 
@@ -151,8 +167,8 @@ ConfigMap sync (default period ~1 minute) redistributes the full object to
 every node with a mounting pod — a 1 MB object on 100 such nodes moves ~100
 MB of data per rewrite.
 
-The obvious fix — publishing naming conventions and letting clients derive
-addresses — does not hold: the controller must compute the templates, because
+Publishing naming conventions and letting clients derive addresses is not
+sufficient: the controller must compute the templates, because
 workload and Service names are truncated at 63 characters, a compatibility
 path keeps legacy Service names, CustomComponentsPattern components may
 override their `ServiceName`, and three patterns use different pod-naming
@@ -160,9 +176,10 @@ schemes.
 
 ### Goals
 
-1. Stored ConfigMap size `O(roles x components)`, independent of replica count
-   (bounded growth from normalized skip ranges only).
-2. A stable, independently versioned source schema that future consumers and
+1. Stored ConfigMap size proportional to the number of role and component
+   definitions, independent of replica count, with bounded growth from
+   normalized skip ranges.
+2. A stable, independently versioned compact source schema that future consumers and
    migration tooling can rely on.
 3. Keep the mounted `<rbg>` ConfigMap and the existing `legacy` / `refine`
    populations unchanged.
@@ -183,7 +200,7 @@ schemes.
 5. Supporting Deployment-type (stateless, random pod names) workloads.
 6. Changing the mounted ConfigMap or Pod templates.
 7. Supporting deprecated workload types (Deployment, StatefulSet,
-   LeaderWorkerSet) in the compact format. New uses of those types are
+   LeaderWorkerSet) in the compact source. New uses of those types are
    rejected at admission; existing populations stay on `legacy`/`refine`
    behavior.
 
@@ -194,7 +211,7 @@ Store a compact declarative description in a separate
 
 ```text
 RBG controller
-  └─ ConfigMap <rbg-name>-source-<uid-hash>  (compact source, format: compact)
+  └─ ConfigMap <rbg-name>-source-<uid-hash>  (key: source.yaml, format: compact)
 
 The mounted `<rbg>` ConfigMap continues to serve current consumers.
 ```
@@ -219,8 +236,8 @@ controller's storage format.
 - Deployment-type workloads have non-deterministic pod names, so no discovery
   ConfigMap is created or mounted for them.
 - Only stateful roles are included, matching the shipped behavior.
-- The compact format covers the RoleInstanceSet template types only
-  (Standalone, CustomComponents, LeaderWorker). This deliberately excludes
+- The compact source covers the RoleInstanceSet template types only
+  (Standalone, CustomComponents, LeaderWorker). This excludes
   the deprecated LWS-compatible naming path, whose builder output has not
   been verified against actual pod names.
 
@@ -246,31 +263,35 @@ The existing discovery mode annotation and mounted volume remain unchanged.
 | post-#134 `refine` | ConfigMap `<rbg>`, full enumeration, direct mount | published |
 | new RBGs | ConfigMap `<rbg>`, full enumeration, direct mount | published |
 
-The compact source lives in a **separate object** derived from the RBG name and
-UID (see [Source Object Naming](#source-object-naming)). The controller
-reconciles it before roles, on every reconcile. The mounted `<rbg>` object is
-never rewritten or deleted by this KEP.
+The compact source is stored in a separate ConfigMap derived from the RBG name
+and UID (see [Compact Source ConfigMap Naming](#compact-source-configmap-naming)).
+The controller reconciles it before roles, on every reconcile. The mounted
+`<rbg>` ConfigMap is never rewritten or deleted by this KEP.
 
-### Source Object Naming
+### Compact Source ConfigMap Naming
 
-The source ConfigMap name is:
+The compact source ConfigMap name is:
 
 ```text
 <rbg>-source-<uid-hash>
 ```
 
-`<uid-hash>` is the first 16 bytes of `sha256(rbg.uid)`, encoded as lowercase
-hex. If the full derived name would exceed Kubernetes' 253-character name
+`<uid-hash>` is the first 16 bytes of `sha256(rbg.uid)` encoded as lowercase
+hex, where `rbg.uid` is the RBG object's Kubernetes UID. If the full derived
+name would exceed Kubernetes' 253-character name
 limit, the controller truncates the RBG-name prefix before appending
 `-source-<uid-hash>`.
 
 The UID suffix keeps the generated name distinct across RBGs whose names would
 otherwise produce the same source name. The name is stable for the RBG's
 lifetime because the UID is stable. Before any create, update, or delete, the
-controller verifies that the existing object's controller owner UID matches
-the RBG; on mismatch it emits a Warning Event and refuses to write.
+controller checks that an existing ConfigMap has a controller owner reference
+whose UID matches the RBG UID. On mismatch, it emits a Warning Event and
+refuses to write.
 
 ### Compact Format
+
+The compact source stores the following YAML in its `source.yaml` data key:
 
 ```yaml
 format: compact
@@ -343,8 +364,8 @@ Pattern mapping:
 
 ### Component Indexing
 
-The source encodes `component_index` for each pod `j` in
-`[0, component.size)` of each committed `role_index`:
+For each committed `role_index`, let `j` be a pod's zero-based position within
+its component. The source encodes:
 
 `component_index = component.offset + j`
 
@@ -360,53 +381,51 @@ not modeled. RBG creates genuine vendor LeaderWorkerSet objects for that
 path, whose pod names follow the vendor convention
 (`<set>-<groupIndex>`, `<set>-<groupIndex>-<workerIndex>`), which the shipped
 builder does not reproduce. Since that workload type is deprecated and its
-population stays on `refine` enumeration, the compact format does not carry
+population stays on `refine` enumeration, the compact source does not carry
 the discrepancy forward.
 
 ### Membership Encoding
 
-The compact format does **not** project the user-facing
+For example, `members: 3` and `skipOrdinals: "1,3"` represent the ordinals
+`[0,2,4]`.
+
+The compact source does not project the user-facing
 `rbg.workloads.x-k8s.io/excluded-ordinals` annotation directly. It encodes the
-membership selected by the shipped `memberOrdinals` algorithm, which is
-conditional:
+membership selected by the shipped `memberOrdinals` algorithm:
 
 1. Before the child RoleInstanceSet exists:
-   - no exclusion input → dense `[0, role.replicas)`;
-   - valid exclusion input → `ordinals.Select(nil, role.replicas, excluded)`;
-   - invalid input → empty membership.
+   - with no exclusion input, use dense `[0, role.replicas)`;
+   - with valid exclusion input, project the exclusions onto that dense range;
+   - with invalid input, publish no members.
 2. After the child exists:
-   - if exclusion input is present or invalid, or the child carries a
-     committed skip record, use `CommittedOrdinals()`;
+   - use the child's committed target when exclusion input is present or
+     invalid, or when the child carries a committed skip record;
    - otherwise use dense `[0, role.replicas)`.
 
-In the steady state, the controller evaluates that algorithm and encodes the
-selected member count and holes without expanding the member list:
+The controller evaluates those rules and encodes the selected member count and
+the holes below the highest selected ordinal:
 
 - `members` is the number of selected ordinals;
-- `skipOrdinals` is `ordinals.Record(members)`, the normalized inclusive
-  ranges for the holes below the last member.
+- `skipOrdinals` is the normalized inclusive range record for those holes.
 
-A consumer reconstructs membership with range jumping: emit the first
-`members` ordinals not contained in `skipOrdinals`, using the same `Next`
-semantics as `ordinals.Ranges.Members`. It never expands the skip ranges.
-After a reconcile converges, this reproduces the shipped behavior, including
-members with ordinal `>= members` (members 3, skips `1,3` → members
-`[0,2,4]`) and freeze-on-invalid-input when a child already exists.
+A consumer reconstructs membership by emitting the first `members` ordinals not
+contained in `skipOrdinals`, using range jumping rather than expanding every
+skipped ordinal. After a reconcile converges, this reproduces the shipped
+behavior, including selected ordinals greater than or equal to the member
+count and the freeze-on-invalid-input behavior when a child already exists.
 
 ### Source Publication
 
-The controller attempts to publish the compact source before role
-reconciliation. A source write failure emits a Warning Event and requeues the
-RBG; it does not block role reconciliation because no Pod consumes the source
+The controller writes the compact source before role reconciliation. If the
+write fails, the controller emits a Warning Event and requeues the RBG. Role
+reconciliation continues because the compact source is not mounted in any Pod
 in this KEP.
 
 ### Size Guardrail
 
-The guardrail applies to the **serialized compact ConfigMap object**
-(the thing that lives in etcd and has the 1 MiB limit), including the
-`skipOrdinals` range string:
-
-- Threshold: 512 KiB (headroom below the 1 MiB limit).
+The guardrail is a 512 KiB limit on the serialized compact source ConfigMap,
+including the `skipOrdinals` range string. The limit leaves headroom below the
+1 MiB ConfigMap limit:
 - On breach with an existing object: keep the last good content and emit a
   Warning Event when the guardrail state changes.
 - On breach at first creation: do not create the object and emit one Warning
@@ -415,9 +434,9 @@ The guardrail applies to the **serialized compact ConfigMap object**
 A guardrail breach does not block role reconciliation.
 
 Skip ranges are stored without expansion: a contiguous 5000-member drain is a
-few bytes, and disjoint holes cost one short range entry each. The source never
-becomes `O(replicas)` merely because a role has a large ordinal or a long skip
-range.
+few bytes, and disjoint holes cost one short range entry each. The source does
+not grow with replica count merely because a role has a large ordinal or a
+long skip range.
 
 ### Rollout and Downgrade
 
@@ -432,7 +451,7 @@ No Pod template, volume, or mount changes. A later KEP can define consumer
 delivery and migration.
 
 Downgrade to a controller without this feature is safe: the old controller
-ignores the source object, and the RBG owner reference eventually garbage
+ignores the compact source ConfigMap, and the RBG owner reference eventually garbage
 collects it with the RBG.
 
 ### Phase 1 Scope
@@ -440,7 +459,7 @@ collects it with the RBG.
 In scope:
 
 - The compact source schema.
-- Additive source object publication.
+- Additive compact source ConfigMap publication.
 - Conditional membership encoding.
 - Stored-object size guardrail.
 
@@ -488,7 +507,7 @@ None.
   requeues, but does not block role reconciliation.
 - Name collision: RBGs `foo` and `foo-source` coexist without one controller
   overwriting the other's object.
-- Downgrade drill: an older controller ignores the source object and the
+- Downgrade drill: an older controller ignores the compact source ConfigMap and the
   mounted ConfigMap remains usable.
 
 ##### e2e tests
@@ -498,7 +517,7 @@ None.
   template changes.
 - Membership scenarios: KEP-499 drain and invalid exclusion input are encoded
   as specified.
-- Downgrade drill: an older controller ignores the source object.
+- Downgrade drill: an older controller ignores the compact source ConfigMap.
 
 ### Graduation Criteria
 
@@ -526,12 +545,12 @@ None.
 ### Upgrade / Downgrade Strategy
 
 See [Rollout and Downgrade](#rollout-and-downgrade). The feature only adds a
-source object; it does not change Pod templates or mounted volumes.
+compact source ConfigMap; it does not change Pod templates or mounted volumes.
 
 ### Version Skew Strategy
 
 The `format: compact` marker lets future consumers detect the schema. The compact
-source lives in the separate `<rbg>-source-<uid-hash>` object, which older
+source lives in the separate `<rbg>-source-<uid-hash>` ConfigMap, which older
 controllers never read or write.
 
 ## Production Readiness Review Questionnaire
@@ -551,7 +570,7 @@ unchanged.
 ###### Can the feature be disabled once it has been enabled (i.e. can we roll back the enablement)?
 
 Roll back to a controller release without compact-source support. Workloads
-are unaffected. The source object remains until the RBG is deleted, and an
+are unaffected. The compact source ConfigMap remains until the RBG is deleted, and an
 operator may delete it manually.
 
 ###### What happens if we reinstall the feature after rolling it back?
@@ -592,7 +611,7 @@ The `<rbg>-source-<uid-hash>` ConfigMap exists and carries `format: compact`.
 
 ###### How can someone using this feature know that it is working for their instance?
 
-The source object exists and its content matches the RBG's current roles,
+The compact source ConfigMap exists and its content matches the RBG's current roles,
 components, and membership encoding.
 
 ###### What are the reasonable SLOs (Service Level Objectives) for the enhancement?
@@ -632,8 +651,8 @@ No.
 
 ###### Will enabling / using this feature result in increasing size or count of the existing API objects?
 
-One additional ConfigMap per RBG. The source is `O(roles x components)`, with
-bounded growth from normalized skip ranges.
+One additional ConfigMap per RBG. The source grows with the number of role and
+component definitions, with bounded growth from normalized skip ranges.
 
 ###### Will enabling / using this feature result in increasing time taken by any operations covered by existing SLIs/SLOs?
 
@@ -693,24 +712,24 @@ together.
    has no accurate KEP description today; this KEP owns both the baseline
    description and the target design.
 2. **Keep the shipped enumeration and only merge per-role ConfigMaps**:
-   already shipped; does not address the `O(instances)` size problem.
+   already shipped; does not address growth with instance count.
 3. **Client-side FQDN derivation from naming conventions**: rejected
    (63-char truncation, compatible Service names, component overrides, three
    naming patterns).
 4. **Per-role ConfigMap sharding**: fails for huge single roles and keeps
    many objects.
 5. **Runtime discovery (DNS SRV / EndpointSlice watch)**: answers
-   readiness-style questions but not ordinal identity, and conflicts with
-   RBG's static-injection philosophy; complement, not replacement.
+   readiness-style questions but not ordinal identity. It can complement the
+   compact source, but it cannot replace ordinal-based discovery.
 6. **Compress the existing enumeration**: gzip keeps the content smaller, but
    the stored object still changes on every membership event and consumers
    must decompress it before parsing.
-7. **active/draining membership fields**: rejected. The source is static and
-   declarative; KEP-499 membership encoding already expresses the drain
-   window correctly, and readiness is EndpointSlice's job.
+7. **Separate active and draining membership fields**: rejected. KEP-499
+   membership encoding already represents the drain window, and readiness
+   belongs to EndpointSlice.
 8. **In-place rewrite of the shared `<rbg>` ConfigMap**: rejected. It changes
    the file under running pods; a later consumer migration can use the
-   separate source object instead.
+   separate compact source ConfigMap instead.
 
 ## Infrastructure Needed (Optional)
 
