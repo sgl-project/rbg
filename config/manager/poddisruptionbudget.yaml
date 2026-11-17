@@ -1,0 +1,16 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: controller-manager
+  namespace: system
+  labels:
+    control-plane: rbgs-controller
+    app.kubernetes.io/name: rbgs
+    app.kubernetes.io/managed-by: kustomize
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      control-plane: rbgs-controller
+      app.kubernetes.io/name: rbgs
+  unhealthyPodEvictionPolicy: AlwaysAllow
