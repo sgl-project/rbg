@@ -38,6 +38,7 @@ func TestDeprecatedResources(t *testing.T) {
 			"leaderworkersets": true,
 		},
 		"workloads.x-k8s.io": {
+			"instances":    true,
 			"instancesets": true,
 		},
 	}, deprecatedResources)

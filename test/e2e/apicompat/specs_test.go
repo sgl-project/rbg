@@ -71,6 +71,7 @@ var deprecatedResourceAttrs = []deprecatedResourceAttr{
 	{"apps", "deployments"},
 	{"apps", "statefulsets"},
 	{"leaderworkerset.x-k8s.io", "leaderworkersets"},
+	{"workloads.x-k8s.io", "instances"},
 	{"workloads.x-k8s.io", "instancesets"},
 }
 

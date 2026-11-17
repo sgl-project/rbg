@@ -55,9 +55,9 @@ const fileHeader = `---
   Run "make manifests" after changing kubebuilder RBAC markers.
 
   Rules for the deprecated workload types (Deployment, StatefulSet,
-  LeaderWorkerSet, v1alpha1 InstanceSet) are wrapped in a conditional so that
-  disabling controller.deprecatedWorkloadTypes.enabled removes them. An unset
-  value counts as enabled, matching values.yaml.
+  LeaderWorkerSet, v1alpha1 InstanceSet and Instance) are wrapped in a
+  conditional so that disabling controller.deprecatedWorkloadTypes.enabled
+  removes them. An unset value counts as enabled, matching values.yaml.
 */}}
 {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
 {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
@@ -69,14 +69,18 @@ rules:
 `
 
 // deprecatedResources maps RBAC apiGroup to the resources gated by
-// controller.deprecatedWorkloadTypes.enabled. Deriving it from the same constants
-// that isDeprecatedWorkloadType switches on keeps the gate from drifting toward
-// over-granting. Subresources are matched by their base resource, so
+// controller.deprecatedWorkloadTypes.enabled. The workload types come from the
+// same constants that isDeprecatedWorkloadType switches on, so the RBAC gate
+// cannot drift from the admission gate. InstanceWorkloadType is not matched by
+// that validator — roles never select Instance — but its grants are equally
+// dead: RoleInstance replaced it, and no v1alpha2 reconciler touches the legacy
+// resource. Subresources are matched by their base resource, so
 // deployments/status and deployments/finalizers are covered too.
 var deprecatedResources = mustGroupResources(
 	constants.DeploymentWorkloadType,
 	constants.StatefulSetWorkloadType,
 	constants.InstanceSetWorkloadType,
+	constants.InstanceWorkloadType,
 	constants.LeaderWorkerSetWorkloadType,
 )
 
