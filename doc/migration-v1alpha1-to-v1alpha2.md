@@ -2,7 +2,7 @@
 
 This guide applies to RBG `0.9.0`. In this release, `v1alpha1` is still served so existing objects remain readable and writable, every `v1alpha1` request returns a CRD deprecation warning, and new uses of the deprecated workload types are rejected. `v1alpha1` will stop being served in `0.10.0`.
 
-The storage-version rewrite below applies to `RoleBasedGroup` and `RoleBasedGroupSet`, the two CRDs that use conversion webhooks. The workload migration also covers the special v1alpha1 `InstanceSet` role selector. For other v1alpha1 kinds, use the replacement named by the CRD deprecation warning and review the v1alpha2 schema before changing manifests or clients.
+The storage-version rewrite below applies to the four CRDs that serve both versions: `RoleBasedGroup`, `RoleBasedGroupSet`, `RoleBasedGroupScalingAdapter`, and `ClusterEngineRuntimeProfile`. `RoleBasedGroup` and `RoleBasedGroupSet` use conversion webhooks; the other two use `None` conversion, and their v1alpha1 and v1alpha2 schemas are identical. The workload migration also covers the special v1alpha1 `InstanceSet` role selector. For other v1alpha1 kinds, use the replacement named by the CRD deprecation warning and review the v1alpha2 schema before changing manifests or clients.
 
 ## Scope and responsibility
 
@@ -45,10 +45,11 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
   | (if .workload.kind then "\(.workload.apiVersion)/\(.workload.kind)"
      else ((.annotations // {})["rbg.workloads.x-k8s.io/role-workload-type"] // "")
      end) as $wt
-  | select(($wt | test("/(Deployment|StatefulSet|LeaderWorkerSet)$"))
-           or $wt == "workloads.x-k8s.io/v1alpha1/InstanceSet")
+  | select($wt != "" and $wt != "workloads.x-k8s.io/v1alpha2/RoleInstanceSet")
   | "\($o.kind) \($o.metadata.namespace)/\($o.metadata.name) role=\(.name) \($wt)"'
 ```
+
+The command lists every role whose selector is not the v1alpha2 default, including unknown or misspelled values. Treat any value that does not match a row in the table below as an unknown selector, even though the command prints it the same way as a known type.
 
 For v1alpha1 roles, the direct `workload` field takes precedence over a stale annotation. For v1alpha2 roles, which have no `workload` field, the command reads `rbg.workloads.x-k8s.io/role-workload-type`. Role locations are:
 
@@ -79,10 +80,10 @@ For each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role:
    kubectl get rolebasedgroups.v1alpha2.workloads.x-k8s.io RBG_NAME -o yaml > RBG_NAME.pre-migration.yaml
    ```
 
-2. Identify the Pods owned by the current downstream workload. They will be recreated when the workload Kind changes:
+2. Identify the Pods owned by the current downstream workload in the RoleBasedGroup's namespace. They will be recreated when the workload Kind changes:
 
    ```bash
-   kubectl get pods -A \
+   kubectl get pods -n NAMESPACE \
      -l rbg.workloads.x-k8s.io/group-name=RBG_NAME,rbg.workloads.x-k8s.io/role-name=ROLE_NAME \
      -o wide
    ```
@@ -103,16 +104,16 @@ For each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role:
 5. Submit the single-role `v1alpha2` change through your normal deployment workflow. If the source of truth is still a v1alpha1 manifest, first review and convert that source to v1alpha2. Do not batch multiple roles in one change.
 
 6. Observe the replacement:
-   - The controller creates a `RoleInstanceSet`.
-   - The controller treats the old Deployment, StatefulSet, or LeaderWorkerSet as an orphan and deletes it.
+   - The controller creates a `RoleInstanceSet` and treats the old Deployment, StatefulSet, or LeaderWorkerSet as an orphan, deleting it in the same reconcile pass. The deletion happens even if creating the replacement failed.
+   - The role runs with zero Pods until the `RoleInstanceSet` is Ready. There is no overlap or surge period.
    - All Pods for that role are recreated.
 
 7. Verify the role before continuing:
 
    ```bash
-   kubectl get rolebasedgroup RBG_NAME -o wide
-   kubectl describe rolebasedgroup RBG_NAME
-   kubectl get events --field-selector involvedObject.name=RBG_NAME
+   kubectl get rolebasedgroup RBG_NAME -n NAMESPACE -o wide
+   kubectl describe rolebasedgroup RBG_NAME -n NAMESPACE
+   kubectl get events -n NAMESPACE --field-selector involvedObject.name=RBG_NAME
    ```
 
    Confirm that the old workload is gone, not merely that the replacement is ready. Also inspect the Pods and any traffic, readiness, cache-warmup, or business-specific health signal that matters to the service.
@@ -129,15 +130,22 @@ After the replacement `RoleInstanceSet` is ready, delete the old `InstanceSet` e
 
 ### RoleBasedGroupSet rollout order
 
-A `RoleBasedGroupSet` is not an independent per-child staging mechanism. Its controller compares generated children with `groupTemplate` and copies the template roles back into them. Migrating a child while the set template still carries a legacy workload type is unstable: the controller may try to restore the legacy role, and the admission guard rejects that new use.
+A `RoleBasedGroupSet` is not an independent per-child staging mechanism. Its controller compares generated children with `groupTemplate` and copies the template roles back into them. Migrating a child while the set template still carries a legacy workload type is unstable:
 
-Migrate the set template first. That can propagate the change to all remaining children, so it is a set-wide rollout decision rather than a one-role change. If per-child staging is required, use an explicitly reviewed plan that coordinates or isolates the child from set reconciliation. Do not assume that a child can be permanently migrated while its parent template remains unchanged.
+- If the set controller updates a migrated child, restoring the legacy role is a new deprecated use and the admission guard rejects it.
+- If the set controller deletes and re-creates the child from the unmigrated template, the re-created child inherits the legacy type through the create-time exemption for set-owned children, and the role must be migrated again.
+
+Migrate the set template first. Each child deletes its old workload in the same reconcile pass, so the propagated change takes every child's role to zero Pods at the same time. Plan it as a full outage of that role across the set, not as a staged rollout. If per-child staging is required, use an explicitly reviewed plan that coordinates or isolates the child from set reconciliation. Do not assume that a child can be permanently migrated while its parent template remains unchanged.
 
 ## Rollback
 
 Before each role migration, retain an immutable copy of the object, its resource version, and any revision history used by your deployment process. These records remain useful for audit and for restoring non-workload fields, but they do not make the workload-type change reversible.
 
-Once a role has switched to `RoleInstanceSet`, restoring the saved Deployment, StatefulSet, LeaderWorkerSet, or InstanceSet selector is a new deprecated use. The validator rejects it even while `controller.deprecatedWorkloadTypes.enabled=true`; compatibility preserves existing roles, but does not authorize reintroducing a deprecated type after migration. Do not begin migration until the business owner has approved a recovery plan for a failed `RoleInstanceSet` rollout.
+Once a role has switched to `RoleInstanceSet`, restoring the saved Deployment, StatefulSet, or LeaderWorkerSet selector is a new deprecated use. The validator rejects it even while `controller.deprecatedWorkloadTypes.enabled=true`; compatibility preserves existing roles, but does not authorize reintroducing a deprecated type after migration.
+
+Restoring an InstanceSet selector is not a safer alternative. The admission gate checks only Deployment, StatefulSet, and LeaderWorkerSet, so the InstanceSet write is accepted in both compatibility modes; the unsupported workload type then stops the whole RoleBasedGroup during preflight reconciliation. A successful write can be mistaken for a successful rollback while the group has silently stopped reconciling. Never restore an InstanceSet selector.
+
+Do not begin migration until the business owner has approved a recovery plan for a failed `RoleInstanceSet` rollout.
 
 If the old workload was already removed, do not manually recreate it with the same name. Let the controller own the replacement workload. Recovery after submission must use the pre-agreed emergency plan rather than a simple restore of the deprecated workload type.
 
@@ -145,7 +153,22 @@ If the old workload was already removed, do not manually recreate it with the sa
 
 Only begin this track after every identified legacy workload selector has been migrated, verified ready, and cleaned up.
 
-For every RoleBasedGroup and RoleBasedGroupSet:
+The rewrite applies to the four CRDs that serve both versions: `rolebasedgroups`, `rolebasedgroupsets`, `rolebasedgroupscalingadapters`, and `clusterengineruntimeprofiles`. The first two use the conversion webhook. The last two use `None` conversion with identical v1alpha1 and v1alpha2 schemas, so the API server only rewrites the `apiVersion` field, and the same read-and-write-back procedure applies.
+
+First check which CRDs still record `v1alpha1`. Clusters first installed at v0.7.0 or later never stored these kinds as v1alpha1, so their entries are already `[v1alpha2]` and the steps below are no-ops for them:
+
+```bash
+kubectl get customresourcedefinition \
+  rolebasedgroups.workloads.x-k8s.io \
+  rolebasedgroupsets.workloads.x-k8s.io \
+  rolebasedgroupscalingadapters.workloads.x-k8s.io \
+  clusterengineruntimeprofiles.workloads.x-k8s.io \
+  -o custom-columns=CRD:.metadata.name,STORED_VERSIONS:.status.storedVersions
+```
+
+Only CRDs whose `storedVersions` contains `v1alpha1` need the object rewrite. `RoleBasedGroupScalingAdapter` objects are written by the controller and are usually already v1alpha2-encoded. `ClusterEngineRuntimeProfile` objects are cluster-scoped and never written by the controller, so they are the most likely to remain v1alpha1-encoded.
+
+For every object of those kinds that still needs a rewrite:
 
 1. Read the object through the `v1alpha2` endpoint.
 2. Save and review the returned object.
@@ -155,12 +178,12 @@ For every RoleBasedGroup and RoleBasedGroupSet:
 One explicit, non-batched Kubernetes workflow is:
 
 ```bash
-kubectl get rolebasedgroups.v1alpha2.workloads.x-k8s.io RBG_NAME -o yaml > RBG_NAME.storage-rewrite.yaml
+kubectl get rolebasedgroups.v1alpha2.workloads.x-k8s.io RBG_NAME -n NAMESPACE -o yaml > RBG_NAME.storage-rewrite.yaml
 # Review RBG_NAME.storage-rewrite.yaml, then write it back:
 kubectl replace -f RBG_NAME.storage-rewrite.yaml
 ```
 
-Use the equivalent fully qualified `v1alpha2` resource for RoleBasedGroupSets. If the write conflicts because the object changed, fetch a fresh copy, review it, and decide whether to retry.
+Use the equivalent fully qualified `v1alpha2` resource for RoleBasedGroupSets, RoleBasedGroupScalingAdapters, and ClusterEngineRuntimeProfiles; the last one is cluster-scoped, so its commands take no namespace. `kubectl patch --subresource=status` requires kubectl 1.24 or newer. If the write conflicts because the object changed, fetch a fresh copy, review it, and decide whether to retry.
 
 Do not round-trip the object through `v1alpha1`: that path can reintroduce the `role-workload-type` compatibility annotation and create noise in later checks.
 
@@ -176,14 +199,24 @@ kubectl patch customresourcedefinition rolebasedgroups.workloads.x-k8s.io \
 kubectl patch customresourcedefinition rolebasedgroupsets.workloads.x-k8s.io \
   --subresource=status --type=merge \
   -p '{"status":{"storedVersions":["v1alpha2"]}}'
+
+kubectl patch customresourcedefinition rolebasedgroupscalingadapters.workloads.x-k8s.io \
+  --subresource=status --type=merge \
+  -p '{"status":{"storedVersions":["v1alpha2"]}}'
+
+kubectl patch customresourcedefinition clusterengineruntimeprofiles.workloads.x-k8s.io \
+  --subresource=status --type=merge \
+  -p '{"status":{"storedVersions":["v1alpha2"]}}'
 ```
 
-Then verify both conversion-enabled CRDs:
+Then verify all four dual-version CRDs:
 
 ```bash
 kubectl get customresourcedefinition \
   rolebasedgroups.workloads.x-k8s.io \
   rolebasedgroupsets.workloads.x-k8s.io \
+  rolebasedgroupscalingadapters.workloads.x-k8s.io \
+  clusterengineruntimeprofiles.workloads.x-k8s.io \
   -o custom-columns=CRD:.metadata.name,STORED_VERSIONS:.status.storedVersions
 ```
 
@@ -193,7 +226,7 @@ Each value must contain only `v1alpha2`. If `v1alpha1` remains before the status
 
 1. Repeat the role inventory. It must run successfully and produce no output.
 2. Confirm that reconciliation is complete and that no RBG-owned Deployment, StatefulSet, or LeaderWorkerSet remains. Confirm that every old v1alpha1 `InstanceSet` has also been deleted.
-3. Confirm from the migration inventory that every RoleBasedGroup and RoleBasedGroupSet was rewritten, then update and verify both `status.storedVersions` values as described above.
+3. Confirm from the migration inventory that every RoleBasedGroup and RoleBasedGroupSet was rewritten, and that no RoleBasedGroupScalingAdapter or ClusterEngineRuntimeProfile remains v1alpha1-encoded; then update and verify all four `status.storedVersions` values as described above.
 4. Set `controller.deprecatedWorkloadTypes.enabled=false`, then verify that the controller remains healthy and that a normal v1alpha2 update is not rejected by the deprecation gate.
 5. Move manifests, clients, and automation to `v1alpha2`.
 6. Retire the saved migration artifacts only after the rollback window agreed with the business owner has elapsed.
@@ -201,10 +234,11 @@ Each value must contain only `v1alpha2`. If `v1alpha1` remains before the status
 ## Risks and failure modes
 
 - **Pod recreation:** changing the workload Kind is destructive for the selected role. All Pods for that role can be recreated during migration.
+- **Zero capacity during cutover:** the old workload is deleted in the same reconcile pass that creates the `RoleInstanceSet`, even if that creation fails. The role has zero Pods until the replacement is Ready; there is no surge or overlap period.
 - **Partial readiness:** migrate one role at a time. Do not automate the full set of roles.
 - **Business state:** readiness alone may not be sufficient. Databases, caches, session state, traffic draining, and scheduler behavior must be reviewed by the service owner.
-- **Stale old workloads:** while compatibility is enabled, orphan cleanup removes an old Deployment, StatefulSet, or LeaderWorkerSet after its role moves to `RoleInstanceSet`. Verify that cleanup completed before the final cutoff. Do not manually delete one unless the controller cannot, because manual deletion can race with replacement creation.
+- **Stale old workloads:** while compatibility is enabled, orphan cleanup removes an old Deployment, StatefulSet, or LeaderWorkerSet after its role moves to `RoleInstanceSet`. Verify that cleanup completed before the final cutoff. Do not manually delete one unless the controller cannot.
 - **InstanceSet residue:** orphan cleanup does not remove old v1alpha1 InstanceSets. Their Pods continue running until the operator deletes the old object after the replacement is ready.
 - **Storage ghosts:** `status.storedVersions` records storage versions that have been used. Confirm a complete object rewrite before removing `v1alpha1` from that list; if old-encoded objects remain when the API version is removed, they can become unreadable.
 - **Silent type fallback:** deleting the workload-type annotation without completing the content migration changes the role to `RoleInstanceSet`. Make that change only after the Pattern and business impact have been reviewed.
-- **Set-wide propagation:** updating a RoleBasedGroupSet template can migrate all generated children. Treat it as a set-wide rollout, not a way to stage one child indefinitely.
+- **Set-wide propagation:** updating a RoleBasedGroupSet template can migrate all generated children, and their old workloads are deleted in the same reconcile pass. Treat it as a full outage of that role across the set, not a way to stage one child indefinitely.

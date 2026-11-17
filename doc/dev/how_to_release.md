@@ -168,8 +168,9 @@ When releasing a new version, use `update-release.sh` script:
 Before cutting a release that serves a deprecated API version:
 
 1. Confirm the CRD `deprecationWarning` names the replacement API and the removal release.
-2. Confirm the Helm README, chart NOTES, and root READMEs describe the compatibility gate and link
-   the English and Chinese migration guides.
+2. Confirm the Helm README, chart NOTES, and root READMEs describe the compatibility gate and lead
+   to the migration guides: each root README links the guide in its own language, and the chart
+   README links the guides or the NOTES points to the chart README, which links them.
 3. Confirm the migration guides cover role inventory, type-exact compatibility, per-role rollout,
    RoleBasedGroupSet template ordering, rollback limits, legacy workload cleanup, and
    storage-version rewriting.
