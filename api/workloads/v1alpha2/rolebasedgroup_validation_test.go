@@ -19,6 +19,7 @@ package v1alpha2
 import (
 	"context"
 	"fmt"
+	goruntime "runtime"
 	"sort"
 	"testing"
 	"time"
@@ -1321,28 +1322,107 @@ func TestValidateEngineRuntimesOverlapErrorCap(t *testing.T) {
 }
 
 // TestValidateEngineRuntimesScopeOwnershipLinear pins the complexity of the
-// D6 check: references are grouped by profileName and indexed per covered
-// component, so an uncapped list with no same-profile overlap validates in
-// linear time. A pairwise scan walks n^2/2 comparisons before concluding
-// nothing overlaps — ~5e9 for the object below — which this test turns into
-// a failure. The overlap semantics themselves are pinned by the D6 table
+// D6 check: each reference is recorded once — compat references per profile,
+// every other reference under its one component — so an uncapped list with no
+// same-profile overlap validates in linear time and bounded memory. A
+// pairwise scan walks n^2/2 comparisons before concluding nothing overlaps,
+// and the per-(reference, component) recording the check originally used held
+// n × C coverage entries under customComponentsPattern — 9M at n = C = 3000,
+// which OOMKilled a serving replica on a server-side dry run of nothing but
+// the validation. The overlap semantics themselves are pinned by the D6 table
 // above and the error-cap test.
 func TestValidateEngineRuntimesScopeOwnershipLinear(t *testing.T) {
+	t.Run("leaderWorkerPattern: distinct profiles default without overlap", func(t *testing.T) {
+		role := &RoleSpec{
+			Name:    "r",
+			Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+		}
+		const n = 100_000
+		runtimes := make([]EngineRuntime, n)
+		for i := range runtimes {
+			runtimes[i] = EngineRuntime{ProfileName: fmt.Sprintf("p-%d", i)}
+		}
+		role.EngineRuntimes = runtimes
+
+		start := time.Now()
+		require.NoError(t, ValidateEngineRuntimes(role))
+		assert.Less(t, time.Since(start), 2*time.Second,
+			"the scope-ownership check must stay linear in the engineRuntimes list")
+	})
+
+	t.Run("customComponentsPattern: broadcast compat references stay O(n + components)", func(t *testing.T) {
+		const n = 3000
+		role := &RoleSpec{
+			Name:    "r",
+			Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{}},
+		}
+		components := make([]InstanceComponent, n)
+		for i := range components {
+			components[i] = InstanceComponent{Name: fmt.Sprintf("comp-%d", i)}
+		}
+		role.CustomComponentsPattern.Components = components
+		// every reference is the pure compatibility shape, so it covers the
+		// full default set — the shape the per-component recording exploded on
+		runtimes := make([]EngineRuntime, n)
+		for i := range runtimes {
+			runtimes[i] = EngineRuntime{ProfileName: fmt.Sprintf("p-%d", i)}
+		}
+		role.EngineRuntimes = runtimes
+
+		var before, after goruntime.MemStats
+		goruntime.ReadMemStats(&before)
+		start := time.Now()
+		err := ValidateEngineRuntimes(role)
+		elapsed := time.Since(start)
+		goruntime.ReadMemStats(&after)
+		require.NoError(t, err)
+		assert.Less(t, elapsed, 2*time.Second,
+			"the scope-ownership check must stay linear in the engineRuntimes list")
+		assert.Less(t, after.Mallocs-before.Mallocs, uint64(500_000),
+			"each reference must be recorded once, not once per covered component")
+	})
+}
+
+// TestValidateEngineRuntimesErrorCap pins the aggregate-wide error cap: the
+// presence, vocabulary, env and deprecated-surface rules each return one error
+// per reference over an uncapped list, and the webhook path renders the
+// aggregate with err.Error(), whose += build is quadratic in the message
+// length — 5k violations answered with a 618 KiB error in 4.4 s, and 10k hit
+// the webhook's 10 s timeout. Every violation is still counted, but the
+// message stops at maxEngineRuntimeValidationErrors plus one summary line.
+func TestValidateEngineRuntimesErrorCap(t *testing.T) {
+	const n = 10_000
 	role := &RoleSpec{
-		Name:    "r",
-		Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+		Name: "r",
+		Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
+			Components: []InstanceComponent{{Name: "engine-comp"}},
+		}},
 	}
-	const n = 100_000
+	// one presence violation per reference: targetContainers without
+	// component outside standalonePattern
 	runtimes := make([]EngineRuntime, n)
 	for i := range runtimes {
-		runtimes[i] = EngineRuntime{ProfileName: fmt.Sprintf("p-%d", i)}
+		runtimes[i] = EngineRuntime{
+			ProfileName:      fmt.Sprintf("p-%d", i),
+			TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}},
+		}
 	}
 	role.EngineRuntimes = runtimes
 
 	start := time.Now()
-	require.NoError(t, ValidateEngineRuntimes(role))
-	assert.Less(t, time.Since(start), 2*time.Second,
-		"the scope-ownership check must stay linear in the engineRuntimes list")
+	err := ValidateEngineRuntimes(role)
+	elapsed := time.Since(start)
+	require.Error(t, err)
+	assert.Less(t, elapsed, 2*time.Second,
+		"validation must stay linear even when every reference violates")
+	assert.Contains(t, err.Error(), "targetContainers requires component")
+	assert.Contains(t, err.Error(),
+		fmt.Sprintf("and %d more engine runtime validation errors", n-maxEngineRuntimeValidationErrors))
+	assert.Less(t, len(err.Error()), 64*1024,
+		"the rendered error message must stay bounded")
+	aggregate, ok := err.(utilerrors.Aggregate)
+	require.True(t, ok, "expected an aggregate error")
+	assert.Len(t, aggregate.Errors(), maxEngineRuntimeValidationErrors+1)
 }
 
 // TestRoleBasedGroupValidator_EngineRuntimes pins the webhook call sites:

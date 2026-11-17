@@ -256,6 +256,20 @@ func scaledIntOrPercent(v *intstr.IntOrString, replicas int32, roundUp bool, def
 	return intstr.GetScaledValueFromIntOrPercent(v, int(replicas), roundUp)
 }
 
+// maxEngineRuntimeValidationErrors caps how many engine-runtime validation
+// errors one role's aggregate carries. The engineRuntimes list is uncapped by
+// API contract, so a pathological object can violate the presence, scope,
+// vocabulary or env rules once per reference — tens of thousands of errors.
+// The webhook path renders the aggregate with err.Error(), whose += build is
+// quadratic in the message length: 5k presence violations (~260 KiB of JSON)
+// took 4.4 s and answered with a 618 KiB error, and 10k hit the webhook's
+// 10 s timeout, hiding the violations behind a context deadline. The resolver
+// re-runs this validation on every reconcile, so the cap bounds the recurring
+// cost too. Every violation is still counted — the aggregate ends with an
+// "and N more" line — but only the first maxEngineRuntimeValidationErrors
+// carry a message.
+const maxEngineRuntimeValidationErrors = 20
+
 // ValidateEngineRuntimes enforces the role-side engine-runtime invariants
 // the role's own object can answer (KEP-531 Validation Layer Split):
 // targetContainers requiring component except under standalonePattern,
@@ -275,7 +289,8 @@ func scaledIntOrPercent(v *intstr.IntOrString, replicas int32, roundUp bool, def
 // by admission, failing there with EngineRuntimeRenderFailed. The presence
 // rule is webhook-enforced rather than CEL: the apiserver's CEL cost
 // budget rejects a comprehension over the uncapped engineRuntimes list
-// by more than 100x, the KEP-531 cost-budget remedy.
+// by more than 100x, the KEP-531 cost-budget remedy. Errors are capped at
+// maxEngineRuntimeValidationErrors plus one "and N more" line.
 func ValidateEngineRuntimes(role *RoleSpec) error {
 	if role == nil || len(role.EngineRuntimes) == 0 {
 		return nil
@@ -285,6 +300,11 @@ func ValidateEngineRuntimes(role *RoleSpec) error {
 	allErrs = append(allErrs, validateEngineRuntimeComponentVocabulary(role)...)
 	allErrs = append(allErrs, validateEngineRuntimeEnvCreation(role)...)
 	allErrs = append(allErrs, validateEngineRuntimeNewFieldsOnDeprecatedSurface(role)...)
+	if len(allErrs) > maxEngineRuntimeValidationErrors {
+		excess := len(allErrs) - maxEngineRuntimeValidationErrors
+		allErrs = append(allErrs[:maxEngineRuntimeValidationErrors:maxEngineRuntimeValidationErrors],
+			fmt.Errorf("and %d more engine runtime validation errors", excess))
+	}
 	return utilerrors.NewAggregate(allErrs)
 }
 
@@ -375,39 +395,60 @@ func validateEngineRuntimeTargetContainersPresence(role *RoleSpec) []error {
 // all lacking component and carrying no targetContainers — which keeps
 // main's duplicate-reference semantics verbatim.
 //
-// The engineRuntimes list is uncapped by API contract, so the check is
-// indexed instead of pairwise: references are grouped by profileName and
-// recorded under each component of their effective set, and a component
-// recorded by two references is the overlap. That keeps admission and
-// the render-time re-run linear in the list (a pairwise scan pays n^2/2
-// comparisons even when nothing overlaps). For every admissible shape the
-// reported pairs match the pairwise scan's — a non-compat reference
-// covers one component, or the pattern's default set with a singleton —
-// the one divergence being references that default with targetContainers
-// under customComponentsPattern, which cover the whole default set and
-// would report one error per shared component; that shape is rejected by
-// the presence rule in the same validation pass. Only the first
+// Both the engineRuntimes list and a customComponentsPattern's components
+// list are uncapped by API contract, so the check records each reference
+// once, not once per (reference, component) of its effective set: a
+// component-less compat reference under customComponentsPattern would
+// otherwise be recorded under every declared component — n × C entries,
+// which OOMKilled a serving replica at n = C = 6000 on nothing but a
+// server-side dry run. Compat references never conflict with each other,
+// so they are recorded once per profile as an index list; every other
+// admissible reference covers exactly one component (a component-less
+// reference carrying targetContainers is admitted only under
+// standalonePattern, whose effective set is the singleton {role.Name},
+// and the presence rule rejects it on every other pattern in the same
+// validation pass, so its scope overlaps are moot), so it is recorded
+// under that one component. A one-component reference overlaps the
+// compat references of its profile exactly when its component belongs to
+// the pattern's default set, which is computed once. The pairwise walk
+// over one component's references still stops at
+// maxScopeOwnershipErrors, and only the first
 // maxScopeOwnershipErrors overlaps carry a message.
 func validateEngineRuntimeScopeOwnership(role *RoleSpec) []error {
 	const maxScopeOwnershipErrors = 20
 
-	// scopeCover marks one reference's coverage of one component; compat
-	// flags the pure compatibility shape, whose pairs are exempt.
-	type scopeCover struct {
-		index  int
-		compat bool
+	// The pattern's default component set, computed once: the effective
+	// set of every compat reference of the role, and therefore the overlap
+	// condition between a compat reference and a one-component reference.
+	defaultSet := engineRuntimeEffectiveComponents(role, &EngineRuntime{})
+
+	// coverage: profileName → component → reference indices in list order,
+	// one entry per non-compat reference. compat: profileName → reference
+	// indices in list order, one entry per compat reference.
+	coverage := make(map[string]map[string][]int)
+	compat := make(map[string][]int)
+	record := func(profileName, component string, index int) {
+		components, ok := coverage[profileName]
+		if !ok {
+			components = make(map[string][]int, 1)
+			coverage[profileName] = components
+		}
+		components[component] = append(components[component], index)
 	}
-	coverage := make(map[string]map[string][]scopeCover)
 	for i := range role.EngineRuntimes {
 		er := &role.EngineRuntimes[i]
-		components, ok := coverage[er.ProfileName]
-		if !ok {
-			components = make(map[string][]scopeCover)
-			coverage[er.ProfileName] = components
-		}
-		compat := er.Component == "" && len(er.TargetContainers) == 0
-		for component := range engineRuntimeEffectiveComponents(role, er) {
-			components[component] = append(components[component], scopeCover{index: i, compat: compat})
+		switch {
+		case er.Component == "" && len(er.TargetContainers) == 0:
+			compat[er.ProfileName] = append(compat[er.ProfileName], i)
+		case er.Component != "":
+			record(er.ProfileName, er.Component, i)
+		case role.StandalonePattern != nil:
+			// component-less with targetContainers: legal only under
+			// standalonePattern, where the effective set is {role.Name}
+			record(er.ProfileName, role.Name, i)
+		default:
+			// component-less with targetContainers on another pattern:
+			// rejected by the presence rule in this same validation pass
 		}
 	}
 
@@ -428,24 +469,10 @@ func validateEngineRuntimeScopeOwnership(role *RoleSpec) []error {
 			componentNames = append(componentNames, component)
 		}
 		sort.Strings(componentNames)
+		compatRefs := compat[profileName]
 		for _, component := range componentNames {
-			covers := components[component]
-			if len(covers) < 2 {
-				continue
-			}
-			// Every pair mixing in a non-compat reference overlaps on this
-			// component, so split first: an all-compat list can never error
-			// and is skipped without walking its pairs.
-			nonCompat := make([]int, 0, len(covers))
-			compatRefs := make([]int, 0, len(covers))
-			for _, c := range covers {
-				if c.compat {
-					compatRefs = append(compatRefs, c.index)
-				} else {
-					nonCompat = append(nonCompat, c.index)
-				}
-			}
-			if len(nonCompat) == 0 {
+			nonCompat := components[component]
+			if len(nonCompat) < 2 && len(compatRefs) == 0 {
 				continue
 			}
 			report := func(i, j int) {
@@ -466,11 +493,19 @@ func validateEngineRuntimeScopeOwnership(role *RoleSpec) []error {
 					}
 					report(nonCompat[a], nonCompat[b])
 				}
-				for _, compatIndex := range compatRefs {
+			}
+			// The compat references cover the pattern's default set, so a
+			// one-component reference overlaps them exactly when its
+			// component is in that set.
+			if _, inDefaults := defaultSet[component]; !inDefaults {
+				continue
+			}
+			for _, i := range nonCompat {
+				for _, j := range compatRefs {
 					if len(allErrs) >= maxScopeOwnershipErrors {
 						return allErrs
 					}
-					report(nonCompat[a], compatIndex)
+					report(i, j)
 				}
 			}
 		}

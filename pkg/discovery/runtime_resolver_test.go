@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -225,11 +226,11 @@ func TestResolveEngineRuntimes(t *testing.T) {
 		require.NoError(t, err)
 		assert.Empty(t, collectEvents(t, recorder))
 
-		require.Len(t, plan.FragmentApplications[leader], 1)
-		assert.Equal(t, "p", plan.FragmentApplications[leader][0].Profile.Name)
+		require.Len(t, plan.FragmentsFor(leader), 1)
+		assert.Equal(t, "p", plan.FragmentsFor(leader)[0].Profile.Name)
 		// main never runs the sidecar stage for the worker template, so the
 		// compatibility default must not deliver there
-		assert.NotContains(t, plan.FragmentApplications, worker)
+		assert.Empty(t, plan.FragmentsFor(worker))
 		assert.Equal(t, []string{leader, worker}, plan.Vocabulary)
 	})
 
@@ -263,15 +264,19 @@ func TestResolveEngineRuntimes(t *testing.T) {
 		plan, recorder, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
 		require.NoError(t, err)
 		assert.Empty(t, collectEvents(t, recorder))
-		require.Len(t, plan.FragmentApplications["engine-comp"], 1)
-		require.Len(t, plan.FragmentApplications["aux-comp"], 1)
+		// the reference is stored once (no per-component copies) and
+		// selected per template through the pattern's default set
+		require.Len(t, plan.DefaultFragments, 1)
+		assert.Empty(t, plan.FragmentApplications)
+		require.Len(t, plan.FragmentsFor("engine-comp"), 1)
+		require.Len(t, plan.FragmentsFor("aux-comp"), 1)
 
 		role = componentsRole([]workloadsv1alpha2.EngineRuntime{{ProfileName: "p", Component: "engine-comp"}})
 		plan, recorder, err = resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
 		require.NoError(t, err)
 		assert.Empty(t, collectEvents(t, recorder))
 		require.Len(t, plan.FragmentApplications["engine-comp"], 1)
-		assert.NotContains(t, plan.FragmentApplications, "aux-comp")
+		assert.Empty(t, plan.FragmentsFor("aux-comp"))
 	})
 
 	t.Run("unknown component is a render error", func(t *testing.T) {
@@ -402,10 +407,11 @@ func TestResolveEngineRuntimes(t *testing.T) {
 		plan, recorder, err = resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
 		require.NoError(t, err)
 		assert.Empty(t, collectEvents(t, recorder))
-		require.Len(t, plan.FragmentApplications[leader], 2)
-		assert.NotContains(t, plan.FragmentApplications, worker)
-		assert.Equal(t, "p", plan.FragmentApplications[leader][0].Profile.Name)
-		assert.Equal(t, "p", plan.FragmentApplications[leader][1].Profile.Name)
+		require.Len(t, plan.DefaultFragments, 2)
+		require.Len(t, plan.FragmentsFor(leader), 2)
+		assert.Empty(t, plan.FragmentsFor(worker))
+		assert.Equal(t, "p", plan.FragmentsFor(leader)[0].Profile.Name)
+		assert.Equal(t, "p", plan.FragmentsFor(leader)[1].Profile.Name)
 	})
 
 	t.Run("D6: compat default plus a scoped reference to a different component are disjoint and legal", func(t *testing.T) {
@@ -420,8 +426,8 @@ func TestResolveEngineRuntimes(t *testing.T) {
 		plan, recorder, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
 		require.NoError(t, err)
 		assert.Empty(t, collectEvents(t, recorder))
-		require.Len(t, plan.FragmentApplications[leader], 1)
-		require.Len(t, plan.FragmentApplications[worker], 1)
+		require.Len(t, plan.FragmentsFor(leader), 1)
+		require.Len(t, plan.FragmentsFor(worker), 1)
 	})
 
 	t.Run("D6: compat default plus a scoped reference to the same component overlap and error", func(t *testing.T) {
@@ -433,8 +439,32 @@ func TestResolveEngineRuntimes(t *testing.T) {
 		plan, recorder, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), `component "leader" is covered by both`)
-		assert.Nil(t, plan.FragmentApplications[leader])
+		assert.Empty(t, plan.FragmentsFor(leader))
 		assert.True(t, hasEventContaining(t, recorder, ReasonEngineRuntimeRenderFailed))
+	})
+
+	t.Run("FragmentsFor merges named and default references in role-list order", func(t *testing.T) {
+		profiles := []*workloadsv1alpha2.ClusterEngineRuntimeProfile{
+			makeProfile("a", nil), makeProfile("b", nil), makeProfile("c", nil),
+		}
+		// the leader-scoped and component-less references interleave: the
+		// per-position merge must rebuild role-list order, not name-then-default
+		role := leaderWorkerRole([]workloadsv1alpha2.EngineRuntime{
+			{ProfileName: "a", Component: leader},
+			{ProfileName: "b"},
+			{ProfileName: "c", Component: leader},
+		})
+		plan, recorder, err := resolverHarness(t, profiles, role)
+		require.NoError(t, err)
+		assert.Empty(t, collectEvents(t, recorder))
+
+		require.Len(t, plan.FragmentApplications[leader], 2)
+		require.Len(t, plan.DefaultFragments, 1)
+		fragments := plan.FragmentsFor(leader)
+		require.Len(t, fragments, 3)
+		assert.Equal(t, []string{"a", "b", "c"},
+			[]string{fragments[0].Profile.Name, fragments[1].Profile.Name, fragments[2].Profile.Name})
+		assert.Empty(t, plan.FragmentsFor(worker))
 	})
 
 	t.Run("role-side extraPatches route to the named containers with the declared vocabulary", func(t *testing.T) {
@@ -682,8 +712,8 @@ func TestResolveEngineRuntimesLegacySingleTemplate(t *testing.T) {
 		assert.False(t, plan.HasPosition(string(constants.LeaderComponentType)))
 		// the fragment lands on the role-named position, which is the one
 		// the StatefulSet reconciler renders
-		assert.Len(t, plan.FragmentApplications["worker"], 1)
-		assert.Empty(t, plan.FragmentApplications[string(constants.LeaderComponentType)])
+		assert.Len(t, plan.FragmentsFor("worker"), 1)
+		assert.Empty(t, plan.FragmentsFor(string(constants.LeaderComponentType)))
 	})
 
 	t.Run("a Deployment-annotated customComponentsPattern role keys scenario-1 references by role name", func(t *testing.T) {
@@ -694,9 +724,9 @@ func TestResolveEngineRuntimesLegacySingleTemplate(t *testing.T) {
 		plan, _, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"worker"}, plan.Vocabulary)
-		assert.Len(t, plan.FragmentApplications["worker"], 1)
-		assert.Empty(t, plan.FragmentApplications["engine-comp"])
-		assert.Empty(t, plan.FragmentApplications["aux-comp"])
+		assert.Len(t, plan.FragmentsFor("worker"), 1)
+		assert.Empty(t, plan.FragmentsFor("engine-comp"))
+		assert.Empty(t, plan.FragmentsFor("aux-comp"))
 	})
 
 	t.Run("a standalonePattern role on a deprecated path is unchanged", func(t *testing.T) {
@@ -707,7 +737,7 @@ func TestResolveEngineRuntimesLegacySingleTemplate(t *testing.T) {
 		plan, _, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
 		require.NoError(t, err)
 		assert.Equal(t, []string{"standalone"}, plan.Vocabulary)
-		assert.Len(t, plan.FragmentApplications["standalone"], 1)
+		assert.Len(t, plan.FragmentsFor("standalone"), 1)
 	})
 
 	t.Run("a component-carrying reference on a deprecated path is rejected at render", func(t *testing.T) {
@@ -752,8 +782,8 @@ func TestResolveEngineRuntimesLWSNonLWPPattern(t *testing.T) {
 		assert.True(t, plan.HasPosition(string(constants.WorkerComponentType)))
 		// the absent-component default is leader — main injected the leader
 		// template and skipped the worker, whatever the pattern
-		assert.Len(t, plan.FragmentApplications[string(constants.LeaderComponentType)], 1)
-		assert.Empty(t, plan.FragmentApplications[string(constants.WorkerComponentType)])
+		assert.Len(t, plan.FragmentsFor(string(constants.LeaderComponentType)), 1)
+		assert.Empty(t, plan.FragmentsFor(string(constants.WorkerComponentType)))
 	})
 
 	t.Run("a LeaderWorkerSet-annotated customComponentsPattern role keys fragments to leader", func(t *testing.T) {
@@ -766,9 +796,9 @@ func TestResolveEngineRuntimesLWSNonLWPPattern(t *testing.T) {
 		assert.Equal(t, []string{
 			string(constants.LeaderComponentType), string(constants.WorkerComponentType),
 		}, plan.Vocabulary)
-		assert.Len(t, plan.FragmentApplications[string(constants.LeaderComponentType)], 1)
-		assert.Empty(t, plan.FragmentApplications["engine-comp"])
-		assert.Empty(t, plan.FragmentApplications["aux-comp"])
+		assert.Len(t, plan.FragmentsFor(string(constants.LeaderComponentType)), 1)
+		assert.Empty(t, plan.FragmentsFor("engine-comp"))
+		assert.Empty(t, plan.FragmentsFor("aux-comp"))
 	})
 
 	t.Run("a leaderWorkerPattern role on the LWS path keeps the pattern vocabulary", func(t *testing.T) {
@@ -781,9 +811,60 @@ func TestResolveEngineRuntimesLWSNonLWPPattern(t *testing.T) {
 		assert.Equal(t, []string{
 			string(constants.LeaderComponentType), string(constants.WorkerComponentType),
 		}, plan.Vocabulary)
-		assert.Len(t, plan.FragmentApplications[string(constants.LeaderComponentType)], 1)
-		assert.Empty(t, plan.FragmentApplications[string(constants.WorkerComponentType)])
+		assert.Len(t, plan.FragmentsFor(string(constants.LeaderComponentType)), 1)
+		assert.Empty(t, plan.FragmentsFor(string(constants.WorkerComponentType)))
 	})
+}
+
+// TestResolveEngineRuntimesPlanStoredOncePerReference pins the plan's storage
+// cost: a component-less reference under customComponentsPattern scopes to
+// every declared component, but the resolver must store the reference once
+// and select per template through DefaultPositions, not copy one fragment
+// per (reference, component) pair. At n = C = 3000 the per-pair expansion
+// held 9M fragments (~1.15 GiB live after GC) and OOMKilled a 1536Mi
+// controller pod; once-per-reference keeps the plan at O(n + components).
+func TestResolveEngineRuntimesPlanStoredOncePerReference(t *testing.T) {
+	const n = 3000
+	profile := makeProfile("p", nil)
+	components := make([]workloadsv1alpha2.InstanceComponent, n)
+	for i := range components {
+		components[i] = workloadsv1alpha2.InstanceComponent{
+			Name: fmt.Sprintf("comp-%d", i),
+			Size: ptr.To(int32(1)),
+			Template: corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "engine"}}},
+			},
+		}
+	}
+	// all references are the pure compatibility shape, which never conflicts
+	// (D6 exemption), so the resolve itself must succeed
+	runtimes := make([]workloadsv1alpha2.EngineRuntime, n)
+	for i := range runtimes {
+		runtimes[i] = workloadsv1alpha2.EngineRuntime{ProfileName: "p"}
+	}
+	role := &workloadsv1alpha2.RoleSpec{
+		Name: "worker",
+		Pattern: workloadsv1alpha2.Pattern{
+			CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+				Components: components,
+			},
+		},
+		EngineRuntimes: runtimes,
+	}
+
+	start := time.Now()
+	plan, recorder, err := resolverHarness(t, []*workloadsv1alpha2.ClusterEngineRuntimeProfile{profile}, role)
+	require.NoError(t, err)
+	assert.Less(t, time.Since(start), 10*time.Second,
+		"the resolve must stay linear in the engineRuntimes list")
+	assert.Empty(t, collectEvents(t, recorder))
+
+	// each reference is stored exactly once, outside the per-position map
+	require.Len(t, plan.DefaultFragments, n)
+	assert.Empty(t, plan.FragmentApplications)
+	// and every position still selects the full default-scope set
+	require.Len(t, plan.FragmentsFor("comp-0"), n)
+	require.Len(t, plan.FragmentsFor(fmt.Sprintf("comp-%d", n-1)), n)
 }
 
 // TestResolveEngineRuntimesConsentOnlyTargetValidation pins the consent-only
@@ -884,7 +965,7 @@ func TestResolveEngineRuntimesConsentOnlyTargetValidation(t *testing.T) {
 		// consent-only, nothing to apply, and the listed targets resolve
 		// — "engine" through the referenced template's containers and
 		// "patch-only" through its templateRef patch.
-		require.Len(t, plan.FragmentApplications[role.Name], 1)
+		require.Len(t, plan.FragmentsFor(role.Name), 1)
 		assert.Empty(t, plan.PatchApplications)
 		assert.Empty(t, plan.RolePatchApplications)
 	})

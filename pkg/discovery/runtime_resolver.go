@@ -32,11 +32,18 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
-// EngineRuntimeFragment is one reference's pod-level fragments routed to one
-// position: the fetched profile plus the role-side Containers override.
+// EngineRuntimeFragment is one reference's pod-level fragments: the fetched
+// profile plus the role-side Containers override. ReferenceIndex is the
+// reference's index in the role's engineRuntimes list — FragmentsFor merges
+// the two storage halves of the plan back into role-list order per template.
 type EngineRuntimeFragment struct {
 	Profile *workloadsv1alpha2.ClusterEngineRuntimeProfile
 	Runtime workloadsv1alpha2.EngineRuntime
+	// ReferenceIndex is the reference's index in the role's engineRuntimes
+	// list. The resolver stores a component-less reference once, outside the
+	// per-position map, so the per-template merge needs the index to
+	// reconstruct role-list order.
+	ReferenceIndex int
 }
 
 // EngineRuntimePatch is one reference's profile-side patch rules routed to
@@ -74,21 +81,39 @@ type EngineRuntimeRolePatch struct {
 	DeclaredContainers map[string]struct{}
 }
 
-// EngineRuntimePlan is the resolver's per-role output: the three routing
-// artifacts the render passes consume, keyed by position. FragmentApplications
-// feeds the fragment pass — pod-level fragments and the legacy containers
-// merge follow the reference's component scope (its effective set);
-// append-only, consent-free, idempotent. PatchApplications feeds the
-// profile-side patch pass (the profile's patches at the consented addresses
-// of the named component); RolePatchApplications feeds the role-side patch
-// pass (the reference's patches into role-declared or profile-declared
-// containers of the named component, per D8). All preserve role-list order
-// within a position. Under standalonePattern the single position is the
-// role-named component — the plan keys by role.Name, exactly the component
-// main's renderer builds (KEP-173: the standalone component is named after
-// the role, so `component: <role name>` selects it).
+// EngineRuntimePlan is the resolver's per-role output: the routing artifacts
+// the render passes consume. The fragment side is stored once per reference,
+// not once per (reference, position) pair: a reference naming a component
+// lands in FragmentApplications under that component, and a component-less
+// reference — whose scope is the pattern's default set — lands once in
+// DefaultFragments, selected per template through FragmentsFor and the
+// DefaultPositions set. Expanding the default scope per component at resolve
+// time instead would cost one EngineRuntime copy per (reference, component)
+// pair: n × C entries under customComponentsPattern, which OOMKilled the
+// controller at n = C = 3000. PatchApplications feeds the profile-side patch
+// pass (the profile's patches at the consented addresses of the named
+// component); RolePatchApplications feeds the role-side patch pass (the
+// reference's patches into role-declared or profile-declared containers of
+// the named component, per D8). Both patch dimensions key by the reference's
+// one named component, so they have no default-scope expansion. All preserve
+// role-list order within a position. Under standalonePattern the single
+// position is the role-named component — the plan keys by role.Name, exactly
+// the component main's renderer builds (KEP-173: the standalone component is
+// named after the role, so `component: <role name>` selects it).
 type EngineRuntimePlan struct {
-	FragmentApplications  map[string][]EngineRuntimeFragment
+	// FragmentApplications holds the references that name a component,
+	// keyed by that component, in role-list order.
+	FragmentApplications map[string][]EngineRuntimeFragment
+	// DefaultFragments holds the component-less references, once each in
+	// role-list order. Their scope is DefaultPositions — the pattern's
+	// default set — which FragmentsFor applies per template.
+	DefaultFragments []EngineRuntimeFragment
+	// DefaultPositions is the pattern's default position set (KEP-531
+	// Effective Component Set): leader-only under leaderWorkerPattern, every
+	// declared component under customComponentsPattern, the single
+	// role-named component under standalonePattern and on the collapsed
+	// legacy vocabularies.
+	DefaultPositions      map[string]struct{}
 	PatchApplications     map[string][]EngineRuntimePatch
 	RolePatchApplications map[string][]EngineRuntimeRolePatch
 	// Vocabulary lists the positions the role's pattern defines, in authored
@@ -138,6 +163,44 @@ func (p *EngineRuntimePlan) HasPosition(name string) bool {
 		}
 	}
 	return false
+}
+
+// FragmentsFor returns the fragments the render pass for one template
+// (position) applies: the references naming that component, merged with the
+// component-less references when the position belongs to the pattern's
+// default set, in role-list order. The two halves are stored once per
+// reference — the default-scope references are not copied per component —
+// so the merge is O(named + defaults) per template, the same per-template
+// work main paid, while the plan itself stays O(n + components). The
+// returned slice is a read-only view: it aliases the plan's storage when
+// one half is empty (the pure-broadcast shape, where a merged copy per
+// template would itself cost n × C across a customComponentsPattern
+// render), and the fragment pass must not write into it.
+func (p *EngineRuntimePlan) FragmentsFor(position string) []EngineRuntimeFragment {
+	named := p.FragmentApplications[position]
+	if _, ok := p.DefaultPositions[position]; !ok {
+		return named
+	}
+	if len(named) == 0 {
+		return p.DefaultFragments
+	}
+	if len(p.DefaultFragments) == 0 {
+		return named
+	}
+	merged := make([]EngineRuntimeFragment, 0, len(named)+len(p.DefaultFragments))
+	i, j := 0, 0
+	for i < len(named) && j < len(p.DefaultFragments) {
+		if named[i].ReferenceIndex < p.DefaultFragments[j].ReferenceIndex {
+			merged = append(merged, named[i])
+			i++
+			continue
+		}
+		merged = append(merged, p.DefaultFragments[j])
+		j++
+	}
+	merged = append(merged, named[i:]...)
+	merged = append(merged, p.DefaultFragments[j:]...)
+	return merged
 }
 
 // ResolveEngineRuntimes runs once per role render, before any per-template
@@ -193,6 +256,10 @@ func ResolveEngineRuntimes(
 
 	vocabulary, positions, defaults := positionVocabulary(role)
 	plan.Vocabulary = positions
+	plan.DefaultPositions = make(map[string]struct{}, len(defaults))
+	for _, position := range defaults {
+		plan.DefaultPositions[position] = struct{}{}
+	}
 
 	// Computed once per resolve: the role-declared half of the
 	// targetContainers validation below, which runs per reference.
@@ -205,16 +272,23 @@ func ResolveEngineRuntimes(
 			return plan, failRef(ctx, recorder, rbg, runtime, err)
 		}
 
-		effective, err := effectivePositions(role, runtime, vocabulary, defaults)
-		if err != nil {
-			return plan, failRef(ctx, recorder, rbg, runtime, err)
-		}
-
-		for _, position := range effective {
-			plan.FragmentApplications[position] = append(
-				plan.FragmentApplications[position],
-				EngineRuntimeFragment{Profile: profile, Runtime: runtime},
-			)
+		// Store the reference once: named components route to their one
+		// position; a component-less reference's scope (the pattern's
+		// default set) is recorded as DefaultPositions, and the fragment
+		// itself lives only in DefaultFragments. Expanding the default set
+		// here would copy the reference once per component of the set —
+		// n × C entries under customComponentsPattern, OOMKill territory
+		// for uncapped lists.
+		if runtime.Component == "" {
+			plan.DefaultFragments = append(plan.DefaultFragments,
+				EngineRuntimeFragment{Profile: profile, Runtime: runtime, ReferenceIndex: refIndex})
+		} else {
+			if err := effectivePositions(role, runtime, vocabulary); err != nil {
+				return plan, failRef(ctx, recorder, rbg, runtime, err)
+			}
+			plan.FragmentApplications[runtime.Component] = append(
+				plan.FragmentApplications[runtime.Component],
+				EngineRuntimeFragment{Profile: profile, Runtime: runtime, ReferenceIndex: refIndex})
 		}
 
 		if len(runtime.TargetContainers) > 0 {
@@ -415,36 +489,30 @@ func failRef(
 	return NewRenderError(err)
 }
 
-// effectivePositions computes a reference's effective position set: the
-// single named component when component is set, else the pattern's default
-// set (per-pattern per D2 — leader-only under leaderWorkerPattern, every
-// declared component under customComponentsPattern, the single
-// role-named component under standalonePattern). The explicit form is
-// validated against the vocabulary; under standalonePattern that
-// vocabulary is exactly {role.Name} — the standalone component is named
-// after the role (KEP-173), so `component: <role name>` selects it and any
-// other name fails the render vocabulary check.
+// effectivePositions validates a named-component reference against the
+// pattern's vocabulary (KEP-531 Plan-Time Vocabulary Check, per-pattern per
+// D2): under standalonePattern that vocabulary is exactly {role.Name} — the
+// standalone component is named after the role (KEP-173), so `component:
+// <role name>` selects it and any other name fails the render vocabulary
+// check. Component-less references need no check here: their scope is the
+// pattern's default set, recorded once as the plan's DefaultPositions.
 func effectivePositions(
 	role *workloadsv1alpha2.RoleSpec,
 	runtime workloadsv1alpha2.EngineRuntime,
 	vocabulary map[string]struct{},
-	defaults []string,
-) ([]string, error) {
-	if runtime.Component == "" {
-		return defaults, nil
-	}
+) error {
 	if _, legal := vocabulary[runtime.Component]; !legal {
 		if role.GetStandalonePattern() != nil {
-			return nil, fmt.Errorf(
+			return fmt.Errorf(
 				"role %q reference %q names component %q, but a standalonePattern role has exactly one "+
 					"component, named after the role — component must equal %q or stay absent",
 				role.Name, runtime.ProfileName, runtime.Component, role.Name)
 		}
-		return nil, fmt.Errorf(
+		return fmt.Errorf(
 			"role %q reference %q names component %q, which the role's pattern does not define",
 			role.Name, runtime.ProfileName, runtime.Component)
 	}
-	return []string{runtime.Component}, nil
+	return nil
 }
 
 // positionVocabulary returns the legal position names of the role's pattern,

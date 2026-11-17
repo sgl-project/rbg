@@ -603,7 +603,7 @@ func renderResolvedPosition(
 	}
 	ctx := context.Background()
 	if err := InjectEngineRuntimeFragments(
-		ctx, spec, plan.FragmentApplications[position], plan.RoleName, nil, nil); err != nil {
+		ctx, spec, plan.FragmentsFor(position), plan.RoleName, nil, nil); err != nil {
 		return spec, err
 	}
 	profilePositionalInserts, err := ApplyEngineRuntimePatches(

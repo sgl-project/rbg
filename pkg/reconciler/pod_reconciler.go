@@ -191,7 +191,7 @@ func (r *PodReconciler) ConstructPodTemplateSpecApplyConfiguration(
 		// Delivery).
 		if err := discovery.InjectEngineRuntimeFragments(
 			ctx, &podTemplateSpec,
-			r.engineRuntimePlan.FragmentApplications[r.engineRuntimePosition],
+			r.engineRuntimePlan.FragmentsFor(r.engineRuntimePosition),
 			r.engineRuntimePlan.RoleName,
 			r.recorder, rbg,
 		); err != nil {
