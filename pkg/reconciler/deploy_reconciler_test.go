@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,6 +35,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 var expectedRevisionHash = "revision-hash-value"
@@ -192,6 +194,44 @@ func TestDeploymentReconciler_Reconciler(t *testing.T) {
 			},
 		)
 	}
+}
+
+func TestDeploymentReconciler_RepairsLegacyExclusiveTopology(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, appsv1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+	reconciler := NewDeploymentReconciler(scheme, fakeClient)
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("exclusive", "default").
+		WithAnnotations(map[string]string{constants.GroupExclusiveTopologyKey: corev1.LabelHostname}).Obj()
+	role := &rbg.Spec.Roles[0]
+	role.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment"}
+	key := types.NamespacedName{Namespace: rbg.Namespace, Name: rbg.GetWorkloadName(role)}
+	require.NoError(t, reconciler.Reconciler(ctx, rbg, role, nil, expectedRevisionHash))
+	deploy := &appsv1.Deployment{}
+	require.NoError(t, fakeClient.Get(ctx, key, deploy))
+
+	// Keep the stored owner, selector and role hash. Only affinity is stale.
+	deploy.UID = "stored-deployment-uid"
+	deploy.Spec.Template.Spec.Affinity = nil
+	require.NoError(t, setExclusiveAffinities(&deploy.Spec.Template, rbg.GenGroupUniqueKey(),
+		corev1.LabelHostname, constants.GroupUniqueHashLabelKey))
+	require.NoError(t, fakeClient.Update(ctx, deploy))
+
+	var wantTemplate corev1.PodTemplateSpec
+	require.NoError(t, setExclusiveAffinities(&wantTemplate, rbg.GenGroupUniqueKey(),
+		corev1.LabelHostname, constants.GroupUIDLabelKey))
+	require.NoError(t, reconciler.Reconciler(ctx, rbg, role, nil, expectedRevisionHash))
+	require.NoError(t, fakeClient.Get(ctx, key, deploy))
+	require.Equal(t, wantTemplate.Spec.Affinity, deploy.Spec.Template.Spec.Affinity)
+	require.Equal(t, rbg.GetCommonLabelsFromRole(role), deploy.Spec.Selector.MatchLabels)
+	require.Equal(t, expectedRevisionHash, deploy.Labels[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)])
+	resourceVersion := deploy.ResourceVersion
+
+	require.NoError(t, reconciler.Reconciler(ctx, rbg, role, nil, expectedRevisionHash))
+	require.NoError(t, fakeClient.Get(ctx, key, deploy))
+	require.Equal(t, resourceVersion, deploy.ResourceVersion)
 }
 
 // TestDeploymentReconciler_CheckWorkloadReady tests the CheckWorkloadReady method of DeploymentReconciler

@@ -1,13 +1,12 @@
 # Example: RoleBasedGroup with exclusive topology (v1alpha2)
-# Pods of different roles are scheduled on different nodes (or topology zones)
-# by setting the exclusive-topology annotation.
+# Pods of the same group are scheduled in the same topology domain.
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
   name: nginx-exclusive
   namespace: default
   annotations:
-    rolebasedgroup.workloads.x-k8s.io/exclusive-topology: "kubernetes.io/hostname"
+    rbg.workloads.x-k8s.io/group-exclusive-topology: "kubernetes.io/hostname"
 spec:
   roles:
     - name: frontend
@@ -15,9 +14,9 @@ spec:
       standalonePattern:
         template:
           # To disable exclusive topology for this specific role, add:
-          metadata:
-            annotations:
-              rolebasedgroup.workloads.x-k8s.io/disable-exclusive-topology: "true"
+          # metadata:
+          #   annotations:
+          #     rbg.workloads.x-k8s.io/role-disable-exclusive: "true"
           spec:
             containers:
               - name: nginx-frontend

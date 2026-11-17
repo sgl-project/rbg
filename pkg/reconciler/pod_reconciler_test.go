@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"reflect"
 	"testing"
 
@@ -27,6 +28,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
 	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	"k8s.io/client-go/tools/record"
@@ -612,6 +614,131 @@ func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration(t *testing.T) 
 	}
 }
 
+func TestPodTemplateExclusiveTopologyMatchesPodLabels(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	reconciler := NewPodReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).Build())
+	reconciler.SetInjectors([]string{})
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("group-a", "test-ns").Obj()
+	rbg.Annotations = map[string]string{constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname"}
+	role := &rbg.Spec.Roles[0]
+	other := wrappersv2.BuildBasicRoleBasedGroup("group-b", "test-ns").Obj()
+
+	for _, tt := range []struct {
+		name   string
+		labels map[string]string
+	}{
+		{name: "common labels", labels: rbg.GetCommonLabelsFromRole(role)},
+		{name: "legacy workload selector", labels: map[string]string{"legacy-selector": "preserved"}},
+		{name: "nil labels"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			originalLabels := maps.Clone(tt.labels)
+			result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
+				context.Background(), rbg, role, tt.labels,
+			)
+			require.NoError(t, err)
+			assert.Equal(t, originalLabels, tt.labels, "input selector must not be mutated")
+			assert.Equal(t, rbg.GenGroupUniqueKey(), result.Labels[constants.GroupUIDLabelKey])
+			assert.NotContains(t, result.Labels, constants.GroupUniqueHashLabelKey)
+
+			obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(result)
+			require.NoError(t, err)
+			var pod corev1.PodTemplateSpec
+			require.NoError(t, runtime.DefaultUnstructuredConverter.FromUnstructured(obj, &pod))
+			require.NotNil(t, pod.Spec.Affinity)
+			require.NotNil(t, pod.Spec.Affinity.PodAffinity)
+			require.NotNil(t, pod.Spec.Affinity.PodAntiAffinity)
+			require.Len(t, pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 1)
+			require.Len(t, pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution, 1)
+			affinity := pod.Spec.Affinity.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0]
+			antiAffinity := pod.Spec.Affinity.PodAntiAffinity.RequiredDuringSchedulingIgnoredDuringExecution[0]
+			assert.Equal(t, "kubernetes.io/hostname", affinity.TopologyKey)
+			assert.Equal(t, affinity.TopologyKey, antiAffinity.TopologyKey)
+			matchOwn, err := metav1.LabelSelectorAsSelector(affinity.LabelSelector)
+			require.NoError(t, err)
+			matchOther, err := metav1.LabelSelectorAsSelector(antiAffinity.LabelSelector)
+			require.NoError(t, err)
+			assert.True(t, matchOwn.Matches(labels.Set(pod.Labels)), "first pod must match its own affinity")
+			assert.False(t, matchOther.Matches(labels.Set(pod.Labels)), "same group must not match anti-affinity")
+			otherLabels := other.GetCommonLabelsFromRole(&other.Spec.Roles[0])
+			assert.True(t, matchOther.Matches(labels.Set(otherLabels)), "another group must match anti-affinity without opting in")
+			assert.False(t, matchOther.Matches(labels.Set{"app": "other"}), "unrelated pods must not match anti-affinity")
+		})
+	}
+}
+
+func TestPodTemplateExclusiveTopologyIsOptIn(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	reconciler := NewPodReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).Build())
+	reconciler.SetInjectors([]string{})
+
+	for _, tt := range []struct {
+		name     string
+		topology bool
+		disabled bool
+	}{
+		{name: "no exclusive topology"},
+		{name: "disabled role", topology: true, disabled: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("group", "test-ns").Obj()
+			if tt.topology {
+				rbg.Annotations = map[string]string{constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname"}
+			}
+			role := &rbg.Spec.Roles[0]
+			if tt.disabled {
+				role.GetTemplate().Annotations = map[string]string{constants.DisableExclusiveKeyAnnotationKey: "true"}
+			}
+			result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
+				context.Background(), rbg, role, rbg.GetCommonLabelsFromRole(role),
+			)
+			require.NoError(t, err)
+			assert.NotContains(t, result.Labels, constants.GroupUniqueHashLabelKey)
+			assert.Nil(t, result.Spec.Affinity)
+		})
+	}
+}
+
+func TestPodTemplateExclusiveTopologyPreservesConflictingSelector(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	reconciler := NewPodReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).Build())
+	reconciler.SetInjectors([]string{})
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("group", "test-ns").Obj()
+	rbg.Annotations = map[string]string{constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname"}
+
+	result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
+		context.Background(), rbg, &rbg.Spec.Roles[0], map[string]string{constants.GroupUIDLabelKey: "other"},
+	)
+	require.ErrorContains(t, err, constants.GroupUIDLabelKey)
+	assert.Nil(t, result)
+}
+
+func TestPodTemplateExclusiveTopologyCorrectsTemplateLabel(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, corev1.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	reconciler := NewPodReconciler(scheme, fake.NewClientBuilder().WithScheme(scheme).Build())
+	reconciler.SetInjectors([]string{})
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("group", "test-ns").Obj()
+	rbg.Annotations = map[string]string{constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname"}
+	role := &rbg.Spec.Roles[0]
+	role.GetTemplate().Labels = map[string]string{constants.GroupUIDLabelKey: "incorrect"}
+
+	result, err := reconciler.ConstructPodTemplateSpecApplyConfiguration(
+		context.Background(), rbg, role, rbg.GetCommonLabelsFromRole(role),
+	)
+	require.NoError(t, err)
+	assert.Equal(t, rbg.GenGroupUniqueKey(), result.Labels[constants.GroupUIDLabelKey])
+	assert.Equal(t, "incorrect", role.GetTemplate().Labels[constants.GroupUIDLabelKey])
+}
+
 func TestPodReconciler_ConstructPodTemplateSpecApplyConfiguration_WithInjectors(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = corev1.AddToScheme(scheme)
@@ -1051,7 +1178,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			pod:            &corev1.PodTemplateSpec{},
 			uniqueKey:      "abcd1234",
 			topologyKey:    "kubernetes.io/hostname",
-			podAffinityKey: constants.GroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUIDLabelKey,
 			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -1063,7 +1190,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      constants.GroupUniqueHashLabelKey,
+												Key:      constants.GroupUIDLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"abcd1234"},
 											},
@@ -1079,11 +1206,11 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      constants.GroupUniqueHashLabelKey,
+												Key:      constants.GroupUIDLabelKey,
 												Operator: metav1.LabelSelectorOpExists,
 											},
 											{
-												Key:      constants.GroupUniqueHashLabelKey,
+												Key:      constants.GroupUIDLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,
 												Values:   []string{"abcd1234"},
 											},
@@ -1116,7 +1243,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			},
 			uniqueKey:      "xyz5678",
 			topologyKey:    "node",
-			podAffinityKey: constants.GroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUIDLabelKey,
 			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -1129,7 +1256,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      constants.GroupUniqueHashLabelKey,
+												Key:      constants.GroupUIDLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"xyz5678"},
 											},
@@ -1146,11 +1273,11 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      constants.GroupUniqueHashLabelKey,
+												Key:      constants.GroupUIDLabelKey,
 												Operator: metav1.LabelSelectorOpExists,
 											},
 											{
-												Key:      constants.GroupUniqueHashLabelKey,
+												Key:      constants.GroupUIDLabelKey,
 												Operator: metav1.LabelSelectorOpNotIn,
 												Values:   []string{"xyz5678"},
 											},
@@ -1175,7 +1302,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      constants.GroupUniqueHashLabelKey,
+												Key:      constants.GroupUIDLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"old"},
 											},
@@ -1194,7 +1321,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			},
 			uniqueKey:      "newkey",
 			topologyKey:    "rack",
-			podAffinityKey: constants.GroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUIDLabelKey,
 			wantErr:        false,
 			want: &corev1.PodTemplateSpec{
 				Spec: corev1.PodSpec{
@@ -1206,7 +1333,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 									LabelSelector: &metav1.LabelSelector{
 										MatchExpressions: []metav1.LabelSelectorRequirement{
 											{
-												Key:      constants.GroupUniqueHashLabelKey,
+												Key:      constants.GroupUIDLabelKey,
 												Operator: metav1.LabelSelectorOpIn,
 												Values:   []string{"old"},
 											},
@@ -1228,7 +1355,7 @@ func Test_setExclusiveAffinities(t *testing.T) {
 			pod:            &corev1.PodTemplateSpec{},
 			uniqueKey:      "key",
 			topologyKey:    "", // illegal
-			podAffinityKey: constants.GroupUniqueHashLabelKey,
+			podAffinityKey: constants.GroupUIDLabelKey,
 			want:           &corev1.PodTemplateSpec{}, // No change
 			wantErr:        true,
 		},
