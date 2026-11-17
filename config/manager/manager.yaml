@@ -29,9 +29,9 @@ spec:
         app.kubernetes.io/name: rbgs
     spec:
       serviceAccountName: controller-sa
-      # The preStop sleep keeps the webhooks serving for 5s after SIGTERM while
-      # the Pod leaves the webhook Service's endpoints. The grace period covers
-      # that sleep plus the manager's 30s graceful shutdown (5 + 30).
+      # The preStop sleep delays SIGTERM by 5s, so the webhooks keep serving
+      # while the Pod leaves the webhook Service's endpoints. The grace period
+      # covers that sleep plus the manager's 30s graceful shutdown (5 + 30).
       terminationGracePeriodSeconds: 35
       containers:
         - name: rbgs
@@ -49,6 +49,8 @@ spec:
           image: controller:latest
           imagePullPolicy: IfNotPresent
           lifecycle:
+            # Needs /bin/sleep in the image. Switch to preStop.sleep once
+            # Kubernetes 1.30 is the minimum.
             preStop:
               exec:
                 command: ["/bin/sleep", "5"]
