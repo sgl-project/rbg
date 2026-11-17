@@ -36,6 +36,7 @@
     - [与 Rolling Update 的集成](#与-rolling-update-的集成)
       - [RBG 与 RIS 的更新协调闭环](#rbg-与-ris-的更新协调闭环)
       - [成员可用性与预算补位](#成员可用性与预算补位)
+      - [surge 准备与基础更新门槛](#surge-准备与基础更新门槛)
       - [Policy 覆盖与 RIS 执行窗口](#policy-覆盖与-ris-执行窗口)
       - [maxSurge 上限与 RIS 执行](#maxsurge-上限与-ris-执行)
       - [按 Segment 生成 partition](#按-segment-生成-partition)
@@ -124,6 +125,8 @@
 Segment 将多个 role 的 RoleInstance 按固定配比分组，为扩缩容、滚动更新和 Gang 调度提供共同的操作单位。例如，`2P:1D` 表示一个组包含 2 个 prefill RoleInstance 和 1 个 decode RoleInstance。
 
 `segment` 定义在 `CoordinatedPolicy.spec.policies[]` 中，只声明成员结构；同一规则的 `strategy` 决定创建批量、调度门槛和更新预算。组身份保存在 RoleInstance 与 Pod 的受管标签中，在同一有效分组配置下保持稳定。组成员可以先后创建、启动和 Ready；更新期间允许新旧版本共存。
+
+带 surge 的滚动更新中，Segment 通过由 controller 管理的 `surgePartition` 边界，把 surge 准备与基础实例更新授权拆开。
 
 本文面向 KEP 评审者和控制器开发者，假定读者了解 RBG、RIS 及 Kubernetes 控制器的基本工作方式。本文是设计提案，Segment API 扩展、控制器适配和测试尚未完成；文中标注为“现有行为”的内容仅说明复用边界，其余行为是实现要求。
 
@@ -244,8 +247,8 @@ spec:
 | 组件 | 职责 |
 | --- | --- |
 | RBG controller | 读取 Policy；校验接管条件；计算组级副本目标、更新边界与预算；维护分组描述、Adapter 和策略生命周期 |
-| WorkloadReconciler | RBG controller 内的后端适配层，将计算结果写入 RIS；不是独立控制器 |
-| RIS controller | 读取本 role 的分组描述并维护 RI 标签；在下发的副本目标、partition 和局部预算内执行，不直接解析完整 Policy |
+| WorkloadReconciler | RBG controller 内的后端适配层，将计算结果（包括基础更新 `partition` 和 `surgePartition`）写入 RIS；不是独立控制器 |
+| RIS controller | 读取本 role 的分组描述并维护 RI 标签；在下发的副本目标、基础更新 `partition`、`surgePartition` 和局部预算内执行，不直接解析完整 Policy |
 | RI controller | 管理 component Pod，同步已有 Pod 和后续 Pod template 的组身份，执行具体 Pod 更新 |
 | ScalingAdapter controller | 接收最终期望组数，按配比一次提交所有成员的 RBG 副本目标并维护状态；不创建自身或直接操作 RIS、RI、Pod |
 
@@ -260,6 +263,8 @@ Policy 字段以 `CoordinatedPolicy.spec.policies[]` 为起点。新增字段均
 | `strategy.scaling.scalingAdapter` | 复用现有 `ScalingAdapter` 类型 | `enable` 默认 `false`；`labels` 附加到自动创建的 Adapter |
 | `strategy.scheduling.gang.minSegments` | 正整数，组数 | 未配置 scaling 时，省略表示全部期望完整组；同时配置 scaling 和 Gang 时必须显式设置；与 `minReplicas` 互斥 |
 | `strategy.rollingUpdate.maxSurge` | 整数或百分比 | Segment 下未配置按 `0` 下发；非 Segment 未配置时保留 role 行为 |
+
+Segment 还会在 `RoleInstanceSetUpdateStrategy` 中增加由 controller 管理的 `surgePartition` 字段，用户不直接配置该字段。
 
 现有 `strategy.scaling.maxSkew` 和 `strategy.rollingUpdate.maxSkew` 字段继续保留，但 Segment 计算忽略其值。现有更新字段的组级单位见[滚动更新](#与-rolling-update-的集成)。Adapter 资源新增的 `spec.scaleTargetRef.segment` 及副本字段语义见[目标与副本单位](#目标与副本单位)。
 
@@ -377,7 +382,7 @@ Policy 与 RBG 的关联配置决定成员模式是否支持 Segment：
 - 创建或更新 Policy、RBG 时，若关联配置已存在，校验成员的有效 workload 后端和模式。每个成员必须使用 `workloads.x-k8s.io/v1alpha2 RoleInstanceSet`，且 pattern 为 `Stateful` 或默认 Stateful。拒绝 Stateless RIS、Deployment、StatefulSet、LeaderWorkerSet 和未知后端，不自动转换模式或忽略 Segment。
 - 稠密成员是前置条件。Segment 成员不得携带用户 `excluded-ordinals`，其子 RIS 不得携带非空的 controller 管理 `committed-skip-ordinals` annotation。稀疏 Stateful 成员使整个 RBG reconcile 停止，不得直接按配比做整数除法。
 - Policy 可以先于 RBG 创建；此时不能仅凭 Policy 确认成员模式，允许先保存 Policy，待 RBG 出现时校验。reconcile 在接管及下发 Segment 参数前再次检查，发现不合法组合时停止整个 RBG reconcile 并报告具体成员和原因，不改写模式或删除已有实例。
-- 非 Segment 的 Stateless role 不受该限制影响；移除 Segment 后，模式变更仍遵守原有 workload 校验，不因撤销 Segment 而承诺支持原地切换模式。
+- 非 Segment 的 Stateless role 不需要满足 Segment 成员模式要求，但 Segment 成员不合法时整个 RBG reconcile 仍会停止；这些 role 的已有实例继续运行不变。移除 Segment 后，模式变更仍遵守原有 workload 校验，不因撤销 Segment 而承诺支持原地切换模式。
 
 例：prefill 为 Stateful RIS、decode 为 Stateless RIS，即使副本满足 `1P:1D`，也不能启用 Segment；两个成员均为 Stateful RIS 时，继续执行其余校验。
 
@@ -509,7 +514,7 @@ aligned = 所有 residual[role] 均为 0
 
 有效 Segment 的地址发现必须只枚举对齐后的基础组目标，不得发布不会被创建的剩余身份，也不得把 surge 身份发布为基础服务成员。地址表仍不是实际完整组或可用成员列表。
 
-owner 是现有 RBG discovery ConfigMap 构建链路，不引入单独的 Segment discovery 组件。地址表由已下发的基础组目标推导——子对象创建前使用 RBG role replicas，创建后使用子 RIS 的 committed ordinals——从不读取实际 Pod 或 RoleInstance。Stateful surge 实例的 ordinal 位于 `RIS.spec.replicas` 及以上，且 surge 不改变该值，因此 surge 身份按构造被排除，不依赖感知 surge 的选择器。
+owner 是现有 RBG discovery ConfigMap 构建链路，不引入单独的 Segment discovery 组件。RBG reconcile 向该构建链路传入同一个对齐后的基础组目标。首次创建和批量创建时，目标是当前创建批次——`min(segBatchSize, desiredGroups - appliedGroups)` 个完整组，再乘各 role 配额——不是最终期望组数；`desiredGroups` 是通过校验的最终组数，`appliedGroups` 是已经写入所有成员 RIS 的完整组数。子对象创建前使用第一批。子对象开始创建后，RBG 传入最近一次成功写入所有成员 RIS 的批次目标；若观察到的子目标不一致，报告不一致并保留上一份地址表。稠密 child 路径必须使用该传入目标，不能独立枚举 RBG role replicas。地址发现从不读取实际 Pod 或 RoleInstance。Stateful surge 实例的 ordinal 位于 `RIS.spec.replicas` 及以上，且 surge 不改变该值，因此 surge 身份按构造被排除，不依赖感知 surge 的选择器。
 
 ### 与 Scaling 的集成
 
@@ -798,9 +803,9 @@ Policy webhook 只检查当前 Policy 能确定的组合。RBG reconcile 还需�
 ```text
 RBG controller：成员状态 + Policy
     ↓ 按组统计不可用与在途占用，计算共同更新边界
-    ↓ 投影 partition，按组级预算设置 maxUnavailable，投影 maxSurge
+    ↓ 投影基础更新 partition 与 surgePartition，按组级预算设置 maxUnavailable，投影 maxSurge
 WorkloadReconciler：写入各 RIS.spec.updateStrategy
-    ↓ RIS controller 在 partition、执行窗口和 surge 条件内更新 RI
+    ↓ RIS controller 在 surgePartition 内准备 surge，并在基础更新 partition、执行窗口和 surge 条件内更新基础 RI
     ↓ RI controller 执行 Pod 更新，成员状态反馈给 RBG
 RBG controller：下一次 reconcile 重算边界
 ```
@@ -837,14 +842,32 @@ B = Policy 的 strategy.rollingUpdate.maxUnavailable 按期望完整组数解析
 
 ```text
 availableSurge[role] = 该 role 中已创建、处于目标版本、健康且非 terminating 的额外 RI 数
-surgeEligible(group) = 每个成员 role 均满足 availableSurge[role] >= segment[role]
+reservedSurge[role] = 已准入、尚未完成且仍依赖 surge 避免基础可用性损失的组，按成员 role 累加 segment[role]
+unreservedSurge[role] = max(availableSurge[role] - reservedSurge[role], 0)
+surgeEligible(group) = 每个成员 role 均满足 unreservedSurge[role] >= segment[role]
 
-若 partition 允许，且满足以下任一条件，则放行该组：
+若基础更新 partition 允许，且满足以下任一条件，则放行该组：
     |U ∪ I_loss| + 1 <= B
     或 surgeEligible(group)
 ```
 
 `I_loss` 包含已准入但尚未完成、且已经出现基础成员不可用，或每个 role 已不再保有足够目标版本 surge 以继续无损推进的组。安全的 surge 支撑在途组仍被跟踪为 in-flight，但不消耗不可用预算。若 surge 容量消失或基础成员变为不可用，该组立即转为 `I_loss`。仅一个 role 有富余 surge 不能放行组；每个成员 role 都必须至少达到本组配额。
+
+#### surge 准备与基础更新门槛
+
+现有 RIS 的单一 `partition` 无法区分“准备额外容量”和“授权更新基础 RI”。Segment 因此把这两个门槛拆开：
+
+| 门槛 | 含义 |
+| --- | --- |
+| `surgePartition` | 由 controller 管理的 RIS 字段。该边界之后的 ordinal 可以创建或保留 surge RI，但在该边界比 `partition` 更严格时，不得更新基础 RI。 |
+| `partition` | 既有的基础更新边界。只有低于该边界的组被授权更新基础 RI。 |
+
+在 `B = 0` 且 `maxSurge` 为正时，RBG 按两个阶段 reconcile：
+
+1. **准备 surge。** RBG 下调 `surgePartition` 以纳入候选 Segment，同时保持基础更新的 `partition` 不变。RIS 创建并保留 surge RI，但不更新该范围内的基础 RI。
+2. **授权基础更新。** 当候选 Segment 的每个成员 role 都有足够的未预留、健康且处于目标版本的 surge 时，RBG 记录预留并下调该 Segment 的 `partition`。只有此时 RIS 才能更新基础 RI。
+
+这种拆分也避免多个并发准入复用同一份 surge 容量。评估下一个候选 Segment 前，`reservedSurge` 会先从 `availableSurge` 中扣除。只有当 Segment 完成并恢复可用，或转入 `I_loss` 且不再声明安全的 surge 支撑推进时，才释放预留。
 
 例如无 surge、`maxUnavailable: 2`，在满足 `partition` 等其他推进条件时：
 
@@ -865,7 +888,7 @@ Segment 的参数覆盖规则为：
 | 配置情况 | RBG 的组级控制 | RIS 的执行窗口 |
 | --- | --- | --- |
 | Policy 显式设置 `maxUnavailable`，解析预算 `B > 0` | 按组聚合不可用与在途状态；无 surge 时使用上述窗口，有 surge 时保留额外可用容量参与预算的机制 | 忽略 role 原值，下发 `100%`；共同 partition 内的获准 RI 不再受额外 RI 数限制 |
-| Policy 显式设置 `maxUnavailable`，解析预算 `B = 0` | 仅在有效 `maxSurge` 为正时合法：允许准备额外容量，并结合组状态推进；无 surge 的零预算由准入拒绝或 reconcile 报告 | 忽略 role 原值，下发 `0`；只有实际可用的 surge 增加执行预算 |
+| Policy 显式设置 `maxUnavailable`，解析预算 `B = 0` | 仅在有效 `maxSurge` 为正时合法：用 `surgePartition` 准备额外容量，等每个成员 role 都有足够未预留 surge 后才下调基础更新的 `partition`；无 surge 的零预算由准入拒绝或 reconcile 报告 | 忽略 role 原值，基础更新下发 `0`；只有实际可用且未被预留的 surge 增加执行预算 |
 | Policy 未设置 `maxUnavailable` | 不新增隐式组级默认预算，仍按 Segment 边界及其他已配置的协调条件推进 | 保留 role 配置；role 也未配置时沿用 RIS 默认值 |
 
 `B > 0` 时，Policy 的整数或百分比只用于 RBG 的组级预算，不再作为 RI 预算二次执行。下发 `100%` 是取消 RIS 的额外局部限流，不是按配比放大 Policy 原值；各 RIS 仍不得越过共同 partition。`B = 0` 不能下发 `100%`，否则会在没有可用 surge 时主动制造不可用实例。RBG 不从各 RIS 的局部值反推统一组级默认预算。
@@ -874,11 +897,11 @@ Segment 的参数覆盖规则为：
 
 例如无 surge、起始全部健康的 `1P:2D`，Policy 配置 `maxUnavailable: 1`。RBG 一次最多让一个 Segment 占用更新预算，P、D 两个 RIS 都收到 `100%`。该组获准后，P、D0、D1 都可以进入更新，不要求两个 D 串行轮换；整个组可能暂时不可用，但只占用一份组级预算。实际启动和 Ready 时间仍可不同，整组完成目标版本并恢复可用后，RBG 才释放在途占用并继续补位。
 
-`B = 0` 且 `maxSurge` 为正时，P、D 两个 RIS 都收到 `0`，各 RIS 先按现有算法准备额外实例，只有实际可用的 surge 才能支持基础 RI 更新。无 surge 的零预算组合在下发覆盖前被拒绝或报告，因此健康基础 RI 不会仅因组级准入进入候选更新范围就开始造成额外不可用的更新。
+`B = 0` 且 `maxSurge` 为正时，P、D 两个 RIS 的基础更新都收到 `0`，各 RIS 先在 `surgePartition` 内准备额外实例，只有实际可用且未被预留的 surge 才能支持基础 RI 更新。无 surge 的零预算组合在下发覆盖前被拒绝或报告，因此健康基础 RI 不会仅因组级准入进入候选更新范围就开始造成额外不可用的更新。
 
 #### maxSurge 上限与 RIS 执行
 
-采用 Policy 配置、RBG 计算并覆盖下发、RIS 正常执行的方案，不增加实际 surge 目标字段或新的 surge 控制 annotation。
+采用 Policy 配置、RBG 计算并覆盖下发、RIS 正常执行的方案。Segment 在 RIS update strategy 中增加由 controller 管理的 `surgePartition` 字段；它不是面向用户的额外副本目标。
 
 | 规则类型 | Policy 的 `maxSurge` | 下发到 RIS 的行为 |
 | --- | --- | --- |
@@ -900,25 +923,25 @@ risMaxSurge[role] = S × segment[role]
 
 覆盖只改变下发的执行参数，不改写 RBG 中用户声明的 role 配置。Segment 仍有效时，移除 Policy 的 `maxSurge` 字段应下发 `0`，撤销旧正值的影响，不能因值为空而跳过覆盖；整个 Policy 或 Segment 撤销后，则按当前 role 配置及剩余有效策略重算，见生命周期章节。
 
-RIS 收到的是上限，不是必须达到的额外副本目标。实际 surge 数量、保留与回收沿用各 RIS 的现有算法，`RIS.spec.replicas` 不因 surge 增加。当前 Stateful RIS 在正在更新且没有已有有效 surge 时，计算为：
+RIS 收到的是上限，不是必须达到的额外副本目标。实际 surge 数量、保留与回收沿用各 RIS 的现有算法，`RIS.spec.replicas` 不因 surge 增加。Segment 模式下，surge 创建由 `surgePartition` 驱动，基础更新授权仍由 `partition` 控制。当前 Stateful RIS 在正在更新且没有已有有效 surge 时，计算为：
 
 ```text
-healthyOld = [partition, replicas) 内健康、非 terminating 的旧版本 RI 数
+healthyOld = [surgePartition, replicas) 内健康、非 terminating 的旧版本 RI 数
 activeSurge = min(maxSurge, max(healthyOld - maxUnavailable, 0))
 ```
 
-公式中的 `maxUnavailable` 是 RIS 最终接收的执行值，不是 Policy 的组级原始值。已有有效 surge 时还会应用本地保留逻辑，不能直接套用上述简化式。`replicas=4、partition=0、maxUnavailable=2、maxSurge=2` 且 4 个旧实例健康时，额外目标为 `2`；`replicas=3、partition=2、maxUnavailable=1、maxSurge=1` 且仅放行的旧实例健康时，额外目标为 `0`。两者均遵守上限，不要求每轮用满 surge。Segment 组级预算大于 0 时，RIS 收到 `100%`，上述简化式不会要求额外创建 surge；预算为 0 时则收到 `0`，可按可用 surge 推进。
+公式中的 `maxUnavailable` 是 RIS 最终接收的执行值，不是 Policy 的组级原始值。已有有效 surge 时还会应用本地保留逻辑，不能直接套用上述简化式。`replicas=4、surgePartition=0、maxUnavailable=2、maxSurge=2` 且 4 个旧实例健康时，额外目标为 `2`；`replicas=3、surgePartition=2、maxUnavailable=1、maxSurge=1` 且仅放行的旧实例健康时，额外目标为 `0`。两者均遵守上限，不要求每轮用满 surge。Segment 组级预算大于 0 时，RIS 收到 `100%`，上述简化式不会要求额外创建 surge；预算为 0 时则收到 `0`，可按可用 surge 推进。
 
 各 RIS 的实际额外数量可以不满足 Segment 配比，也可以先后回收；RBG 不强制补齐临时组或等待跨 role 的统一回收条件。surge RI 复用普通 RI 的创建及分组 label 同步链路，但 label 不代表临时组已完整或可服务。本方案不承诺完整备用 Segment 的创建、保留或生命周期协调。
 
-surge 与 `maxUnavailable` 的组合沿用现有执行机制，不另设 Segment 专属的“零不可用预算禁止更新”规则。Segment 调整协调计量单位、成员归属和参数投影，不替换 RIS 的 surge 创建、可用性预算及回收算法。当前 Stateful RIS 的本地执行预算为：
+surge 与 `maxUnavailable` 的组合沿用现有本地执行机制。Segment 在基础更新前增加跨 role 准入门槛，但不替换 RIS 的 surge 创建、可用性预算及回收算法。当前 Stateful RIS 的本地执行预算为：
 
 ```text
 availableSurge = 本 RIS 中已创建、处于目标版本、健康且非 terminating 的额外 RI 数
 有效执行预算 = maxUnavailable + availableSurge
 ```
 
-这里参与预算的是实际可用的额外实例，不是配置的 `maxSurge` 上限，也不是刚创建但尚未可用的数量。对健康旧实例，`maxUnavailable: 0、maxSurge > 0` 时，RIS 在已允许更新的范围内按现有算法创建 surge；额外实例可用后，才用新增的可用容量支持基础实例更新，最终按本地条件回收。原有故障实例处理、暂停及用户 partition 等限制仍生效，不因配置 surge 就保证任意状态下都能推进。
+这里参与预算的是实际可用的额外实例，不是配置的 `maxSurge` 上限，也不是刚创建但尚未可用的数量。对健康旧实例，`maxUnavailable: 0、maxSurge > 0` 时，RIS 在 `surgePartition` 允许的范围内按现有算法创建 surge；额外实例可用且未被其他在途组预留后，才用新增的可用容量支持基础实例更新，最终按本地条件回收。原有故障实例处理、暂停及用户 partition 等限制仍生效，不因配置 surge 就保证任意状态下都能推进。
 
 RBG 继续生成共同的 Segment 更新边界，并聚合不可用与在途状态；RIS 不得越过该边界。进入候选更新范围不等于立即允许损失可用容量，后者仍受 RIS 的实际执行预算约束。因此，不能把无 surge 时的 `max(B - |U ∪ I|, 0)` 公式直接用作所有场景的 partition 前置门槛，在 `B=0` 时连 surge 的准备机会也一并阻断。
 
@@ -948,20 +971,23 @@ risPartition[role] = segmentBoundary × segment[role]
 
 partition 是准入结果的下发方式，不替代组级预算判断，也不要求单调降低。无 surge、预算耗尽时不再放宽；目标版本变化时可能需要收紧。
 
+启用 surge 时，RBG 会额外把准备边界投影到 `surgePartition`。候选组尚未拥有完整目标版本 surge 时，`surgePartition` 可以低于 `partition`，但它不得授权更新基础 RI。
+
 常规 Stateful 路径优先从已持久化的 RIS partition、目标版本和成员状态重建窗口，不预设新增持久化准入名单。部分下发、状态延迟、重启、暂停、更新中扩缩容及 surge 窗口衔接均需实现验证。Stateless 不在适用范围内，非 Segment 的 partition 行为不变。
 
 #### 目标版本变化时的新模板与 partition 下发
 
-目标从 B 改为 C 或回滚时，继续使用已有组级预算：
+目标从 B 改为 C 或回滚时，RBG 先检查是否存在已准入且尚未完成的 Segment：
 
 - 保留不可用与在途组的去重占用 `U ∪ I`，不因目标变化清空或提前释放。
-- 按新目标、成员状态和剩余预算重算 partition，并保留用户分区限制。必要时收紧，保持旧值本身不构成预算保证。
-- 预算耗尽时允许阻塞新增组；有剩余预算且满足其他条件时继续推进。坏版本不改变该规则，不增加特殊恢复机制，也不要求 B 必须先成功。
-- 无 surge 时，组级预算耗尽会阻止继续放行健康 RI；partition 允许范围内、满足既有持续 unhealthy 条件的成员仍可能被修复。修复不能越过边界或绕过组级预算。
+- 若没有未完成的已准入 Segment，写入新目标，并按成员状态、剩余预算和用户分区限制重算 partition。
+- 若存在未完成的已准入 Segment，不向成员 RIS 写入新目标，也不放宽 partition；保持当前模板和边界，直到所有在途 Segment 完成并恢复可用。这是刻意冻结：Segment 不会为了让某个 Segment 修复，而选择性地把健康 Segment 暴露给新目标。
+- 已在当前边界内且满足既有持续 unhealthy 条件的成员，仍可由 RIS 修复或替换。修复不能越过边界或绕过组级预算。
+- 若在途 Segment 无法恢复，支持的处理是通过既有 RIS 语义修复或替换 unhealthy 成员、回滚到该在途组能完成的上一目标，或撤销 Segment 并让 workload 使用普通配置。RBG 不会自动删除健康组。
 
-例如，无 surge、`maxUnavailable: 1`，Segment 2 已完成 B，Segment 1 的 P 已 Ready、D 未 Ready，此时目标改为 C。Segment 1 仍占满预算；RBG 必须重算并下发边界，阻止 P 因本地预算空闲而更新 Segment 2，避免两组同时不可用。
+例如，无 surge、`maxUnavailable: 1`，Segment 2 已完成 B，Segment 1 的 P 已 Ready、D 未 Ready，此时目标改为 C。Segment 1 仍占满预算。RBG 保持 B 模板和现有边界，不因 P 的本地预算空闲而把 Segment 2 暴露给 C；Segment 1 完成 B 或被修复后，再应用 C 并重算边界。
 
-新模板与 partition 的配合仍需实现验证，覆盖预算为 1 和大于 1、各 RIS 部分下发、状态延迟及重启。沿用既有 surge 边界，不把无 surge 窗口用于阻断 surge 准备，也不新增任意选组协议或伪造 unhealthy 状态。
+新模板与 partition 的配合仍需实现验证，覆盖预算为 1 和大于 1、各 RIS 部分下发、状态延迟及重启。沿用既有 surge 边界，不伪造 unhealthy 状态。
 
 ### 与 Topology 的组合
 
@@ -1077,7 +1103,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 - 修改已声明 segment 的 value 或 key 集合被拒绝。
 - 同一次更新同时改变规则名和 Segment map 时拒绝，要求拆分为撤销后另行添加。
 - 覆盖 rule ID 冲突，并验证长规则名、大组序号下生成的 label value 仍是合法 Kubernetes label value。
-- Segment rolling update 的有效组级 `maxUnavailable` 与 `maxSurge` 同时解析为 0 时仍接受；无 surge 时不开始会增加不可用实例的更新。
+- 拒绝有效组级 `maxUnavailable` 为 0 且没有正有效 `maxSurge` 的 Segment rolling update 配置；验证百分比预算取整到 0 且无 surge 时由 reconcile 报告。
 - 验证更新后的 CRD 中 `AdapterScaleTargetRef.role` 可选，且 `role` 与 `segment` 必须二选一。
 - 配比不变时允许修改策略参数；添加、删除及重新添加 segment 遵循接管与撤销规则，不以历史配比拒绝新配置。
 - Policy `maxSurge` 的整数、百分比、显式零值与未配置在 API、CRD 和生成代码中正确保留，不将未配置一律默认成 `0` 而丢失非 Segment 的回退语义。
@@ -1173,14 +1199,14 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 - 在固定目标版本、`maxUnavailable: 1` 的逐组推进示例中，当前组未完成或共享预算不足时，后续 reconcile 保持边界；满足推进条件后才放宽，较快 role 不得单独提前进入下一组。
 - 成员可用性沿用 RIS 判断；原地更新未完成、未满足 `minReadySeconds` 或组内仍有未更新成员时，不因瞬时 Ready 或 `updatedReplicas` 增加而释放在途占用。
 - 无 surge、`maxUnavailable: 2` 时，无其他占用且满足推进条件可同时准入两组；一组完成后即可补一组，不等待整批完成；覆盖占用为 0、1、2 以及不可用与在途集合重叠的情况。
-- 一组因成员失败持续占用、另一窗口可用时，仍可放行其他符合条件的组；占满预算后不再放宽边界，目标变化时必要收紧，恢复可用并完成目标版本后补位，不因单组失败冻结整个 RBG。
+- 一组因成员失败持续占用、另一窗口可用时，在目标不变的情况下仍可放行其他符合条件的组；占满预算后不再放宽边界。目标变化时，在途占用释放前不写入新模板、不放宽边界，不能为修复失败组而暴露健康组。
 - RBG 使用组身份和成员状态计算预算，不通过改写健康 RI / Pod 的 Ready 状态传递组级不可用信息。
 - Policy 的 `maxUnavailable` 直接以 Segment 计数，无需额外更新模式开关；Segment 下 `rollingUpdate.maxSkew` 的省略、零值及其他合法值均不改变共同边界和组级预算，`segBatchSize` 不限制更新窗口。
 - 组级 `partition` 和 `maxUnavailable` 百分比向下取整，`maxSurge` 百分比向上取整；覆盖 0、1 和边界百分比。
 - 同一 Segment 的多个成员不可用只计一次，不同 Segment 的不可用成员分别计数。
 - 无 surge、`maxUnavailable: 1` 时，不允许各 RIS 独立推进更新而同时使两个 Segment 不可用。
 - 已放行但尚未反映到成员状态中的更新占用预算，不因状态延迟重复放行。
-- 目标从 B 改为 C 或回滚时，保留不可用与在途 Segment 的去重占用，按当前目标重新计算 partition；不因目标变化重新获得一份预算，也不以保持旧 partition 代替组级校验。
+- 目标从 B 改为 C 或回滚时，保留不可用与在途 Segment 的去重占用。只要存在未完成的在途 Segment，就不写入新模板、不放宽 partition；占用释放后再应用最新目标并重算 partition。目标变化不重新获得预算，也不以保持旧 partition 代替组级校验。
 - 坏版本占满预算时允许阻塞新增组更新，不额外要求 B 必须先成功；位于 partition 范围内且满足 RIS 既有条件的 unhealthy 成员仍可尝试修复，但不能绕过边界或扩大组级占用。
 - 外部故障导致预算耗尽或超限时，不再放行会扩大不可用 Segment 集合的更新。
 
@@ -1188,16 +1214,16 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 
 - Policy `maxUnavailable` 的百分比只以期望完整 Segment 数为基数解析组级预算，不再交给 RIS 按各自副本数二次解析。
 - 组级预算 `B > 0` 时忽略 role 原值并向各 RIS 下发 `100%`，不按配比放大 Policy 原值；`1P:2D`、Policy 值为 `1` 时，一个获准 Segment 的 P、D0、D1 都可进入更新，整组只占用一份组级预算，不要求实际同时启动或 Ready。
-- 组级预算 `B = 0` 且 `maxSurge` 为正时向各 RIS 下发 `0`，不能为绕过零预算而下发 `100%`，仅由实际可用额外实例增加执行预算；验证准入拒绝显式零预算搭配省略或零值 `maxSurge`，reconcile 报告百分比取整到零且无 surge 的绕过场景。
+- 组级预算 `B = 0` 且 `maxSurge` 为正时，基础更新下发 `0`，额外容量准备使用 `surgePartition`，不能为绕过零预算而下发 `100%`；仅由实际可用且未被预留的额外实例增加执行预算。验证准入拒绝显式零预算搭配省略或零值 `maxSurge`，reconcile 报告百分比取整到零且无 surge 的绕过场景。
 - 验证 `maxSurge` 为正时字面 `0` 覆盖原样通过现有 Stateful RIS 解析（不被 floor 到 `1`），且 Segment 不向 RIS 写入会被 floor 抬升为 `1` 的零预算；非 Segment 规则保留现有 floor 行为。
 - Policy 未配置 `maxUnavailable` 时保留各 role 配置或 RIS 默认值，不新增或反推组级默认预算，仍保持 Segment 更新边界和其他协调条件。
 - 未声明 segment 的规则继续使用各 role 独立的不可用预算。
 - 非 Segment 的 Policy `maxSurge` 显式配置时原样覆盖 role，未配置时保留原行为，显式 `0` 不等同于未配置。
 - Segment 的 Policy `maxSurge` 忽略 role 配置；`1P:2D`、组级值为 `1` 时下发 `P=1、D=2`，未配置或移除字段后显式下发 `0`，撤销整个 Segment 后恢复当前普通配置。
 - `maxSurge` 百分比按期望完整组数向上取整后再乘配额，覆盖零副本、取整边界和乘积溢出，不能先按各 RIS 的副本分别取整。
-- 保留 Stateful 实际 surge 算法：完整更新范围可创建上限数量，较小 partition 范围可能创建更少或不创建；已有有效 surge 的保留与回收仍由 RIS 决定，不增加跨 role 补齐与统一回收要求。
-- `maxUnavailable: 0、maxSurge > 0` 时 RIS 收到 `0`，沿用先准备额外容量、待其可用后更新健康基础实例的机制；RBG 不因简化组级窗口为零而阻断 surge 准备，RIS 不将配置上限或未 Ready 的额外 RI 当成可用预算。
-- 实现 surge 准入规则：每个 role 至少拥有配额数量的健康目标版本 surge RI 时组才可 surge 放行，否则必须消耗不可用预算；覆盖 surge 容量消失和从安全在途转为 loss-risk 的场景。
+- 保留 Stateful 实际 surge 算法：完整的 surge 准备范围可创建上限数量，较小的 `surgePartition` 范围可能创建更少或不创建；已有有效 surge 的保留与回收仍由 RIS 决定，不增加跨 role 补齐与统一回收要求。
+- `maxUnavailable: 0、maxSurge > 0` 时，基础更新收到 `0`，额外容量准备使用 `surgePartition`。只有每个成员 role 都有足够的未预留可用 surge 后，才允许更新健康基础实例；RBG 不因简化组级窗口为零而阻断 surge 准备，RIS 不将配置上限或未 Ready 的额外 RI 当成可用预算。
+- 实现两阶段 surge 准入规则：每个 role 至少拥有配额数量的健康、目标版本且未被预留的 surge RI 时组才可 surge 放行，否则必须消耗不可用预算；覆盖 surge 容量消失和从安全在途转为 loss-risk 的场景。
 - surge 的创建路径同样写入 RI 与 Pod 分组 label；额外成员不完整时不将其误判为完整可服务组，不因局部 surge Ready 就释放基础 Segment 的在途占用。
 
 ##### Gang
@@ -1247,10 +1273,11 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 - 覆盖无 surge、Policy 值为 `2` 时同时准入两组、一组完成后补位，以及一组持续失败时另一窗口仍可推进；Policy 未配置时保留局部窗口且不新增组级默认预算。
 - 覆盖 Policy `maxSurge` 从 API 到 RBG 计算、RIS 参数覆盖和额外 RI 创建的链路：非 Segment 原样覆盖，Segment 按配比投影；下发上限正确不等于每轮必须创建满额。
 - 覆盖较小 partition 下各 role 实际额外数量不成组、独立回收以及 surge RI / Pod label 同步；基础组仍遵守共同边界和有效执行预算。
-- 覆盖 Segment Policy `maxUnavailable: 0、maxSurge: 1`：各 RIS 收到 `maxUnavailable: 0`，在用户 partition 和其他协调条件允许、旧成员健康时，候选更新范围可触发 surge 创建；额外 RI 未可用时不更新健康旧实例，可用后按 RIS 原预算机制推进，不新增零预算冻结规则；同时验证组级状态和在途记录不因局部 Ready 被提前清除。
+- 覆盖 Segment Policy `maxUnavailable: 0、maxSurge: 1`：各 RIS 的基础更新收到 `maxUnavailable: 0`，在用户 partition 和其他协调条件允许、旧成员健康时，`surgePartition` 触发 surge 创建；额外 RI 未可用或任一成员 role 的未预留 surge 不足时不更新健康旧实例，条件满足后按预留 surge 预算机制推进，不新增零预算冻结规则；同时验证组级状态和在途记录不因局部 Ready 被提前清除。
+- 覆盖两个 `1P:1D` 候选 Segment 只有一组完整健康 surge 的场景：最多准入一个 Segment 并预留各 role 的 surge 配额，第二个候选不得复用同一份预留容量。
 - 一个 role 更新较快、另一个较慢或失败时，不可用 Segment 的并集不因各 RIS 独立推进而突破已配置的共享预算。
 - controller 重启或成员状态延迟时，共同准入恢复后不重复放行，也不丢失在途更新的预算占用。
-- 无 surge、`maxUnavailable: 1`，Segment 2 已完成 B，Segment 1 的 P 已 Ready、D 未 Ready，此时目标改为 C：验证新模板与重算后的 partition 阻止 P 因本地预算空闲而更新 Segment 2，避免两组同时不可用；覆盖各 RIS 部分下发、状态延迟和重启。
+- 无 surge、`maxUnavailable: 1`，Segment 2 已完成 B，Segment 1 的 P 已 Ready、D 未 Ready，此时目标改为 C：验证 RBG 保持 B 模板和当前边界，P 的本地预算空闲也不会把 Segment 2 更新到 C；Segment 1 恢复后，再验证 RBG 应用 C 并重算边界。覆盖各 RIS 部分下发、状态延迟和重启。
 - 连续更新、坏版本与回滚覆盖预算为 1 和大于 1 的情况：占满时阻塞新增组，有剩余预算且满足条件时允许推进；不清空旧占用、不强制等待 B 成功，不改写真实健康状态；验证允许范围内的 unhealthy 修复沿用 RIS 条件。
 
 ##### Gang 资源准入
@@ -1265,6 +1292,7 @@ Policy 是可插拔的协同能力。配比不可变仅限制已声明 Segment �
 ##### 地址发现
 
 - 当有效期望副本违反配比（例如 `2P:1D` 且 `P=5、D=2`）时，验证 reconcile 在更新地址表前停止：不出现 `prefill-4` 等剩余实例地址，保留上一次对齐地址表；同时验证不把 surge 身份发布为基础可服务成员。
+- 期望 5 组、`segBatchSize: 1` 且尚未创建 child 时，验证地址发现使用第一批 1 组目标，而不是最终 5 组目标；child 部分创建期间，若一个 role 处于批次目标、另一个 role 处于最终目标，验证 reconcile 报告不一致并保留上一份地址表。
 - 滚动更新和 surge 创建期间，验证地址发现输出只随实际下发的基础组目标变化，任何剩余实例或 surge 身份都不会被发布为可服务成员。
 
 ##### Policy 接管与撤销

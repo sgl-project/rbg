@@ -36,6 +36,7 @@
     - [Integration with Rolling Update](#integration-with-rolling-update)
       - [RBG and RIS Update Coordination Loop](#rbg-and-ris-update-coordination-loop)
       - [Member Availability and Reusing Budget Capacity](#member-availability-and-reusing-budget-capacity)
+      - [Surge Preparation and Base-Update Gates](#surge-preparation-and-base-update-gates)
       - [Policy Overrides and RIS Execution Windows](#policy-overrides-and-ris-execution-windows)
       - [maxSurge Limits and RIS Execution](#maxsurge-limits-and-ris-execution)
       - [Generating Partitions by Segment](#generating-partitions-by-segment)
@@ -124,6 +125,8 @@
 Segment groups RoleInstances from multiple roles in a fixed ratio, providing a common unit for scaling, rolling updates, and Gang scheduling. For example, `2P:1D` means that one group contains two prefill RoleInstances and one decode RoleInstance.
 
 The `segment` field in `CoordinatedPolicy.spec.policies[]` declares only the member structure. The `strategy` in the same rule determines creation batch size, scheduling thresholds, and update budgets. Group identity is stored in managed labels on RoleInstances and Pods and remains stable within the same effective grouping configuration. Members can be created, started, and become Ready at different times; old and new versions may coexist during updates.
+
+For rolling updates with surge, Segment separates surge preparation from base-instance update authorization through a controller-managed `surgePartition` boundary.
 
 This document is intended for KEP reviewers and controller developers familiar with RBG, RIS, and Kubernetes controller fundamentals. It is a design proposal: the Segment API extensions, controller adaptations, and tests are not yet complete. Statements marked as existing behavior describe the mechanisms being reused; all other behavior is an implementation requirement. This English version follows the [Chinese design](README.zh-CN.md).
 
@@ -244,8 +247,8 @@ The following sections define controller responsibilities, APIs and validation, 
 | Component | Responsibilities |
 | --- | --- |
 | RBG controller | Read Policy; validate adoption conditions; calculate group-level replica targets, update boundaries, and budgets; maintain group descriptions, Adapters, and policy lifecycle |
-| WorkloadReconciler | Backend adaptation layer within the RBG controller that writes calculated results to RIS; not a separate controller |
-| RIS controller | Read the description for its role and maintain RI labels; execute within the supplied replica target, partition, and local budget without directly parsing the full Policy |
+| WorkloadReconciler | Backend adaptation layer within the RBG controller that writes calculated results, including the base-update `partition` and `surgePartition`, to RIS; not a separate controller |
+| RIS controller | Read the description for its role and maintain RI labels; execute within the supplied replica target, base-update `partition`, `surgePartition`, and local budget without directly parsing the full Policy |
 | RI controller | Manage component Pods, synchronize group identity to existing Pods and future Pod templates, and perform Pod updates |
 | ScalingAdapter controller | Receive the final desired group count, submit all members' RBG replica targets together according to the ratio, and maintain status; neither create itself nor directly operate on RIS, RI, or Pod objects |
 
@@ -260,6 +263,8 @@ Policy field paths start at `CoordinatedPolicy.spec.policies[]`. All new fields 
 | `strategy.scaling.scalingAdapter` | Reuses the existing `ScalingAdapter` type | `enable` defaults to `false`; `labels` are added to the automatically created Adapter |
 | `strategy.scheduling.gang.minSegments` | Positive integer, groups | Without scaling, omission means all desired complete groups; required when scaling and Gang are both configured; mutually exclusive with `minReplicas` |
 | `strategy.rollingUpdate.maxSurge` | Integer or percentage | If omitted, explicitly apply `0` for Segment; retain role behavior for non-Segment rules |
+
+Segment also adds a controller-managed `surgePartition` field to `RoleInstanceSetUpdateStrategy`; users do not configure this field directly.
 
 The existing `strategy.scaling.maxSkew` and `strategy.rollingUpdate.maxSkew` fields remain, but Segment calculations ignore their values. See [rolling updates](#integration-with-rolling-update) for the group-level units of existing update fields. See [targets and replica units](#targets-and-replica-units) for the Adapter's new `spec.scaleTargetRef.segment` field and replica semantics.
 
@@ -379,7 +384,7 @@ The related Policy and RBG configuration determines whether member modes support
 - On Policy or RBG creation or update, validate members' effective workload backend and mode when the related configuration exists. Every member must use `workloads.x-k8s.io/v1alpha2 RoleInstanceSet` with `Stateful` or the default Stateful pattern. Reject Stateless RIS, Deployment, StatefulSet, LeaderWorkerSet, and unknown backends; do not convert modes or silently ignore Segment.
 - Dense membership is a prerequisite. A Segment member may not carry user `excluded-ordinals`, and its child RIS may not carry a non-empty controller-managed `committed-skip-ordinals` annotation. Sparse Stateful membership stops the RBG reconciliation rather than being silently divided by the ratio.
 - A Policy can be created before its RBG. Because Policy alone cannot establish member modes, allow it to be saved and validate when the RBG appears. Reconciliation checks again before adoption and before applying Segment parameters. An invalid combination stops the entire RBG reconciliation and reports the member and reason without changing modes or deleting existing instances.
-- Non-Segment Stateless roles are unaffected. After Segment is removed, mode changes still follow existing workload validation; withdrawing Segment does not guarantee support for in-place mode switching.
+- Non-Segment Stateless roles are exempt from the Segment member-mode requirement, but an invalid Segment member still stops whole-RBG reconciliation. Their running instances continue unchanged. After Segment is removed, mode changes still follow existing workload validation; withdrawing Segment does not guarantee support for in-place mode switching.
 
 For example, Stateful prefill and Stateless decode cannot enable Segment even if their replicas satisfy `1P:1D`. If both members use Stateful RIS, proceed with the remaining validation.
 
@@ -511,7 +516,7 @@ Members may be temporarily missing during creation, deletion, and updates; simul
 
 For an effective Segment, address discovery must enumerate only the aligned base-group target. It must not publish a residual identity that will not be created, and surge identities must not be published as base service members. The address table still is not a list of actual complete groups or available members.
 
-The owner is the existing RBG discovery ConfigMap builder; no separate Segment discovery component is introduced. Discovery derives the address table from the committed base target — RBG role replicas before a child exists, otherwise the child RIS committed ordinals — and never from live Pods or RoleInstances. Stateful surge instances live at ordinals at or above `RIS.spec.replicas` and never change that field, so they are excluded by construction rather than by a surge-aware selector.
+The owner is the existing RBG discovery ConfigMap builder; no separate Segment discovery component is introduced. RBG reconciliation passes one aligned base target to that builder. For initial and batched creation, the target is the current creation batch — `min(segBatchSize, desiredGroups - appliedGroups)` complete groups, multiplied by each role's quota — not the final desired group count. `desiredGroups` is the validated final group count, and `appliedGroups` is the number of complete groups already written to every member RIS. Before a child exists, this is the first batch. After child creation starts, RBG passes the last batch target it successfully wrote to every member RIS; if observed child targets disagree, it reports the disagreement and retains the previous address table. The dense-child path must use this supplied target and must not enumerate RBG role replicas independently. Discovery never reads live Pods or RoleInstances. Stateful surge instances live at ordinals at or above `RIS.spec.replicas` and never change that field, so they are excluded by construction rather than by a surge-aware selector.
 
 ### Integration with Scaling
 
@@ -800,9 +805,9 @@ In the existing non-Segment path, RBG calculates a dynamic partition from each r
 ```text
 RBG controller: member states + Policy
     ↓ Count unavailable and in-flight groups and calculate a common update boundary
-    ↓ Project partition, set maxUnavailable from the group budget, and project maxSurge
+    ↓ Project the base-update partition and surgePartition, set maxUnavailable from the group budget, and project maxSurge
 WorkloadReconciler: write each RIS.spec.updateStrategy
-    ↓ RIS controller updates RIs within partition, execution window, and surge conditions
+    ↓ RIS controller prepares surge within surgePartition and updates base RIs within the base-update partition, execution window, and surge conditions
     ↓ RI controller performs Pod updates; member states are reported to RBG
 RBG controller: recalculate the boundary on the next reconciliation
 ```
@@ -840,14 +845,33 @@ With surge, RBG uses the following deterministic admission rule:
 ```text
 availableSurge[role] = extra RIs of that role that exist, use the target version,
                        are healthy, and are non-terminating
-surgeEligible(group) = availableSurge[role] >= segment[role] for every member role
+reservedSurge[role] = sum(segment[role]) over admitted, incomplete groups that
+                      still rely on surge to avoid base availability loss
+unreservedSurge[role] = max(availableSurge[role] - reservedSurge[role], 0)
+surgeEligible(group) = unreservedSurge[role] >= segment[role] for every member role
 
-admit(group) if partition permits and either:
+admit(group) if the base-update partition permits and either:
     |U ∪ I_loss| + 1 <= B
     or surgeEligible(group)
 ```
 
 `I_loss` contains admitted, incomplete groups that already have an unavailable base member or no longer retain enough target-version surge in every role to continue without base availability loss. Safe surge-backed in-flight groups remain tracked as in-flight but do not consume the no-unavailability budget. If surge capacity disappears or a base member becomes unavailable, the group moves to `I_loss` immediately. A group is never admitted merely because one role has spare surge; every member role must have at least its Segment quota.
+
+#### Surge Preparation and Base-Update Gates
+
+The existing RIS `partition` field cannot distinguish between preparing extra capacity and authorizing a base RI update. Segment therefore separates those two gates:
+
+| Gate | Meaning |
+| --- | --- |
+| `surgePartition` | Controller-managed RIS field. Ordinals at or above this boundary may create or retain surge RIs, but must not update base RIs while the boundary is stricter than `partition`. |
+| `partition` | Existing base-update boundary. Only groups below this boundary are authorized to update base RIs. |
+
+For `B = 0` and positive `maxSurge`, RBG reconciles in two phases:
+
+1. **Prepare surge.** RBG lowers `surgePartition` to include candidate Segments while keeping `partition` at the base-update boundary. RIS creates and retains surge RIs but does not update base RIs in that range.
+2. **Authorize base updates.** Once every member role of a candidate Segment has enough unreserved, healthy, target-version surge, RBG records the reservation and lowers `partition` for that Segment. Only then may the RIS update base RIs.
+
+This separation also prevents concurrent admissions from reusing the same surge capacity. `reservedSurge` is deducted from `availableSurge` before another candidate Segment is evaluated. A reservation is released only when the Segment completes and recovers availability, or when the Segment moves to `I_loss` and no longer claims safe surge-backed progression.
 
 For example, without surge and with `maxUnavailable: 2`, assuming partition and other progression conditions are met:
 
@@ -868,7 +892,7 @@ Segment parameter overrides follow these rules:
 | Configuration | RBG group-level control | RIS execution window |
 | --- | --- | --- |
 | Policy explicitly sets `maxUnavailable`, with resolved budget `B > 0` | Aggregate unavailable and in-flight groups; use the window above without surge, and retain the contribution of extra available capacity when surge is enabled | Ignore the role value and apply `100%`; admitted RIs within the common partition have no additional RI-count limit |
-| Policy explicitly sets `maxUnavailable`, with resolved budget `B = 0` | Valid only with positive effective `maxSurge`: allow extra-capacity preparation and advance using group state. A zero budget without surge is rejected by admission or reported by reconciliation | Ignore the role value and apply `0`; only actually available surge increases the execution budget |
+| Policy explicitly sets `maxUnavailable`, with resolved budget `B = 0` | Valid only with positive effective `maxSurge`: use `surgePartition` to prepare extra capacity and lower the base-update `partition` only after every member role has enough unreserved surge. A zero budget without surge is rejected by admission or reported by reconciliation | Ignore the role value and apply `0` to base updates; only actually available, unreserved surge increases the execution budget |
 | Policy omits `maxUnavailable` | Do not add an implicit default group-level budget; continue using Segment boundaries and other configured coordination conditions | Retain role configuration, or RIS defaults if the role also omits it |
 
 With `B > 0`, the Policy integer or percentage is used only for RBG's group-level budget and is not executed again as an RI budget. Applying `100%` removes additional local RIS throttling; it does not multiply the original Policy value by the ratio. Each RIS must still respect the common partition. With `B = 0`, applying `100%` would incorrectly create unavailable instances without available surge. RBG does not infer a default group budget from local RIS values.
@@ -877,11 +901,11 @@ This zero-budget rule deliberately aligns with existing Stateful RIS resolution.
 
 For example, without surge and with initially healthy `1P:2D` members, Policy `maxUnavailable: 1` allows at most one Segment to occupy RBG's update budget. Both P and D RIS receive `100%`. Once the group is admitted, P, D0, and D1 may all enter the update; the two D instances need not rotate serially. The whole group may become temporarily unavailable while occupying only one group-budget slot. Startup and readiness times may still differ. RBG releases occupancy and admits another group only after the whole group reaches the target version and becomes available.
 
-With `B = 0` and positive `maxSurge`, both P and D RIS receive `0`. Each RIS first prepares extra instances through its existing algorithm, and only actually available surge can support base RI updates. The zero-budget-without-surge combination is rejected or reported before overrides are written, so healthy base RIs never begin an update that adds unavailable instances merely because the group entered a candidate update scope.
+With `B = 0` and positive `maxSurge`, both P and D RIS receive `0` for base updates. Each RIS first prepares extra instances within `surgePartition`, and only actually available, unreserved surge can support base RI updates. The zero-budget-without-surge combination is rejected or reported before overrides are written, so healthy base RIs never begin an update that adds unavailable instances merely because the group entered a candidate update scope.
 
 #### maxSurge Limits and RIS Execution
 
-Policy supplies configuration, RBG calculates and applies overrides, and RIS executes normally. No actual surge target field or new surge-control annotation is introduced.
+Policy supplies configuration, RBG calculates and applies overrides, and RIS executes normally. Segment adds a controller-managed `surgePartition` field to the RIS update strategy; it is not a user-facing extra-replica target.
 
 | Rule type | Policy `maxSurge` | Behavior applied to RIS |
 | --- | --- | --- |
@@ -903,25 +927,25 @@ Percentages retain the round-up rule for `maxSurge`, but are resolved at the Seg
 
 Overrides change only the applied execution parameters, not the user's role configuration in RBG. While Segment remains effective, removing Policy `maxSurge` must apply `0` and withdraw the previous positive value; an absent value must not skip the override. If the entire Policy or Segment is withdrawn, recalculate from current role configuration and remaining effective strategies as described in the lifecycle section.
 
-RIS receives a limit, not an extra-replica target that must be reached. Each RIS retains its existing algorithms for actual surge count, retention, and reclamation. Surge does not increase `RIS.spec.replicas`. During an update with no existing valid surge instances, current Stateful RIS calculates:
+RIS receives a limit, not an extra-replica target that must be reached. Each RIS retains its existing algorithms for actual surge count, retention, and reclamation. Surge does not increase `RIS.spec.replicas`. In Segment mode, surge creation is driven by `surgePartition`, while base-update authorization remains gated by `partition`. During an update with no existing valid surge instances, current Stateful RIS calculates:
 
 ```text
-healthyOld = Number of healthy, non-terminating old-version RIs in [partition, replicas)
+healthyOld = Number of healthy, non-terminating old-version RIs in [surgePartition, replicas)
 activeSurge = min(maxSurge, max(healthyOld - maxUnavailable, 0))
 ```
 
-In this formula, `maxUnavailable` is the execution value received by RIS, not the original group-level Policy value. Existing valid surge instances invoke additional local retention logic; the simplified formula cannot be used alone. With `replicas=4, partition=0, maxUnavailable=2, maxSurge=2` and 4 healthy old instances, the extra target is `2`. With `replicas=3, partition=2, maxUnavailable=1, maxSurge=1` and only the admitted old instance healthy, it is `0`. Both respect the limit; neither requires fully using surge capacity in every reconciliation. With a positive Segment group budget, RIS receives `100%`, so this simplified formula does not require additional surge creation. With a zero group budget, RIS receives `0` and can proceed through available surge.
+In this formula, `maxUnavailable` is the execution value received by RIS, not the original group-level Policy value. Existing valid surge instances invoke additional local retention logic; the simplified formula cannot be used alone. With `replicas=4, surgePartition=0, maxUnavailable=2, maxSurge=2` and 4 healthy old instances, the extra target is `2`. With `replicas=3, surgePartition=2, maxUnavailable=1, maxSurge=1` and only the admitted old instance healthy, it is `0`. Both respect the limit; neither requires fully using surge capacity in every reconciliation. With a positive Segment group budget, RIS receives `100%`, so this simplified formula does not require additional surge creation. With a zero group budget, RIS receives `0` and can proceed through available surge.
 
 Actual extra counts across RIS objects may not satisfy the Segment ratio, and reclamation can occur at different times. RBG does not force temporary groups to become complete or wait for a cross-role reclamation condition. Surge RIs reuse ordinary RI creation and group-label synchronization, but labels do not mean a temporary group is complete or serviceable. This proposal does not guarantee creation, retention, or coordinated lifecycle of complete standby Segments.
 
-The combination of surge and `maxUnavailable` follows existing execution mechanisms. There is no Segment-specific rule that forbids updates with zero unavailability budget. Segment changes coordination units, membership, and parameter projection, not RIS surge creation, availability budgeting, or reclamation algorithms. Current Stateful RIS uses the following local execution budget:
+The combination of surge and `maxUnavailable` follows existing local execution mechanisms. Segment adds a cross-role admission gate before base updates, but it does not replace RIS surge creation, availability budgeting, or reclamation algorithms. Current Stateful RIS uses the following local execution budget:
 
 ```text
 availableSurge = Number of extra RIs in this RIS that exist, use the target version, are healthy, and are non-terminating
 effectiveExecutionBudget = maxUnavailable + availableSurge
 ```
 
-Only actual available extra instances contribute, not the configured `maxSurge` limit or newly created instances that are not yet available. For healthy old instances with `maxUnavailable: 0, maxSurge > 0`, RIS creates surge within the admitted update scope using its existing algorithm. After those extra instances become available, it uses their capacity to update base instances and eventually reclaims them according to local conditions. Existing handling of failed instances, pauses, user partitions, and other restrictions still applies; configuring surge does not guarantee progress from every state.
+Only actual available extra instances contribute, not the configured `maxSurge` limit or newly created instances that are not yet available. For healthy old instances with `maxUnavailable: 0, maxSurge > 0`, RIS creates surge within `surgePartition` using its existing algorithm. After those extra instances become available and are not reserved for another in-flight Segment, it uses their capacity to update base instances and eventually reclaims them according to local conditions. Existing handling of failed instances, pauses, user partitions, and other restrictions still applies; configuring surge does not guarantee progress from every state.
 
 RBG continues to calculate a common Segment update boundary and aggregate unavailable and in-flight state; RIS must not cross that boundary. Entering a candidate update scope does not immediately authorize loss of available capacity, which remains constrained by the RIS execution budget. Therefore, the no-surge formula `max(B - |U ∪ I|, 0)` must not become a universal prerequisite for lowering partition, blocking even surge preparation when `B=0`.
 
@@ -951,20 +975,23 @@ In this example, lower the boundary to admit the next group only after every mem
 
 Partition conveys the admission result; it does not replace group-level budget calculation and need not decrease monotonically. Without surge, do not relax it when budget is exhausted. A target version change may require tightening it.
 
+When surge is enabled, RBG additionally projects the preparation boundary into `surgePartition`. `surgePartition` may be lower than `partition` while a candidate group is waiting for complete target-version surge, but it must not authorize base RI updates.
+
 The normal Stateful path should first reconstruct its window from persisted RIS partitions, target versions, and member states, without assuming a new persistent admission list. Partial parameter application, delayed status, restarts, pauses, scaling during updates, and interaction with surge windows require implementation verification. Stateless is out of scope; non-Segment partition behavior is unchanged.
 
 #### Applying New Templates and Partitions After a Target Version Change
 
-When the target changes from B to C or rolls back, continue using the existing group-level budget:
+When the target changes from B to C or rolls back, RBG first checks for admitted, incomplete Segments:
 
 - Retain deduplicated unavailable and in-flight occupancy `U ∪ I`; do not clear or release it early because the target changed.
-- Recalculate partition from the new target, member states, and remaining budget while preserving user partition restrictions. Tighten it if necessary; retaining the old value alone does not guarantee budget compliance.
-- An exhausted budget may block new groups. Continue if budget remains and other conditions are met. A bad version does not change this rule, introduce a special recovery mechanism, or require B to succeed first.
-- Without surge, an exhausted group budget prevents further admission of healthy RIs. Members within partition that meet existing stable-unhealthy conditions may still be repaired. Repair must not cross the boundary or bypass the group-level budget.
+- If no admitted Segment is incomplete, write the new target and recalculate partition from member states and remaining budget while preserving user partition restrictions.
+- If an admitted Segment is incomplete, do not write the new target to member RIS objects or relax partition. Keep the current templates and boundary until every in-flight Segment completes and recovers availability. This is a deliberate freeze: Segment does not selectively expose a healthy Segment to a new target in order to repair another Segment.
+- Members already within the current boundary that meet existing stable-unhealthy conditions may still be repaired or replaced by RIS. Repair must not cross the boundary or bypass the group-level budget.
+- If the in-flight Segment cannot recover, the supported procedures are to repair or replace the unhealthy member through existing RIS semantics, roll back to the last target that the in-flight Segment can complete, or withdraw Segment and let the workload use ordinary configuration. RBG does not delete healthy groups automatically.
 
-For example, without surge and with `maxUnavailable: 1`, Segment 2 has completed B while Segment 1's P is Ready and D is not. The target then changes to C. Segment 1 still occupies the entire budget. RBG must recalculate and apply a boundary that prevents P from updating Segment 2 merely because its local budget is free, avoiding two simultaneously unavailable groups.
+For example, without surge and with `maxUnavailable: 1`, Segment 2 has completed B while Segment 1's P is Ready and D is not. The target then changes to C. Segment 1 still occupies the entire budget. RBG keeps the B templates and the existing boundary; it does not expose Segment 2 to C merely because P's local budget is free. After Segment 1 completes B or is repaired, RBG applies C and recalculates the boundary.
 
-The interaction between new templates and partitions still requires implementation verification with budgets of 1 and greater than 1, partially applied RIS parameters, delayed status, and restarts. Preserve existing surge boundaries: do not use the no-surge window to block surge preparation, add an arbitrary-group selection protocol, or fabricate unhealthy states.
+The interaction between new templates and partitions still requires implementation verification with budgets of 1 and greater than 1, partially applied RIS parameters, delayed status, and restarts. Preserve existing surge boundaries and do not fabricate unhealthy states.
 
 ### Composition with Topology
 
@@ -1080,7 +1107,7 @@ For each capability below, cover valid inputs, invalid inputs, and boundary stat
 - Reject changes to the values or key set of a declared `segment`.
 - Reject a single update that changes both a rule name and its Segment map; require withdrawal and a separate addition.
 - Reject rule-ID collisions and verify generated label values remain valid Kubernetes label values for long rule names and large group indices.
-- Accept a Segment rolling-update configuration whose effective group-level `maxUnavailable` and `maxSurge` both resolve to zero; without surge, do not start updates that increase unavailable instances.
+- Reject a Segment rolling-update configuration whose effective group-level `maxUnavailable` is zero without positive effective `maxSurge`. Verify that percentage budgets which round down to zero without surge are reported by reconciliation.
 - Verify `AdapterScaleTargetRef.role` is optional in the updated schema and that exactly one of `role` and `segment` is required.
 - Allow strategy parameter changes with an unchanged ratio. Adding, deleting, and re-adding Segment follow adoption and withdrawal rules, without rejecting new configuration based on ratio history.
 - Preserve integer, percentage, explicit zero, and omitted Policy `maxSurge` values in the API, CRDs, and generated code. Do not globally default omission to `0`, losing non-Segment fallback semantics.
@@ -1176,14 +1203,14 @@ Verify group-level admission, budget recovery, and RIS execution parameters sepa
 - In the fixed-target, `maxUnavailable: 1`, group-by-group example, later reconciliations retain the boundary while the current group is incomplete or shared budget is insufficient. Relax it only after progression conditions are met; faster roles cannot enter the next group early.
 - Use RIS availability semantics. Incomplete in-place updates, unsatisfied `minReadySeconds`, or pending member updates must not release in-flight occupancy because of momentary readiness or increased `updatedReplicas`.
 - Without surge and with `maxUnavailable: 2`, admit two groups when there is no other occupancy and progression conditions hold. Admit a replacement as soon as one finishes, without waiting for the whole batch. Cover occupancy of 0, 1, and 2, and overlap between unavailable and in-flight sets.
-- If one group remains occupied by a failed member while another slot is free, allow other eligible groups. Do not relax the boundary when budget is full; tighten it on target changes when needed. Reuse capacity after target completion and availability recovery without freezing the entire RBG for one failed group.
+- If one group remains occupied by a failed member while another slot is free, allow other eligible groups while the target remains unchanged. Do not relax the boundary when budget is full. On a target change, hold the new template until in-flight occupancy is released; do not expose a healthy group merely to repair the failed group.
 - RBG calculates budgets from group identities and member states; it does not communicate group unavailability by rewriting Ready states of healthy RIs or Pods.
 - Policy `maxUnavailable` counts Segments directly without an extra update-mode switch. Omitted, zero, and other valid Segment `rollingUpdate.maxSkew` values do not change the common boundary or budget, and `segBatchSize` does not limit the update window.
 - Resolve group-level `partition` and `maxUnavailable` percentages by rounding down, and `maxSurge` percentages by rounding up. Cover 0, 1, and boundary percentages.
 - Count multiple unavailable members of the same Segment once, and unavailable members of different Segments separately.
 - Without surge and with `maxUnavailable: 1`, independent RIS progression must not make two Segments unavailable simultaneously.
 - Admitted updates occupy budget before member status reflects them; delayed status must not admit updates twice.
-- Changing B to C or rolling back retains deduplicated unavailable and in-flight occupancy and recalculates partition for the current target. A target change neither grants a fresh budget nor permits retaining the old partition as a substitute for group-level validation.
+- Changing B to C or rolling back retains deduplicated unavailable and in-flight occupancy. If any in-flight Segment remains incomplete, do not write the new template or relax partition; after occupancy is released, apply the latest target and recalculate partition. A target change neither grants a fresh budget nor permits retaining the old partition as a substitute for group-level validation.
 - A bad version occupying the entire budget may block new group updates, without additionally requiring B to succeed first. Unhealthy members within partition may attempt repair under existing RIS conditions, without crossing the boundary or increasing group-level occupancy.
 - If external failures exhaust or exceed the budget, do not admit updates that expand the unavailable Segment set.
 
@@ -1191,16 +1218,16 @@ Verify group-level admission, budget recovery, and RIS execution parameters sepa
 
 - Resolve Policy `maxUnavailable` percentages only against desired complete Segments for the group budget. Do not pass them to RIS for a second calculation against per-RIS replica counts.
 - With group budget `B > 0`, ignore role values and apply `100%` to each RIS without multiplying the original Policy value by the ratio. With `1P:2D` and Policy value `1`, P, D0, and D1 in one admitted Segment may all enter the update while the group occupies one budget slot; simultaneous startup or readiness is not required.
-- With group budget `B = 0` and positive `maxSurge`, apply `0` to each RIS, never `100%` as a way around the zero budget; only actually available extra instances increase the execution budget. Verify admission rejects an explicit zero budget with omitted or zero `maxSurge`, and reconciliation reports percentage budgets that round down to zero without surge.
+- With group budget `B = 0` and positive `maxSurge`, apply `0` to base updates and use `surgePartition` for extra-capacity preparation; never apply `100%` as a way around the zero budget. Only actually available, unreserved extra instances increase the execution budget. Verify admission rejects an explicit zero budget with omitted or zero `maxSurge`, and reconciliation reports percentage budgets that round down to zero without surge.
 - Verify the literal `0` override survives existing Stateful RIS resolution when `maxSurge` is positive, and that no Segment path writes a zero budget that the RIS floor would raise to `1`. Non-Segment rules retain the existing floor behavior.
 - If Policy omits `maxUnavailable`, retain role configuration or RIS defaults, without adding or inferring a group-level default. Preserve Segment boundaries and other coordination conditions.
 - Rules without Segment retain independent per-role unavailability budgets.
 - For non-Segment rules, explicit Policy `maxSurge` overrides role configuration unchanged; omission preserves existing behavior. Explicit `0` differs from omission.
 - For Segment, Policy `maxSurge` ignores role configuration. With `1P:2D` and group-level value `1`, apply `P=1, D=2`. Omission or field removal explicitly applies `0`; withdrawing Segment restores current ordinary configuration.
 - Resolve `maxSurge` percentages by rounding up desired complete groups before multiplying by quotas. Cover zero replicas, rounding boundaries, and multiplication overflow; do not round per RIS first.
-- Preserve the actual Stateful surge algorithm: a full update range may create up to the limit, while a narrower partition range may create fewer instances or none. RIS retains and reclaims existing valid surge instances without cross-role completion or unified reclamation requirements.
-- With `maxUnavailable: 0, maxSurge > 0`, RIS receives `0`. Retain preparation of extra capacity followed by healthy base-instance updates only after that capacity is available. RBG must not block surge preparation because the simplified group window is zero. RIS must not count configured limits or non-Ready extra RIs as available budget.
-- Implement the surge admission rule: a group is eligible only when every role has at least its quota of healthy target-version surge RIs; otherwise it consumes the no-unavailability budget. Cover capacity disappearance and movement from safe in-flight to loss-risk.
+- Preserve the actual Stateful surge algorithm: a full surge-preparation range may create up to the limit, while a narrower `surgePartition` range may create fewer instances or none. RIS retains and reclaims existing valid surge instances without cross-role completion or unified reclamation requirements.
+- With `maxUnavailable: 0, maxSurge > 0`, RIS receives `0` for base updates and uses `surgePartition` to prepare extra capacity. Healthy base-instance updates begin only after every member role has enough unreserved available surge. RBG must not block surge preparation because the simplified group window is zero. RIS must not count configured limits or non-Ready extra RIs as available budget.
+- Implement the two-phase surge admission rule: a group is eligible only when every role has at least its quota of healthy, target-version, unreserved surge RIs; otherwise it consumes the no-unavailability budget. Cover capacity disappearance and movement from safe in-flight to loss-risk.
 - Surge creation also writes RI and Pod group labels. Incomplete extra membership must not be considered a complete serviceable group, and local surge readiness must not release a base Segment's in-flight occupancy.
 
 ##### Gang
@@ -1250,10 +1277,11 @@ These scenarios verify parameter application, event propagation, and final state
 - Without surge and with Policy value `2`, cover admission of two groups, reuse of one slot after completion, and continued progression through the other slot when one group persistently fails. If Policy omits the value, retain local windows without a new group-level default budget.
 - Cover Policy `maxSurge` from the API through RBG calculation, RIS overrides, and extra RI creation: unchanged overrides for non-Segment, ratio projection for Segment. A correct limit does not require creating the full amount every reconciliation.
 - Cover narrower partitions where actual extra counts do not form groups, independent reclamation, and surge RI/Pod label synchronization. Base groups still obey the common boundary and effective execution budget.
-- With Segment Policy `maxUnavailable: 0, maxSurge: 1`, each RIS receives `maxUnavailable: 0`. With healthy old members and user partition and other coordination conditions permitting, the candidate update scope can trigger surge creation. Do not update healthy old instances until extra RIs are available; then proceed under the existing RIS budget mechanism, without a new zero-budget freeze rule. Local readiness must not clear group state or in-flight records early.
+- With Segment Policy `maxUnavailable: 0, maxSurge: 1`, each RIS receives `maxUnavailable: 0` for base updates. With healthy old members and user partition and other coordination conditions permitting, `surgePartition` triggers surge creation. Do not update healthy old instances until every member role has enough unreserved available extra RIs; then proceed under the reserved-surge budget mechanism, without a new zero-budget freeze rule. Local readiness must not clear group state or in-flight records early.
+- With two `1P:1D` candidate Segments and only one complete Segment's worth of healthy surge, admit at most one Segment and reserve its per-role surge quota. A second candidate must not consume the same reserved capacity.
 - If one role updates faster while another is slow or failing, independent RIS progression must not make the union of unavailable Segments exceed the configured shared budget.
 - After a controller restart or delayed member status, restoring common admission must neither admit groups twice nor lose in-flight budget occupancy.
-- Without surge and with `maxUnavailable: 1`, Segment 2 has completed B, Segment 1's P is Ready, and D is not. Change the target to C and verify that the new template and recalculated partition prevent P from updating Segment 2 on its free local budget, avoiding two unavailable groups. Cover partial RIS parameter application, delayed status, and restarts.
+- Without surge and with `maxUnavailable: 1`, Segment 2 has completed B, Segment 1's P is Ready, and D is not. Change the target to C and verify that RBG keeps the B templates and current boundary, so P's free local budget does not update Segment 2 to C. After Segment 1 recovers, verify that RBG applies C and recalculates the boundary. Cover partial RIS parameter application, delayed status, and restarts.
 - Cover successive updates, bad versions, and rollbacks with budgets of 1 and greater than 1. Full occupancy blocks new groups; remaining budget permits eligible groups. Do not clear old occupancy, force B to succeed first, or rewrite real health states. Verify that unhealthy repair within the allowed scope follows RIS conditions.
 
 ##### Gang Resource Admission
@@ -1268,6 +1296,7 @@ These scenarios verify parameter application, event propagation, and final state
 ##### Address Discovery
 
 - While effective desired replicas violate the ratio, such as `2P:1D` with `P=5, D=2`, verify that reconciliation stops before the address table is updated: no residual address such as `prefill-4` appears and the last aligned table is retained. Also verify that no surge identity is published as a base service member.
+- With five desired groups, `segBatchSize: 1`, and no child yet, verify that discovery uses the first one-group batch target rather than the five-group final target. During partial child creation, verify that one role at the batch target and another at the final target causes reconciliation to report the mismatch and retain the previous table.
 - During rolling updates and surge creation, verify that discovery output changes only with the applied base-group target and that residual or surge identities are never published as serviceable members.
 
 ##### Policy Adoption and Withdrawal
