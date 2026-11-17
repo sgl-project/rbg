@@ -51,11 +51,10 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
 
 该命令会列出所有选择器不是 v1alpha2 默认值的 role，包括未知或拼写错误的值。只要某个值不在下表中，就一律按未知选择器处理，即使命令会像已知类型一样打印它。
 
-对 v1alpha1 role，直接 `workload` 字段优先于 stale annotation。对没有 `workload` 字段的 v1alpha2 role，命令读取 `rbg.workloads.x-k8s.io/role-workload-type`。Role 所在路径为：
+`kubectl get rbg,rbgs` 返回 preferred `v1alpha2` 表达，因此命令通常读取 `rbg.workloads.x-k8s.io/role-workload-type`。`workload` 字段和 `spec.template.roles` 两个分支只会在显式固定为 v1alpha1 输出时执行。Role 所在路径为：
 
 - `RoleBasedGroup`：`spec.roles`
-- `v1alpha2 RoleBasedGroupSet`：`spec.groupTemplate.spec.roles`
-- `v1alpha1 RoleBasedGroupSet`：`spec.template.roles`
+- `RoleBasedGroupSet`：`spec.groupTemplate.spec.roles`
 
 按下表解释盘点结果：
 
@@ -94,6 +93,7 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
    - 保留既有 template source、replicas、size、patch、rollout strategy 和 restart policy 配置。
    - Pattern 缺失，或 Pattern 没有可解析的 template source，属于对象健康问题。请停止迁移，先通过独立变更修复或删除该 role。
    - 如果既有 Pattern 与旧 workload 类型冲突，停止并与工作负载负责人设计变更；不要仅为通过校验而删除 workload 选择器。
+   - 确定 RoleInstanceSet 的实例组织模式。迁移后的 role 若没有 `rbg.workloads.x-k8s.io/role-instance-pattern` 注解，默认为 `Stateful`。如果 role 来自 Deployment，且不需要按实例的身份——不需要稳定的 ordinal 名称、不使用排除序数、不需要有状态 membership——可以在该 role 上把注解设为 `Stateless`。无状态组织更贴近 Deployment 语义，并且不会挂载发现 ConfigMap。取值区分大小写：`Stateless` 或 `Stateful`。
 
 4. 在 `v1alpha2` 表达中只编辑选中的一个 role：
    - 从该 role 的 annotations 中删除 `rbg.workloads.x-k8s.io/role-workload-type`。
@@ -106,6 +106,7 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
 6. 观察替换过程：
    - 控制器创建 `RoleInstanceSet`，并在同一轮 reconcile 中把旧 Deployment、StatefulSet 或 LeaderWorkerSet 判定为孤儿删除。即使替代对象创建失败，删除也会发生。
    - 在 `RoleInstanceSet` ready 之前，该 role 没有任何 Pod。没有重叠或 surge 阶段。
+   - 已知问题 #595：在 `legacy` 发现模式下，新 Pod 可能永久停留在 `ContainerCreating`，因为发现 ConfigMap 永远不会被创建。迁移前必须先完成下一节的准备工作。
    - 该 role 的全部 Pod 会重建。
 
 7. 继续前验证该 role：
@@ -119,6 +120,28 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
    确认旧 workload 已删除，而不只是替代对象 ready。同时检查 Pod，以及对该业务真正重要的流量、readiness、缓存预热或其他健康信号。
 
 8. 只要业务状态需要，就停止、暂停或调整 rollout。不要因为对象可写而自动继续下一个 role。
+
+### 发现 ConfigMap 前置条件（已知问题 #595）
+
+有状态 role 的 Pod——StatefulSet、LeaderWorkerSet 以及 Stateful 模式的 RoleInstanceSet role——会挂载一个以 RoleBasedGroup 名称命名的发现 ConfigMap。在 #595 修复之前，控制器只在 `rbg.workloads.x-k8s.io/discovery-config-mode` 为 `refine` 时才创建该 ConfigMap。处于 `legacy` 模式的对象因此在迁移后失败：新 Pod 停留在 `ContainerCreating` 并报 `configmap "RBG_NAME" not found`，旧 workload 又已被删除，没有任何机制自动恢复该 role。
+
+迁移有状态 role 之前，先确认对象来源：
+
+| 对象来源 | 发现模式 | 迁移前的动作 |
+| --- | --- | --- |
+| v0.7.0 及以后创建，或全新 v0.9.0 安装 | `refine` | 无需操作：控制器会创建 ConfigMap。 |
+| 从 v0.6.0 或更早版本升级上来 | 派生为 `legacy` | 在 RBG 上把模式注解设为 `refine`，触发一次 reconcile，确认 ConfigMap 存在。 |
+| RoleBasedGroupSet 子对象（任意来源） | 实际为 `legacy` | 在 `spec.groupTemplate.annotations` 中设置 `rbg.workloads.x-k8s.io/discovery-config-mode: refine`。set controller 会用模板注解替换子对象注解，直接写在子对象上的注解不会保留。 |
+
+设置注解后，迁移前先确认 ConfigMap 已存在：
+
+```bash
+kubectl get configmap RBG_NAME -n NAMESPACE
+```
+
+只修改注解不会触发 reconcile：控制器只按 RoleBasedGroup 的 spec 变化入队，注解变化不会入队。请重启控制器，或在注解变更的同时提交一次经过审批的 spec 变更，等待 ConfigMap 出现后再继续。若 Deployment role 已按步骤 3 切换为 `Stateless`，本节不适用：无状态 role 不挂载 ConfigMap。
+
+这是 #595 的临时 workaround，不是永久迁移步骤。控制器修复为对任意模式的有状态 role 都创建 ConfigMap 后，应删除本节。
 
 ### v1alpha1 InstanceSet role
 
@@ -135,7 +158,7 @@ v1alpha1 `InstanceSet` 选择器不受兼容开关保护。它从 v0.7.0 起就�
 - 如果 set 控制器更新已迁移的子对象，恢复旧 role 属于新的弃用使用，admission guard 会拒绝。
 - 如果 set 控制器按未迁移模板删除并重建子对象，重建的子对象会通过 set 子对象的创建时豁免继承旧类型，该 role 必须再次迁移。
 
-先迁移 set 模板。每个子对象都会在同一轮 reconcile 中删除旧 workload，因此传播的变更会让所有子对象的该 role 同时降为零 Pod。请把它规划为该 role 在整个 set 内的完全中断，而不是灰度 rollout。如果确实需要逐子对象灰度，必须使用单独审查过的方案，协调或隔离子对象与 set reconcile 的关系。不要假设在父模板未更新时，某个子对象的迁移可以永久保持。
+先迁移 set 模板。每个子对象都会在同一轮 reconcile 中删除旧 workload，因此传播的变更会让所有子对象的该 role 同时降为零 Pod。请把它规划为该 role 在整个 set 内的完全中断，而不是灰度 rollout。迁移前先按上一节已知问题的说明，在模板上设置发现模式注解。如果确实需要逐子对象灰度，必须使用单独审查过的方案，协调或隔离子对象与 set reconcile 的关系。不要假设在父模板未更新时，某个子对象的迁移可以永久保持。
 
 ## 回滚
 
@@ -143,7 +166,7 @@ v1alpha1 `InstanceSet` 选择器不受兼容开关保护。它从 v0.7.0 起就�
 
 一旦 role 已切换到 `RoleInstanceSet`，恢复保存的 Deployment、StatefulSet 或 LeaderWorkerSet 选择器就是一次新的弃用使用。即使 `controller.deprecatedWorkloadTypes.enabled=true`，validator 也会拒绝该写入；兼容模式保留存量 role，但不会授权在迁移后重新引入弃用类型。
 
-恢复 InstanceSet 选择器也不是更安全的替代方案。admission gate 只检查 Deployment、StatefulSet 和 LeaderWorkerSet，两种兼容模式下 InstanceSet 写入都会被接受；随后不支持的 workload 类型会让整个 RoleBasedGroup 在 preflight reconcile 阶段停止。写入成功可能被误认为回滚成功，而整个 group 实际已静默停止 reconcile。绝不要恢复 InstanceSet 选择器。
+恢复 InstanceSet 选择器也不是更安全的替代方案。admission gate 只检查 Deployment、StatefulSet 和 LeaderWorkerSet，两种兼容模式下 InstanceSet 写入都会被接受；随后不支持的 workload 类型会让整个 RoleBasedGroup 在 preflight reconcile 阶段停止。写入成功可能被误认为回滚成功，而整个 group 实际已静默停止 reconcile。写入之后 RoleBasedGroup 仍会报告 `Ready=True`，因为 preflight 失败不会重建 status；唯一可见信号是反复出现的 `FailedReconcileWorkload` warning 事件。绝不要恢复 InstanceSet 选择器；怀疑 preflight 失败时，检查 RBG 的事件而不是 Ready condition。
 
 在业务负责人批准 `RoleInstanceSet` rollout 失败后的恢复方案之前，不要开始迁移。
 
@@ -166,9 +189,9 @@ kubectl get customresourcedefinition \
   -o custom-columns=CRD:.metadata.name,STORED_VERSIONS:.status.storedVersions
 ```
 
-只有 `storedVersions` 包含 `v1alpha1` 的 CRD 才需要对象重写。`RoleBasedGroupScalingAdapter` 对象由控制器写入，通常已按 v1alpha2 编码；`ClusterEngineRuntimeProfile` 是 cluster-scoped 且控制器从不写入，最可能仍按 v1alpha1 编码。
+API 不会暴露对象在 etcd 中的编码，所以不要试图挑选“哪些对象仍需要重写”。对每个 `storedVersions` 仍列出 `v1alpha1` 的 CRD，重写该 kind 的**每一个**对象。跳过任何对象都会让它保持 v1alpha1 编码；`0.10.0` 移除该版本后，它会以 `request to convert CR from an invalid group/version: workloads.x-k8s.io/v1alpha1` 报错而无法读取。
 
-对每个仍需要重写的上述资源对象：
+对每个所属 CRD 仍列出 `v1alpha1` 的 kind 的对象：
 
 1. 通过 `v1alpha2` 端点读取对象。
 2. 保存并审查返回对象。
@@ -183,13 +206,13 @@ kubectl get rolebasedgroups.v1alpha2.workloads.x-k8s.io RBG_NAME -n NAMESPACE -o
 kubectl replace -f RBG_NAME.storage-rewrite.yaml
 ```
 
-RoleBasedGroupSet、RoleBasedGroupScalingAdapter 和 ClusterEngineRuntimeProfile 使用等价的、完整限定的 `v1alpha2` 资源；最后一类是 cluster-scoped，其命令不使用 namespace。`kubectl patch --subresource=status` 需要 kubectl 1.24 或更新版本。如果写入因对象变化而冲突，重新获取副本、审查后再决定是否重试。
+RoleBasedGroupSet、RoleBasedGroupScalingAdapter 和 ClusterEngineRuntimeProfile 使用等价的、完整限定的 `v1alpha2` 资源；最后一类是 cluster-scoped，其命令不使用 namespace。如果写入因对象变化而冲突，重新获取副本、审查后再决定是否重试。
 
 不要通过 `v1alpha1` 往返对象：该路径可能重新引入 `role-workload-type` 兼容注解，为后续检查制造噪音。
 
 所有对象重写完成后，必须根据迁移清单独立确认重写集合已经完整。`status.storedVersions` 是 CRD 级历史记录，不是逐对象清单；对象重写后它也不会自动丢弃 `v1alpha1`。重复写对象不能移除该列表中的历史条目。
 
-只有在完整重写得到确认后，才通过明确审查过的变更更新每个 CRD status：
+只有在完整重写得到确认后，才通过明确审查过的变更更新每个 CRD status。`kubectl patch --subresource=status` 需要 kubectl 1.24 或更新版本：
 
 ```bash
 kubectl patch customresourcedefinition rolebasedgroups.workloads.x-k8s.io \
@@ -226,7 +249,7 @@ kubectl get customresourcedefinition \
 
 1. 重新执行 role 盘点。命令必须成功执行且输出为空。
 2. 确认 reconcile 已完成，没有 RBG-owned Deployment、StatefulSet 或 LeaderWorkerSet 残留，并确认所有旧 v1alpha1 `InstanceSet` 也已删除。
-3. 根据迁移清单确认每个 RoleBasedGroup 和 RoleBasedGroupSet 均已重写，且没有 RoleBasedGroupScalingAdapter 或 ClusterEngineRuntimeProfile 仍按 v1alpha1 编码；然后按上述说明更新并验证全部四个 `status.storedVersions` 值。
+3. 根据重写记录确认：凡是所属 CRD 曾列出 `v1alpha1` 的 kind，其每个对象都已完成重写；API 无法报告对象编码，完整性只能来自记录本身。然后按上述说明更新并验证全部四个 `status.storedVersions` 值。
 4. 设置 `controller.deprecatedWorkloadTypes.enabled=false`，然后确认控制器健康，且普通 v1alpha2 更新不会被弃用 gate 拒绝。
 5. 将清单、客户端和自动化迁移到 `v1alpha2`。
 6. 只有在与业务负责人约定的回滚窗口结束后，才清理保存的迁移产物。
