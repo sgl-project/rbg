@@ -18,6 +18,7 @@ package v1alpha2
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -247,9 +248,12 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		// still need to be deletable.
 	} else {
 		// Removing or replacing the owner in this update must not bypass placement
-		// validation. Only the new role configuration is validated, allowing cleanup.
+		// validation: the proposed object is restricted when it is managed in either
+		// snapshot. The persisted snapshot is validated with its own ownership, so a
+		// newly managed object cannot smuggle a now-forbidden configuration through
+		// the ratchet as if it had always been violating.
 		managed := isRBGSetManaged(oldRBG) || isRBGSetManaged(rbg)
-		allErrs = append(allErrs, ratchetUpdateableSpec(oldRBG, rbg, managed)...)
+		allErrs = append(allErrs, ratchetUpdateableSpec(oldRBG, rbg, isRBGSetManaged(oldRBG), managed)...)
 	}
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
 		allErrs = append(allErrs, err)
@@ -280,18 +284,24 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 // the update, so objects written before these webhook checks existed (or while
 // the webhook was unavailable) stay updatable and fixable; only newly introduced
 // violations are rejected.
-func ratchetUpdateableSpec(oldRBG, rbg *RoleBasedGroup, managed bool) []error {
-	checks := []func(*RoleBasedGroup) error{
-		func(g *RoleBasedGroup) error { return validateExcludedOrdinals(g, managed) },
-		ValidateRollingUpdate,
-		ValidateRoleDependencies,
+//
+// Violations are compared individually: joined errors, wrapped aggregates, and
+// API status errors are split into their concrete violations before old and new
+// are compared, so partially repairing an invalid object is allowed. The old and
+// new snapshots are validated with their own RBGSet ownership (the proposed
+// object also stays restricted when ownership is being removed in this update).
+func ratchetUpdateableSpec(oldRBG, rbg *RoleBasedGroup, oldManaged, newManaged bool) []error {
+	checks := []func(*RoleBasedGroup, bool) error{
+		validateExcludedOrdinals,
+		func(g *RoleBasedGroup, _ bool) error { return ValidateRollingUpdate(g) },
+		func(g *RoleBasedGroup, _ bool) error { return ValidateRoleDependencies(g) },
 	}
 	var newErrs, oldErrs []error
 	for _, check := range checks {
-		if err := check(rbg); err != nil {
+		if err := check(rbg, newManaged); err != nil {
 			newErrs = append(newErrs, err)
 		}
-		if err := check(oldRBG); err != nil {
+		if err := check(oldRBG, oldManaged); err != nil {
 			oldErrs = append(oldErrs, err)
 		}
 	}
@@ -300,15 +310,70 @@ func ratchetUpdateableSpec(oldRBG, rbg *RoleBasedGroup, managed bool) []error {
 
 	oldViolation := make(map[string]bool, len(oldErrs))
 	for _, err := range oldErrs {
-		oldViolation[err.Error()] = true
+		for _, key := range violationKeys(err) {
+			oldViolation[key] = true
+		}
 	}
 	var ratcheted []error
 	for _, err := range newErrs {
-		if !oldViolation[err.Error()] {
+		if ratchetError(err, oldViolation) != nil {
 			ratcheted = append(ratcheted, err)
 		}
 	}
 	return ratcheted
+}
+
+// ratchetError returns the original error when at least one of its concrete
+// violations is new, nil when every violation already existed in the persisted
+// object. Returning the original error keeps rejection messages recognizable.
+func ratchetError(err error, oldViolation map[string]bool) error {
+	keys := violationKeys(err)
+	if len(keys) == 0 {
+		return nil
+	}
+	for _, key := range keys {
+		if !oldViolation[key] {
+			return err
+		}
+	}
+	return nil
+}
+
+// violationKeys extracts one stable key per concrete violation. Aggregates are
+// split into constituents, wrapped errors are unwrapped, and API status errors
+// are keyed by their causes (field, type, reason, and message identify the
+// violation; the aggregate error string does not, because it changes whenever
+// any sibling violation is repaired).
+func violationKeys(err error) []string {
+	if err == nil {
+		return nil
+	}
+	var keys []string
+	if aggregate, ok := err.(interface{ Errors() []error }); ok {
+		for _, single := range aggregate.Errors() {
+			keys = append(keys, violationKeys(single)...)
+		}
+		return keys
+	}
+	if aggregate, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, single := range aggregate.Unwrap() {
+			keys = append(keys, violationKeys(single)...)
+		}
+		return keys
+	}
+	if statusErr, ok := err.(*apierrors.StatusError); ok && statusErr.Status().Details != nil {
+		for _, cause := range statusErr.Status().Details.Causes {
+			keys = append(keys, fmt.Sprintf("%s: %s: %s",
+				cause.Field, cause.Type, cause.Message))
+		}
+		if len(keys) > 0 {
+			return keys
+		}
+	}
+	if wrapped := errors.Unwrap(err); wrapped != nil {
+		return violationKeys(wrapped)
+	}
+	return []string{err.Error()}
 }
 
 // ValidateDelete just implements admission.CustomValidator. This verb is currently no-op.

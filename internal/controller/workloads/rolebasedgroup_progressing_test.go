@@ -325,7 +325,7 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeRBGProgressingCondition(tc.rbg, tc.roleStatuses, tc.observations, tc.expected, tc.gangWaiting, tc.depsNotReady, nil)
+			got := computeRBGProgressingCondition(tc.rbg, tc.roleStatuses, tc.observations, tc.expected, tc.gangWaiting, tc.depsNotReady, nil, nil)
 			if got.Reason != tc.wantReason || got.Status != tc.wantStatus {
 				t.Fatalf("got status=%s reason=%s message=%s, want status=%s reason=%s", got.Status, got.Reason, got.Message, tc.wantStatus, tc.wantReason)
 			}
@@ -353,7 +353,7 @@ func TestEntryBlockerCarryAndSnapshot(t *testing.T) {
 			"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
 			"decode":  observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
 		}
-		got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), false, nil, &entry)
+		got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), false, nil, &entry, nil)
 		if got.Status != metav1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonPermissionDenied {
 			t.Fatalf("got status=%s reason=%s", got.Status, got.Reason)
 		}
@@ -416,6 +416,44 @@ func TestEntryBlockerCarryAndSnapshot(t *testing.T) {
 			t.Fatalf("message must not grow across retries, got %q, want %q", message, want)
 		}
 	})
+}
+
+func TestOwnBlockerCompetesWithFreshChildBlockers(t *testing.T) {
+	// A fresh child blocker with a higher-priority family must not be replaced
+	// by this controller's own lower-priority operation failure.
+	rbg := newProgressingRBG()
+	observations := map[string]risObservation{
+		"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+		"decode":  observation(workloadconstants.ProgressingReasonPermissionDenied, corev1.ConditionTrue, "hash"),
+	}
+	got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), false, nil, nil,
+		&rbgOwnBlocker{reason: workloadconstants.ProgressingReasonWaitingForQuota, message: "exceeded quota"})
+	if got.Status != metav1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonPermissionDenied {
+		t.Fatalf("got status=%s reason=%s", got.Status, got.Reason)
+	}
+
+	// The own blocker wins when its family has the higher precedence, and its
+	// message stays visible.
+	got = computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), false, nil, nil,
+		&rbgOwnBlocker{reason: workloadconstants.ProgressingReasonInvalidSpec, message: "invalid excluded ordinals"})
+	if got.Status != metav1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonInvalidSpec ||
+		got.Message != "invalid excluded ordinals" {
+		t.Fatalf("got status=%s reason=%s message=%s", got.Status, got.Reason, got.Message)
+	}
+
+	// Same family: the child roles and the own message are both reported.
+	quotaChild := map[string]risObservation{
+		"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
+		"decode":  observation(workloadconstants.ProgressingReasonWaitingForQuota, corev1.ConditionTrue, "hash"),
+	}
+	got = computeRBGProgressingCondition(rbg, readyRoleStatuses(), quotaChild, expectedRevisions(), false, nil, nil,
+		&rbgOwnBlocker{reason: workloadconstants.ProgressingReasonWaitingForQuota, message: "exceeded quota"})
+	if got.Status != metav1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonWaitingForQuota {
+		t.Fatalf("got status=%s reason=%s", got.Status, got.Reason)
+	}
+	if !strings.Contains(got.Message, "exceeded quota") || !strings.Contains(got.Message, "decode") {
+		t.Fatalf("message must describe child roles and the own failure, got %q", got.Message)
+	}
 }
 
 func TestPodGroupWaitingPhase(t *testing.T) {

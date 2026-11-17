@@ -325,6 +325,12 @@ spec:
                 description: LabelSelector of a RoleInstance is a label query over
                   Pods that should match the RoleInstance.
                 type: string
+              lastPhaseCompleteGeneration:
+                description: |-
+                  LastPhaseCompleteGeneration is the metadata.generation whose target the
+                  phase machine last confirmed complete.
+                format: int64
+                type: integer
               lastReadyGeneration:
                 description: |-
                   LastReadyGeneration is the metadata.generation at which the instance was last

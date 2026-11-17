@@ -173,6 +173,29 @@ func classifyPodOperationError(operation string, err error) string {
 	if err == nil {
 		return ""
 	}
+	// A single operation can fail with a Kubernetes error aggregate (for example
+	// a same-name foreign Pod blocking one component while a sibling's creation
+	// fails). Aggregates expose Errors(), not Unwrap(), so apierrors helpers
+	// cannot see their contained StatusErrors: classify each constituent and
+	// select the highest-priority blocker, as the set-level classifier does.
+	reasons := make([]string, 0, 4)
+	for _, single := range flattenPodOperationErrors(err) {
+		reasons = append(reasons, classifySinglePodOperationError(operation, single))
+	}
+	selected, selectedPriority := workloadsv1alpha2.ReasonPodOperationUnclassified, len(instanceBlockerFamilyPriority)
+	for _, reason := range reasons {
+		if priority := instanceBlockerPriority(reason); priority < selectedPriority {
+			selected, selectedPriority = reason, priority
+		}
+	}
+	return selected
+}
+
+// classifySinglePodOperationError classifies one concrete Pod operation error.
+func classifySinglePodOperationError(operation string, err error) string {
+	if err == nil {
+		return ""
+	}
 	switch {
 	case apierrors.IsForbidden(err):
 		// HTTP 403 is ambiguous: quota, admission, and RBAC all reject with
@@ -201,6 +224,31 @@ func classifyPodOperationError(operation string, err error) string {
 	default:
 		return workloadsv1alpha2.ReasonPodOperationUnclassified
 	}
+}
+
+// flattenPodOperationErrors expands joined and aggregated errors into their
+// concrete constituents, keeping single errors unchanged. Kubernetes
+// aggregates implement Errors() without Unwrap, so errors.As cannot traverse
+// them on its own.
+func flattenPodOperationErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	if aggregate, ok := err.(interface{ Errors() []error }); ok {
+		var out []error
+		for _, single := range aggregate.Errors() {
+			out = append(out, flattenPodOperationErrors(single)...)
+		}
+		return out
+	}
+	if aggregate, ok := err.(interface{ Unwrap() []error }); ok {
+		var out []error
+		for _, single := range aggregate.Unwrap() {
+			out = append(out, flattenPodOperationErrors(single)...)
+		}
+		return out
+	}
+	return []error{err}
 }
 
 // isRBACDenial positively matches the stable RBAC Forbidden shape

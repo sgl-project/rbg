@@ -219,6 +219,19 @@ type RoleInstanceStatus struct {
 	// or a new Pod-template revision, even if the budget is changed or removed.
 	// +optional
 	RestartBudgetExhausted bool `json:"restartBudgetExhausted,omitempty"`
+
+	// LastPhaseCompleteGeneration is the metadata.generation whose target the
+	// phase machine last confirmed complete. Completion uses only
+	// controller-observed workload readiness — runtime readiness plus the
+	// controller-owned in-place update gate — so externally owned readiness
+	// gates cannot keep the phase in Updating after the work has converged.
+	// It is deliberately independent of LastReadyGeneration, which latches
+	// full serving readiness including external gates.
+	//
+	// Starting at 0 means "never completed at a recorded generation"; upgraded
+	// objects fall back to LastReadyGeneration until the next completion.
+	// +optional
+	LastPhaseCompleteGeneration int64 `json:"lastPhaseCompleteGeneration,omitempty"`
 }
 
 // ContainerUpdateBaseline records the pre-update state of a container for

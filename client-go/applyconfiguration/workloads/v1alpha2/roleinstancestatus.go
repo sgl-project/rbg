@@ -40,6 +40,7 @@ type RoleInstanceStatusApplyConfiguration struct {
 	GroupRestartCount               *int32                                                          `json:"groupRestartCount,omitempty"`
 	GroupRestartRevision            *string                                                         `json:"groupRestartRevision,omitempty"`
 	RestartBudgetExhausted          *bool                                                           `json:"restartBudgetExhausted,omitempty"`
+	LastPhaseCompleteGeneration     *int64                                                          `json:"lastPhaseCompleteGeneration,omitempty"`
 }
 
 // RoleInstanceStatusApplyConfiguration constructs a declarative configuration of the RoleInstanceStatus type for use with
@@ -181,5 +182,13 @@ func (b *RoleInstanceStatusApplyConfiguration) WithGroupRestartRevision(value st
 // If called multiple times, the RestartBudgetExhausted field is set to the value of the last call.
 func (b *RoleInstanceStatusApplyConfiguration) WithRestartBudgetExhausted(value bool) *RoleInstanceStatusApplyConfiguration {
 	b.RestartBudgetExhausted = &value
+	return b
+}
+
+// WithLastPhaseCompleteGeneration sets the LastPhaseCompleteGeneration field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LastPhaseCompleteGeneration field is set to the value of the last call.
+func (b *RoleInstanceStatusApplyConfiguration) WithLastPhaseCompleteGeneration(value int64) *RoleInstanceStatusApplyConfiguration {
+	b.LastPhaseCompleteGeneration = &value
 	return b
 }

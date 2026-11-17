@@ -17,11 +17,14 @@ limitations under the License.
 package roleinstance
 
 import (
+	stderrors "errors"
+	"fmt"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/utils/ptr"
 
 	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
@@ -76,6 +79,40 @@ func TestNextRoleInstancePhase(t *testing.T) {
 				t.Fatalf("nextRoleInstancePhase(%q, %+v) = %q, want %q", tc.current, tc.facts, got, tc.want)
 			}
 		})
+	}
+}
+
+func TestClassifyPodOperationErrorAggregates(t *testing.T) {
+	forbiddenQuota := apierrors.NewForbidden(
+		corev1.Resource("pods"), "ri-1", apierrors.NewBadRequest("pods \"ri-1\" is forbidden: exceeded quota"))
+	// Scale can return a Kubernetes error aggregate when a same-name foreign Pod
+	// blocks one component and creation of a sibling fails. The aggregate exposes
+	// Errors(), not Unwrap(), so apierrors helpers cannot see the contained
+	// StatusError without explicit flattening.
+	scaleAggregate := utilerrors.NewAggregate([]error{
+		stderrors.New("pod ri-0 is not controlled by RoleInstance ri"),
+		forbiddenQuota,
+	})
+	if got := classifyPodOperationError("Create", scaleAggregate); got != workloadsv1alpha2.ReasonPodCreateQuotaExceeded {
+		t.Fatalf("classifyPodOperationError(aggregate) = %q, want %q", got, workloadsv1alpha2.ReasonPodCreateQuotaExceeded)
+	}
+
+	// Joined errors keep the same behavior: the higher-priority family wins.
+	joined := stderrors.Join(
+		apierrors.NewServerTimeout(corev1.Resource("pods"), "POST", 1),
+		forbiddenQuota,
+	)
+	if got := classifyPodOperationError("Create", joined); got != workloadsv1alpha2.ReasonPodCreateQuotaExceeded {
+		t.Fatalf("classifyPodOperationError(joined) = %q, want %q", got, workloadsv1alpha2.ReasonPodCreateQuotaExceeded)
+	}
+
+	// Only unclassifiable constituents stay unclassified.
+	unclassified := utilerrors.NewAggregate([]error{
+		stderrors.New("pod ri-0 is not controlled by RoleInstance ri"),
+		apierrors.NewServerTimeout(corev1.Resource("pods"), "POST", 1),
+	})
+	if got := classifyPodOperationError("Create", unclassified); got != workloadsv1alpha2.ReasonPodOperationUnclassified {
+		t.Fatalf("classifyPodOperationError(unclassified) = %q, want %q", got, workloadsv1alpha2.ReasonPodOperationUnclassified)
 	}
 }
 
@@ -277,6 +314,13 @@ func TestStableBlockerReason(t *testing.T) {
 func TestPhaseFacts(t *testing.T) {
 	r := &reconciler{}
 	size := int32(2)
+	bareTopologyPods := func(component string, count int32) []*corev1.Pod {
+		pods := make([]*corev1.Pod, 0, count)
+		for id := int32(0); id < count; id++ {
+			pods = append(pods, &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("ri-%s-%d", component, id)}})
+		}
+		return pods
+	}
 
 	t.Run("component size increase without revision change is a spec-driven update", func(t *testing.T) {
 		// Component size is excluded from revision patches, so the revisions stay
@@ -339,6 +383,137 @@ func TestPhaseFacts(t *testing.T) {
 			t.Fatal("without the gate condition the None policy is satisfied")
 		}
 	})
+
+	t.Run("phase completion uses runtime readiness, not external gates", func(t *testing.T) {
+		// The externally observed Pod Ready condition includes readiness gates
+		// owned outside the controller; they gate serving readiness, not phase
+		// completion.
+		instance := &workloadsv1alpha2.RoleInstance{
+			Spec: workloadsv1alpha2.RoleInstanceSpec{
+				Components: []workloadsv1alpha2.RoleInstanceComponent{{Name: "main", Size: ptr.To(int32(1))}},
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "rev", UpdateRevision: "rev"}
+		externallyGated := &corev1.Pod{
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{Type: corev1.ContainersReady, Status: corev1.ConditionTrue},
+					{Type: corev1.PodReady, Status: corev1.ConditionFalse},
+				},
+			},
+		}
+		if facts := r.phaseFacts(instance, newStatus, []*corev1.Pod{externallyGated}); !facts.readySatisfied {
+			t.Fatal("a false external readiness gate must not block phase completion")
+		}
+	})
+
+	t.Run("in-place gate false blocks phase completion", func(t *testing.T) {
+		instance := &workloadsv1alpha2.RoleInstance{
+			Spec: workloadsv1alpha2.RoleInstanceSpec{
+				Components: []workloadsv1alpha2.RoleInstanceComponent{{Name: "main", Size: ptr.To(int32(1))}},
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "rev", UpdateRevision: "rev"}
+		blocked := &corev1.Pod{
+			Status: corev1.PodStatus{
+				Phase: corev1.PodRunning,
+				Conditions: []corev1.PodCondition{
+					{Type: corev1.ContainersReady, Status: corev1.ConditionTrue},
+					{Type: corev1.PodReady, Status: corev1.ConditionTrue},
+					{Type: workloadconstants.InPlaceUpdateReady, Status: corev1.ConditionFalse},
+				},
+			},
+		}
+		if facts := r.phaseFacts(instance, newStatus, []*corev1.Pod{blocked}); facts.readySatisfied {
+			t.Fatal("the controller-owned in-place gate must block phase completion")
+		}
+	})
+
+	t.Run("phase completion latch decouples spec updates from full readiness", func(t *testing.T) {
+		// An external readiness gate keeps LastReadyGeneration behind the current
+		// generation; the phase-completion latch must not reintroduce the same
+		// wait for a spec-driven update whose work has converged.
+		instance := &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Generation: 2},
+			Spec: workloadsv1alpha2.RoleInstanceSpec{
+				Components: []workloadsv1alpha2.RoleInstanceComponent{{Name: "main", Size: &size}},
+			},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				LastReadyGeneration:         1,
+				LastPhaseCompleteGeneration: 2,
+			},
+		}
+		newStatus := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "rev", UpdateRevision: "rev"}
+		if facts := r.phaseFacts(instance, newStatus, bareTopologyPods("main", 2)); facts.updateActive {
+			t.Fatal("a generation confirmed complete by the phase latch is not updateActive")
+		}
+	})
+}
+
+func TestPodsMatchComponentTopology(t *testing.T) {
+	newInstance := func(components ...workloadsv1alpha2.RoleInstanceComponent) *workloadsv1alpha2.RoleInstance {
+		return &workloadsv1alpha2.RoleInstance{Spec: workloadsv1alpha2.RoleInstanceSpec{Components: components}}
+	}
+	pod := func(name string) *corev1.Pod {
+		return &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name}}
+	}
+
+	cases := []struct {
+		name      string
+		instances *workloadsv1alpha2.RoleInstance
+		pods      []*corev1.Pod
+		want      bool
+	}{
+		{
+			name: "all required slots exist",
+			instances: newInstance(
+				workloadsv1alpha2.RoleInstanceComponent{Name: "a", Size: ptr.To(int32(2))},
+				workloadsv1alpha2.RoleInstanceComponent{Name: "b", Size: ptr.To(int32(1))}),
+			pods: []*corev1.Pod{pod("ri-a-0"), pod("ri-a-1"), pod("ri-b-0")},
+			want: true,
+		},
+		{
+			name: "total count is unchanged but a required slot is missing",
+			// A=2/B=1 becomes A=1/B=2: the old A-1 Pod cannot hide the missing B-1.
+			instances: newInstance(
+				workloadsv1alpha2.RoleInstanceComponent{Name: "a", Size: ptr.To(int32(1))},
+				workloadsv1alpha2.RoleInstanceComponent{Name: "b", Size: ptr.To(int32(2))}),
+			pods: []*corev1.Pod{pod("ri-a-0"), pod("ri-a-1"), pod("ri-b-0")},
+			want: false,
+		},
+		{
+			name:      "missing required slot",
+			instances: newInstance(workloadsv1alpha2.RoleInstanceComponent{Name: "a", Size: ptr.To(int32(2))}),
+			pods:      []*corev1.Pod{pod("ri-a-0")},
+			want:      false,
+		},
+		{
+			name:      "surplus pod outside the target topology",
+			instances: newInstance(workloadsv1alpha2.RoleInstanceComponent{Name: "a", Size: ptr.To(int32(1))}),
+			pods:      []*corev1.Pod{pod("ri-a-0"), pod("ri-a-1")},
+			want:      false,
+		},
+		{
+			name:      "pod from an undeclared component",
+			instances: newInstance(workloadsv1alpha2.RoleInstanceComponent{Name: "a", Size: ptr.To(int32(1))}),
+			pods:      []*corev1.Pod{pod("ri-a-0"), pod("ri-b-0")},
+			want:      false,
+		},
+		{
+			name:      "no components and no pods",
+			instances: newInstance(),
+			pods:      nil,
+			want:      true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := podsMatchComponentTopology(tc.instances, tc.pods); got != tc.want {
+				t.Fatalf("podsMatchComponentTopology = %v, want %v", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestInsufficientResourcesMessage(t *testing.T) {

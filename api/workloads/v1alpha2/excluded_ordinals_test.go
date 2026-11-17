@@ -131,6 +131,11 @@ func TestExcludedOrdinalsAdmissionOwnerTransitions(t *testing.T) {
 		{name: "remove owner and add empty exclusions", oldManaged: true, newExcluded: true, bad: true},
 		{name: "replace owner and add exclusions", oldManaged: true, newOwner: "Job", newExcluded: true, value: "1", bad: true},
 		{name: "add owner and exclusions", newOwner: "RoleBasedGroupSet", newExcluded: true, value: "1", bad: true},
+		// The old snapshot is validated with its own ownership: a standalone
+		// object with exclusions is valid, so adding an RBGSet owner introduces
+		// the placement violation and must be rejected instead of being
+		// ratcheted as pre-existing.
+		{name: "add owner with existing exclusions", oldExcluded: true, newOwner: "RoleBasedGroupSet", newExcluded: true, value: "1", bad: true},
 		{name: "keep owner and add exclusions", oldManaged: true, newOwner: "RoleBasedGroupSet", newExcluded: true, value: "1", bad: true},
 		{name: "standalone add exclusions", newExcluded: true, value: "1"},
 		{name: "remove owner without exclusions", oldManaged: true},

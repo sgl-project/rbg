@@ -250,6 +250,14 @@ const (
 	// RoleInstanceSetProgressing reports progress toward the instance-set target, whether
 	// executing, waiting, or blocked.
 	RoleInstanceSetProgressing RoleInstanceSetConditionType = "Progressing"
+
+	// RoleInstanceSetEstablished records, independently of the dominant
+	// Progressing reason, that the set has previously established the
+	// RoleInstances of a target. Once True it stays True: no phase returns to
+	// initial creation. A dominant blocker can overwrite the Progressing
+	// reason, so establishment is persisted separately instead of being
+	// re-derived from it.
+	RoleInstanceSetEstablished RoleInstanceSetConditionType = "Established"
 )
 
 // RoleInstanceSetCondition describes the state of a RoleInstanceSet at a certain point.

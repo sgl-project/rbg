@@ -23,6 +23,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	intstr "k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/utils/ptr"
 
 	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -211,6 +213,75 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				Replicas: 3, CurrentRevision: "old", UpdateRevision: "new", UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
 			},
 			instances:  bareInstances(3),
+			wantReason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "completed partition rollout converges",
+			// A non-zero partition pins instances on CurrentRevision after the
+			// rollout completes, and CurrentRevision is never advanced then:
+			// revision inequality alone must not keep the set updating forever.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(2))
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, ReadyReplicas: 3, AvailableReplicas: 3,
+				CurrentRevision: "old", UpdateRevision: "new",
+				UpdatedReplicas: 1, UpdatedReadyReplicas: 1, ExpectedUpdatedReplicas: 1,
+			},
+			instances:  bareInstances(3),
+			wantReason: workloadconstants.ProgressingReasonConverged,
+			wantStatus: corev1.ConditionFalse,
+		},
+		{
+			name: "reversed scale target reports scaling down while the surplus instance is still starting",
+			// After 2 -> 3, lowering the target to 1 leaves the still-Creating
+			// third instance as part of the deletion, not a scale-up.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(1)
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonScalingUp,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, UpdatedReplicas: 2, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 1,
+			},
+			instances: append(bareInstances(1),
+				instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseCreating)),
+			wantReason: workloadconstants.ProgressingReasonScalingDown,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "paused set with in-flight child update keeps the update workflow",
+			// Pausing does not stop updates already dispatched to RoleInstances,
+			// so the set must not report Paused while the child update executes.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Spec.UpdateStrategy.Paused = true
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "old", UpdateRevision: "new",
+				UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
+			},
+			instances: []*workloadsv1alpha2.RoleInstance{
+				instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseUpdating),
+			},
 			wantReason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -578,6 +649,62 @@ func TestApplySetProgressingConditionDeduplicates(t *testing.T) {
 	}
 	if progressing[0].Reason != workloadconstants.ProgressingReasonPermissionDenied {
 		t.Fatalf("permission must outrank the unclassified first error, got %s", progressing[0].Reason)
+	}
+}
+
+func TestEstablishmentSurvivesDominantBlocker(t *testing.T) {
+	// A converged set scales from two to three; quota blocks the new instance
+	// and becomes the dominant Progressing reason, erasing ScalingUp.
+	establishedSet := func() *workloadsv1alpha2.RoleInstanceSet {
+		set := newTestSet(3)
+		set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+		set.Status.ExpectedUpdatedReplicas = 2
+		set.Status.CurrentRevision, set.Status.UpdateRevision = "rev", "rev"
+		set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+			Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+			Status: corev1.ConditionTrue,
+			Reason: workloadconstants.ProgressingReasonScalingUp,
+		}}
+		return set
+	}()
+	blockedStatus := &workloadsv1alpha2.RoleInstanceSetStatus{
+		Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2,
+		CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+		Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{
+			Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
+			Reason: workloadconstants.ProgressingReasonWaitingForQuota, Message: "exceeded quota",
+		}},
+	}
+	ApplySetProgressingCondition(establishedSet, blockedStatus, bareInstances(2))
+
+	var established *workloadsv1alpha2.RoleInstanceSetCondition
+	for i := range blockedStatus.Conditions {
+		if blockedStatus.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetEstablished {
+			established = &blockedStatus.Conditions[i]
+		}
+	}
+	if established == nil || established.Status != corev1.ConditionTrue {
+		t.Fatalf("establishment must be persisted independently of the dominant blocker, got %+v", blockedStatus.Conditions)
+	}
+
+	// Quota clears and the new instance is still starting: the set must return
+	// to its scale-up workflow, not to initial creation.
+	persisted := establishedSet.DeepCopy()
+	persisted.Status = *blockedStatus.DeepCopy()
+	resumedStatus := &workloadsv1alpha2.RoleInstanceSetStatus{
+		Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+	}
+	instances := append(bareInstances(2),
+		instanceWithProgressing("", workloadsv1alpha2.RoleInstancePhaseCreating))
+	ApplySetProgressingCondition(persisted, resumedStatus, instances)
+	var resumed *workloadsv1alpha2.RoleInstanceSetCondition
+	for i := range resumedStatus.Conditions {
+		if resumedStatus.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetProgressing {
+			resumed = &resumedStatus.Conditions[i]
+		}
+	}
+	if resumed == nil || resumed.Reason != workloadconstants.ProgressingReasonScalingUp {
+		t.Fatalf("a blocked scale-up must resume as ScalingUp, got %+v", resumed)
 	}
 }
 

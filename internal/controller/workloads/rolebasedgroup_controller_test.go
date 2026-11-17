@@ -373,6 +373,39 @@ func Test_CalculateNextRollingTarget_WithNormalCases(t *testing.T) {
 	}
 }
 
+func TestWithoutConflicts(t *testing.T) {
+	conflict := apierrors.NewConflict(schema.GroupResource{Group: "workloads.x-k8s.io", Resource: "roleinstancesets"},
+		"decode", errors.New("Operation cannot be fulfilled on roleinstancesets"))
+	forbidden := apierrors.NewForbidden(schema.GroupResource{Group: "workloads.x-k8s.io", Resource: "roleinstancesets"},
+		"decode", errors.New(`User "alice" cannot create resource "roleinstancesets"`))
+
+	// apierrors.IsConflict reports a match as soon as one constituent of a
+	// joined error carries it; the whole error must not be classified as a
+	// conflict while another role's permission failure is still unreported.
+	joined := errors.Join(conflict, forbidden)
+	if got := withoutConflicts(joined); len(got) != 1 || got[0] != forbidden {
+		t.Fatalf("conflict must be filtered per constituent, got %v", got)
+	}
+
+	if got := withoutConflicts(errors.Join(conflict, conflict)); len(got) != 0 {
+		t.Fatalf("conflict-only failures are transient, got %v", got)
+	}
+
+	if got := withoutConflicts(forbidden); len(got) != 1 || got[0] != forbidden {
+		t.Fatalf("single non-conflict failure must be kept, got %v", got)
+	}
+
+	// Wrapped single conflicts are still recognized through the wrapper.
+	wrapped := fmt.Errorf("role decode: %w", conflict)
+	if got := withoutConflicts(wrapped); len(got) != 0 {
+		t.Fatalf("wrapped conflict must be filtered, got %v", got)
+	}
+
+	if got := withoutConflicts(nil); len(got) != 0 {
+		t.Fatalf("nil error must be empty, got %v", got)
+	}
+}
+
 func Test_CalculateNextRollingTarget_MinProgressWhenNoRoleReady(t *testing.T) {
 	maxSkew := "10%"
 	roles := sets.New[string]("prefill", "decode")

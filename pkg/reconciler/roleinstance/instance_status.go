@@ -416,6 +416,7 @@ func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleI
 		newStatus.UpdateRevision != oldStatus.UpdateRevision ||
 		newStatus.RestartCount != oldStatus.RestartCount ||
 		newStatus.LastReadyGeneration != oldStatus.LastReadyGeneration ||
+		newStatus.LastPhaseCompleteGeneration != oldStatus.LastPhaseCompleteGeneration ||
 		inconsistentRestartTime(oldStatus.LastRestartTime, newStatus.LastRestartTime) {
 		return true
 	}
@@ -550,6 +551,7 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		liveRestartCount := clone.Status.RestartCount
 		liveLastRestartTime := clone.Status.LastRestartTime
 		liveLastReadyGeneration := clone.Status.LastReadyGeneration
+		liveLastPhaseCompleteGeneration := clone.Status.LastPhaseCompleteGeneration
 		// Detect whether updateRestartTracking ran this reconcile. It sets
 		// LastRestartTime = metav1.Now(), producing a timestamp that differs from
 		// BOTH the informer's value AND the live API value. In contrast,
@@ -595,6 +597,9 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		}
 		if budgetManaged {
 			synccontrol.EnforceRestartBudgetConditions(clone)
+		}
+		if liveLastPhaseCompleteGeneration > clone.Status.LastPhaseCompleteGeneration {
+			clone.Status.LastPhaseCompleteGeneration = liveLastPhaseCompleteGeneration
 		}
 		if restartTrackingModified {
 			// updateRestartTracking ran this reconcile — trust newStatus values.

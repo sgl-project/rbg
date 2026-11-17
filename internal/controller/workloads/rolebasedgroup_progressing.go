@@ -138,7 +138,7 @@ func (r *RoleBasedGroupReconciler) updateRBGProgressingCondition(
 	}
 	depsNotReady := r.unreadyDependencies(ctx, rbg)
 
-	condition := computeRBGProgressingCondition(rbg, roleStatuses, observations, expectedRevisions, gangWaiting, depsNotReady, entryBlocker)
+	condition := computeRBGProgressingCondition(rbg, roleStatuses, observations, expectedRevisions, gangWaiting, depsNotReady, entryBlocker, nil)
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, condition)
 
 	_, recovering := missingChildRoles(rbg, observations)
@@ -171,9 +171,24 @@ func (r *RoleBasedGroupReconciler) reportRBGProgressingBlocker(
 		Message:            message,
 		ObservedGeneration: rbg.Generation,
 	}
+	// The own-operation blocker competes with fresh child blockers through the
+	// documented family precedence instead of replacing them: this controller's
+	// quota failure must not hide a RoleInstanceSet's current permission denial.
+	// The historical entry blocker keeps its stricter generation confirmation;
+	// the new own-operation failure is a current fact without one.
+	if observations, readErr := r.collectRISObservations(ctx, rbg); readErr == nil {
+		if computed := computeRBGProgressingCondition(
+			rbg, rbg.Status.RoleStatuses, observations, nil,
+			r.observeGangWaiting(ctx, rbg), r.unreadyDependencies(ctx, rbg),
+			entryBlocker, &rbgOwnBlocker{reason: reason, message: message},
+		); isRBGBlockerFamily(computed.Reason) && computed.Status == metav1.ConditionTrue {
+			condition = computed
+		}
+	}
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, condition)
 	rbg.Status.ObservedGeneration = rbg.Generation
-	return utils.PatchObjectApplyConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus)
+	_, err := utils.ApplyObjectConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.ApplyStatus)
+	return err
 }
 
 // finalizeRBGProgressingCondition recomputes the Progressing condition after the
@@ -189,7 +204,8 @@ func (r *RoleBasedGroupReconciler) finalizeRBGProgressingCondition(
 		return nil
 	}
 	r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRevisions, r.observeGangWaiting(ctx, rbg), nil)
-	return utils.PatchObjectApplyConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus)
+	_, err := utils.ApplyObjectConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.ApplyStatus)
+	return err
 }
 
 // isRBGBlockerFamily reports whether the reason is a current-blocker family reason
@@ -444,6 +460,7 @@ func computeRBGProgressingCondition(
 	gangWaiting bool,
 	depsNotReady []string,
 	entryBlocker *metav1.Condition,
+	ownBlocker *rbgOwnBlocker,
 ) metav1.Condition {
 	condition := metav1.Condition{
 		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
@@ -452,7 +469,7 @@ func computeRBGProgressingCondition(
 		ObservedGeneration: rbg.Generation,
 	}
 
-	blockerReason, blockerMessage := rbgCurrentBlocker(observations, gangWaiting, depsNotReady, entryBlocker)
+	blockerReason, blockerMessage := rbgCurrentBlocker(observations, gangWaiting, depsNotReady, entryBlocker, ownBlocker)
 	if blockerReason != "" {
 		condition.Reason = blockerReason
 		condition.Message = blockerMessage
@@ -497,6 +514,7 @@ func rbgCurrentBlocker(
 	gangWaiting bool,
 	depsNotReady []string,
 	entryBlocker *metav1.Condition,
+	ownBlocker *rbgOwnBlocker,
 ) (string, string) {
 	// All current blockers, including RBG-owned gang and dependency facts, compete
 	// through the KEP-502 family precedence: gang and dependencies rank below
@@ -521,6 +539,17 @@ func rbgCurrentBlocker(
 			byFamily[entryBlocker.Reason] = []string{}
 		}
 		entryMessages[entryBlocker.Reason] = entryBlocker.Message
+	}
+	// A controller-owned operation failure observed in this reconcile is a
+	// current fact: it competes by family even before it is persisted as a
+	// condition, so a lower-priority own failure cannot replace a fresh
+	// higher-priority child blocker.
+	ownMessages := map[string]string{}
+	if ownBlocker != nil && ownBlocker.reason != "" && isRBGBlockerFamily(ownBlocker.reason) {
+		if _, exists := byFamily[ownBlocker.reason]; !exists {
+			byFamily[ownBlocker.reason] = []string{}
+		}
+		ownMessages[ownBlocker.reason] = ownBlocker.message
 	}
 	for roleName, observation := range observations {
 		if observation.progressing == nil || observation.progressing.Status != v1.ConditionTrue {
@@ -555,14 +584,29 @@ func rbgCurrentBlocker(
 				return family, fmt.Sprintf("dependencies for roles %s are not ready", strings.Join(sortedCopy(roles), ", "))
 			}
 			if len(roles) == 0 {
+				if message := ownMessages[family]; message != "" {
+					return family, message
+				}
 				if message := entryMessages[family]; message != "" {
 					return family, message
 				}
 			}
-			return family, fmt.Sprintf("%s affects roles %s", family, strings.Join(sortedCopy(roles), ", "))
+			message := fmt.Sprintf("%s affects roles %s", family, strings.Join(sortedCopy(roles), ", "))
+			if own := ownMessages[family]; own != "" {
+				return family, fmt.Sprintf("%s; %s", message, own)
+			}
+			return family, message
 		}
 	}
 	return "", ""
+}
+
+// rbgOwnBlocker carries a controller-owned operation failure observed in this
+// reconcile. Unlike the entry blocker it is a current fact, so it needs no
+// generation confirmation to compete in the blocker precedence.
+type rbgOwnBlocker struct {
+	reason  string
+	message string
 }
 
 func rbgCurrentActivity(rbg *workloadsv1alpha2.RoleBasedGroup, observations map[string]risObservation) (string, string) {

@@ -308,18 +308,25 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// validation failures are configuration blockers, and optimistic-lock
 	// conflicts are transient: reporting them as UnclassifiedBlocker would page
 	// anyone following the KEP's "needs attention" rule on every retry.
-	if roleErr != nil && !apierrors.IsConflict(roleErr) {
-		reason := setprogressing.ClassifySetOperationError(roleErr)
+	// A conflict in one role must not classify the whole joined error either:
+	// apierrors.IsConflict reports a match as soon as one constituent carries
+	// it, which would hide a quota or permission failure from another role.
+	roleFailures := withoutConflicts(roleErr)
+	if len(roleFailures) > 0 {
+		roleFailure := stderrors.Join(roleFailures...)
+		reason := setprogressing.ClassifySetOperationError(roleFailure)
 		if stderrors.Is(roleErr, errInvalidRoleSpec) {
 			reason = constants.ProgressingReasonInvalidSpec
 		}
-		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, entryBlocker, reason, roleErr.Error()); reportErr != nil {
+		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, entryBlocker, reason, roleFailure.Error()); reportErr != nil {
 			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for role reconcile failure")
 		}
-	} else if entryBlocker != nil {
+	} else if entryBlocker != nil && roleErr == nil {
 		// The previously blocked role operation succeeded: finalize the condition
 		// from a fresh observation without the carried entry blocker, so the
 		// confirmed family is cleared by the successful retry instead of persisting.
+		// A conflict-only failure is not success: the optimistic-lock retry has
+		// not observed the operation outcome, so the entry blocker is retained.
 		if err := r.finalizeRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash); err != nil {
 			log.FromContext(ctx).Error(err, "Failed to finalize Progressing condition after successful role reconcile")
 		}
@@ -340,6 +347,45 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+// withoutConflicts flattens a joined or aggregated role-reconcile error and
+// drops every optimistic-lock conflict constituent. Conflicts are transient
+// retries rather than KEP-502 blockers, and one role's conflict must not hide
+// another role's quota, permission, or admission failure.
+func withoutConflicts(err error) []error {
+	var failures []error
+	for _, single := range flattenJoinedErrors(err) {
+		if !apierrors.IsConflict(single) {
+			failures = append(failures, single)
+		}
+	}
+	return failures
+}
+
+// flattenJoinedErrors expands joined and aggregated errors into their concrete
+// constituents, keeping single errors unchanged. Kubernetes aggregates expose
+// Errors() without implementing Unwrap, so apierrors helpers cannot see their
+// contents on their own.
+func flattenJoinedErrors(err error) []error {
+	if err == nil {
+		return nil
+	}
+	if aggregate, ok := err.(interface{ Errors() []error }); ok {
+		var out []error
+		for _, single := range aggregate.Errors() {
+			out = append(out, flattenJoinedErrors(single)...)
+		}
+		return out
+	}
+	if aggregate, ok := err.(interface{ Unwrap() []error }); ok {
+		var out []error
+		for _, single := range aggregate.Unwrap() {
+			out = append(out, flattenJoinedErrors(single)...)
+		}
+		return out
+	}
+	return []error{err}
 }
 
 func (r *RoleBasedGroupReconciler) handleRevisions(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) (map[string]string, error) {

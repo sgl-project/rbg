@@ -177,6 +177,55 @@ func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newSta
 		}
 	}
 	newStatus.Conditions = append(conditions, condition)
+	applyEstablishedCondition(set, newStatus)
+}
+
+// applyEstablishedCondition carries forward or records the durable
+// establishment fact. Blocker reasons can replace the Progressing reason that
+// previously proved establishment, and readiness counters drop during
+// scale-up; the separate condition keeps the classification stable across
+// such intermediate observations.
+func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus) {
+	if !setEstablished(set) {
+		// Still establishing, or no durable evidence yet. setEstablished reads
+		// the persisted status, so a Progressing reason about to be replaced by
+		// this write is still visible here and is captured before the erasure.
+		return
+	}
+	var persisted *workloadsv1alpha2.RoleInstanceSetCondition
+	for i := range set.Status.Conditions {
+		if set.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetEstablished {
+			persisted = &set.Status.Conditions[i]
+		}
+	}
+	if persisted == nil || persisted.Status != v1.ConditionTrue {
+		now := metav1.Now()
+		established := workloadsv1alpha2.RoleInstanceSetCondition{
+			Type:               workloadsv1alpha2.RoleInstanceSetEstablished,
+			Status:             v1.ConditionTrue,
+			LastTransitionTime: now,
+			Reason:             "InstancesEstablished",
+			Message:            "the set has established the instances of a previous target",
+		}
+		if persisted != nil {
+			established.LastTransitionTime = persisted.LastTransitionTime
+		}
+		for i := range newStatus.Conditions {
+			if newStatus.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetEstablished {
+				newStatus.Conditions[i] = established
+				return
+			}
+		}
+		newStatus.Conditions = append(newStatus.Conditions, established)
+		return
+	}
+	for i := range newStatus.Conditions {
+		if newStatus.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetEstablished {
+			newStatus.Conditions[i] = *persisted
+			return
+		}
+	}
+	newStatus.Conditions = append(newStatus.Conditions, *persisted)
 }
 
 // ComputeSetProgressingCondition builds the RIS Progressing condition. Blockers outrank
@@ -234,8 +283,13 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 
 	// A paused update is not executing, so it must not mask a concurrent workflow.
 	paused := set.Spec.UpdateStrategy.Paused
+	// Pausing does not stop updates already dispatched to RoleInstances: the
+	// RI controller finishes an in-flight update independently of this flag.
+	// Undispatched rollout work is paused; dispatched child updates keep the
+	// update workflow active until they complete.
+	pausedWithInFlightUpdate := paused && anyInstanceUpdating(instances)
 	if updatePending {
-		if !paused {
+		if !paused || pausedWithInFlightUpdate {
 			condition.Reason = workloadconstants.ProgressingReasonRoleInstanceUpdated
 			return condition
 		}
@@ -245,7 +299,11 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	}
 
 	switch {
-	case observedReplicas < target || starting:
+	// Startup keeps ScalingUp active only while the observed count is at or
+	// below the target: during a reversed scale (for example three to one,
+	// with the third instance still Creating), the still-starting instance is
+	// part of the deletion, not a scale-up.
+	case observedReplicas < target || (starting && observedReplicas <= target):
 		condition.Reason = workloadconstants.ProgressingReasonScalingUp
 		return condition
 	case observedReplicas > target:
@@ -253,7 +311,7 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 		return condition
 	}
 
-	if paused && updatePending {
+	if paused && updatePending && !pausedWithInFlightUpdate {
 		// A fully paused update with no other workflow is not progress toward the
 		// target: all relevant progress is paused.
 		condition.Status = v1.ConditionFalse
@@ -323,6 +381,13 @@ func anyInstanceStarting(instances []*workloadsv1alpha2.RoleInstance) bool {
 // OrderedReady initial creation is not establishment.
 func setEstablished(set *workloadsv1alpha2.RoleInstanceSet) bool {
 	for _, condition := range set.Status.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetEstablished {
+			// Durable establishment evidence, recorded independently of the
+			// dominant Progressing reason: a blocker can erase ScalingUp or
+			// Recovering while the set is still established, and the readiness
+			// counters drop during scale-up.
+			return condition.Status == v1.ConditionTrue
+		}
 		if condition.Type != workloadsv1alpha2.RoleInstanceSetProgressing {
 			continue
 		}
@@ -481,6 +546,19 @@ func anyInstanceRecovering(instances []*workloadsv1alpha2.RoleInstance) bool {
 	return false
 }
 
+// anyInstanceUpdating reports whether an instance is executing its own update
+// workflow. Pausing the set does not stop work already dispatched to the RI
+// controller, so these in-flight updates keep the update workflow active.
+func anyInstanceUpdating(instances []*workloadsv1alpha2.RoleInstance) bool {
+	for _, instance := range instances {
+		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseUpdating ||
+			instanceProgressingReason(instance) == workloadsv1alpha2.ReasonInstanceUpdating {
+			return true
+		}
+	}
+	return false
+}
+
 // instanceProgressingReason returns the fresh RI Progressing reason for the
 // instance's current generation, or "" when the condition is absent or stale.
 // RIS aggregates lower-level facts through reason families; it must not parse
@@ -516,19 +594,27 @@ func EmitOperationFailureEvent(recorder record.EventRecorder, set *workloadsv1al
 // replacement gap that the previously reported update workflow explains.
 func updateActive(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus,
 	instances []*workloadsv1alpha2.RoleInstance, observedReplicas, target int32) bool {
-	// Differing revisions are the rollout signal regardless of the compatibility
-	// counters: during RecreatePod replacement the old instances can already be
-	// gone (stateless: updated == replicas == 0 advances current) or synthetic
-	// slots can inflate the updated count (stateful), while the replacements have
-	// not finished starting.
+	// Outstanding work is derived from the required update scope — the
+	// instances below the partition cut that must reach UpdateRevision and be
+	// ready — plus replacement and surge cleanup state, not from revision
+	// inequality alone. With a non-zero partition the pinned instances
+	// deliberately stay on CurrentRevision after the rollout completes, and
+	// CurrentRevision is never advanced then, so revision inequality alone
+	// would keep the set reporting RoleInstanceUpdated forever.
 	if newStatus.UpdateRevision != "" && newStatus.UpdateRevision != newStatus.CurrentRevision {
-		return true
-	}
-	for _, instance := range instances {
-		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseUpdating ||
-			instanceProgressingReason(instance) == workloadsv1alpha2.ReasonInstanceUpdating {
+		if newStatus.UpdatedReplicas < newStatus.ExpectedUpdatedReplicas ||
+			newStatus.UpdatedReadyReplicas < newStatus.ExpectedUpdatedReplicas {
 			return true
 		}
+	}
+	// Recorded replacement scope with surge retention is still being cleaned
+	// up; the state is cleared when its instances converge or the target
+	// revision changes.
+	if newStatus.RolloutReplacementState != nil {
+		return true
+	}
+	if anyInstanceUpdating(instances) {
+		return true
 	}
 	// Update-driven replacement keeps its workflow reason while replacement
 	// instances are missing or still starting, even after the revisions converge:
