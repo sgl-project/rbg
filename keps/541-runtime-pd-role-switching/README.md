@@ -15,7 +15,7 @@
     - [Declaring the Runtime Key](#declaring-the-runtime-key)
     - [Why an Externally Written Value Survives](#why-an-externally-written-value-survives)
     - [Switch Flow](#switch-flow)
-    - [Open Question: Where the Switcher Lives](#open-question-where-the-switcher-lives)
+    - [Decision: The Switcher Lives in Patio](#decision-the-switcher-lives-in-patio)
     - [Test Plan](#test-plan)
     - [Graduation Criteria](#graduation-criteria)
     - [Upgrade / Downgrade Strategy](#upgrade--downgrade-strategy)
@@ -63,7 +63,7 @@ and enforceable: a Pod carries two distinct identities.
   and scheduling constraints a Pod belongs to, and is immutable after creation.
 - A user-defined runtime label, for example `inference.workload.x-k8s.io/pd-role`, is the **serving
   identity**. It records the role the engine inside the Pod is currently serving, and is mutable at
-  runtime by an external switcher.
+  runtime by the switcher — the Patio sidecar.
 
 RBG does not interpret, validate, or manage the serving identity. It carries the key through as an
 ordinary label and must never revert a value written from outside. That already holds today, but
@@ -71,9 +71,11 @@ nothing tests it and nothing documents it, so a future drift-correction change w
 silently.
 
 The deliverables are a regression suite pinning the contract, user-facing documentation, and a
-runnable example. One design question is left open for the community: whether the switcher runs as a
-service outside RBG, or inside the [Patio][patio] sidecar, as suggested by @diw-zw in
-[#541][issue-541].
+runnable example. The switcher itself belongs in the [Patio][patio] sidecar, as suggested by @diw-zw
+in [#541][issue-541]; this KEP adopts that direction and records the split between what RBG delivers
+here and what Patio delivers under its own proposal process. Patio was extracted from this repository
+in [PR #366][patio-extract] and is a listed ecosystem project, so this is a division of labour between
+two repositories maintained by overlapping contributors, not a new external dependency.
 
 ## Motivation
 
@@ -101,15 +103,15 @@ documented, which is what this KEP scopes.
 
 ### Goals
 
-1. Pin the label-ownership contract with regression tests covering **both** paths that could
-   plausibly clobber an externally written key: steady-state reconciliation, and a completed
-   in-place update.
+1. Pin the label-ownership contract with regression tests covering every path that writes to a live
+   Pod's metadata: steady-state reconciliation, a completed in-place update, the grace-period-expiry
+   second write, and a revision-only update.
 2. Document the contract, the switch flow, and its boundary conditions, so a switcher author knows
    precisely what RBG guarantees and what it does not.
 3. Provide a runnable example that wires routing to the runtime label rather than to the topology
    role.
-4. Reach an explicit community decision on where the switcher lives (external service versus Patio
-   sidecar), and record it in this KEP.
+4. Adopt the Patio sidecar as the home of the switcher, and record the cross-repository split: what
+   RBG delivers here, and what Patio delivers under its own proposal process.
 5. Correct one factual error in the issue text and refine one code citation, both verified against
    the repository and a live API server.
 
@@ -121,8 +123,10 @@ documented, which is what this KEP scopes.
 3. No automatic load-based flip policy. Upstream excludes this too; the flip is driven externally.
 4. No request draining or KV-cache transfer orchestration inside RBG.
 5. No change to topology identity semantics. `role-name` stays immutable.
-6. Implementing the switcher itself is out of scope for the first slice of this KEP. The first slice
-   is tests, documentation, and an example, none of which change controller behavior.
+6. **The switcher is not implemented in this repository.** It belongs in Patio, which has its own
+   proposal process. This KEP designs it and pins the interface it relies on, but the RBG-side
+   deliverable is the contract, its regression tests, the example, and verification of the existing
+   injection channel — none of which change controller behavior.
 
 ## Proposal
 
@@ -142,10 +146,13 @@ The contract has three properties, all of which RBG must preserve:
 2. A value written to that key from outside RBG is not treated as drift and is not reverted, neither
    by steady-state reconciliation nor by an in-place update.
 3. A recreated Pod gets the template's initial value again. The recommended convention is
-   `unassigned`, so new and recreated Pods are safe by default: the router only routes to Pods
-   carrying a valid role, and the switcher assigns a role after warmup.
+   `unassigned`, so new and recreated Pods are safe by default **where routing selects on the label**:
+   the router only routes to Pods carrying a valid role, and the switcher assigns a role after warmup.
+   Where routing is driven by the router's worker registry instead, withholding registration during
+   warmup is the switcher's job — see
+   [`unassigned` is a routing state](#unassigned-is-a-routing-state-not-an-engine-mode).
 
-The switcher — not RBG — owns the five-step switch flow described in
+The switcher — the Patio sidecar, not RBG — owns the five-step switch flow described in
 [Switch Flow](#switch-flow).
 
 ### User Stories
@@ -158,9 +165,9 @@ weight reloads and a capacity dip.
 
 #### Story 2
 
-As the author of a switch service, I want a documented guarantee that RBG will not revert the
-runtime label I patch onto a live Pod, so I can treat the label as durable state I own rather than
-re-asserting it on a loop to fight the controller.
+As the author of the switcher in the Patio sidecar, I want a documented guarantee that RBG will not
+revert the runtime label I patch onto a live Pod, so I can treat the label as durable state I own
+rather than re-asserting it on a loop to fight the controller.
 
 #### Story 3
 
@@ -216,6 +223,119 @@ SGLang has no `unassigned` disaggregation mode. A pool Pod starts with a real
 label reads `unassigned` so the router keeps traffic away until the switcher assigns a role. The
 label and the engine mode are deliberately decoupled during warmup.
 
+**This safety default does not hold by itself under the Patio design.** Patio's startup sequence is
+`wait_engine_ready` then `register`, and `register` publishes the static `worker_type` from
+`--instance-info`. A warming Pod would therefore be registered as a real `decode` worker while its
+label still reads `unassigned`. Where routing is driven by the router's registry rather than by a
+label-selecting Service, the label alone cannot keep traffic away.
+
+The Patio-side design must therefore **withhold registration while the serving label is
+`unassigned`**, and register only once the switcher assigns a role. This is a requirement on Patio,
+not something RBG can provide, and it is the reason contract property 3 is scoped to label-selecting
+routing below.
+
+#### The injection channel already exists, and it is on by default
+
+Patio is not a new dependency. It was extracted out of this repository — `python/patio/` became
+[rolebasedgroup/inference-engine-runtime][patio] in [PR #366][patio-extract] — and it is listed as an
+ecosystem project in RBG's own README. Its contributors are RBG contributors.
+
+The injection path is already wired: `spec.roles[].engineRuntimes[].profileName` references a
+`ClusterEngineRuntimeProfile`, and [`SidecarBuilder.injectRuntime`][sidecar-builder] appends the
+profile's initContainers, containers and volumes into the Pod template, then appends per-role `Env`
+and `Args` overrides. `sidecarInjector` is in the **default** injector list
+([`pod_reconciler.go`][pod-reconciler]), so this runs for every role unless explicitly disabled.
+
+Two consequences for this KEP:
+
+- The switcher needs **no new RBG API**. The profile, the `engineRuntimes` reference, and
+  `serviceAccountName` (a native Pod field) are sufficient.
+- `injectRuntime` injects containers and volumes only. It does **not** inject labels, so the runtime
+  key still has to be declared in the Pod template by the user.
+
+The shipped Patio profile lives at
+[`examples/deprecated/v1alpha1/pd-disagg/sglang/patio-profile.yaml`][patio-profile] and is v1alpha1.
+There is no v1alpha2 Patio example or doc page today. Re-establishing that example on v1alpha2 is part
+of the RBG-side slice.
+
+#### A profile update can reset every serving role in the pool
+
+`ClusterEngineRuntimeProfile.spec.updateStrategy` accepts `NoUpdate` (the default) and
+`RollingUpdate`. With `RollingUpdate`, a profile change triggers a rolling update of every Pod using
+that profile, honouring each role's `rolloutStrategy`. Any Pod that is **recreated** rather than
+updated in place returns to the template's initial label value — `unassigned` — and drops out of
+rotation.
+
+The old Patio profile pins `updateStrategy: NoUpdate`, which avoids this. The current general example
+([`engine-runtime-profile.yaml`][engine-runtime-example]) and the engine-runtime doc both use
+`RollingUpdate`. A Patio profile rebuilt on v1alpha2 by copying that example would therefore wipe the
+serving roles of an entire pool on the next profile bump. The Patio-side design must pin `NoUpdate`,
+or state how serving roles survive a profile-driven rollout.
+
+#### The router holds a second copy of the serving role
+
+Pod labels are not the only place the serving role is recorded. Patio registers each worker with the
+SGLang router by `POST /workers`, carrying `worker_type` (`prefill` / `decode`) and `bootstrap_port`
+([`sgl_topo_client.py`][patio-topo-client]).
+
+Critically, [`app.py`][patio-app] parses `--instance-info` once into a `worker_info` dict, then starts
+a daemon thread that re-`register`s **that same dict** every `HEARTBEAT_INTERVAL` seconds (default
+10). This exists so workers recover their registration after a router restart.
+
+This cuts both ways, and it is the most important integration fact for the switcher:
+
+- If the switcher flips the engine and patches the Pod label but leaves `worker_info` untouched, the
+  heartbeat keeps re-asserting the **old** `worker_type` every 10 seconds.
+- Because `worker_info` is a live dict held for the process lifetime, mutating
+  `worker_info["worker_type"]` in place is enough for the next heartbeat to publish the new role. No
+  new router protocol is needed for that path.
+
+The switch flow must therefore treat the label and the registered `worker_type` as one logical
+update, and the sidecar is the only place positioned to perform both. This is the strongest argument
+for placing the switcher in Patio rather than outside the Pod.
+
+<<[UNRESOLVED @diw-zw]>>
+`register` issues a fresh `POST /workers` on every heartbeat and overwrites the stored `worker_id`
+from the response. Whether the router treats a repeated POST for the same worker URL as an update of
+the existing entry's `worker_type`, or as a new worker, is router-side behaviour not verified here. If
+it is not an update, a flip requires `unregister` (`DELETE /workers/{id}`) followed by re-registration,
+which opens a window with no registration at all. This must be confirmed before the switch flow is
+fixed.
+<<[/UNRESOLVED]>>
+
+Note also that `register` retries internally up to 60 times at 3-second intervals, and the heartbeat
+loop calls it synchronously. An unreachable router can stall the heartbeat loop for up to three
+minutes, which bounds how quickly a flip can be published.
+
+#### Scale-down does not know which Pods are serving
+
+RBG chooses scale-down victims by component ID alone: [`newComponentPodGroup`][instance-core] marks
+every Pod whose ID is `>= desiredReplicas` for deletion. It reads no serving-role label.
+
+For a switchable pool this is a real hazard. Shrinking `pdmix-pool` from 8 to 6 deletes IDs 6 and 7
+regardless of what they currently serve. If the switcher had placed the last two prefills there, the
+pool loses all prefill capacity in one reconcile and the router is left with no prefill endpoint.
+
+RBG will not become role-aware to fix this — that would violate Non-Goal 2. The obligation falls on
+the switcher: before a scale-in it must ensure the surviving low-ID Pods can carry the required role
+mix, or the operator must drain and reassign first. Note that [rbg-planner][rbg-planner], the
+ecosystem autoscaler, scales prefill and decode roles by SLA and is a likely driver of such a
+scale-in; the interaction needs to be stated, not assumed safe.
+
+#### Violating the system-label boundary deletes the Pod
+
+The contract says RBG-owned keys are not covered. The consequence of writing one is stronger than
+drift, and switcher authors need to know it.
+
+[`GetPodComponentID`][instance-utils] reads `rbg.workloads.x-k8s.io/component-id` and parses it as an
+integer, falling back to the last `-`-separated segment of the Pod name when the label is absent. A
+value that fails to parse yields `-1`, and [`calculateDiffsWithExpectation`][instance-scale] puts
+every Pod with ID `-1` straight into the deletion list.
+
+A switcher that writes a non-numeric value into that key gets its Pod **deleted**, not corrected. A
+switcher that replaces the whole label map is usually saved by the name fallback, but must not rely on
+it. Patch a single key; never replace `metadata.labels` wholesale.
+
 #### Upstream backend and parallelism constraints
 
 Per the upstream PR's own limitations section:
@@ -243,8 +363,13 @@ presented as working end to end. Until then the example should be labelled as de
 | A user picks a runtime key inside an RBG-managed prefix | Document that the key must live outside `rbg.workloads.x-k8s.io/`. RBG-owned keys are explicitly not covered by the contract. |
 | The switcher patches the label but the engine flip fails | Upstream fails fast to an `unhealthy` state on rebuild failure. The switcher must not advance the label on a failed flip; the router then keeps the Pod out of rotation. |
 | Requests are not drained before teardown | Upstream states draining to idle is a **correctness** requirement, because an in-flight decode request's KV is owned by an upstream prefill. The switch flow makes `unassigned` plus drain a precondition. RBG cannot enforce this. |
-| The switcher needs RBAC to patch Pods | Scope to `patch` on `pods` in the RBG namespace only. If the switcher becomes a Patio sidecar, this is a new permission surface and must be reviewed in that repo's proposal. |
+| The switcher needs RBAC to patch Pods | The Patio sidecar uses the Pod's own service account, scoped to `patch` on `pods` in its namespace. This is a new in-Pod permission surface and must be reviewed in Patio's proposal. It is namespace-scoped, **not** self-scoped: RBAC cannot express "only this Pod" without enumerating Pod names. |
 | Pod recreation resets the serving role | The `unassigned` convention plus label-selecting routing makes this safe by default rather than a misroute. |
+| A profile bump recreates pool Pods and resets every serving role | Pin `updateStrategy: NoUpdate` on the Patio profile, or state how serving roles survive a profile-driven rollout. Copying the current `RollingUpdate` example is unsafe here. |
+| The heartbeat re-asserts the old `worker_type` after a flip | The switcher mutates the live `worker_info` dict as part of the flip, so the next heartbeat publishes the new role. Label and registration are one logical update, not two. |
+| Scale-in deletes the Pods currently serving a role | RBG selects victims by component ID and is not role-aware. The switcher must rebalance roles onto surviving low-ID Pods before a scale-in. |
+| A switcher overwrites an RBG-owned label | The documented consequence is Pod **deletion**, not drift correction. Patch a single key; never replace `metadata.labels`. |
+| A warming Pod is registered as a real worker while labelled `unassigned` | Patio must gate initial registration on the serving label. Without this, registry-driven routing ignores the `unassigned` convention entirely. |
 | Label-based routing is eventually consistent | There is a brief window between a label patch and router endpoint convergence. The switch flow orders drain before flip and flip before re-label, so the window does not carry traffic for the wrong role. |
 
 ## Design Details
@@ -253,10 +378,12 @@ presented as working end to end. Until then the example should be labelled as de
 
 Normative statement, intended for the user-facing documentation:
 
-> A runtime serving-role label on a Pod is owned by an external switch service. RBG carries the key
-> through as an ordinary label. The value in the Pod template is the **initial** value only. Do not
-> modify that value in the RBG spec at runtime. RBG will not revert a value written from outside,
-> across reconciliation and across in-place updates. A recreated Pod returns to the initial value.
+> A runtime serving-role label on a **live Pod** is owned by the switcher — in this design, the Patio
+> sidecar. RBG carries the key through as an ordinary label. The value in the Pod template is the
+> **initial** value only. Do not modify that value in the RBG spec at runtime. RBG will not revert a
+> value written from outside, across reconciliation and across in-place updates. A recreated Pod
+> returns to the initial value. The guarantee covers keys outside `rbg.workloads.x-k8s.io/`; writing
+> an RBG-owned key is not drift but a violation whose consequence can be Pod deletion.
 
 What RBG does:
 
@@ -271,6 +398,11 @@ What RBG does not do:
 - detect that a flip happened
 - participate in draining, KV transfer, or engine health assessment
 - restore the template value after an external patch
+
+The guarantee is about **live Pods**, and it was verified on the RoleInstance path. It does not extend
+to workload templates: for the Deployment and StatefulSet workload types RBG does compare old versus
+new desired objects and corrects template drift ([`deploy_reconciler.go`][deploy-reconciler],
+[`sts_reconciler.go`][sts-reconciler]). A switcher patches the Pod, never the template.
 
 ### Declaring the Runtime Key
 
@@ -289,6 +421,8 @@ spec:
         template:
           metadata:
             labels:
+              # Workload identity, referenced by the Services below.
+              app: sglang-pd
               # Serving identity. Owned by the switcher after creation.
               inference.workload.x-k8s.io/pd-role: unassigned
           spec:
@@ -322,9 +456,18 @@ spec:
       targetPort: 8000
 ```
 
+<<[UNRESOLVED @diw-zw]>>
+This Service selects a **VIP** across all Pods currently serving prefill. The repository's own PD
+examples ([`pd-disagg-standalone.yaml`][pd-standalone], [`pd-disagg-leader-worker.yaml`][pd-lw]) instead
+address individual Pods by per-Pod DNS, because PD pairing is per-instance. Whether a load-balanced
+VIP is correct for the prefill side of a bootstrap pairing has not been demonstrated here. Until it
+is, this snippet illustrates **label-based selection**, and a production topology may need per-Pod
+addressing plus a router that resolves the serving role per instance.
+<<[/UNRESOLVED]>>
+
 ### Why an Externally Written Value Survives
 
-Two code properties, both cited so a reviewer can check them:
+Three code properties, all cited so a reviewer can check them:
 
 1. **Creation is one-shot.** Pods are built from the role's Pod template when a RoleInstance is
    scaled up ([`pkg/reconciler/roleinstance/sync/instance_scale.go`][instance-scale]). Steady-state
@@ -338,9 +481,36 @@ Two code properties, both cited so a reviewer can check them:
    metadata. That patch is then applied with `strategicpatch.StrategicMergePatch` to a freshly read
    live Pod.
 
-Because both inputs to the metadata patch are revisions, a key whose template value did not change
-is absent from the patch, and `StrategicMergePatch` leaves the live value untouched. Nothing on this
-path compares the live Pod against the template.
+   Because both inputs to the metadata patch are revisions, a key whose template value did not change
+   is absent from the patch, and `StrategicMergePatch` leaves the live value untouched. Nothing on
+   this path compares the live Pod against the template.
+
+3. **The writes are full `Update`s, and the safety comes from concurrency control.** It is tempting to
+   explain the guarantee as "RBG only patches, so it cannot clobber". That is wrong. The Pod-level
+   path reads a fresh copy and calls `Update` on the whole object
+   ([`clientadapter/adapter.go`][pod-adapter]). Three write sites matter:
+
+   - the `GraceSeconds <= 0` branch in
+     [`pkg/inplace/pod/inplaceupdate/inplace_update.go`][pod-inplace], which writes the
+     `InPlaceUpdateStateKey` annotation and the update spec;
+   - the **second** write in the same file, after the grace period expires and
+     `RemoveInPlaceUpdateGrace` runs;
+   - `onlyUpdateRevision` in
+     [`pkg/reconciler/roleinstance/inplaceupdate/inplaceupdate.go`][ri-inplaceupdate], which rewrites
+     the revision-hash label.
+
+   Each runs inside `retry.RetryOnConflict` after a fresh `GetPod`. An externally written label
+   survives because it is present in the object that was just read, and a concurrent switcher write is
+   resolved by `resourceVersion` optimistic concurrency rather than silently lost. The property that
+   protects the contract is the absence of a live-Pod-versus-template comparison — not the absence of
+   `Patch`. A future change to read-modify-write against the *template* would break it while still
+   using `Update`.
+
+   For completeness: the metadata-comparison helpers in [`pod_reconciler.go`][pod-reconciler]
+   (`objectMetaEqual`, `podTemplateSpecEqual`) are **not** a fourth write path. Their callers are the
+   Deployment, StatefulSet and Service reconcilers, and they compare two *desired* objects, never a
+   live Pod against a template. `ConstructPodTemplateSpecApplyConfiguration` likewise builds a
+   template apply-configuration; it does not server-side-apply a live Pod.
 
 The boundary in [Notes](#the-guarantee-has-a-boundary) follows directly: change the template value
 and the key enters the diff.
@@ -365,48 +535,76 @@ Owned by the switcher. RBG is not a participant.
    size-matched decode CUDA graph capture; the captured sizes are queryable via `/get_server_info`.
 4. Wait until the engine reports the new role ready. A rebuild failure puts the engine into a
    fail-fast `unhealthy` state; the switcher must treat that as a failed flip.
-5. Update the runtime label to the new role. The router resumes routing by label.
+5. Publish the new role to **both** places that record it: mutate the sidecar's live `worker_info`
+   dict so the next heartbeat registers the new `worker_type`, and update the Pod's runtime label.
+   The router then resumes routing. Patching only the label leaves the heartbeat re-asserting the old
+   role every 10 seconds.
 
 Steps 1–2 before 3, and 3–4 before 5, are what keep the eventually-consistent routing window from
 carrying traffic for a role the engine is not serving.
 
-### Open Question: Where the Switcher Lives
+### Decision: The Switcher Lives in Patio
 
 @diw-zw suggested in [#541][issue-541] that PD service switching and label switching could move into
-the [Patio][patio] sidecar, and that the two repositories could be co-designed.
+the [Patio][patio] sidecar, and that the two repositories could be co-designed. **This KEP adopts that
+direction.** The suggestion was phrased as a proposal, not a mandate, and the same comment thread asks
+for a KEP precisely so the community can settle the design; recording a direction here is what that
+discussion is for.
 
-<<[UNRESOLVED @diw-zw @cheyang]>>
-This KEP does not presume the answer. The contract above is invariant under either option, because
-it constrains **RBG's** behavior toward an externally written label, regardless of which component
-writes it. What changes is where the switch flow, the RBAC, and the failure handling live.
-<<[/UNRESOLVED]>>
+Three reasons, in order of weight:
 
-**Option A — external switch service.** A deployment outside RBG watches the pool, calls the engine
-API, and patches Pod labels.
+1. **Only the sidecar can update both copies of the serving role.** The router's `worker_type` and the
+   Pod label must agree, and Patio's heartbeat re-publishes `worker_type` from a dict it holds in
+   process every 10 seconds. A switcher outside the Pod cannot mutate that dict; it would have to
+   fight the heartbeat or add a new control path into Patio anyway. See
+   [the router note](#the-router-holds-a-second-copy-of-the-serving-role).
+2. **No new RBG API is required.** `ClusterEngineRuntimeProfile`, `engineRuntimes`, and the native
+   `serviceAccountName` field already carry everything the sidecar needs.
+3. **The engine-side plumbing already exists.** Patio owns engine readiness polling, health, and
+   topology registration. An external switcher can reach the same engine APIs over the network — it is
+   not blind — but it would rebuild that plumbing rather than reuse it.
 
-- Pros: no new RBG or Patio code; no new in-Pod permission surface; works with any engine that
-  exposes a flip API; the contract is the only integration point.
-- Cons: every user builds or buys the switcher; drain and failure handling are the user's problem;
-  needs cluster-wide-ish `patch pods` RBAC; no engine-side view of KV transfer state.
+#### The layered split
 
-**Option B — Patio sidecar.** Patio already runs alongside the engine and already owns LoRA loading,
-normalized metrics, topology registration, and health.
+| Layer | Owns | Delivered in |
+| --- | --- | --- |
+| RBG | The label-ownership contract on live Pods; carrying the template's initial value; not reverting external writes; the injection channel | This repo, this KEP's first slice |
+| Patio | The switch flow: drain, engine flip, readiness, mutating `worker_info`, patching the Pod label; failure handling; its RBAC | [Patio][patio], under its own `proposals/` process |
+| SGLang router | Worker registry and label/endpoint convergence | Upstream; no change proposed here |
+
+The RBG-side slice is tests, documentation, a v1alpha2 example, and verification that the existing
+injection channel carries the contract. None of it changes controller behavior, so it can land
+independently of Patio's schedule.
+
+#### What Patio has to build
 
 Verified current state of that repository: `disaggregation`, `pd_role`, and `switch_role` have zero
 hits. `prefill` appears only as a static `worker_type` in topology registration
-(`src/patio/topo/client/sgl_topo_client.py`) and its tests. **No runtime PD switching exists there
-yet.** Patio has its own `proposals/` process, which requires a proposal for architecture and
-lifecycle changes but exempts tests and docs.
+([`sgl_topo_client.py`][patio-topo-client]) and its tests. **No runtime PD switching exists there yet.**
+The flip endpoint call, the drain wait, the `worker_info` mutation, the Pod-label patch, and the RBAC
+to perform it are all new work. So is **gating initial registration on the serving label**, without
+which a warming Pod is registered as a real worker while labelled `unassigned`. Patio's process
+requires a proposal for architecture and lifecycle changes, which this is; tests and docs are exempt.
 
-- Pros: the switcher sits next to the engine, so it can observe drain and KV state directly; one
-  place for engine-specific behavior across SGLang and vLLM; reuses Patio's health and topology
-  plumbing; label patching can be done from the Pod's own service account.
-- Cons: a new proposal and implementation in a second repository; a new RBAC surface inside every
-  inference Pod; couples the flip path to Patio's release cycle; cross-repo version skew.
+Patio is a small repository — 15 commits at the time of writing, its most recent adding the proposal
+process itself. It is active and it is maintained by RBG contributors, but the flip path's delivery
+cannot be assumed on RBG's timeline. That is a scheduling risk, not a reason to choose differently.
 
-**What is invariant either way.** The regression suite, the contract documentation, and the
-label-selecting routing example are all useful under both options, and none of them change
-controller behavior. That is why the first slice can proceed while this question is open.
+#### Fallback: external switch service
+
+An external deployment that watches the pool, calls the engine API, and patches Pod labels remains
+**viable**, because the contract constrains RBG rather than the writer. It is kept as a documented
+fallback for two cases: an engine Patio does not support, and a site that will not grant `patch pods`
+to an in-Pod service account.
+
+It is not the recommended path. It leaves every user to build drain and failure handling, and it
+cannot suppress the heartbeat's re-assertion of the old `worker_type` without a Patio-side change —
+which removes its main advantage of needing no Patio code.
+
+Two claims from the earlier draft of this section are corrected here, because both were overstated:
+an external switcher **can** observe engine and KV state by calling the engine API remotely, and
+running in the Pod's own service account is **not** least privilege — RBAC cannot scope a grant to
+"this Pod only" without enumerating Pod names, so the sidecar's grant is namespace-scoped.
 
 ### Test Plan
 
@@ -416,10 +614,21 @@ controller behavior. That is why the first slice can proceed while this question
 
 ##### Prerequisite testing updates
 
-None. The existing envtest harness (`test/envtest/testutil`) already starts a real etcd and
-kube-apiserver with the controllers in-process, which is what this contract needs. Note that envtest
-runs **no kubelet**, so container status and `ImageID` must be written by the test to let the
-controller observe an in-place update as completed.
+The existing envtest harness (`test/envtest/testutil`) already starts a real etcd and kube-apiserver
+with the controllers in-process, which is what this contract needs. Note that envtest runs **no
+kubelet**, so container status and `ImageID` must be written by the test to let the controller observe
+an in-place update as completed.
+
+Two gaps must be closed before the suite can be claimed to cover the contract:
+
+1. **The prototyped RBG sets no `rolloutStrategy`.** With the default strategy the suite exercises only
+   the `GraceSeconds <= 0` write. The grace-period-expiry second write and the `onlyUpdateRevision`
+   path are never reached, even though the shipped example sets `gracePeriodSeconds: 30`. The suite
+   needs a variant with a grace period configured, and a revision-only variant.
+2. **`SetupTestEnv` wires no admission webhooks.** This is deliberate and is *not* a coverage gap for
+   this contract: the mutating webhooks target RBG, RBGSet, RoleInstanceSet and CoordinatedPolicy, none
+   target Pods, and the RBG webhook does not touch template labels. It is recorded here so a reviewer
+   does not have to re-derive it.
 
 ##### Unit tests
 
@@ -449,9 +658,18 @@ this PR):
 
 Every spec asserts the Pod UID is unchanged, so preservation by recreation cannot pass.
 
+Two further specs are required to cover the remaining write sites:
+
+4. **Grace-period expiry.** Same as spec 3, but with `gracePeriodSeconds` set so the update takes the
+   grace branch and the second write after `RemoveInPlaceUpdateGrace` actually runs. Assert the
+   external values hold after both writes.
+5. **Revision-only update.** Trigger `onlyUpdateRevision` so the revision-hash label is rewritten
+   without a template metadata diff, and assert the external values hold.
+
 The suite has been mutation-verified: replacing the old-template base of the metadata patch with an
-empty `ObjectMeta` makes spec 3 fail on the external-label assertion, confirming the test can
-actually detect the regression it is meant to guard.
+empty `ObjectMeta` makes spec 3 fail on the external-label assertion, confirming the test can actually
+detect the regression it is meant to guard. That verification covers **spec 3's path only**; it says
+nothing about specs 4 and 5 until they exist and are mutation-verified themselves.
 
 ##### e2e tests
 
@@ -468,22 +686,31 @@ ecosystem rather than API maturity.
 
 #### Alpha
 
-- The decision on switcher placement is recorded in this KEP.
-- The regression suite is merged and runs in CI.
-- The contract documentation and the runnable example are merged, with the example's backend
-  caveats stated honestly.
+- The Patio direction and the layered split are recorded in this KEP and acknowledged by the
+  maintainers.
+- The regression suite is merged and runs in CI, covering all three write sites (specs 3, 4 and 5),
+  each mutation-verified.
+- The contract documentation and a v1alpha2 example are merged, with the example's backend caveats
+  stated honestly and the Patio profile pinning `updateStrategy: NoUpdate`.
 
 #### Beta
 
-- A switcher exists in whichever location was decided, with drain, failure handling, and scoped
-  RBAC.
-- An e2e flip and flip-back passes on a supported backend.
+- The switcher exists in Patio, with drain, failure handling, namespace-scoped RBAC, and the
+  `worker_info` mutation wired into the flip.
+- An e2e flip and flip-back passes on a supported backend, asserting that the label **and** the
+  router's registered `worker_type` both converge to the new role.
 - The boundary condition (template value edited at runtime) is documented and tested.
+- The scale-in interaction is documented, with a stated procedure for preserving the role mix.
 
 #### GA
 
-- Multiple real deployments use runtime switching without a label-reversion incident.
-- Flip-back stability is demonstrated over a sustained period, not a single cycle.
+- At least two independent deployments run runtime switching across a full RBG release cycle,
+  evidenced by pool Pods carrying non-`unassigned` serving labels before and after an RBG upgrade,
+  with no label-reversion incident reported against [#541][issue-541].
+- Flip-back stability is reproduced on a supported backend over a sustained run — upstream's
+  100-switch result reproduced at least once in CI, not a single cycle.
+- Patio's flip success rate and flip latency metrics are published and consumed by at least one
+  operator's alerting, so the SLIs below are actually observed rather than merely defined.
 
 ### Upgrade / Downgrade Strategy
 
@@ -491,8 +718,9 @@ The first slice adds tests, documentation, and an example. It changes no control
 and no default. Existing RoleBasedGroups are unaffected, and no user action is required on upgrade
 or downgrade.
 
-If Option B is chosen later, the Patio sidecar's introduction is a separate rollout with its own
-upgrade path, to be specified in that repository's proposal.
+The Patio sidecar's introduction is a separate rollout with its own upgrade path, to be specified in
+that repository's proposal. Introducing it into an existing pool is a profile change, so the
+`updateStrategy` hazard above applies directly to the rollout itself.
 
 ### Version Skew Strategy
 
@@ -505,8 +733,11 @@ the switcher and the engine:
   endpoint as a failed flip rather than advancing the label.
 - The KV transfer backend must implement `supports_role_switch`; upstream checks this up front in
   the reject path.
-- Under Option B, Patio and engine versions skew independently; the sidecar must not assume a flip
-  API exists because Patio is new enough.
+- Patio and engine versions skew independently; the sidecar must not assume a flip API exists because
+  Patio is new enough.
+- The router's `worker_type` semantics are a third skew axis: a router old enough to treat a repeated
+  `POST /workers` as a new worker rather than an update changes the flip procedure. The sidecar must
+  detect which behaviour it is talking to.
 
 ## Production Readiness Review Questionnaire
 
@@ -593,13 +824,14 @@ Proposed, to be confirmed with switcher owners:
   intermediate state where the label claims a role the engine is not serving.
 - Time from flip request to label update bounded by drain time plus engine rebuild time, with the
   switcher enforcing a deadline.
+- The router's registered `worker_type` converges to the new role within one heartbeat interval of
+  the flip, so the label and the registry never disagree for longer than that interval.
 
 ###### What are the SLIs (Service Level Indicators) an operator can use to determine the health of the service?
 
 - [x] Other (treat as last resort)
-    - Details: flip success rate and flip latency, measured by the switcher. Under Option B these
-      would be exposed through Patio's existing normalized `patio:` metrics. RBG emits no new SLI,
-      by design.
+    - Details: flip success rate and flip latency, measured by the switcher and exposed through
+      Patio's existing normalized `patio:` metrics. RBG emits no new SLI, by design.
 
 ###### Are there any missing metrics that would be useful to have to improve observability of this feature?
 
@@ -621,9 +853,15 @@ the interpretation this KEP excludes. Declined deliberately; the regression suit
 - **A router that selects by the runtime label.**
     - Usage description: turns a label change into a routing change.
     - Impact of its outage: traffic loss, not label corruption. Independent of RBG's guarantee.
-- **The switcher (external service or Patio sidecar).**
-    - Usage description: owns the five-step flow.
-    - Impact of its outage: no rebalancing. Existing roles keep serving.
+- **The Patio sidecar, carrying the switcher.**
+    - Usage description: owns the five-step flow, including the `worker_info` mutation.
+    - Impact of its outage: no rebalancing. Existing roles keep serving. Note that Patio's heartbeat
+      also stops, so a router restart during the outage loses this worker's registration until Patio
+      returns.
+- **The SGLang router's worker registry.**
+    - Usage description: holds `worker_type` per worker, refreshed by Patio's heartbeat.
+    - Impact of its outage: `register` retries for up to three minutes and stalls the heartbeat loop;
+      flips cannot be published. Labels remain correct, so label-selecting Services still route.
 - **Kubernetes API server.**
     - Usage description: the switcher patches Pod labels.
     - Impact of its outage: see [Troubleshooting](#troubleshooting) — this is the one dependency
@@ -634,8 +872,9 @@ the interpretation this KEP excludes. Declined deliberately; the regression suit
 ###### Will enabling / using this feature result in any new API calls?
 
 **RBG makes none.** The first slice changes no controller code. The switcher issues `PATCH pods`,
-at a rate proportional to the number of flips, not periodic. Under Option B this is one patch per
-flip per Pod, from the Pod's own service account.
+at a rate proportional to the number of flips, not periodic: one patch per flip per Pod, from the
+Pod's own service account. Patio's registration heartbeat already exists and is unchanged in
+frequency; a flip rides the next heartbeat rather than adding a call.
 
 ###### Will enabling / using this feature result in introducing new API types?
 
@@ -658,8 +897,8 @@ teardown/rebuild, neither of which RBG participates in.
 ###### Will enabling / using this feature result in non-negligible increase of resource usage (CPU, RAM, disk, IO, ...) in any components?
 
 RBG: none. Engine: upstream reports flat weight, KV-cache, graph, GPU-free and thread-count metrics
-across 100 switches, with the radix cache both off and on. Patio under Option B: to be assessed in
-that repository's proposal.
+across 100 switches, with the radix cache both off and on. Patio: to be assessed in that repository's
+proposal.
 
 ###### Can enabling / using this feature result in resource exhaustion of some node resources (PIDs, sockets, inodes, etc.)?
 
@@ -681,9 +920,10 @@ Ordering alone is not sufficient under API server outage.
 ###### What steps should be taken if SLOs are not being met to determine the problem?
 
 Check, in order: whether the engine reports the new role (`/get_server_info`); whether the Pod's
-runtime label matches it; whether the Pod appears in the expected Service's EndpointSlice; whether
-the switcher logged a rejected flip or a patch failure; and whether the RBG spec's template value
-for the runtime key was edited, which would legitimately overwrite the live value.
+runtime label matches it; whether the router's registered `worker_type` for that worker matches it;
+whether the Pod appears in the expected Service's EndpointSlice; whether the switcher logged a
+rejected flip or a patch failure; and whether the RBG spec's template value for the runtime key was
+edited, which would legitimately overwrite the live value.
 
 ###### What are other known failure modes?
 
@@ -710,6 +950,27 @@ for the runtime key was edited, which would legitimately overwrite the live valu
     - Diagnostics: Pod UID and `role-instance-id`.
     - Testing: the integration specs assert UID stability so this case cannot masquerade as
       preservation.
+- **Heartbeat re-asserts the old role after a flip.**
+    - Detection: the Pod label and `/get_server_info` agree on the new role, but the router still
+      routes it as the old one; the discrepancy persists rather than converging.
+    - Mitigations: the switcher must mutate the live `worker_info` dict, not only the label. If the
+      router does not update `worker_type` on a repeated POST, unregister and re-register instead.
+    - Diagnostics: Patio's registration logs (`registered worker successfully`, `worker_id`) and the
+      router's worker list.
+    - Testing: switcher-side, once the flip path exists; the e2e must assert registry convergence, not
+      just the label.
+- **Scale-in removes the Pods serving a role.**
+    - Detection: after a replicas decrease, one of the label-selecting Services has no endpoints.
+    - Mitigations: rebalance roles onto surviving low-ID Pods before scaling in. RBG selects victims
+      by component ID and will not do this for you.
+    - Diagnostics: compare the deleted Pods' component IDs with the serving labels of the survivors.
+    - Testing: not covered by the first slice; needs a switcher-in-the-loop test.
+- **A profile rollout resets the whole pool.**
+    - Detection: many pool Pods return to `unassigned` at once, following a
+      `ClusterEngineRuntimeProfile` edit.
+    - Mitigations: pin `updateStrategy: NoUpdate` on the Patio profile.
+    - Diagnostics: the profile's `updateStrategy` and the affected roles' `rolloutStrategy`.
+    - Testing: a profile-edit test asserting serving labels survive, once the v1alpha2 example exists.
 
 ## Implementation History
 
@@ -717,8 +978,15 @@ for the runtime key was edited, which would legitimately overwrite the live valu
 - 2026-11-13: assigned by @diw-zw, who requested a KEP before implementation and suggested
   co-design with [Patio][patio].
 - 2026-11-17: this provisional KEP opened. The three-spec envtest regression suite is prototyped on
-  branch `test/541-runtime-label-contract` and is intentionally **not** part of this PR, pending the
-  switcher-placement decision.
+  branch `test/541-runtime-label-contract` and is intentionally **not** part of this PR.
+- 2026-11-17: revised after a full self-review against the assigner's requirements. The switcher
+  placement is now **decided as Patio**, with a layered RBG/Patio/router split replacing the former
+  open A/B question. Added: the existing `ClusterEngineRuntimeProfile` injection channel, the
+  `updateStrategy` reset hazard, the router's `worker_type` heartbeat, scale-in victim selection, and
+  the Pod-deletion consequence of writing an RBG-owned label. Corrected: the causal explanation of why
+  external writes survive (full `Update` plus optimistic concurrency, not the absence of `Patch`), the
+  example's missing `app` label, and two overstated option comparisons. Test plan now requires grace
+  and revision-only specs.
 
 ## Drawbacks
 
@@ -729,6 +997,10 @@ for the runtime key was edited, which would legitimately overwrite the live valu
 - Label-based routing is eventually consistent, so there is an inherent convergence window.
 - Co-designing across two repositories adds coordination cost and a version-skew surface that a
   single-repo solution would not have.
+- Placing the switcher in the sidecar puts `patch pods` permission inside every inference Pod in the
+  pool. The grant is namespace-scoped, so a compromised sidecar can relabel its neighbours.
+- The flip path's delivery depends on Patio, a 15-commit repository. RBG's contract can land
+  independently, but the feature is not usable until Patio ships its side.
 
 ## Alternatives
 
@@ -755,17 +1027,25 @@ Rejected. It holds accidentally, is untested, and is undocumented. The issue's o
 broken for its stated purpose because `spec.roles[].labels` never reaches Pod labels. Without a
 test, the next drift-correction change breaks every runtime-switching deployment silently.
 
-### External switch service versus Patio sidecar
+### External switch service instead of the Patio sidecar
 
-**Open.** See [Open Question: Where the Switcher Lives](#open-question-where-the-switcher-lives).
-Both preserve the contract; they differ in where the switch flow, RBAC, and failure handling live.
+**Considered, kept as fallback only.** It preserves the contract, but it cannot mutate the
+`worker_info` dict the heartbeat re-publishes, so it needs a Patio-side change anyway. See
+[Decision: The Switcher Lives in Patio](#decision-the-switcher-lives-in-patio).
 
 ## Infrastructure Needed
 
-- A decision from @diw-zw and the maintainers on switcher placement, recorded in this KEP.
-- If Option B is chosen: a proposal in [rolebasedgroup/inference-engine-runtime][patio]. Its process
-  exempts tests and docs but requires a proposal for architecture and lifecycle changes, which a
-  flip path plus Pod-patching RBAC would be.
+- Maintainer confirmation of the Patio direction recorded in this KEP, and of the layered split.
+- A proposal in [rolebasedgroup/inference-engine-runtime][patio] for the flip path, the `worker_info`
+  mutation, the Pod-label patch, and the in-Pod RBAC. Its process exempts tests and docs but requires
+  a proposal for architecture and lifecycle changes, which this is.
+- A v1alpha2 Patio profile example in this repo, pinning `updateStrategy: NoUpdate`, replacing the
+  v1alpha1 one that currently sits under `examples/deprecated/`.
+- Confirmation of the router's semantics for a repeated `POST /workers` carrying a changed
+  `worker_type`, so the switch flow can be fixed rather than assumed.
+- Maintainer confirmation of the target milestone. `kep.yaml` proposes v0.10.0: v0.9.0-alpha.4 was
+  already published on 2026-11-17, so v0.9.0 is not a credible target for a KEP that has not started
+  implementation.
 - GPU CI capacity with a KV transfer backend that supports `supports_role_switch` (mori today) for
   the e2e flip test. This does not exist in the project's CI at present.
 - Confirmation of whether the mooncake/CUDA path supports a flip, so the example can state its
@@ -777,3 +1057,20 @@ Both preserve the contract; they differ in where the switch flow, RBAC, and fail
 [instance-scale]: https://github.com/sgl-project/rbg/blob/main/pkg/reconciler/roleinstance/sync/instance_scale.go
 [pod-inplace-defaults]: https://github.com/sgl-project/rbg/blob/main/pkg/inplace/pod/inplaceupdate/inplace_update_defaults.go
 [instance-inplace-defaults]: https://github.com/sgl-project/rbg/blob/main/pkg/inplace/instance/inplaceupdate/inplace_update_defaults.go
+[patio-extract]: https://github.com/sgl-project/rbg/pull/366
+[sidecar-builder]: https://github.com/sgl-project/rbg/blob/main/pkg/discovery/sidecar_builder.go
+[pod-reconciler]: https://github.com/sgl-project/rbg/blob/main/pkg/reconciler/pod_reconciler.go
+[patio-profile]: https://github.com/sgl-project/rbg/blob/main/examples/deprecated/v1alpha1/pd-disagg/sglang/patio-profile.yaml
+[engine-runtime-example]: https://github.com/sgl-project/rbg/blob/main/examples/basic/engine-runtime/engine-runtime-profile.yaml
+[instance-core]: https://github.com/sgl-project/rbg/blob/main/pkg/reconciler/roleinstance/core/instance_core.go
+[instance-utils]: https://github.com/sgl-project/rbg/blob/main/pkg/reconciler/roleinstance/utils/instance_utils.go
+[rbg-planner]: https://github.com/rolebasedgroup/rbg-planner
+[patio-app]: https://github.com/rolebasedgroup/inference-engine-runtime/blob/main/src/patio/app.py
+[patio-topo-client]: https://github.com/rolebasedgroup/inference-engine-runtime/blob/main/src/patio/topo/client/sgl_topo_client.py
+[pod-adapter]: https://github.com/sgl-project/rbg/blob/main/pkg/inplace/pod/clientadapter/adapter.go
+[pod-inplace]: https://github.com/sgl-project/rbg/blob/main/pkg/inplace/pod/inplaceupdate/inplace_update.go
+[ri-inplaceupdate]: https://github.com/sgl-project/rbg/blob/main/pkg/reconciler/roleinstance/inplaceupdate/inplaceupdate.go
+[deploy-reconciler]: https://github.com/sgl-project/rbg/blob/main/pkg/reconciler/deploy_reconciler.go
+[sts-reconciler]: https://github.com/sgl-project/rbg/blob/main/pkg/reconciler/sts_reconciler.go
+[pd-standalone]: https://github.com/sgl-project/rbg/blob/main/examples/inference/pd-disagg-standalone.yaml
+[pd-lw]: https://github.com/sgl-project/rbg/blob/main/examples/inference/pd-disagg-leader-worker.yaml
