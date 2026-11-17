@@ -50,11 +50,14 @@ type workloadType struct {
 	kind       string
 }
 
-// deprecatedWorkloads are the three workload types the toggle turns off.
+// deprecatedWorkloads are the workload types the toggle turns off. InstanceSet is
+// included even though it has no reconciler: admitting a new use would only move
+// the failure to controller preflight, where it blocks the whole RoleBasedGroup.
 var deprecatedWorkloads = []workloadType{
 	{"apps/v1", "Deployment"},
 	{"apps/v1", "StatefulSet"},
 	{"leaderworkerset.x-k8s.io/v1", "LeaderWorkerSet"},
+	{"workloads.x-k8s.io/v1alpha1", "InstanceSet"},
 }
 
 // deprecatedResourceAttr is an RBAC (apiGroup, resource) pair that must not be granted
@@ -68,6 +71,7 @@ var deprecatedResourceAttrs = []deprecatedResourceAttr{
 	{"apps", "deployments"},
 	{"apps", "statefulsets"},
 	{"leaderworkerset.x-k8s.io", "leaderworkersets"},
+	{"workloads.x-k8s.io", "instancesets"},
 }
 
 // RunDeprecatedDisabledTestCases asserts the behaviour of a release installed with

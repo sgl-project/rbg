@@ -40,8 +40,12 @@ const (
 )
 
 const (
-	DeploymentWorkloadType      string = "apps/v1/Deployment"
-	StatefulSetWorkloadType     string = "apps/v1/StatefulSet"
+	DeploymentWorkloadType  string = "apps/v1/Deployment"
+	StatefulSetWorkloadType string = "apps/v1/StatefulSet"
+	// InstanceSetWorkloadType is the v1alpha1-only workload superseded by
+	// RoleInstanceSet. No reconciler exists for it since v0.7.0, so the v1alpha2
+	// admission gate treats it as deprecated to keep new uses out.
+	InstanceSetWorkloadType     string = "workloads.x-k8s.io/v1alpha1/InstanceSet"
 	RoleInstanceSetWorkloadType string = "workloads.x-k8s.io/v1alpha2/RoleInstanceSet"
 	LeaderWorkerSetWorkloadType string = "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet"
 )

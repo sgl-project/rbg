@@ -103,7 +103,9 @@ type RoleBasedGroupReconciler struct {
 	NodeBindings *instancesync.NodeBindingStore
 	// enableDeprecatedWorkloadTypes reports whether the deprecated workload types are
 	// still enabled. When false, Deployment/StatefulSet/LeaderWorkerSet are skipped
-	// in cleanup paths (deleteOrphanRoles) to avoid forbidden errors when RBAC is removed.
+	// in cleanup paths (deleteOrphanRoles) to avoid forbidden errors when RBAC is
+	// removed. The v1alpha1 InstanceSet is part of the same gate at admission, but
+	// it has no reconciler and no cleanup path in any mode.
 	enableDeprecatedWorkloadTypes bool
 	// revisionEqualityCache caches semantic revision equality results to avoid
 	// expensive ApplyRevision + getRBGPatch reconstruction on every reconcile.

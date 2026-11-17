@@ -83,14 +83,14 @@ For detailed instructions, see [Installation Guide](doc/install.md).
 
 #### Deprecated workload types
 
-The `v1alpha1` API and the `Deployment` / `StatefulSet` / `LeaderWorkerSet` workload types are on
-their way out, superseded by `v1alpha2` and `RoleInstanceSet`. The chart value
+The `v1alpha1` API and the `Deployment` / `StatefulSet` / `LeaderWorkerSet` / v1alpha1 `InstanceSet`
+workload types are on their way out, superseded by `v1alpha2` and `RoleInstanceSet`. The chart value
 `controller.deprecatedWorkloadTypes.enabled` (controller flag
 `--enable-deprecated-workload-types`) selects which of the two worlds the controller serves:
 
 | Value | Behaviour |
 |:------|:----------|
-| `true` (chart default) | Compatibility mode: both `v1alpha1` and `v1alpha2` control logic stay active. Roles that already use a deprecated workload type keep reconciling, while **new** uses are rejected (including switching between deprecated types) — migrate those roles to `RoleInstanceSet`. |
+| `true` (chart default) | Compatibility mode: both `v1alpha1` and `v1alpha2` control logic stay active. Roles that already use a deprecated workload type keep reconciling — except the v1alpha1 `InstanceSet`, which has had no reconciler since v0.7.0 — while **new** uses are rejected (including switching between deprecated types) — migrate those roles to `RoleInstanceSet`. |
 | `false` | Strict mode: the controller refuses the deprecated workload types outright — no RBAC is granted for them, none of them are watched, and the validating webhook rejects every create and update whose roles use one. |
 
 Every `v1alpha1` request returns a deprecation warning; `v1alpha1` will be removed in `0.10.0`.

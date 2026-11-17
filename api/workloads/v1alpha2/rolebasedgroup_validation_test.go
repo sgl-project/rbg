@@ -108,6 +108,20 @@ func TestValidateNoDeprecatedWorkloadTypes(t *testing.T) {
 			errContains: "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet",
 		},
 		{
+			// InstanceSet has no reconciler since v0.7.0, so the final cutoff must
+			// reject it like the other deprecated types instead of leaving the whole
+			// RBG failing preflight reconciliation.
+			name: "InstanceSet workload type - error",
+			roles: []RoleSpec{
+				{
+					Name:        "worker",
+					Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.InstanceSetWorkloadType},
+				},
+			},
+			expectError: true,
+			errContains: "workloads.x-k8s.io/v1alpha1/InstanceSet",
+		},
+		{
 			name: "mixed roles with one deprecated - error",
 			roles: []RoleSpec{
 				{Name: "role-a"},
@@ -494,6 +508,73 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 		}
 		_, err := v.ValidateUpdate(context.Background(), oldDeprecated, newDeprecated)
 		assert.NoError(t, err)
+	})
+}
+
+// TestRoleBasedGroupValidator_ValidateUpdate_InstanceSetWorkloadType pins the
+// compatibility-mode behaviour for the v1alpha1 InstanceSet selector. The gate
+// historically matched only Deployment, StatefulSet and LeaderWorkerSet, so
+// restoring an InstanceSet selector into a migrated role was admitted and only
+// failed later, when the unsupported workload type stopped the whole RBG during
+// preflight reconciliation. The type-exact exemption still applies: a role that
+// already used InstanceSet before the upgrade keeps being writable while the
+// compatibility flag is enabled.
+func TestRoleBasedGroupValidator_ValidateUpdate_InstanceSetWorkloadType(t *testing.T) {
+	instanceSetRole := func(replicas int32) RoleSpec {
+		return RoleSpec{
+			Name:     "worker",
+			Replicas: ptr.To(replicas),
+			Annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: constants.InstanceSetWorkloadType,
+			},
+		}
+	}
+	oldRIS := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
+		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}}},
+	}
+	oldInstanceSet := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
+		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{instanceSetRole(1)}},
+	}
+
+	t.Run("compatibility mode rejects restoring InstanceSet into a migrated role", func(t *testing.T) {
+		newRBG := oldRIS.DeepCopy()
+		newRBG.Spec.Roles[0].Annotations = map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: constants.InstanceSetWorkloadType,
+		}
+		v := &RoleBasedGroupValidator{
+			Client:                        newFakeValidatorClient(t),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateUpdate(context.Background(), oldRIS, newRBG)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "workloads.x-k8s.io/v1alpha1/InstanceSet")
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+
+	t.Run("compatibility mode keeps an existing InstanceSet role writable", func(t *testing.T) {
+		newRBG := oldInstanceSet.DeepCopy()
+		newRBG.Spec.Roles[0].Replicas = ptr.To(int32(3))
+		v := &RoleBasedGroupValidator{
+			Client:                        newFakeValidatorClient(t),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateUpdate(context.Background(), oldInstanceSet, newRBG)
+		assert.NoError(t, err)
+	})
+
+	t.Run("final cutoff rejects an InstanceSet role on every update", func(t *testing.T) {
+		newRBG := oldInstanceSet.DeepCopy()
+		newRBG.Spec.Roles[0].Replicas = ptr.To(int32(3))
+		v := &RoleBasedGroupValidator{
+			Client:                        newFakeValidatorClient(t),
+			EnableDeprecatedWorkloadTypes: false,
+		}
+		_, err := v.ValidateUpdate(context.Background(), oldInstanceSet, newRBG)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "workloads.x-k8s.io/v1alpha1/InstanceSet")
+		assert.Contains(t, err.Error(), "controller.deprecatedWorkloadTypes.enabled=true")
 	})
 }
 

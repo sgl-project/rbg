@@ -55,9 +55,9 @@ const fileHeader = `---
   Run "make manifests" after changing kubebuilder RBAC markers.
 
   Rules for the deprecated workload types (Deployment, StatefulSet,
-  LeaderWorkerSet) are wrapped in a conditional so that disabling
-  controller.deprecatedWorkloadTypes.enabled removes them. An unset value counts
-  as enabled, matching values.yaml.
+  LeaderWorkerSet, v1alpha1 InstanceSet) are wrapped in a conditional so that
+  disabling controller.deprecatedWorkloadTypes.enabled removes them. An unset
+  value counts as enabled, matching values.yaml.
 */}}
 {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
 {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
@@ -76,6 +76,7 @@ rules:
 var deprecatedResources = mustGroupResources(
 	constants.DeploymentWorkloadType,
 	constants.StatefulSetWorkloadType,
+	constants.InstanceSetWorkloadType,
 	constants.LeaderWorkerSetWorkloadType,
 )
 
