@@ -25,6 +25,7 @@ workload 类型内容迁移必须使用 `v1alpha2` 表达和写入路径。在 `
 
 - 将 RBG 控制器升级到 `0.9.0` 或更新版本，并确认控制器、conversion webhook 和 admission webhook 健康。
 - 确认待迁移 role 当前 ready，且没有其他 rollout 正在进行。`InstanceSet` role 是例外：它从 v0.7.0 起就不再 reconcile，且不支持的 workload 类型会让整个 RoleBasedGroup 无法通过 preflight reconcile。
+- 在提交任何有状态 role 的迁移前，先完成发现 ConfigMap 前置条件。从 v0.6.0 或更早版本升级上来的 RBG 以及 RoleBasedGroupSet 子对象都处于 `legacy` 发现模式；参见[发现 ConfigMap 前置条件（已知问题 #595）](#发现-configmap-前置条件已知问题-595)。
 - 确认每个 role 已有 Pattern，并且 `template` 或 `templateRef` 可解析。缺少这些内容的 role 本身已无法 reconcile；请先通过独立变更修复或删除该 role，再进行迁移。
 - 与自动扩缩容、流量管理、调度以及可能在迁移期间修改该 role 的业务流程协调。
 - 在变更窗口内冻结外部写入。
@@ -71,7 +72,33 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
 
 ## 2. 逐 role 手工迁移
 
-对每个 `Deployment`、`StatefulSet` 或 `LeaderWorkerSet` role：
+### 发现 ConfigMap 前置条件（已知问题 #595）
+
+有状态 role 的 Pod——StatefulSet、LeaderWorkerSet 以及 Stateful 模式的 RoleInstanceSet role——会挂载一个以 RoleBasedGroup 名称命名的发现 ConfigMap。在 #595 修复之前，控制器只在 `rbg.workloads.x-k8s.io/discovery-config-mode` 为 `refine` 时才创建该 ConfigMap。处于 `legacy` 模式的对象因此在迁移后失败：新 Pod 停留在 `ContainerCreating` 并报 `configmap "RBG_NAME" not found`，旧 workload 又已被删除，没有任何机制自动恢复该 role。
+
+迁移有状态 role 之前，先确认对象来源：
+
+| 对象来源 | 发现模式 | 迁移前的动作 |
+| --- | --- | --- |
+| v0.7.0 及以后创建，或全新 v0.9.0 安装 | `refine` | 无需操作：控制器会创建 ConfigMap。 |
+| 从 v0.6.0 或更早版本升级上来 | 派生为 `legacy` | 在 RBG 上把模式注解设为 `refine`，触发一次 reconcile，确认 ConfigMap 存在。 |
+| RoleBasedGroupSet 子对象（任意来源） | 实际为 `legacy` | 在 `spec.groupTemplate.annotations` 中设置 `rbg.workloads.x-k8s.io/discovery-config-mode: refine`。set controller 会用模板注解替换子对象注解，直接写在子对象上的注解不会保留。 |
+
+对普通 RoleBasedGroup，先设置注解，迁移前确认 ConfigMap 已存在：
+
+```bash
+kubectl annotate rolebasedgroup RBG_NAME -n NAMESPACE \
+  rbg.workloads.x-k8s.io/discovery-config-mode=refine --overwrite
+kubectl get configmap RBG_NAME -n NAMESPACE
+```
+
+对 RoleBasedGroupSet，注解应设置在 `spec.groupTemplate.annotations` 中，而不是子对象上；直接写在子对象上的注解无法在 set controller 的同步中保留。
+
+只修改注解不会触发 reconcile：控制器只按 RoleBasedGroup 的 spec 变化入队，注解变化不会入队。请重启控制器，或在注解变更的同时提交一次经过审批的 spec 变更，等待 ConfigMap 出现后再继续。若 Deployment role 已按下方步骤 3 切换为 `Stateless`，本节不适用：无状态 role 不挂载 ConfigMap。
+
+这是 #595 的临时 workaround，不是永久迁移步骤。控制器修复为对任意模式的有状态 role 都创建 ConfigMap 后，应删除本节。
+
+完成上述前置条件后，对每个 `Deployment`、`StatefulSet` 或 `LeaderWorkerSet` role：
 
 1. 保存当前 `v1alpha2` 表达用于审计和审查：
 
@@ -106,7 +133,7 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
 6. 观察替换过程：
    - 控制器创建 `RoleInstanceSet`，并在同一轮 reconcile 中把旧 Deployment、StatefulSet 或 LeaderWorkerSet 判定为孤儿删除。即使替代对象创建失败，删除也会发生。
    - 在 `RoleInstanceSet` ready 之前，该 role 没有任何 Pod。没有重叠或 surge 阶段。
-   - 已知问题 #595：在 `legacy` 发现模式下，新 Pod 可能永久停留在 `ContainerCreating`，因为发现 ConfigMap 永远不会被创建。迁移前必须先完成下一节的准备工作。
+   - 如果新 Pod 停留在 `ContainerCreating` 并报 `configmap "RBG_NAME" not found`，说明没有完成上方的发现 ConfigMap 前置条件。请先完成前置条件，再重试迁移。
    - 该 role 的全部 Pod 会重建。
 
 7. 继续前验证该 role：
@@ -120,28 +147,6 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
    确认旧 workload 已删除，而不只是替代对象 ready。同时检查 Pod，以及对该业务真正重要的流量、readiness、缓存预热或其他健康信号。
 
 8. 只要业务状态需要，就停止、暂停或调整 rollout。不要因为对象可写而自动继续下一个 role。
-
-### 发现 ConfigMap 前置条件（已知问题 #595）
-
-有状态 role 的 Pod——StatefulSet、LeaderWorkerSet 以及 Stateful 模式的 RoleInstanceSet role——会挂载一个以 RoleBasedGroup 名称命名的发现 ConfigMap。在 #595 修复之前，控制器只在 `rbg.workloads.x-k8s.io/discovery-config-mode` 为 `refine` 时才创建该 ConfigMap。处于 `legacy` 模式的对象因此在迁移后失败：新 Pod 停留在 `ContainerCreating` 并报 `configmap "RBG_NAME" not found`，旧 workload 又已被删除，没有任何机制自动恢复该 role。
-
-迁移有状态 role 之前，先确认对象来源：
-
-| 对象来源 | 发现模式 | 迁移前的动作 |
-| --- | --- | --- |
-| v0.7.0 及以后创建，或全新 v0.9.0 安装 | `refine` | 无需操作：控制器会创建 ConfigMap。 |
-| 从 v0.6.0 或更早版本升级上来 | 派生为 `legacy` | 在 RBG 上把模式注解设为 `refine`，触发一次 reconcile，确认 ConfigMap 存在。 |
-| RoleBasedGroupSet 子对象（任意来源） | 实际为 `legacy` | 在 `spec.groupTemplate.annotations` 中设置 `rbg.workloads.x-k8s.io/discovery-config-mode: refine`。set controller 会用模板注解替换子对象注解，直接写在子对象上的注解不会保留。 |
-
-设置注解后，迁移前先确认 ConfigMap 已存在：
-
-```bash
-kubectl get configmap RBG_NAME -n NAMESPACE
-```
-
-只修改注解不会触发 reconcile：控制器只按 RoleBasedGroup 的 spec 变化入队，注解变化不会入队。请重启控制器，或在注解变更的同时提交一次经过审批的 spec 变更，等待 ConfigMap 出现后再继续。若 Deployment role 已按步骤 3 切换为 `Stateless`，本节不适用：无状态 role 不挂载 ConfigMap。
-
-这是 #595 的临时 workaround，不是永久迁移步骤。控制器修复为对任意模式的有状态 role 都创建 ConfigMap 后，应删除本节。
 
 ### v1alpha1 InstanceSet role
 

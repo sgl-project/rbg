@@ -25,6 +25,7 @@ Finishing one track does not imply that the other is complete. Check both before
 
 - Upgrade the RBG controller to `0.9.0` or later and confirm that the controller, conversion webhook, and admission webhook are healthy.
 - Confirm the roles being migrated are currently ready and have no unrelated rollout in progress. An `InstanceSet` role is an exception: it has not reconciled since v0.7.0, and its unsupported workload type prevents the whole RoleBasedGroup from passing preflight reconciliation.
+- Complete the discovery ConfigMap prerequisite for every stateful role before submitting its migration. RBGs upgraded from v0.6.0 or earlier and RoleBasedGroupSet children run in `legacy` discovery mode; see [Discovery ConfigMap prerequisite (known issue #595)](#discovery-configmap-prerequisite-known-issue-595).
 - Confirm each role has an existing Pattern and a resolvable `template` or `templateRef`. A role without these is already invalid for reconciliation; repair or remove it through a separate change before migration.
 - Coordinate with autoscaling, traffic management, scheduling, and any business process that can change the role while it is being migrated.
 - Freeze external writes to the object during the change window.
@@ -71,7 +72,33 @@ The inventory is an impact report, not a rollout decision. The operator decides 
 
 ## 2. Migrate one role at a time
 
-For each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role:
+### Discovery ConfigMap prerequisite (known issue #595)
+
+Pods of stateful roles — StatefulSet, LeaderWorkerSet, and Stateful-pattern RoleInstanceSet roles — mount a discovery ConfigMap named after the RoleBasedGroup. Until #595 is fixed, the controller creates that ConfigMap only when `rbg.workloads.x-k8s.io/discovery-config-mode` is `refine`. An object in `legacy` mode therefore fails after migration: the new Pods stay in `ContainerCreating` with `configmap "RBG_NAME" not found`, the old workload is already deleted, and nothing recovers the role automatically.
+
+Check the object's origin before migrating a stateful role:
+
+| Object origin | Discovery mode | Action before migrating |
+| --- | --- | --- |
+| Created by v0.7.0 or later, or a fresh v0.9.0 install | `refine` | None: the controller creates the ConfigMap. |
+| Upgraded from v0.6.0 or earlier | Derived `legacy` | Set the mode annotation to `refine` on the RBG, trigger a reconcile, and verify the ConfigMap exists. |
+| RoleBasedGroupSet child, any origin | Effectively `legacy` | Set `rbg.workloads.x-k8s.io/discovery-config-mode: refine` in `spec.groupTemplate.annotations`. The set controller replaces child annotations with the template's, so an annotation written directly on a child does not survive. |
+
+For a plain RoleBasedGroup, set the annotation and then verify the ConfigMap exists before migrating:
+
+```bash
+kubectl annotate rolebasedgroup RBG_NAME -n NAMESPACE \
+  rbg.workloads.x-k8s.io/discovery-config-mode=refine --overwrite
+kubectl get configmap RBG_NAME -n NAMESPACE
+```
+
+For a RoleBasedGroupSet, the annotation belongs in `spec.groupTemplate.annotations`, not on the child; an annotation written directly on a child does not survive the set controller's sync.
+
+An annotation-only change does not enqueue a reconcile: the controller watches RoleBasedGroup spec changes, not annotation changes. Restart the controller, or submit an approved spec change alongside the annotation, and wait for the ConfigMap to appear before continuing. This prerequisite does not apply to a Deployment role switched to `Stateless` in step 3 below: stateless roles do not mount the ConfigMap.
+
+This is a workaround for #595, not a permanent migration step. Remove it once the controller creates the ConfigMap for every stateful role regardless of mode.
+
+For each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role, after completing the prerequisite above:
 
 1. Save the current `v1alpha2` representation for audit and review:
 
@@ -106,7 +133,7 @@ For each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role:
 6. Observe the replacement:
    - The controller creates a `RoleInstanceSet` and treats the old Deployment, StatefulSet, or LeaderWorkerSet as an orphan, deleting it in the same reconcile pass. The deletion happens even if creating the replacement failed.
    - The role runs with zero Pods until the `RoleInstanceSet` is Ready. There is no overlap or surge period.
-   - Known issue #595: in `legacy` discovery mode the new Pods can stay in `ContainerCreating` forever because the discovery ConfigMap is never created. Complete the prerequisite in the next section before migrating.
+   - If the new Pods stay in `ContainerCreating` with `configmap "RBG_NAME" not found`, the discovery ConfigMap prerequisite above was not completed. Complete it before retrying the migration.
    - All Pods for that role are recreated.
 
 7. Verify the role before continuing:
@@ -120,28 +147,6 @@ For each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role:
    Confirm that the old workload is gone, not merely that the replacement is ready. Also inspect the Pods and any traffic, readiness, cache-warmup, or business-specific health signal that matters to the service.
 
 8. Stop, pause, or adjust the rollout whenever business conditions require it. Do not continue to the next role merely because the object is writable.
-
-### Discovery ConfigMap prerequisite (known issue #595)
-
-Pods of stateful roles — StatefulSet, LeaderWorkerSet, and Stateful-pattern RoleInstanceSet roles — mount a discovery ConfigMap named after the RoleBasedGroup. Until #595 is fixed, the controller creates that ConfigMap only when `rbg.workloads.x-k8s.io/discovery-config-mode` is `refine`. An object in `legacy` mode therefore fails after migration: the new Pods stay in `ContainerCreating` with `configmap "RBG_NAME" not found`, the old workload is already deleted, and nothing recovers the role automatically.
-
-Check the object's origin before migrating a stateful role:
-
-| Object origin | Discovery mode | Action before migrating |
-| --- | --- | --- |
-| Created by v0.7.0 or later, or a fresh v0.9.0 install | `refine` | None: the controller creates the ConfigMap. |
-| Upgraded from v0.6.0 or earlier | Derived `legacy` | Set the mode annotation to `refine` on the RBG, trigger a reconcile, and verify the ConfigMap exists. |
-| RoleBasedGroupSet child, any origin | Effectively `legacy` | Set `rbg.workloads.x-k8s.io/discovery-config-mode: refine` in `spec.groupTemplate.annotations`. The set controller replaces child annotations with the template's, so an annotation written directly on a child does not survive. |
-
-After setting the annotation, verify the ConfigMap exists before migrating:
-
-```bash
-kubectl get configmap RBG_NAME -n NAMESPACE
-```
-
-An annotation-only change does not enqueue a reconcile: the controller watches RoleBasedGroup spec changes, not annotation changes. Restart the controller, or submit an approved spec change alongside the annotation, and wait for the ConfigMap to appear before continuing. This prerequisite does not apply to a Deployment role switched to `Stateless` in step 3: stateless roles do not mount the ConfigMap.
-
-This is a workaround for #595, not a permanent migration step. Remove it once the controller creates the ConfigMap for every stateful role regardless of mode.
 
 ### v1alpha1 InstanceSet roles
 
