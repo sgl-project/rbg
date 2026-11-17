@@ -517,7 +517,8 @@ jobs:
         uses: actions/checkout@v5.0.0
         with:
           # The drills materialize the pre-KEP chart via `git worktree add` of
-          # RBGS_DRILL_FROM_REF, which must resolve against the fetched refs.
+          # RBGS_DRILL_FROM_REF, which must resolve against the fetched refs
+          # (fetch-depth 0 also fetches tags, so a release tag resolves).
           fetch-depth: 0
 
       - name: Download E2E images
@@ -527,11 +528,12 @@ jobs:
           path: _artifacts/e2e-images
 
       # install_mode "none" leaves the cluster without an RBGS install: the
-      # drill suite installs the pre-KEP release itself (from the
-      # origin/main chart), upgrades it to this tree's chart, and rolls the
-      # controller image back inside an admission-disabled window. The
-      # action still creates the cluster, loads the to-end images from the
-      # artifact, installs the LWS CRDs and pre-loads the workload images.
+      # drill suite installs the pre-KEP release itself (from the pinned
+      # pre-KEP release tag below), upgrades it to this tree's chart, and
+      # rolls the controller image back inside an admission-disabled window.
+      # The action still creates the cluster, loads the to-end images from
+      # the artifact, installs the LWS CRDs and pre-loads the workload
+      # images.
       - name: Setup Kind cluster without RBGS
         uses: ./.github/actions/setup-e2e-cluster
         with:
@@ -546,7 +548,9 @@ jobs:
 
       - name: Load the pre-KEP release images into Kind
         env:
-          DRILL_FROM_REF: origin/main
+          # The last pre-KEP release; its chart's own image values are what
+          # the from-install runs, and its tag must stay pullable.
+          DRILL_FROM_REF: v0.9.0-alpha.4
         run: |
           set -euo pipefail
           # The drill suite installs the from-release with the from chart's own
@@ -577,7 +581,12 @@ jobs:
 
       - name: Run engine-runtime upgrade drills
         env:
-          RBGS_DRILL_FROM_REF: origin/main
+          # Pinned to the last pre-KEP release: a moving ref like origin/main
+          # starts carrying the KEP-531 CRD fields once this feature merges,
+          # and verifyDrillFromInstall then fails the suite by design (there
+          # would be nothing to upgrade). Retire the drills, or repoint past
+          # this tag, after the first release that ships KEP-531.
+          RBGS_DRILL_FROM_REF: v0.9.0-alpha.4
           RBGS_TO_TAG: ${{ env.E2E_IMAGE_TAG }}
         run: make test-e2e-drills
 
