@@ -338,7 +338,13 @@ var _ = Describe("Engine runtime profile immutability (KEP-531 Profile Mutabilit
 			Expect(drifted.Status.ReferencedGeneration).To(Equal(int64(1)),
 				"the baseline stays pinned at the generation the freeze recorded")
 			Expect(drifted.Generation).To(Equal(int64(2)))
-			Expect(profileEventReasons("imm-bypass")).To(ContainElement(
+			// Eventually, not a plain Expect: the controller writes the
+			// drifted status before emitting the event, and the recorder
+			// persists Event objects asynchronously, so the condition can be
+			// observable strictly before the event is listable.
+			Eventually(func() []string {
+				return profileEventReasons("imm-bypass")
+			}, immutabilityTimeout, immutabilityPoll).Should(ContainElement(
 				workloads.ReasonEngineRuntimeProfileMutatedWhileReferenced),
 				"the bypass detection event fires on the profile")
 		})
