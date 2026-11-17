@@ -1,7 +1,7 @@
 # KEP-133: Configmap Refine for RoleBasedGroup (RBG)
 
 > **Status: Replaced.** This KEP is superseded by
-> [KEP-576: Compact Discovery ConfigMap](/keps/576-compact-discovery-configmap).
+> [KEP-576: Compact Discovery ConfigMap](https://github.com/sgl-project/rbg/issues/576).
 > KEP-133's compact-format proposal was only partially implemented by #134,
 > which shipped a single RBG-level ConfigMap carrying the full address
 > enumeration (released in v0.7.0/v0.8.0). KEP-576 documents that shipped
