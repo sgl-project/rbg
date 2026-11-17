@@ -15,10 +15,11 @@
     - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
     - [ConfigMap Injection and Mode](#configmap-injection-and-mode)
+    - [Source Object Naming](#source-object-naming)
     - [Compact Format](#compact-format)
     - [Address Templates](#address-templates)
     - [Component Indexing](#component-indexing)
-    - [Committed Membership](#committed-membership)
+    - [Membership Encoding](#membership-encoding)
     - [Compatibility Rendering Layer](#compatibility-rendering-layer)
     - [Snapshot Contract](#snapshot-contract)
     - [Size Guardrail](#size-guardrail)
@@ -73,14 +74,16 @@ expands it inside the Pod into the address list consumers parse today.
 
 The shipped `refine` mode (see [Shipped Baseline](#shipped-baseline)) stores a
 full enumeration of every instance address in a single RBG-level ConfigMap.
-Measured at roughly 43 bytes per pod, a 4000-replica role with 5 pods per
-instance crosses the 1 MiB ConfigMap limit, and every scale event rewrites the
-whole object to every node that mounts it.
+With the example names used in this KEP, one serialized pod entry is roughly
+118 bytes, so a 4000-replica role with 5 pods per instance is about 2.4 MB and
+crosses the 1 MiB ConfigMap limit. Every scale event rewrites the whole object
+to every node that mounts it.
 
 The compact source stores a **controller-computed address template plus
 declarative parameters** per role/component, so its size is
 `O(roles x components)`, independent of replica count. Stored content size
-grows only with the skip-ordinal list during drains, which KEP-499 bounds.
+grows only with the number of normalized skip ranges during drains, which
+KEP-499 bounds.
 
 Scope: the compact format targets **RoleInstanceSet** roles only. The
 deprecated workload types (Deployment, StatefulSet, LeaderWorkerSet) are out
@@ -102,7 +105,12 @@ This is the state on `main` today, which any new design must model accurately:
    (`internal/controller/workloads/rolebasedgroup_controller.go`,
    `ensureDiscoveryConfigMode`). New RBGs get `refine` since PR #134
    (released in v0.7.0/v0.8.0).
-2. **`legacy`** RBGs (pre-#134) keep per-role ConfigMaps.
+2. **`legacy`** RBGs (pre-#134) were created by an older controller that
+   managed per-role ConfigMaps. Since #188, the injector is mode-unaware and
+   mounts the RBG-level `<rbg>` ConfigMap for every stateful role, while only
+   `refine` creates that object. A recreated legacy Pod can therefore reference
+   a missing ConfigMap. This is a pre-existing product gap, not a behavior this
+   KEP changes.
 3. **`refine`** RBGs get a single RBG-level ConfigMap named after the RBG,
    rewritten on every reconcile (`reconcileRefinedDiscoveryConfigMap`), holding
    the **full enumeration**: one `address` entry per pod plus per-entry copies
@@ -110,13 +118,20 @@ This is the state on `main` today, which any new design must model accurately:
 4. **Addresses are relative**: `<workload>-<ordinal>...s-<rbg>-<role>` —
    no namespace, no `svc.cluster.local` suffix (`pkg/discovery/config_builder.go`,
    `buildInstances`). They resolve via the pod's DNS search path.
-5. **Membership is the committed child target, not the user exclusion input**:
-   `ConfigBuilder.memberOrdinals` publishes `RoleInstanceSet.CommittedOrdinals()`
-   when it exists, which can include ordinals `>= replicas` (KEP-499 example:
-   replicas 3, exclusions [1,3] → committed members [0,2,4]). Invalid
-   exclusion input freezes the last committed target rather than dropping it.
-6. **CustomComponentsPattern components are enumerated in spec declaration
-   order**, and roles in spec order.
+5. **Membership selection is conditional.** `ConfigBuilder.memberOrdinals`
+   does not unconditionally read the child. Before child creation, it uses
+   dense `[0, replicas)` when no exclusion input is present, projects valid
+   exclusions when they are present, and returns no members for invalid input.
+   Once the child exists, it reads `CommittedOrdinals()` only when exclusion
+   input is present or invalid, or when the child carries a committed skip
+   record; otherwise it uses dense `[0, role.replicas)`. In the routine
+   scale-up window (role spec 3, committed child 2, no exclusion input or
+   record), today publishes three members. Invalid input with a child freezes
+   the last committed target.
+6. **Ordering is split across the output shape.** `group.roles` is spec
+   declaration order, and each role's `instances` array preserves builder
+   order. The `roles:` mapping itself is a Go map serialized through
+   `sigs.k8s.io/yaml`, so its keys are alphabetically sorted.
 7. **The ConfigMap is mounted as a whole volume (no `subPath`) at `/etc/rbg`**,
    so kubelet's ConfigMap sync propagates content updates (scale-outs,
    KEP-499 drains) to running pods within the sync period.
@@ -143,13 +158,15 @@ schemes.
 ### Goals
 
 1. Stored ConfigMap size `O(roles x components)`, independent of replica count
-   (bounded growth from skip ordinals only).
+   (bounded growth from normalized skip ranges only).
 2. File-format compatibility for consumers that read `/etc/rbg/config.yaml`
-   once at startup: the rendering layer produces an address list that is
-   **semantically equal (field-by-field, order-sensitive)** to today's,
-   including relative addresses, spec ordering, and committed membership.
-3. A truthful rollout model for the three real populations: pre-#134 `legacy`,
-   post-#134 `refine`, and new RBGs.
+   once at startup: after a reconcile converges, the rendering layer produces
+   an address list that is **structurally equal** to today's, including
+   relative addresses, the ordered `group.roles` and `instances` arrays, and
+   the same conditional membership selection.
+3. A truthful rollout model for the real shipped populations: pre-#134
+   `legacy`, post-#134 `refine`, and new RBGs, including the pre-existing
+   legacy injector gap.
 4. An explicit, honest account of the one behavior change (live ConfigMap
    refresh) rather than a false equivalence claim.
 5. Fail fast and visibly when the stored object would exceed its limit.
@@ -177,16 +194,17 @@ schemes.
 
 ## Proposal
 
-Store a compact declarative description in a separate `<rbg>-source` ConfigMap
-for `refine-compact` RBGs and render the address list inside the Pod:
+Store a compact declarative description in a separate
+`<rbg>-source-<uid-hash>` ConfigMap for `refine-compact` RBGs and render the
+address list inside the Pod:
 
 ```text
 RBG controller
-  └─ ConfigMap <rbg-name>-source      (compact source, format: compact)
+  └─ ConfigMap <rbg-name>-source-<uid-hash>  (compact source, format: compact)
        │ mounted read-only by init container
        ▼
 Pod init container (RBG-owned renderer)
-  └─ expand templates + committed membership
+  └─ expand templates + selected membership
        └─ /etc/rbg/config.yaml       (address list, emptyDir volume)
              ▲
              └─ main containers mount as before (read at startup)
@@ -225,7 +243,7 @@ engine sees, without requiring any engine change.
 
 | Risk | Mitigation |
 |---|---|
-| Renderer output diverges from the shipped address list | e2e asserts field-by-field, order-sensitive equality (relative addresses, spec ordering, committed membership) against the current builder output; unit tests cover truncation, compatible names, and all patterns |
+| Renderer output diverges from the shipped address list | e2e asserts structural equality (relative addresses, ordered `group.roles`/`instances`, conditional membership) against the current builder output; unit tests cover truncation, compatible names, and all patterns |
 | Long RBG/role names hit 63-char truncation | `base` is computed by the controller, which owns truncation and compatibility logic; clients never derive names |
 | Live refresh loss affects file-polling consumers | Disclosed as a behavior change with consumer guidance; not claimed as equivalent |
 | Migration rollout stalls | The legacy `<rbg>` enumeration object is retained (stale but valid) until rollout completion; no reader ever sees a wrong-format file |
@@ -240,21 +258,41 @@ The `discovery-config-mode` annotation gains a third value:
 
 | Mode | Population | ConfigMap content | Delivery |
 |---|---|---|---|
-| `legacy` | pre-#134 RBGs | per-role ConfigMaps, full enumeration | direct mount (unchanged) |
+| `legacy` | pre-#134 RBGs | historical per-role ConfigMaps; v0.7+ injectors mount `<rbg>` even though only `refine` creates it | pre-existing injector gap, unchanged by this KEP |
 | `refine` | post-#134 RBGs | ConfigMap `<rbg>`, full enumeration | direct mount (unchanged) |
-| `refine-compact` | new RBGs (and opt-in migration) | ConfigMap `<rbg>-source`, compact source | rendering init container |
+| `refine-compact` | new RBGs when the gate is enabled (and opt-in migration) | ConfigMap `<rbg>-source-<uid-hash>`, compact source | rendering init container |
 
-The compact source lives in a **separate object** named `<rbg>-source` (key
-`source.yaml`). The controller reconciles it the same way it reconciles the
-`refine` ConfigMap today (before roles, every reconcile). The legacy `<rbg>`
-enumeration object of a migrated RBG is never rewritten; it is deleted only
-after the migration rollout completes (see
-[Rollout, Migration, and Downgrade](#rollout-migration-and-downgrade)).
+The compact source lives in a **separate object** derived from the RBG name and
+UID (see [Source Object Naming](#source-object-naming)). The controller
+reconciles it the same way it reconciles the `refine` ConfigMap today (before
+roles, every reconcile). The legacy `<rbg>` enumeration object of a migrated
+RBG is never rewritten; it is deleted only after the migration rollout
+completes (see [Rollout, Migration, and Downgrade](#rollout-migration-and-downgrade)).
 `legacy` and `refine` RBGs are untouched.
 
-Opt-in migration has one precondition: the RBG must not contain stateful
-roles of a deprecated workload type; otherwise the controller rejects the
-mode change with a Warning Event and keeps the RBG on `refine`.
+Opt-in migration has two preconditions:
+
+1. the RBG must not contain stateful roles of a deprecated workload type;
+2. the RBG must already be on `refine`, not `legacy`.
+
+If either precondition fails, the controller rejects the mode change with a
+Warning Event and reverts the annotation to its previous value, so the declared
+mode and the executed mode never diverge.
+
+### Source Object Naming
+
+The source ConfigMap name is:
+
+```text
+truncate(rbg.name, 213) + "-source-" + lowerHex(sha256(rbg.uid)[:16])
+```
+
+The UID suffix makes the generated name collision-resistant across RBGs whose
+names would otherwise produce the same source name. The name is stable for the
+RBG's lifetime because the UID is stable. Before any create, update, or delete,
+the controller verifies that the existing object's controller owner UID matches
+the RBG; on mismatch it emits a Warning Event and refuses to write. The owner
+UID check is mandatory even though hash collisions are not expected.
 
 ### Compact Format
 
@@ -265,8 +303,8 @@ group: pd-inference
 
 roles:                            # array, spec declaration order
 - name: prefill                  # unique per RBG (CRD-validated)
-  replicas: 500                   # committed replica count; see below
-  skipOrdinals: [3, 17]           # committed skip ordinals; see below
+  replicas: 500                   # member count; see below
+  skipOrdinals: "3,17"            # committed skip ranges; see below
   components:                     # array, spec declaration order
   - name: leader
     size: 1                       # pods of this component per instance
@@ -287,10 +325,10 @@ Field reference:
 |---|---|---|
 | `format` | string | Must be `compact`; lets renderers and future revisions detect the schema |
 | `namespace` / `group` | string | Namespace and RBG name |
-| `roles` | array | Role entries in **spec declaration order** (rendering preserves the shipped enumeration order) |
+| `roles` | array | Role entries in **spec declaration order**; `group.roles` preserves this order |
 | `roles[].name` | string | Role name |
-| `roles[].replicas` | int | Committed replica count (see [Committed Membership](#committed-membership)) |
-| `roles[].skipOrdinals` | int[] | Optional, sorted, deduplicated committed skip ordinals |
+| `roles[].replicas` | int | Number of members to render (see [Membership Encoding](#membership-encoding)) |
+| `roles[].skipOrdinals` | string | Optional, normalized comma-separated inclusive ranges (`3`, `3,17`, `0-99999`); never expanded into one element per ordinal |
 | `roles[].components` | array | Component entries in spec declaration order |
 | `roles[].components[].name` | string | Component name |
 | `roles[].components[].size` | int | Pod count of the component within one instance |
@@ -348,49 +386,94 @@ builder does not reproduce. Since that workload type is deprecated and its
 population stays on `refine` enumeration, the compact format does not carry
 the discrepancy forward.
 
-### Committed Membership
+### Membership Encoding
 
 The compact format does **not** project the user-facing
-`rbg.workloads.x-k8s.io/excluded-ordinals` annotation. It encodes the
-**committed child target**, which is what the shipped builder publishes:
+`rbg.workloads.x-k8s.io/excluded-ordinals` annotation directly. It encodes the
+membership selected by the shipped `memberOrdinals` algorithm, which is
+conditional:
 
-- `replicas`: the committed replica count.
-- `skipOrdinals`: the committed skip ordinals (KEP-499's
-  `CommittedSkipOrdinals` semantics).
+1. Before the child RoleInstanceSet exists:
+   - no exclusion input → dense `[0, role.replicas)`;
+   - valid exclusion input → `ordinals.Select(nil, role.replicas, excluded)`;
+   - invalid input → empty membership.
+2. After the child exists:
+   - if exclusion input is present or invalid, or the child carries a
+     committed skip record, use `CommittedOrdinals()`;
+   - otherwise use dense `[0, role.replicas)`.
 
-Rendering rule: emit the first `replicas` ordinals that are **not** in
-`skipOrdinals`. This reproduces the shipped `memberOrdinals` behavior,
-including members with ordinal `>= replicas` (replicas 3, skips [1,3] →
-members [0,2,4]) and the freeze-on-invalid-input behavior (the controller
-keeps publishing the last committed target and never plans new membership
-from invalid input).
+In the steady state, the controller evaluates that algorithm and encodes the
+selected member list without expanding it:
 
-Source of truth, in order (mirroring `memberOrdinals`):
+- `replicas` is `len(members)`;
+- `skipOrdinals` is `ordinals.Record(members)`, the normalized inclusive
+  ranges for the holes below the last member.
 
-1. the RoleInstanceSet's committed target when it exists
-   (`CommittedOrdinals()` / committed skip-ordinal annotation);
-2. the same initial dense planner the controller uses before child creation
-   (dense `[0, replicas)` when no exclusion input is present);
-3. invalid input freezes the last published values.
-
-This also answers which replica value is written when coordination scaling or
-scaling adapters move effective membership away from `spec.replicas`: the
-committed target, not the spec field.
+The renderer reconstructs membership with range jumping: emit the first
+`replicas` ordinals not contained in `skipOrdinals`, using the same `Next`
+semantics as `ordinals.Ranges.Members`. It never expands the skip ranges.
+After a reconcile converges, this reproduces the shipped behavior, including
+members with ordinal `>= replicas` (replicas 3, skips `1,3` → members
+`[0,2,4]`) and freeze-on-invalid-input when a child already exists.
 
 ### Compatibility Rendering Layer
 
-1. The injector mounts the source ConfigMap `<rbg>-source` (key
-   `source.yaml`) read-only as volume `rbg-discovery-source` at
-   `/etc/rbg/source`, and an `emptyDir` volume `rbg-discovery-rendered`
-   (with `sizeLimit`, see below) at `/etc/rbg`.
-2. An RBG-owned init container reads `/etc/rbg/source/source.yaml`, computes
-   committed membership, expands templates, and writes the address list to
-   `/etc/rbg/config.yaml`, preserving role/component declaration order.
-3. Main containers mount `/etc/rbg/config.yaml` as today.
+1. The injector mounts the source ConfigMap
+   `<rbg>-source-<uid-hash>` (key `source.yaml`) read-only as volume
+   `rbg-discovery-source` at `/etc/rbg/source`, and an `emptyDir` volume
+   `rbg-discovery-rendered` (with `sizeLimit`, see below) at `/etc/rbg`.
+2. The RBG-owned renderer is inserted **before any user init container**, so
+   user init containers that read `/etc/rbg/config.yaml` observe a complete
+   file. It reads `/etc/rbg/source/source.yaml`, reconstructs membership,
+   expands templates, and writes the address list to `/etc/rbg/config.yaml`.
+3. Main containers mount `rbg-discovery-rendered` at `/etc/rbg` with
+   `readOnly: true`, matching today's direct ConfigMap mount.
 4. The renderer is deterministic, performs no network or API-server access,
    and fails fast (non-zero exit) on malformed input — including a `format`
    value it does not understand — so Pods surface the error instead of
    silently consuming an incomplete topology.
+5. The renderer marshals the same `ClusterConfig`, `GroupInfo`, `RolesInfo`,
+   `RoleInstances`, and `Instance` types as the shipped builder, using
+   `sigs.k8s.io/yaml`. The compatibility gate compares parsed structures, not
+   re-implemented YAML text.
+
+The rendered schema is therefore fixed:
+
+- `group` is an object with `name`, `size`, and `roles`;
+- `group.roles` is the compact source's spec-ordered role-name array;
+- `roles` is a mapping keyed by role name, serialized by `sigs.k8s.io/yaml`;
+- each role's `size` is the number of serialized pod addresses, not the
+  instance count;
+- `instances` is ordered by member ordinal, then component declaration order,
+  then pod index within the component;
+- ports are copied per instance and keyed by the shipped normalization rules:
+  lower-case, `-` replaced with `_`, or `port<number>` when the ServicePort has
+  no name.
+
+Publication ordering is a hard barrier:
+
+1. compute the membership target for the current reconcile;
+2. successfully write the compact source;
+3. only then update the child / authorize the next Pod.
+
+When the controller is about to change the child target, the source written in
+step 2 is the new target that step 3 will authorize, not the previous target.
+That target is computed by applying the same membership rules to the intended
+child state.
+This may make the source one reconcile ahead of the child during a transition.
+That is a deliberate, disclosed startup-freshness exception: it prevents a new
+Pod from permanently snapshotting stale membership.
+
+If the source write fails, the child update is not performed. If the controller
+crashes after the source write but before the child update, no new Pod is
+authorized; the next reconcile converges.
+
+The renderer init container is injected with a hardened security context:
+`runAsNonRoot: true`, `readOnlyRootFilesystem: true`,
+`allowPrivilegeEscalation: false`, all capabilities dropped, and the default
+runtime seccomp profile. It also receives explicit resource requests and
+limits; the default is `10m` CPU / `16Mi` memory requested and `50m` CPU /
+`32Mi` memory limited.
 
 New consumers may skip the rendering layer and parse the compact source
 directly.
@@ -417,7 +500,7 @@ behavioral equivalence for pollers.
 
 The guardrail applies to the **serialized compact ConfigMap object**
 (the thing that lives in etcd and has the 1 MiB limit), including the
-`skipOrdinals` array:
+`skipOrdinals` range string:
 
 - Threshold: 512 KiB (headroom below the 1 MiB limit).
 - On breach with an existing object: keep the last good content and emit a
@@ -429,40 +512,48 @@ The guardrail applies to the **serialized compact ConfigMap object**
 The rendered output lives in a Pod-local `emptyDir` and is not subject to the
 etcd limit; the rendered volume declares an `emptyDir` `sizeLimit` (default
 4 MiB), and the renderer pre-estimates its output size and fails fast before
-writing when the estimate exceeds the limit. Skip ordinals grow only during
-drains and are bounded by KEP-499 membership (a full 5000-member drain is
-~25 KB).
+writing when the estimate exceeds the limit. Skip ranges are stored without
+expansion: a contiguous 5000-member drain is a few bytes, and disjoint holes
+cost one short range entry each. The source never becomes `O(replicas)` merely
+because a role has a large ordinal or a long skip range.
 
 ### Rollout, Migration, and Downgrade
 
 | Population | Mode | Behavior under the new controller |
 |---|---|---|
-| pre-#134 | `legacy` | Untouched: per-role ConfigMaps, direct mount |
+| pre-#134 | `legacy` | Not migrated. Historical per-role objects remain, but the shipped v0.7+ injector mounts `<rbg>` while only `refine` creates it, so recreated Pods can fail on the missing volume. This pre-existing gap is out of scope. |
 | post-#134 | `refine` | Untouched by default: enumeration content, direct mount. **Opt-in migration** via the sequence below |
-| new | `refine-compact` (default) | `<rbg>-source` ConfigMap + renderer from creation |
+| new | `refine-compact` (feature-gated) | `<rbg>-source-<uid-hash>` ConfigMap + renderer from creation |
 
 Opt-in migration sequence — designed so that **no running pod ever reads a
 wrong-format file**:
 
 1. The operator edits the mode annotation to `refine-compact`.
-2. The controller creates/updates the `<rbg>-source` object and injects the
+2. The controller validates the preconditions. On failure it emits a Warning
+   Event and reverts the annotation to its previous value; it never leaves the
+   RBG declared as `refine-compact` while executing another mode.
+3. The controller creates/updates the `<rbg>-source-<uid-hash>` object and injects the
    renderer into the pod templates, which triggers a normal rollout. The
    legacy `<rbg>` enumeration object is left byte-for-byte untouched, so
    running pods (direct mount, live kubelet sync) keep reading a valid
    enumeration until they are replaced; at worst it is stale, which is the
    shipped behavior anyway. Crash-restarting containers on old pods re-read
    the same valid enumeration.
-3. Once the rollout completes and no pod mounts the legacy volume, the
-   controller deletes the `<rbg>` enumeration object. A stalled rollout
-   merely retains the stale object; it never breaks a reader.
+4. Once the rollout completes and no pod mounts the legacy volume, the
+   controller deletes the `<rbg>` enumeration object. Rollout completion is
+   determined from child status (`observedGeneration`, `replicas`,
+   `updatedReplicas`, and `updatedReadyReplicas`) plus the absence of Pods
+   carrying the pre-migration controller revision hash. The controller then
+   waits a two-minute grace period for terminating Pods before deletion. A
+   stalled rollout merely retains the stale object; it never breaks a reader.
 
 Downgrade matrix (to a v0.7/v0.8 controller):
 
 | Mode at downgrade | Outcome |
 |---|---|
-| `legacy` | Supported (native mode of old controller) |
+| `legacy` | Historical native mode, but the shipped v0.7/v0.8 injector can mount a missing `<rbg>` object for recreated Pods. The KEP does not certify that gap as supported; a separate product fix is required. |
 | `refine` | Supported (native mode of old controller) |
-| `refine-compact` | **Unsupported, recreate the RBG.** The old controller re-pins the unknown mode annotation: to `legacy` when the RBG has status (the common case), which touches neither the `<rbg>` nor the `<rbg>-source` object, or to `refine` when the RBG has no status yet, in which case it (re)creates the `<rbg>` enumeration object. Pods the old controller recreates then either direct-mount a missing `<rbg>` object (post-migration or new RBGs) and fail visibly on the volume, or mount a valid enumeration (status-less RBGs) and keep working while the RBG stays pinned to `refine`. No path silently serves the compact source in the wrong format. |
+| `refine-compact` | **Unsupported, recreate the RBG.** The old controller re-pins the unknown mode annotation: to `legacy` when the RBG has status (the common case), which touches neither the `<rbg>` nor the source object, or to `refine` when the RBG has no status yet, in which case it (re)creates the `<rbg>` enumeration object. Pods the old controller recreates then either direct-mount a missing `<rbg>` object (post-migration or new RBGs) and fail visibly on the volume, or mount a valid enumeration (status-less RBGs) and keep working while the RBG stays pinned to `refine`. No path silently serves the compact source in the wrong format. |
 
 In-place downgrade for `refine-compact` RBGs is deliberately out of scope for
 phase 1 (a dual-write scheme is a possible future extension and is recorded
@@ -472,8 +563,8 @@ under Alternatives).
 
 In scope:
 
-- `refine-compact` mode with the compact format, committed membership, and
-  the rendering init container.
+- `refine-compact` mode with the compact format, conditional membership
+  encoding, and the rendering init container.
 - Opt-in migration for `refine` RBGs.
 - Stored-object size guardrail.
 - The snapshot-contract disclosure.
@@ -502,34 +593,54 @@ None.
   component `ServiceName` overrides), LeaderWorkerPattern (RoleInstanceSet),
   including 63-character truncation and legacy compatible Service names;
   relative (not FQDN) address output.
-- Committed membership: dense fallback, committed-target source, skips
-  producing members `>= replicas`, freeze-on-invalid-input.
+- Membership encoding: dense fallback, conditional child-target selection,
+  projected pre-child exclusions, invalid input without a child, skips
+  producing members `>= replicas`, and freeze-on-invalid-input with a child.
 - Renderer: placeholder substitution, offset arithmetic, fail-fast on
-  malformed input, order-preserving output equal to the current enumeration.
-  Fail-fast on an unknown `format` value (renderer/controller skew).
+  malformed input, structural output equality with the current enumeration,
+  and fail-fast on an unknown `format` value (renderer/controller skew).
 - Size guardrail: threshold behavior on update and first create.
+- Long skip ranges: a one-member source with skip range `0-99999` stays far
+  below the stored-object guardrail and renders member `100000`.
+- Source naming: derived name length, UID-hash stability, and refusal to
+  write an object owned by another RBG.
 
 ##### Integration tests
 
-- Mode gating: new RBGs get `refine-compact`; `legacy` and `refine` RBGs are
-  not rewritten.
+- Mode gating: with the feature gate enabled, new RBGs get
+  `refine-compact`; with it disabled they get `refine`. `legacy` and `refine`
+  RBGs are not rewritten.
 - Opt-in migration: `refine` → `refine-compact` annotation edit creates the
-  `<rbg>-source` object and injects the renderer on the next rollout; the
+  `<rbg>-source-<uid-hash>` object and injects the renderer on the next rollout; the
   legacy `<rbg>` object stays untouched until rollout completion, then is
   deleted.
+- Migration rejection: deprecated workload types and `legacy` RBGs are
+  rejected, the annotation is reverted, and a Warning Event is emitted.
+- Source-publication ordering: a failed source write blocks the child update;
+  a source write followed by a controller crash does not authorize a new Pod.
+- Name collision: RBGs `foo` and `foo-source` coexist without one controller
+  overwriting the other's object.
+- Legacy population: record which ConfigMap the shipped injector mounts and
+  which objects the controller creates, exposing the pre-existing gap rather
+  than certifying it as unchanged.
 - Downgrade drill: a `refine-compact` RBG under an old controller is not
   silently corrupted without operator action; document the re-pin behavior.
 
 ##### e2e tests
 
 - Extend `test/e2e/testcase/v1alpha2/discovery_configmap.go`: the rendered
-  file is **field-by-field and order-sensitive** equal to the enumeration the
-  current builder produces for multi-pod patterns and StandalonePattern,
-  including relative address strings.
-- Committed-membership scenarios: KEP-499 drain keeps committed members
+  file is structurally equal, after reconciliation converges, to the
+  enumeration the current builder produces for multi-pod patterns and
+  StandalonePattern, including relative address
+  strings. At least one fixture has non-alphabetical role names (for example
+  `[prefill, decode]`) so map-key sorting is actually exercised.
+- Membership scenarios: KEP-499 drain keeps committed members
   (including ordinals `>= replicas`) in the rendered file; invalid exclusion
-  input freezes the last published target.
+  input freezes the last published target when a child exists and produces no
+  members before first child creation.
 - Renderer failure surfacing on malformed input.
+- Scale-up interleaving: the source is published before the child update that
+  authorizes a new Pod, and the new Pod renders the target that authorized it.
 - Migration path: v0.8-shaped `refine` RBG → new controller stays on
   enumeration until opt-in; during and after opt-in, every pod (old and new)
   always reads either the legacy enumeration or a valid rendered file — no
@@ -540,14 +651,17 @@ None.
 
 #### Alpha
 
-- Mode gating, compact format, renderer, and guardrail implemented; new RBGs
-  default to `refine-compact`.
+- Mode gating, compact format, renderer, and guardrail implemented behind the
+  `CompactDiscoverySource` feature gate. The gate defaults to **off**; new
+  RBGs continue to get `refine` until an operator enables it.
 - Unit, integration, and e2e coverage as above.
 - A large-scale (2000+ instance) scale test showing the stored ConfigMap
   stays well under the guardrail and reconciliation does not fail.
 
 #### Beta
 
+- `CompactDiscoverySource` defaults to on, making `refine-compact` the
+  default for newly created RBGs.
 - Renderer image published and versioned; docs for direct compact-source
   consumption and the snapshot contract.
 - No reports of rendered-output divergence.
@@ -565,16 +679,16 @@ None.
 ### Upgrade / Downgrade Strategy
 
 See [Rollout, Migration, and Downgrade](#rollout-migration-and-downgrade).
-Upgrades only change new RBGs by default; existing populations are untouched
-unless an operator opts in. In-place downgrade of `refine-compact` RBGs is
-unsupported: recreate the RBG.
+With the feature gate off, upgrades change no RBG. With it on, upgrades change
+only new RBGs and RBGs whose operators explicitly opt in. In-place downgrade
+of `refine-compact` RBGs is unsupported: recreate the RBG.
 
 ### Version Skew Strategy
 
 The `format: compact` marker lets any renderer detect the schema. The compact
-source lives in the separate `<rbg>-source` object, which older controllers
-never read or write (they only manage `legacy` per-role ConfigMaps and the
-`refine` `<rbg>` object).
+source lives in the separate `<rbg>-source-<uid-hash>` object, which older
+controllers never read or write (they only manage `legacy` per-role ConfigMaps
+and the `refine` `<rbg>` object).
 
 Renderer image versioning: the image reference is a controller-level setting
 (e.g. a `--discovery-renderer-image` flag, defaulting to the image released
@@ -590,9 +704,10 @@ skew is operator-visible, never silent.
 
 ###### How can this feature be enabled / disabled in a live cluster?
 
-Enabled automatically for newly created RBGs after the controller upgrade;
-existing RBGs keep their pinned mode. Opt-in migration for `refine` RBGs is
-an annotation edit.
+Enabled with the `CompactDiscoverySource` feature gate. At alpha the gate
+defaults to off; turning it on makes newly created RBGs default to
+`refine-compact`. Existing RBGs keep their pinned mode. Opt-in migration for
+`refine` RBGs is an annotation edit.
 
 ###### Does enabling the feature change any default behavior?
 
@@ -601,13 +716,16 @@ container. Running pods of other populations are unaffected.
 
 ###### Can the feature be disabled once it has been enabled (i.e. can we roll back the enablement)?
 
-Roll back the controller image. In-place downgrade for `refine-compact` RBGs
-is unsupported; recreate them (documented in the downgrade matrix).
+Turn the feature gate off. New RBGs then get `refine`, and invalid opt-in
+attempts are rejected. Existing `refine-compact` RBGs continue to reconcile so
+their workloads are not disturbed. Rolling back the controller image itself
+remains unsupported for `refine-compact` RBGs; recreate them (documented in
+the downgrade matrix).
 
 ###### What happens if we reenable the feature if it was previously rolled back?
 
-The controller rebuilds the compact source deterministically from spec and
-the committed child target.
+The controller rebuilds the compact source deterministically from the same
+conditional membership algorithm as the shipped builder.
 
 ###### Are there any tests for feature enablement/disablement?
 
@@ -639,7 +757,7 @@ No. `legacy` and `refine` modes remain supported.
 ###### How can an operator determine if the feature is in use by workloads?
 
 `kubectl get rbg -o yaml` shows `discovery-config-mode: refine-compact`; the
-`<rbg>-source` ConfigMap carries `format: compact`.
+`<rbg>-source-<uid-hash>` ConfigMap carries `format: compact`.
 
 ###### How can someone using this feature know that it is working for their instance?
 
@@ -684,7 +802,7 @@ No.
 ###### Will enabling / using this feature result in increasing size or count of the existing API objects?
 
 The opposite for new RBGs: the stored ConfigMap is `O(roles x components)`
-instead of `O(instances)`, with bounded growth from committed skip ordinals.
+instead of `O(instances)`, with bounded growth from normalized skip ranges.
 Opt-in migration shrinks existing objects the same way.
 
 ###### Will enabling / using this feature result in increasing time taken by any operations covered by existing SLIs/SLOs?
@@ -724,7 +842,8 @@ unaffected because the rendered file is local.
 ###### What steps should be taken if SLOs are not being met to determine the problem?
 
 Inspect RBG Warning Events and controller logs, then
-`kubectl get cm <rbg> -o yaml` and the init container logs of an affected Pod.
+`kubectl get cm <rbg> <rbg>-source-<uid-hash> -o yaml` and the init container
+logs of an affected Pod.
 
 ## Implementation History
 
@@ -735,13 +854,23 @@ Inspect RBG Warning Events and controller logs, then
   encoding, spec-order rendering, snapshot-contract disclosure, stored-object
   guardrail, three-population migration and downgrade matrix.
 - 2026-11-13 (revision): design-review fixes — the compact source moved to a
-  separate `<rbg>-source` object so opt-in migration never rewrites the
+  separate source object so opt-in migration never rewrites the
   legacy object under running pods (no wrong-format window; legacy object
   deleted only after rollout completion); unified the equality gate to
-  semantic (field-by-field, order-sensitive) equality; corrected the
+  structural equality; corrected the
   downgrade mechanics; specified renderer image versioning and fail-fast on
   unknown `format`; bounded the rendered volume with `emptyDir` `sizeLimit`;
   and completed the size/distribution quantification.
+- 2026-11-17 (review fixes): corrected role-map ordering, conditional
+  membership selection, legacy injector behavior, and Summary arithmetic;
+  changed skip ordinals to compact normalized ranges; pinned the rendered
+  schema and renderer init-container security posture; added a source-first
+  publication barrier, collision-resistant source naming, migration rejection
+  and deletion-readiness semantics, and an alpha feature gate.
+
+Merge-order note: PR #577, which marks KEP-133 replaced by this KEP, must not
+merge before this KEP is accepted. Merge this KEP first, or land both
+together.
 
 ## Drawbacks
 
@@ -772,13 +901,13 @@ Inspect RBG Warning Events and controller logs, then
    deferred; doubles storage and reconcile cost to serve a rollback path
    that can instead be handled by RBG recreation.
 7. **active/draining membership fields**: rejected. The file is static and
-   declarative; committed membership (KEP-499) already expresses the drain
+   declarative; KEP-499 membership encoding already expresses the drain
    window correctly, and readiness is EndpointSlice's job.
 8. **In-place rewrite of the shared `<rbg>` ConfigMap for migration**:
    rejected — it would swap the file format under running pods that
    direct-mount the object (live kubelet sync), including containers that
    re-read the file after a crash restart, creating a breaking window for
-   the entire rollout duration. The separate `<rbg>-source` object avoids
+   the entire rollout duration. The separate source object avoids
    the window entirely.
 
 ## Infrastructure Needed (Optional)
