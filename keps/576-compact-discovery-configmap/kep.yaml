@@ -20,3 +20,10 @@ replaces:
 
 milestone:
   alpha: "v0.9.0"
+
+feature-gates:
+  - name: CompactDiscoverySource
+    components:
+      - rbgs-controller-manager
+
+disable-supported: true
