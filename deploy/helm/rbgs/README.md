@@ -182,6 +182,12 @@ the listed roles (the migration guide is tracked in
 [sgl-project/rbg#454](https://github.com/sgl-project/rbg/issues/454)), and switch to `false` only
 after reconciliation has completed and the legacy workloads have been deleted.
 
+Controller rollouts drain admission traffic: each old manager Pod sleeps 5s in a preStop hook
+before SIGTERM (`terminationGracePeriodSeconds: 35`). An upgrade that picks this up rolls only the
+controller Pods, which take about 5s longer to terminate; RBG workloads are not affected. On large
+clusters where endpoint propagation takes longer, raise both with a post-renderer or kustomize
+patch; keep the grace period at least the sleep plus 30s.
+
 ### Breaking change: values regrouped in chart v0.8.0
 
 **Upgrade path**: from chart **v0.8.0-alpha.2 or earlier** (all previous releases, e.g. `v0.7.0`
