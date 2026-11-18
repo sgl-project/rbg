@@ -1,20 +1,36 @@
-// Copyright 2026 The RBG Authors.
-// SPDX-License-Identifier: Apache-2.0
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
 
 package statefulmode
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
@@ -23,7 +39,7 @@ import (
 
 const preDeleteHoldLabel = "consumer.example/held"
 
-func holdPreDelete(t *testing.T, h *rollbackTestHarness, markNotReady bool, instances ...*workloadsv1alpha2.RoleInstance) client.Client {
+func holdPreDelete(t *testing.T, h *rollbackTestHarness, markNotReady bool, instances ...*workloadsv1alpha2.RoleInstance) client.WithWatch {
 	t.Helper()
 	h.set.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceSetLifecycle{
 		PreDelete: &workloadsv1alpha2.RoleInstanceSetLifecycleHook{
@@ -82,6 +98,44 @@ func TestStatefulRollingUpdateAndScaleDownWaitForPreDeleteHook(t *testing.T) {
 	}
 }
 
+func TestStatefulPreDeleteWaitsForFinalizer(t *testing.T) {
+	for _, test := range []struct {
+		name           string
+		configureLabel bool
+	}{
+		{name: "finalizer only"},
+		{name: "configured label absent", configureLabel: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newRollbackTestHarness(t, "hook-finalizer", 0, 0, 0)
+			instance := h.instance(0, h.current.Name, true)
+			c := holdPreDelete(t, h, false, instance)
+			hook := h.set.Spec.Lifecycle.PreDelete
+			if !test.configureLabel {
+				hook.LabelsHandler = nil
+			}
+			delete(instance.Labels, preDeleteHoldLabel)
+			const holdFinalizer = "consumer.example/drain"
+			hook.FinalizersHandler = []string{holdFinalizer}
+			instance.Finalizers = []string{holdFinalizer}
+			require.NoError(t, c.Update(context.Background(), instance))
+
+			h.reconcile(t, instance)
+			h.assertDeleted(t)
+			require.Equal(t, constants.RoleInstanceLifecycleStatePreparingDelete, readLifecycle(t, c, instance))
+
+			// The first pass announces the drain. The next pass must honor the finalizer.
+			h.reconcile(t, instance)
+			h.assertDeleted(t)
+
+			instance.Finalizers = nil
+			require.NoError(t, c.Update(context.Background(), instance))
+			h.reconcile(t, instance)
+			h.assertDeleted(t, instance.Name)
+		})
+	}
+}
+
 func TestStatefulScaleDownCancellationRestoresPreDeleteReadiness(t *testing.T) {
 	h := newRollbackTestHarness(t, "cancel-scale-down", 1, 0, 0)
 	h.set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
@@ -110,6 +164,72 @@ func TestStatefulScaleDownCancellationRestoresPreDeleteReadiness(t *testing.T) {
 	require.NoError(t, c.Update(context.Background(), held))
 	h.reconcile(t, retained, held)
 	h.assertDeleted(t, held.Name)
+}
+
+func TestCancelScaleDownRestoresTargetRevisionAfterHookRemoval(t *testing.T) {
+	h := newRollbackTestHarness(t, "cancel-scale-down-without-hook", 1, 0, 0)
+	h.set.Spec.UpdateStrategy.Paused = true
+	stale := h.instance(0, h.intermediate.Name, true)
+	retained := h.instance(1, h.current.Name, true)
+	c := holdPreDelete(t, h, true, retained)
+
+	h.reconcile(t, stale, retained)
+	h.assertDeleted(t)
+	require.Equal(t, constants.RoleInstanceLifecycleStatePreparingDelete, readLifecycle(t, c, retained))
+	require.False(t, isHealthy(retained))
+
+	// The stale member keeps the rollout pending while the retained member is at its target revision.
+	h.set.Spec.Lifecycle = nil
+	h.set.Spec.Replicas = ptr.To(int32(2))
+	h.reconcile(t, stale, retained)
+	h.assertDeleted(t)
+	require.Equal(t, constants.RoleInstanceLifecycleStateNormal, readLifecycle(t, c, retained))
+	gate := readiness.GetReadinessCondition(retained)
+	require.NotNil(t, gate)
+	require.Equal(t, corev1.ConditionTrue, gate.Status)
+}
+
+func TestPreDeleteLifecyclePatchFailureStopsReconcile(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		restore bool
+	}{
+		{name: "enter PreparingDelete"},
+		{name: "restore Normal", restore: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newRollbackTestHarness(t, "pre-delete-patch", 1, 0, 0)
+			base := h.instance(0, h.current.Name, true)
+			held := h.instance(1, h.current.Name, true)
+			c := holdPreDelete(t, h, true, held)
+			instances := []*workloadsv1alpha2.RoleInstance{base, held}
+			if test.restore {
+				h.reconcile(t, instances...)
+				h.assertDeleted(t)
+				require.Equal(t, constants.RoleInstanceLifecycleStatePreparingDelete, readLifecycle(t, c, held))
+
+				h.set.Spec.Replicas = ptr.To(int32(2))
+				// An excess member whose hook has released can be deleted if reconcile continues.
+				excess := h.instance(2, h.current.Name, true)
+				instancelifecycle.SetRoleInstanceLifecycle(constants.RoleInstanceLifecycleStatePreparingDelete)(excess)
+				instances = append(instances, excess)
+			}
+			stateBefore := instancelifecycle.GetRoleInstanceLifecycleState(held)
+			patchErr := errors.New("lifecycle patch failed")
+			h.control.lifecycleControl = instancelifecycle.New(interceptor.NewClient(c, interceptor.Funcs{
+				Patch: func(_ context.Context, _ client.WithWatch, obj client.Object, _ client.Patch, _ ...client.PatchOption) error {
+					require.Equal(t, held.Name, obj.GetName())
+					return patchErr
+				},
+			}))
+
+			_, err := h.control.updateStatefulInstanceSet(context.Background(), h.set, h.current, h.current,
+				0, instances, []*appsv1.ControllerRevision{h.current, h.intermediate})
+			require.ErrorIs(t, err, patchErr)
+			h.assertDeleted(t)
+			require.Equal(t, stateBefore, readLifecycle(t, c, held))
+		})
+	}
 }
 
 func TestOrderedScaleDownWaitsForHighestPreDeleteHook(t *testing.T) {
@@ -240,4 +360,25 @@ func TestRollingUpdateCountsUnavailableDrainOnce(t *testing.T) {
 			require.Equal(t, constants.RoleInstanceLifecycleStatePreparingDelete, readLifecycle(t, c, lower))
 		})
 	}
+}
+
+func TestStaleSurgeDrainPreservesBaseRolloutBudget(t *testing.T) {
+	h := newRollbackTestHarness(t, "surge-pre-delete", 2, 0, 2)
+	base0 := h.instance(0, h.intermediate.Name, true)
+	base1 := h.instance(1, h.intermediate.Name, true)
+	readySurge := h.instance(2, h.current.Name, true)
+	staleSurge := h.instance(3, h.intermediate.Name, true)
+	c := holdPreDelete(t, h, false, base0, base1, staleSurge)
+
+	// With maxUnavailable=0, the ready surge supplies the one available base rollout slot.
+	h.reconcile(t, base0, base1, readySurge, staleSurge)
+	h.assertDeleted(t)
+	require.Equal(t, constants.RoleInstanceLifecycleStatePreparingDelete, readLifecycle(t, c, staleSurge))
+	require.Equal(t, constants.RoleInstanceLifecycleStatePreparingDelete, readLifecycle(t, c, base1))
+	require.NotEqual(t, constants.RoleInstanceLifecycleStatePreparingDelete, readLifecycle(t, c, base0))
+
+	delete(staleSurge.Labels, preDeleteHoldLabel)
+	require.NoError(t, c.Update(context.Background(), staleSurge))
+	h.reconcile(t, base0, base1, readySurge, staleSurge)
+	h.assertDeleted(t, staleSurge.Name)
 }
