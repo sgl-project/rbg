@@ -81,7 +81,7 @@ Before migrating a stateful role, switch the discovery mode to `refine` accordin
 | --- | --- | --- |
 | Created by v0.7.0 or later, or a fresh v0.9.0 install | `refine` | None. |
 | Upgraded from v0.6.0 or earlier | Derived `legacy` | Set the RBG's discovery-mode annotation to `refine` and trigger a reconcile. |
-| RoleBasedGroupSet child, any origin | Effectively `legacy` | Set `rbg.workloads.x-k8s.io/discovery-config-mode: refine` in `spec.groupTemplate.annotations`. The set controller replaces child annotations with the template's, so an annotation written directly on a child does not survive. |
+| RoleBasedGroupSet child, any origin | `refine`, unless `legacy` was set explicitly | None for a child without the annotation, which is how v0.7.0 and v0.8.0 leave their children: at its first reconcile after the upgrade the controller pins it to `refine`. Only the annotation is written, so no Pod restarts and no revision is created. A child that carries `legacy` keeps it. To move it, set `rbg.workloads.x-k8s.io/discovery-config-mode: refine` in `spec.groupTemplate.annotations`; the set controller applies template annotations to its children and otherwise keeps the mode a child has. |
 
 For a plain RoleBasedGroup, set the annotation and then verify the ConfigMap exists before migrating:
 

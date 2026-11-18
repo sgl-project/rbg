@@ -35,6 +35,16 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
+func roleBasedGroupSetControllerRef() metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion: workloadsv1alpha2.GroupVersion.String(),
+		Kind:       "RoleBasedGroupSet",
+		Name:       "test-rbgset",
+		UID:        "rbgset-test-uid",
+		Controller: ptr.To(true),
+	}
+}
+
 func TestEnsureDiscoveryConfigMode(t *testing.T) {
 	type testCase struct {
 		name               string
@@ -84,6 +94,48 @@ func TestEnsureDiscoveryConfigMode(t *testing.T) {
 			},
 			wantRequeue:        false,
 			wantMode:           constants.RefineDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "missing annotation with observed status should set legacy mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "RoleBasedGroupSet child with observed status and no annotation should set refine mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				rbg.OwnerReferences = []metav1.OwnerReference{roleBasedGroupSetControllerRef()}
+			},
+			wantRequeue:        false,
+			wantMode:           constants.RefineDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "RoleBasedGroupSet child with an explicit legacy mode should keep it",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				rbg.OwnerReferences = []metav1.OwnerReference{roleBasedGroupSetControllerRef()}
+				rbg.SetDiscoveryConfigMode(constants.LegacyDiscoveryConfigMode)
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "legacy RBG owned by another kind should stay in legacy mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				ref := roleBasedGroupSetControllerRef()
+				ref.Kind = "Other"
+				rbg.OwnerReferences = []metav1.OwnerReference{ref}
+				rbg.SetDiscoveryConfigMode(constants.LegacyDiscoveryConfigMode)
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
 			wantModeAnnotation: true,
 		},
 	}

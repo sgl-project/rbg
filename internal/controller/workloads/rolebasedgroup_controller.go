@@ -416,14 +416,25 @@ func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
 	}
 
 	// determine mode, update annotation
-	legacy, err := r.shouldUseLegacyDiscoveryConfig(ctx, rbg)
-	if err != nil {
-		return true, err
-	}
-	if legacy {
-		mode = constants.LegacyDiscoveryConfigMode
-	} else {
+	if isRoleBasedGroupSetChild(rbg) {
+		// A RoleBasedGroupSet child is created by the set controller and is never a
+		// legacy object, so it must not go through the status check below. A child
+		// has status and no mode when it was created by v0.7.0 or v0.8.0, whose set
+		// controller removed the annotation as template drift (#603). Deriving legacy
+		// for it would stop its discovery ConfigMap from being reconciled, and the
+		// set controller now keeps whatever mode a child carries. An explicit mode,
+		// set on the child or through the set template, is left alone above.
 		mode = constants.RefineDiscoveryConfigMode
+	} else {
+		legacy, err := r.shouldUseLegacyDiscoveryConfig(ctx, rbg)
+		if err != nil {
+			return true, err
+		}
+		if legacy {
+			mode = constants.LegacyDiscoveryConfigMode
+		} else {
+			mode = constants.RefineDiscoveryConfigMode
+		}
 	}
 
 	old := rbg.DeepCopy()
@@ -436,6 +447,16 @@ func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
 	// Don't requeue here - continue to reconcile ConfigMap and workloads in the same loop
 	// to avoid race condition where workload is created before ConfigMap exists
 	return false, nil
+}
+
+// isRoleBasedGroupSetChild reports whether the RBG is controlled by a RoleBasedGroupSet.
+func isRoleBasedGroupSetChild(rbg *workloadsv1alpha2.RoleBasedGroup) bool {
+	ref := metav1.GetControllerOfNoCopy(rbg)
+	if ref == nil || ref.Kind != "RoleBasedGroupSet" {
+		return false
+	}
+	gv, err := schema.ParseGroupVersion(ref.APIVersion)
+	return err == nil && gv.Group == workloadsv1alpha2.GroupVersion.Group
 }
 
 func (r *RoleBasedGroupReconciler) shouldUseLegacyDiscoveryConfig(
