@@ -1114,6 +1114,10 @@ func TestReconcileStatefulSet_ReadFailureDoesNotScaleToZero(t *testing.T) {
 			}
 			return c.List(ctx, list, opts...)
 		},
+		Apply: func(ctx context.Context, c client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+			writes = append(writes, "apply")
+			return c.Apply(ctx, obj, opts...)
+		},
 		Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
 			data, _ := patch.Data(obj)
 			writes = append(writes, string(data))
@@ -1132,6 +1136,20 @@ func TestReconcileStatefulSet_ReadFailureDoesNotScaleToZero(t *testing.T) {
 	got := &appsv1.StatefulSet{}
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Name: live.Name, Namespace: live.Namespace}, got))
 	assert.Equal(t, int32(5), *got.Spec.Replicas, "live replicas must be unchanged")
+}
+
+func TestStatefulSetReconciler_HeadlessServiceWithCacheLag(t *testing.T) {
+	s := laggingScheme(t)
+	rbg := laggingRBG(wrappersv2.BuildStandaloneRole("worker").
+		WithWorkload("apps/v1", "StatefulSet").Obj())
+	backend := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg).Build()
+	r := NewStatefulSetReconciler(s, &laggingCache{Client: backend})
+
+	require.NoError(t, r.Reconciler(context.Background(), rbg, &rbg.Spec.Roles[0], nil, "rev-1"))
+	owner := headlessServiceOwner(t, backend, rbg)
+	require.Equal(t, "apps/v1", owner.APIVersion)
+	require.Equal(t, "StatefulSet", owner.Kind)
+	require.Equal(t, rbg.GetWorkloadName(&rbg.Spec.Roles[0]), owner.Name)
 }
 
 func Test_calculateRoleUnreadyReplicas(t *testing.T) {
