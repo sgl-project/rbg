@@ -20,7 +20,10 @@ package v1alpha2
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
+	managedfields "k8s.io/apimachinery/pkg/util/managedfields"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	internal "sigs.k8s.io/rbgs/client-go/applyconfiguration/internal"
 )
 
 // RoleBasedGroupApplyConfiguration represents a declarative configuration of the RoleBasedGroup type for use
@@ -41,6 +44,42 @@ func RoleBasedGroup(name, namespace string) *RoleBasedGroupApplyConfiguration {
 	b.WithKind("RoleBasedGroup")
 	b.WithAPIVersion("workloads.x-k8s.io/v1alpha2")
 	return b
+}
+
+// ExtractRoleBasedGroup extracts the applied configuration owned by fieldManager from
+// roleBasedGroup. If no managedFields are found in roleBasedGroup for fieldManager, a
+// RoleBasedGroupApplyConfiguration is returned with only the Name, Namespace (if applicable),
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
+// field managers have taken ownership of all the fields previously owned by fieldManager, or because
+// the fieldManager never owned fields any fields.
+// roleBasedGroup must be a unmodified RoleBasedGroup API object that was retrieved from the Kubernetes API.
+// ExtractRoleBasedGroup provides a way to perform a extract/modify-in-place/apply workflow.
+// Note that an extracted apply configuration will contain fewer fields than what the fieldManager previously
+// applied if another fieldManager has updated or force applied any of the previously applied fields.
+// Experimental!
+func ExtractRoleBasedGroup(roleBasedGroup *workloadsv1alpha2.RoleBasedGroup, fieldManager string) (*RoleBasedGroupApplyConfiguration, error) {
+	return extractRoleBasedGroup(roleBasedGroup, fieldManager, "")
+}
+
+// ExtractRoleBasedGroupStatus is the same as ExtractRoleBasedGroup except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractRoleBasedGroupStatus(roleBasedGroup *workloadsv1alpha2.RoleBasedGroup, fieldManager string) (*RoleBasedGroupApplyConfiguration, error) {
+	return extractRoleBasedGroup(roleBasedGroup, fieldManager, "status")
+}
+
+func extractRoleBasedGroup(roleBasedGroup *workloadsv1alpha2.RoleBasedGroup, fieldManager string, subresource string) (*RoleBasedGroupApplyConfiguration, error) {
+	b := &RoleBasedGroupApplyConfiguration{}
+	err := managedfields.ExtractInto(roleBasedGroup, internal.Parser().Type("io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroup"), fieldManager, b, subresource)
+	if err != nil {
+		return nil, err
+	}
+	b.WithName(roleBasedGroup.Name)
+	b.WithNamespace(roleBasedGroup.Namespace)
+
+	b.WithKind("RoleBasedGroup")
+	b.WithAPIVersion("workloads.x-k8s.io/v1alpha2")
+	return b, nil
 }
 func (b RoleBasedGroupApplyConfiguration) IsApplyConfiguration() {}
 

@@ -20,7 +20,10 @@ package v1alpha2
 import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	types "k8s.io/apimachinery/pkg/types"
+	managedfields "k8s.io/apimachinery/pkg/util/managedfields"
 	v1 "k8s.io/client-go/applyconfigurations/meta/v1"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	internal "sigs.k8s.io/rbgs/client-go/applyconfiguration/internal"
 )
 
 // RoleBasedGroupScalingAdapterApplyConfiguration represents a declarative configuration of the RoleBasedGroupScalingAdapter type for use
@@ -41,6 +44,42 @@ func RoleBasedGroupScalingAdapter(name, namespace string) *RoleBasedGroupScaling
 	b.WithKind("RoleBasedGroupScalingAdapter")
 	b.WithAPIVersion("workloads.x-k8s.io/v1alpha2")
 	return b
+}
+
+// ExtractRoleBasedGroupScalingAdapter extracts the applied configuration owned by fieldManager from
+// roleBasedGroupScalingAdapter. If no managedFields are found in roleBasedGroupScalingAdapter for fieldManager, a
+// RoleBasedGroupScalingAdapterApplyConfiguration is returned with only the Name, Namespace (if applicable),
+// APIVersion and Kind populated. It is possible that no managed fields were found for because other
+// field managers have taken ownership of all the fields previously owned by fieldManager, or because
+// the fieldManager never owned fields any fields.
+// roleBasedGroupScalingAdapter must be a unmodified RoleBasedGroupScalingAdapter API object that was retrieved from the Kubernetes API.
+// ExtractRoleBasedGroupScalingAdapter provides a way to perform a extract/modify-in-place/apply workflow.
+// Note that an extracted apply configuration will contain fewer fields than what the fieldManager previously
+// applied if another fieldManager has updated or force applied any of the previously applied fields.
+// Experimental!
+func ExtractRoleBasedGroupScalingAdapter(roleBasedGroupScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter, fieldManager string) (*RoleBasedGroupScalingAdapterApplyConfiguration, error) {
+	return extractRoleBasedGroupScalingAdapter(roleBasedGroupScalingAdapter, fieldManager, "")
+}
+
+// ExtractRoleBasedGroupScalingAdapterStatus is the same as ExtractRoleBasedGroupScalingAdapter except
+// that it extracts the status subresource applied configuration.
+// Experimental!
+func ExtractRoleBasedGroupScalingAdapterStatus(roleBasedGroupScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter, fieldManager string) (*RoleBasedGroupScalingAdapterApplyConfiguration, error) {
+	return extractRoleBasedGroupScalingAdapter(roleBasedGroupScalingAdapter, fieldManager, "status")
+}
+
+func extractRoleBasedGroupScalingAdapter(roleBasedGroupScalingAdapter *workloadsv1alpha2.RoleBasedGroupScalingAdapter, fieldManager string, subresource string) (*RoleBasedGroupScalingAdapterApplyConfiguration, error) {
+	b := &RoleBasedGroupScalingAdapterApplyConfiguration{}
+	err := managedfields.ExtractInto(roleBasedGroupScalingAdapter, internal.Parser().Type("io.k8s.sigs.rbgs.api.workloads.v1alpha2.RoleBasedGroupScalingAdapter"), fieldManager, b, subresource)
+	if err != nil {
+		return nil, err
+	}
+	b.WithName(roleBasedGroupScalingAdapter.Name)
+	b.WithNamespace(roleBasedGroupScalingAdapter.Namespace)
+
+	b.WithKind("RoleBasedGroupScalingAdapter")
+	b.WithAPIVersion("workloads.x-k8s.io/v1alpha2")
+	return b, nil
 }
 func (b RoleBasedGroupScalingAdapterApplyConfiguration) IsApplyConfiguration() {}
 
