@@ -9,6 +9,9 @@
   - [Helm](./install.md)
 - Quick Start
   - [Quick Start Guide](./quick_start.md)
+- Migration
+  - [v1alpha1 to v1alpha2](./migration-v1alpha1-to-v1alpha2.md)
+  - [v1alpha1 到 v1alpha2（中文）](./zh/migration-v1alpha1-to-v1alpha2.md)
 - Key Features
   - [Multi Roles](features/multiroles.md)
   - [Workload Patterns](features/patterns.md)
@@ -38,7 +41,7 @@
     - [Leader-Worker Pattern](../examples/basic/rbg/patterns/leader-worker-pattern.yaml)
     - [Custom Components Pattern](../examples/basic/rbg/patterns/custom-components-pattern.yaml)
     - [Role Dependencies](../examples/basic/rbg/dependency/role-dependencies.yaml)
-    - [Role Templates](../examples/basic/rbg/role-temlate/rbg-with-roletemplates.yaml)
+    - [Role Templates](../examples/basic/rbg/role-template/rbg-with-roletemplates.yaml)
     - [Rolling Update](../examples/basic/rbg/update-strategy/rolling-update.yaml)
     - [Restart Policy](../examples/basic/rbg/restart-policy/restart-policy.yaml)
     - [Gang Scheduling (Scheduler Plugins)](../examples/basic/rbg/scheduling/scheduler-plugins-gang.yaml)
