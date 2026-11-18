@@ -25,8 +25,7 @@ Finishing one track does not imply that the other is complete. Check both before
 
 - Upgrade the RBG controller to `0.9.0` or later and confirm that the controller, conversion webhook, and admission webhook are healthy.
 - Confirm the roles being migrated are currently ready and have no unrelated rollout in progress. An `InstanceSet` role is an exception: it has not reconciled since v0.7.0, and its unsupported workload type prevents the whole RoleBasedGroup from passing preflight reconciliation.
-- Complete the discovery ConfigMap prerequisite for every stateful role before submitting its migration. RBGs upgraded from v0.6.0 or earlier and RoleBasedGroupSet children run in `legacy` discovery mode; see [Discovery ConfigMap prerequisite (known issue #595)](#discovery-configmap-prerequisite-known-issue-595).
-- Confirm each role has an existing Pattern and a resolvable `template` or `templateRef`. A role without these is already invalid for reconciliation; repair or remove it through a separate change before migration.
+- Complete the discovery ConfigMap prerequisite for every stateful role before submitting its migration. RBGs upgraded from v0.6.0 or earlier and RoleBasedGroupSet children run in `legacy` discovery mode; see [Discovery ConfigMap prerequisite](#discovery-configmap-prerequisite).
 - Coordinate with autoscaling, traffic management, scheduling, and any business process that can change the role while it is being migrated.
 - Freeze external writes to the object during the change window.
 - Save the current object and record its revision before editing it.
@@ -72,16 +71,16 @@ The inventory is an impact report, not a rollout decision. The operator decides 
 
 ## 2. Migrate one role at a time
 
-### Discovery ConfigMap prerequisite (known issue #595)
+### Discovery ConfigMap prerequisite
 
-Pods of stateful roles — StatefulSet, LeaderWorkerSet, and Stateful-pattern RoleInstanceSet roles — mount a discovery ConfigMap named after the RoleBasedGroup. Until #595 is fixed, the controller creates that ConfigMap only when `rbg.workloads.x-k8s.io/discovery-config-mode` is `refine`. An object in `legacy` mode therefore fails after migration: the new Pods stay in `ContainerCreating` with `configmap "RBG_NAME" not found`, the old workload is already deleted, and nothing recovers the role automatically.
+The discovery ConfigMap is the Pod discovery information (`config.yaml`) the controller creates and mounts into the Pods of stateful roles. Since v0.7.0 the controller maintains one ConfigMap per RoleBasedGroup instead of one per role (identical copies); the content format is unchanged. Each RBG records its mode in the annotation `rbg.workloads.x-k8s.io/discovery-config-mode` (the discovery mode below), either `legacy` or `refine`; the controller creates the ConfigMap only in `refine` mode.
 
-Check the object's origin before migrating a stateful role:
+Before migrating a stateful role, switch the discovery mode to `refine` according to the object's origin:
 
 | Object origin | Discovery mode | Action before migrating |
 | --- | --- | --- |
-| Created by v0.7.0 or later, or a fresh v0.9.0 install | `refine` | None: the controller creates the ConfigMap. |
-| Upgraded from v0.6.0 or earlier | Derived `legacy` | Set the mode annotation to `refine` on the RBG, trigger a reconcile, and verify the ConfigMap exists. |
+| Created by v0.7.0 or later, or a fresh v0.9.0 install | `refine` | None. |
+| Upgraded from v0.6.0 or earlier | Derived `legacy` | Set the RBG's discovery-mode annotation to `refine` and trigger a reconcile. |
 | RoleBasedGroupSet child, any origin | Effectively `legacy` | Set `rbg.workloads.x-k8s.io/discovery-config-mode: refine` in `spec.groupTemplate.annotations`. The set controller replaces child annotations with the template's, so an annotation written directly on a child does not survive. |
 
 For a plain RoleBasedGroup, set the annotation and then verify the ConfigMap exists before migrating:
@@ -89,16 +88,19 @@ For a plain RoleBasedGroup, set the annotation and then verify the ConfigMap exi
 ```bash
 kubectl annotate rolebasedgroup RBG_NAME -n NAMESPACE \
   rbg.workloads.x-k8s.io/discovery-config-mode=refine --overwrite
+# Confirm the ConfigMap exists before migrating:
 kubectl get configmap RBG_NAME -n NAMESPACE
 ```
 
-For a RoleBasedGroupSet, the annotation belongs in `spec.groupTemplate.annotations`, not on the child; an annotation written directly on a child does not survive the set controller's sync.
-
 An annotation-only change does not enqueue a reconcile: the controller watches RoleBasedGroup spec changes, not annotation changes. Restart the controller, or submit an approved spec change alongside the annotation, and wait for the ConfigMap to appear before continuing. This prerequisite does not apply to a Deployment role switched to `Stateless` in step 3 below: stateless roles do not mount the ConfigMap.
 
-This is a workaround for #595, not a permanent migration step. Remove it once the controller creates the ConfigMap for every stateful role regardless of mode.
+This limitation is tracked in #595; remove this section once the controller creates the ConfigMap in every discovery mode.
 
-For each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role, after completing the prerequisite above:
+### Migration steps
+
+#### Deployment, StatefulSet, and LeaderWorkerSet roles
+
+With the prerequisite above completed, migrate each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role:
 
 1. Save the current `v1alpha2` representation for audit and review:
 
@@ -115,8 +117,7 @@ For each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role, after completin
    ```
 
 3. Review the role's existing Pattern:
-   - Deployment and StatefulSet roles use `standalonePattern`.
-   - LeaderWorkerSet roles use `leaderWorkerPattern`.
+   - Deployment and StatefulSet roles use `standalonePattern`, and LeaderWorkerSet roles use `leaderWorkerPattern`; keep them unchanged after migration.
    - Preserve the existing template source, replicas, size, patches, rollout strategy, and restart-policy configuration.
    - A missing Pattern, or a Pattern without a resolvable template source, is a pre-existing object-health problem. Stop and repair or remove the role through a separate change.
    - If the existing Pattern conflicts with the old workload type, stop and design the change with the workload owner. Do not remove the workload selector merely to make the object pass validation.
@@ -148,13 +149,13 @@ For each `Deployment`, `StatefulSet`, or `LeaderWorkerSet` role, after completin
 
 8. Stop, pause, or adjust the rollout whenever business conditions require it. Do not continue to the next role merely because the object is writable.
 
-### v1alpha1 InstanceSet roles
+#### v1alpha1 InstanceSet roles
+
+v0.6.0 and earlier have no `RoleInstanceSet` (introduced in v0.7.0): clusters upgraded from those versions must upgrade to `0.9.0` first, then migrate.
 
 A v1alpha1 `InstanceSet` selector is not covered by the compatibility toggle. It has not been reconciled since v0.7.0, and an unsupported workload type makes the whole RoleBasedGroup fail preflight reconciliation rather than isolating the failure to one role.
 
-If the cluster is running v0.6.0 or earlier, `RoleInstanceSet` is not available before the upgrade. Upgrade to v0.7.0 or later first, then migrate the role to `RoleInstanceSet` as soon as possible. If the cluster is already on v0.7.0 or later, the role already does not reconcile.
-
-After the replacement `RoleInstanceSet` is ready, delete the old `InstanceSet` explicitly. Orphan cleanup does not cover InstanceSet, so its Pods continue running next to the replacement until the old object is deleted. Review the deletion with the workload owner and include it in the recovery plan.
+Migrate the role to `RoleInstanceSet`. Orphan cleanup does not cover InstanceSet: after the replacement `RoleInstanceSet` is ready, the old InstanceSet and its Pods run alongside the replacement until the old object is explicitly deleted. Review the deletion with the workload owner and include it in the recovery plan.
 
 ### RoleBasedGroupSet rollout order
 
@@ -163,19 +164,15 @@ A `RoleBasedGroupSet` is not an independent per-child staging mechanism. Its con
 - If the set controller updates a migrated child, restoring the legacy role is a new deprecated use and the admission guard rejects it.
 - If the set controller deletes and re-creates the child from the unmigrated template, the re-created child inherits the legacy type through the create-time exemption for set-owned children, and the role must be migrated again.
 
-Migrate the set template first. Each child deletes its old workload in the same reconcile pass, so the propagated change takes every child's role to zero Pods at the same time. Plan it as a full outage of that role across the set, not as a staged rollout. Set the discovery-mode annotation on the template as described in the known issue above before migrating. If per-child staging is required, use an explicitly reviewed plan that coordinates or isolates the child from set reconciliation. Do not assume that a child can be permanently migrated while its parent template remains unchanged.
+Migrate the set template first. Each child deletes its old workload in the same reconcile pass, so the propagated change takes every child's role to zero Pods at the same time. Plan it as a full outage of that role across the set, not as a staged rollout. Set the discovery-mode annotation on the template as described in the Discovery ConfigMap prerequisite above before migrating. If per-child staging is required, use an explicitly reviewed plan that coordinates or isolates the child from set reconciliation. Do not assume that a child can be permanently migrated while its parent template remains unchanged.
 
 ## Rollback
 
-Before each role migration, retain an immutable copy of the object, its resource version, and any revision history used by your deployment process. These records remain useful for audit and for restoring non-workload fields, but they do not make the workload-type change reversible.
+Before each role migration, retain an immutable copy of the object, its resource version, and revision history. These records remain useful for audit and for restoring non-workload fields, but they do not make the workload-type change reversible.
 
-Once a role has switched to `RoleInstanceSet`, restoring the saved Deployment, StatefulSet, or LeaderWorkerSet selector is a new deprecated use. The validator rejects it even while `controller.deprecatedWorkloadTypes.enabled=true`; compatibility preserves existing roles, but does not authorize reintroducing a deprecated type after migration.
+Once a role has switched to `RoleInstanceSet`, restoring the saved Deployment, StatefulSet, or LeaderWorkerSet selector is a new deprecated use and the validator rejects it. Restoring an InstanceSet selector is equally invalid: the write is accepted, but the whole RoleBasedGroup stops at preflight, status keeps showing `Ready=True`, and only the repeated `FailedReconcileWorkload` warning events reveal it. Do not use restoring a deprecated workload type as the rollback; agree an emergency plan with the business owner before submitting the migration.
 
-Restoring an InstanceSet selector is not a safer alternative. The admission gate checks only Deployment, StatefulSet, and LeaderWorkerSet, so the InstanceSet write is accepted in both compatibility modes; the unsupported workload type then stops the whole RoleBasedGroup during preflight reconciliation. A successful write can be mistaken for a successful rollback while the group has silently stopped reconciling. After such a write the RoleBasedGroup keeps reporting `Ready=True`, because preflight failures do not rebuild status; the only visible signal is the repeated `FailedReconcileWorkload` warning events. Never restore an InstanceSet selector, and after any suspected preflight failure check the RBG's events rather than its Ready condition.
-
-Do not begin migration until the business owner has approved a recovery plan for a failed `RoleInstanceSet` rollout.
-
-If the old workload was already removed, do not manually recreate it with the same name. Let the controller own the replacement workload. Recovery after submission must use the pre-agreed emergency plan rather than a simple restore of the deprecated workload type.
+If the old workload was already removed, do not manually recreate it with the same name. Let the controller own the replacement workload.
 
 ## 3. Rewrite objects in the v1alpha2 storage encoding
 
@@ -194,11 +191,9 @@ kubectl get customresourcedefinition \
   -o custom-columns=CRD:.metadata.name,STORED_VERSIONS:.status.storedVersions
 ```
 
-The API does not expose an object's etcd encoding, so do not try to pick which objects still need a rewrite. For each CRD whose `storedVersions` lists `v1alpha1`, rewrite **every** object of that kind. Skipping an object leaves it v1alpha1-encoded, and after `0.10.0` removes the version it becomes unreadable with `request to convert CR from an invalid group/version: workloads.x-k8s.io/v1alpha1`.
+For each CRD that still lists `v1alpha1`, rewrite **every** object of that kind. The API cannot report an object's etcd encoding, so you cannot select which objects still need a rewrite; skipping one leaves it unreadable after `0.10.0` removes v1alpha1:
 
-For every object of the kinds whose CRD still lists `v1alpha1`:
-
-1. Read the object through the `v1alpha2` endpoint.
+1. Read the object (the CR, not the CRD) through the `v1alpha2` endpoint.
 2. Save and review the returned object.
 3. Write the same object back through the `v1alpha2` endpoint. A normal update with the current resourceVersion is sufficient; the spec and status should not change.
 4. Confirm that the write succeeded, then continue to the next object.
@@ -217,7 +212,7 @@ Do not round-trip the object through `v1alpha1`: that path can reintroduce the `
 
 After every object has been rewritten, independently confirm from the migration inventory that the rewrite set was complete. `status.storedVersions` is a CRD-level historical record, not a per-object inventory, and it does not automatically discard `v1alpha1` after objects are rewritten. Repeating object writes cannot remove an old entry from this list.
 
-Only after the complete rewrite has been confirmed, update each CRD status through an explicitly reviewed change. `kubectl patch --subresource=status` requires kubectl 1.24 or newer:
+After every object has been rewritten, replace each CRD's `status.storedVersions` with `["v1alpha2"]` using `kubectl patch --subresource=status` (kubectl 1.24 or newer is required). Rewriting objects does not remove `v1alpha1` from the list: it is a CRD-level historical record and must be replaced manually:
 
 ```bash
 kubectl patch customresourcedefinition rolebasedgroups.workloads.x-k8s.io \
