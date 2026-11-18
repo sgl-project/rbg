@@ -95,7 +95,7 @@ test-coverage-html: test
 	go tool cover -html=cover.out -o cover.html
 
 .PHONY: test-chart
-test-chart: ## Render the Helm chart with helm template and assert the deprecated-workload-types toggle. Requires helm; needs no cluster.
+test-chart: ## Render the Helm chart and the install manifests and check the deprecated-workload-types toggle, the manager health probes, and the manager PDB and topology spread. Requires helm; needs no cluster.
 	go test ./test/chart/ -v
 
 .PHONY: test-e2e-matrix-coverage

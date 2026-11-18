@@ -34,7 +34,10 @@ controller:
           control-plane: rbgs-controller
   # podDisruptionBudget limits voluntary evictions, such as node drains, to
   # one Ready controller pod at a time (maxUnavailable: 1). Pods that are not
-  # Ready can always be evicted.
+  # Ready can always be evicted. On a single node, a drain therefore waits on
+  # the last Ready controller pod, whose replacement cannot schedule there:
+  # set enabled: false, or drain with `kubectl drain --disable-eviction`, to
+  # take that node down.
   podDisruptionBudget:
     enabled: true
   podAnnotations: {}
