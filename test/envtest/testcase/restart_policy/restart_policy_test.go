@@ -99,14 +99,10 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				if pod.Status.Phase == corev1.PodRunning {
 					continue
 				}
-				// Re-fetch to avoid resourceVersion conflicts
-				freshPod := &corev1.Pod{}
-				if err := testutil.K8sClient.Get(testutil.Ctx,
-					client.ObjectKeyFromObject(pod), freshPod); err != nil {
-					return err
-				}
-				testutil.SetPodRunningAndReady(freshPod)
-				if err := testutil.K8sClient.Status().Update(testutil.Ctx, freshPod); err != nil {
+				// Reread and retry on conflict: the controller can update the Pod
+				// between our read and write, which advances resourceVersion.
+				if err := testutil.UpdatePodStatusOnConflict(testutil.Ctx,
+					client.ObjectKeyFromObject(pod), testutil.SetPodRunningAndReady); err != nil {
 					return err
 				}
 			}
@@ -139,26 +135,16 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 		return &riList.Items[0]
 	}
 
-	// Status fixtures use fresh reads on every conflict retry, just like kubelet.
+	// Fixtures write through fresh read-modify-write cycles with conflict
+	// retries, just like the controller write paths and kubelet.
 	updatePodStatus := func(key client.ObjectKey, mutate func(*corev1.Pod)) {
-		ExpectWithOffset(1, retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			pod := &corev1.Pod{}
-			if err := testutil.K8sClient.Get(testutil.Ctx, key, pod); err != nil {
-				return err
-			}
-			mutate(pod)
-			return testutil.K8sClient.Status().Update(testutil.Ctx, pod)
-		})).Should(Succeed())
+		ExpectWithOffset(1, testutil.UpdatePodStatusOnConflict(testutil.Ctx, key, mutate)).Should(Succeed())
 	}
 	updateInstanceStatus := func(key client.ObjectKey, mutate func(*workloadsv1alpha2.RoleInstance)) {
-		ExpectWithOffset(1, retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-			ri := &workloadsv1alpha2.RoleInstance{}
-			if err := testutil.K8sClient.Get(testutil.Ctx, key, ri); err != nil {
-				return err
-			}
-			mutate(ri)
-			return testutil.K8sClient.Status().Update(testutil.Ctx, ri)
-		})).Should(Succeed())
+		ExpectWithOffset(1, testutil.UpdateRoleInstanceStatusOnConflict(testutil.Ctx, key, mutate)).Should(Succeed())
+	}
+	updatePod := func(key client.ObjectKey, mutate func(*corev1.Pod)) {
+		ExpectWithOffset(1, testutil.UpdatePodOnConflict(testutil.Ctx, key, mutate)).Should(Succeed())
 	}
 
 	// Helper: wait for RoleInstance to reach Ready condition
@@ -284,12 +270,11 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			originalUID := podList.Items[0].UID
 
 			// Fail the pod
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			freshPod.Status.Reason = "Error"
-			freshPod.Status.Message = "Container exited with error"
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+				pod.Status.Reason = "Error"
+				pod.Status.Message = "Container exited with error"
+			})
 
 			// Verify the pod is recreated with a new UID
 			Eventually(func() bool {
@@ -355,11 +340,10 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 				workerPod = &podList.Items[1]
 			}
 
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(workerPod), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			freshPod.Status.Reason = "Error"
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(workerPod), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+				pod.Status.Reason = "Error"
+			})
 
 			// Verify ALL pods are recreated (both leader and worker), not just the worker
 			Eventually(func() bool {
@@ -399,11 +383,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			// Trigger failure
 			podList := listRolePods(rbgName, roleName)
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Verify Restarting condition is set
 			Eventually(func() bool {
@@ -470,22 +452,20 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			// Add Ignore annotation to one pod and simulate container restart on it
 			podList := listRolePods(rbgName, roleName)
-			ignorePod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), ignorePod)).Should(Succeed())
+			ignoredPodKey := client.ObjectKeyFromObject(&podList.Items[0])
 
 			// Add the Ignore annotation
-			if ignorePod.Annotations == nil {
-				ignorePod.Annotations = make(map[string]string)
-			}
-			ignorePod.Annotations[constants.RestartTriggerPolicyAnnotationKey] = constants.RestartTriggerPolicyIgnore
-			Expect(testutil.K8sClient.Update(testutil.Ctx, ignorePod)).Should(Succeed())
+			updatePod(ignoredPodKey, func(pod *corev1.Pod) {
+				if pod.Annotations == nil {
+					pod.Annotations = make(map[string]string)
+				}
+				pod.Annotations[constants.RestartTriggerPolicyAnnotationKey] = constants.RestartTriggerPolicyIgnore
+			})
 
 			// Now simulate container restart on the ignored pod
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(ignorePod), ignorePod)).Should(Succeed())
-			testutil.SetPodContainerRestarted(ignorePod, "nginx", 1)
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ignorePod)).Should(Succeed())
+			updatePodStatus(ignoredPodKey, func(pod *corev1.Pod) {
+				testutil.SetPodContainerRestarted(pod, "nginx", 1)
+			})
 
 			// Verify pods are NOT recreated (Ignore prevents recreation)
 			Consistently(func() map[string]types.UID {
@@ -523,15 +503,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			survivorName := podList.Items[1].Name
 			survivorUID := podList.Items[1].UID
 
-			Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-				failPod := &corev1.Pod{}
-				if err := testutil.K8sClient.Get(testutil.Ctx,
-					client.ObjectKeyFromObject(&podList.Items[0]), failPod); err != nil {
-					return err
-				}
-				failPod.Status.Phase = corev1.PodFailed
-				return testutil.K8sClient.Status().Update(testutil.Ctx, failPod)
-			})).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Verify the surviving pod is NOT deleted
 			Consistently(func() types.UID {
@@ -692,11 +666,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			survivorName := podList.Items[1].Name
 			survivorUID := podList.Items[1].UID
 
-			failPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), failPod)).Should(Succeed())
-			failPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, failPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Verify the surviving pod is NOT deleted (no instance-level recreation)
 			Consistently(func() types.UID {
@@ -750,11 +722,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			originalUID := podList.Items[0].UID
 
 			// Simulate container restart (pod still Running but RestartCount > 0)
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			testutil.SetPodContainerRestarted(freshPod, "nginx", 1)
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				testutil.SetPodContainerRestarted(pod, "nginx", 1)
+			})
 
 			// Verify pod gets recreated
 			Eventually(func() bool {
@@ -791,11 +761,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			// Fail one pod while instance is NOT Ready yet
 			podList := listRolePods(rbgName, roleName)
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// The other pod should NOT be deleted (restart policy should not trigger
 			// because instance was never Ready)
@@ -848,11 +816,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			// Fail role-1's pod
 			role1Pods := listRolePods(rbgName, "role-1")
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&role1Pods.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&role1Pods.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Verify role-2's pod is NOT affected
 			Consistently(func() types.UID {
@@ -895,11 +861,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			// Fail one pod to trigger recreation
 			podList := listRolePods(rbgName, roleName)
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Wait for Restarting condition to be set
 			Eventually(func() bool {
@@ -978,11 +942,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// First failure: trigger the first whole-instance recreation.
 			podList := listRolePods(rbgName, roleName)
 			firstGeneration := getPodUIDs(podList)
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// The first wave completes: every pre-restart Pod is gone and both
 			// replacements exist. The instance is intentionally NOT made Ready.
@@ -1093,11 +1055,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			// Fail the pod to trigger recreation
 			podList := listRolePods(rbgName, roleName)
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Wait for recreation to happen (pods get new UIDs)
 			originalUID := podList.Items[0].UID
@@ -1154,11 +1114,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// --- First crash: no backoff (RestartCount=0, LastRestartTime=nil) ---
 			podList := listRolePods(rbgName, roleName)
 			firstUID := podList.Items[0].UID
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Wait for first recreation
 			Eventually(func() bool {
@@ -1189,10 +1147,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// --- Second crash: backoff should delay recreation ---
 			podList = listRolePods(rbgName, roleName)
 			secondUID := podList.Items[0].UID
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// During backoff window, the original pod should NOT be deleted.
 			// backoff delay = baseDelay * 2^restartCount = 10 * 2^1 = 20 seconds
@@ -1291,11 +1248,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// Trigger first recreation to set RestartCount=1
 			podList := listRolePods(rbgName, roleName)
 			originalUID := podList.Items[0].UID
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Wait for recreation
 			Eventually(func() bool {
@@ -1326,16 +1281,16 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// Setting LastRestartTime to 11 minutes ago exceeds this threshold.
 			ri := getRoleInstance(rbgName, roleName)
 			Expect(ri).NotTo(BeNil())
-			ri.Status.LastRestartTime.Time = time.Now().Add(-11 * time.Minute)
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ri)).Should(Succeed())
+			updateInstanceStatus(client.ObjectKeyFromObject(ri), func(ri *workloadsv1alpha2.RoleInstance) {
+				ri.Status.LastRestartTime.Time = time.Now().Add(-11 * time.Minute)
+			})
 
 			// Trigger another recreation
 			podList = listRolePods(rbgName, roleName)
 			secondUID := podList.Items[0].UID
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Wait for recreation
 			Eventually(func() bool {
@@ -1385,11 +1340,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// Trigger first recreation to set LastRestartTime and RestartCount=1
 			podList := listRolePods(rbgName, roleName)
 			originalUIDs := getPodUIDs(podList)
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Wait for recreation (both pods recreated)
 			Eventually(func() bool {
@@ -1424,20 +1377,19 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// Setting to 11 minutes ago exceeds this threshold, making hasRecentRestart return false.
 			ri := getRoleInstance(rbgName, roleName)
 			Expect(ri).NotTo(BeNil())
-			ri.Status.LastRestartTime.Time = time.Now().Add(-11 * time.Minute)
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ri)).Should(Succeed())
+			updateInstanceStatus(client.ObjectKeyFromObject(ri), func(ri *workloadsv1alpha2.RoleInstance) {
+				ri.Status.LastRestartTime.Time = time.Now().Add(-11 * time.Minute)
+			})
 
 			// Make pods not Ready so the live Ready condition flips to False.
 			// Set phase to Pending (IsRunningAndAvailable requires Phase==Running).
 			// The persisted lastReadyGeneration keeps the triggers armed anyway.
 			podList = listRolePods(rbgName, roleName)
 			for i := range podList.Items {
-				freshPod := &corev1.Pod{}
-				Expect(testutil.K8sClient.Get(testutil.Ctx,
-					client.ObjectKeyFromObject(&podList.Items[i]), freshPod)).Should(Succeed())
-				freshPod.Status.Phase = corev1.PodPending
-				freshPod.Status.Conditions = nil
-				Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+				updatePodStatus(client.ObjectKeyFromObject(&podList.Items[i]), func(pod *corev1.Pod) {
+					pod.Status.Phase = corev1.PodPending
+					pod.Status.Conditions = nil
+				})
 			}
 
 			// Wait for the live Ready condition to flip; the latch stays armed.
@@ -1462,11 +1414,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			Expect(podList.Items).Should(HaveLen(2))
 			originalUIDs = getPodUIDs(podList)
 
-			freshPod = &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Require both expected names to exist with new, nonterminating UIDs;
 			// absence during deletion is not evidence of successful replacement.
@@ -1504,7 +1454,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			for i := range pods.Items {
 				updatePodStatus(client.ObjectKeyFromObject(&pods.Items[i]), func(pod *corev1.Pod) {
 					testutil.SetPodRunningAndReady(pod)
-					pod.Status.Conditions[0].Status = corev1.ConditionFalse
+					testutil.SetPodCondition(pod, corev1.PodReady, corev1.ConditionFalse)
 					for j := range pod.Status.ContainerStatuses {
 						pod.Status.ContainerStatuses[j].Ready = false
 						pod.Status.ContainerStatuses[j].State.Running = &corev1.ContainerStateRunning{}
@@ -1589,9 +1539,14 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					if !ready {
 						status = corev1.ConditionFalse
 					}
-					pod.Status.Conditions[0].Status = status
-					pod.Status.Conditions = append(pod.Status.Conditions,
-						corev1.PodCondition{Type: rankRejoined, Status: status, LastTransitionTime: metav1.Now()})
+					// Mirror the gate into PodReady, as kubelet does when it
+					// computes PodReady from readiness gates: the #542 deadlock
+					// scenario needs the pod (and therefore the instance) to
+					// report not Ready while the replacement rank cannot
+					// rejoin. ContainersReady stays True; the gate is the
+					// blocker.
+					testutil.SetPodCondition(pod, corev1.PodReady, status)
+					testutil.SetPodCondition(pod, rankRejoined, status)
 					for i := range pod.Status.ContainerStatuses {
 						pod.Status.ContainerStatuses[i].State.Running = &corev1.ContainerStateRunning{}
 					}
@@ -1852,11 +1807,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// --- First crash: no backoff (RestartCount=0) ---
 			podList := listRolePods(rbgName, roleName)
 			firstUID := podList.Items[0].UID
-			freshPod := &corev1.Pod{}
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Wait for first recreation
 			Eventually(func() bool {
@@ -1886,10 +1839,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// --- Second crash: backoff should be active (120s delay) ---
 			podList = listRolePods(rbgName, roleName)
 			secondUID := podList.Items[0].UID
-			Expect(testutil.K8sClient.Get(testutil.Ctx,
-				client.ObjectKeyFromObject(&podList.Items[0]), freshPod)).Should(Succeed())
-			freshPod.Status.Phase = corev1.PodFailed
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, freshPod)).Should(Succeed())
+			updatePodStatus(client.ObjectKeyFromObject(&podList.Items[0]), func(pod *corev1.Pod) {
+				pod.Status.Phase = corev1.PodFailed
+			})
 
 			// Verify backoff is active: pod should NOT be recreated for 5s
 			Consistently(func() bool {
@@ -1909,8 +1861,9 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			// the backoff (return 0) to allow replacement pod creation.
 			ri := getRoleInstance(rbgName, roleName)
 			Expect(ri).NotTo(BeNil())
-			ri.Status.UpdateRevision = "fake-revision-during-backoff"
-			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, ri)).Should(Succeed())
+			updateInstanceStatus(client.ObjectKeyFromObject(ri), func(ri *workloadsv1alpha2.RoleInstance) {
+				ri.Status.UpdateRevision = "fake-revision-during-backoff"
+			})
 
 			// With the fix: slow path detects revision mismatch → returns 0
 			// → controller creates a replacement pod.

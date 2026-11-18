@@ -544,14 +544,10 @@ var _ = Describe("Stateful selective scale-down", func() {
 						return err
 					}
 				}
-				// Preserve lifecycle/update readiness gate conditions the controllers write.
-				conditions := pod.Status.Conditions
+				// SetPodRunningAndReady upserts the kubelet conditions and
+				// preserves lifecycle/update readiness gate conditions the
+				// controllers write.
 				testutil.SetPodRunningAndReady(pod)
-				for _, condition := range conditions {
-					if condition.Type != corev1.PodReady && condition.Type != corev1.ContainersReady {
-						pod.Status.Conditions = append(pod.Status.Conditions, condition)
-					}
-				}
 				if err := testutil.K8sClient.Status().Update(testutil.Ctx, pod); err != nil {
 					return err
 				}
