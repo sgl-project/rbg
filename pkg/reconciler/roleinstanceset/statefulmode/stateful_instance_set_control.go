@@ -547,7 +547,7 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 		// target, run a restricted update for only that ordinal. This keeps
 		// OrderedReady ordering for other replicas while allowing the rollout
 		// to recover after the unhealthy window instead of waiting forever.
-		if err == nil && shouldExit && monotonic {
+		if err == nil && monotonic {
 			if updateErr := ssc.progressOrderedReadyUnhealthyTarget(ctx, set, &status,
 				currentRevision, updateRevision, revisions, instances, replicas,
 				minReadySeconds, topo); updateErr != nil {
@@ -784,9 +784,8 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 				return status, err
 			}
 			if blocked {
-				// Reserve this disruption slot while the consumer drains it,
-				// preserving the existing ordinal update order.
-				if !isFree {
+				// Reserve a slot for a draining target not already counted as unavailable.
+				if !isFree && !baseUnavail.Has(target.Name) {
 					newlyUnavail++
 				}
 				continue
@@ -1227,22 +1226,28 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 	condemned []*workloadsv1alpha2.RoleInstance,
 	i int) (bool, error) {
 
-	if !isCreated(condemned[i]) {
+	instance := condemned[i]
+	if !isCreated(instance) {
 		return false, nil
 	}
 
-	preDelete := set.Spec.Lifecycle != nil && set.Spec.Lifecycle.PreDelete != nil
-	preparingDelete := preDelete && instancelifecycle.GetRoleInstanceLifecycleState(condemned[i]) == constants.RoleInstanceLifecycleStatePreparingDelete
-	if monotonic && !preparingDelete && condemned[i] != firstUnhealthyInstance && !isHealthy(condemned[i]) {
+	// The drain itself may have marked the instance NotReady before the hook was removed.
+	preparingDelete := instancelifecycle.GetRoleInstanceLifecycleState(instance) == constants.RoleInstanceLifecycleStatePreparingDelete
+	if monotonic && !preparingDelete && instance != firstUnhealthyInstance && !isHealthy(instance) {
 		return true, nil
 	}
+	if isTerminating(instance) {
+		return false, nil
+	}
 
-	klog.V(2).InfoS("InstanceSet terminating condemned Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(condemned[i]))
-	if _, _, err := ssc.deleteInstance(set, condemned[i]); err != nil {
+	klog.V(2).InfoS("InstanceSet terminating condemned Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance))
+	_, deleting, err := ssc.deleteInstance(set, instance)
+	if err != nil {
 		return monotonic, err
 	}
 
-	return monotonic && preDelete, nil
+	// Only a pending hook holds the next ordinal. Once deletion starts, rollout can proceed.
+	return monotonic && !deleting, nil
 }
 
 // restoreRetainedInstances cancels a drain when the desired topology again
@@ -1255,7 +1260,7 @@ func (ssc *defaultStatefulInstanceSetControl) restoreRetainedInstances(
 			instancelifecycle.GetRoleInstanceLifecycleState(instance) != constants.RoleInstanceLifecycleStatePreparingDelete {
 			continue
 		}
-		if topo.inRollout && i+topo.startOrdinal >= topo.partition && getInstanceRevision(instance) != updateRev {
+		if topo.updatePending && i+topo.startOrdinal >= topo.partition && getInstanceRevision(instance) != updateRev {
 			continue
 		}
 		if _, _, err := ssc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStateNormal, true); err != nil {
