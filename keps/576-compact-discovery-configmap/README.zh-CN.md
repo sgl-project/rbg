@@ -132,15 +132,6 @@ group:
     - prefill
     - decode
 roles:
-  prefill:
-    size: 2
-    instances:
-      - address: pd-inference-prefill-0.s-pd-inference-prefill
-        ports:
-          http: 8000
-      - address: pd-inference-prefill-1.s-pd-inference-prefill
-        ports:
-          http: 8000
   decode:
     size: 4
     instances:
@@ -154,6 +145,15 @@ roles:
         ports:
           http: 8000
       - address: pd-inference-decode-3.s-pd-inference-decode
+        ports:
+          http: 8000
+  prefill:
+    size: 2
+    instances:
+      - address: pd-inference-prefill-0.s-pd-inference-prefill
+        ports:
+          http: 8000
+      - address: pd-inference-prefill-1.s-pd-inference-prefill
         ports:
           http: 8000
 ```
@@ -202,8 +202,8 @@ Service 兼容逻辑位于：
 当前 v1alpha1 内容是全量枚举：
 
 - 每条 address 记录约 40–120 字节。
-- 在本 KEP 的示例命名下，一条记录约 118 字节。
-- 4000 个副本、每实例 5 个 Pod 时，约 2.4 MB，超过 ConfigMap 1 MiB 限制。
+- 在本 KEP 的示例命名下，一条记录约 124.7 字节。
+- 4000 个副本、每实例 5 个 Pod 时，约 2.38 MiB，超过 ConfigMap 1 MiB 限制。
 
 即使未超过 1 MiB，每次成员变化也会重写整个对象，并由 kubelet 同步到所有挂载节点。
 
@@ -281,7 +281,7 @@ spec:
 1. `discoveryConfigVersion` 可选，取值为 `v1alpha1` 或 `v1`。
 2. 字段缺失时，Webhook 按照 Defaulting 规则设置默认值，一般为最新值。当前 KEP 实现后的 RBG 都应当默认有这个值，若迁移前有缺失这个字段的 RBG 应当手动设置这个值。
 3. 控制器根据该字段选择 ConfigMap 内容版本。
-4. ConfigMap 被删除后，控制器按该字段重建同版本内容。
+4. ConfigMap 被删除后，控制器在下一次 reconcile 时按该字段重建同版本内容。
 5. ConfigMap 的 `apiVersion` 与该字段一致。
 6. v1alpha1 版本 ConfigMap 内容没有 `apiVersion`。
 
@@ -345,6 +345,8 @@ roles:
 - `{roleIndex}`：RoleInstance 序号。
 - `{componentIndex}`：组件内最终 Pod 序号，等于 `offset + 组件内从 0 开始的序号`。
 
+以上是全部占位符。
+
 替换规则：
 
 1. 执行字符串替换。
@@ -381,7 +383,7 @@ components:
 因此：
 
 - leader 的 `componentIndex` 是 `0`。
-- worker 的 `componentIndex` 范围是 `1` 到 `size - 1`。
+- worker 的 `componentIndex` 范围是 `offset` 到 `offset + size - 1`。
 - 模板保持纯字符串替换。
 - 行为与 `FormatComponentPodName()` 一致。
 
@@ -389,7 +391,7 @@ StandalonePattern：
 
 ```yaml
 components:
-  - name: default
+  - name: prefill
     size: 1
     offset: 0
     base: "pd-inference-prefill-{roleIndex}.s-pd-inference-prefill"
@@ -436,6 +438,19 @@ excludedOrdinals: "1,3"
 
 - `members` 是被选中的序号数量。
 - `excludedOrdinals` 是最高选中序号以下空洞的归一化区间记录。
+
+区间语法：
+
+- 条目之间用逗号分隔。
+- 每个条目是 `n` 或 `a-b`。
+- 区间为闭区间。
+- 值是非负十进制整数。
+- 最大值是 `2147483647`。
+- 条目按升序排列。
+- 重叠和相邻区间会合并。
+- 规范形式中没有空格。
+
+解码时，将条目展开成序号集合，并拒绝格式错误、降序或超出范围的值。
 
 #### 写入与替换
 
@@ -538,7 +553,9 @@ v1 内容序列化后的上限是 512 KiB。
 
 升级只改变 discovery ConfigMap 内容，Pod template、volume 和 mount 保持不变。
 
-降级到 v1 之前的 controller 后，该 controller 无法解析 v1 内容。降级迁移属于后续 KEP。
+降级到 v1 之前的 controller 后，该 controller 不识别
+`spec.discoveryConfigVersion`。它继续沿用现有 discovery mode，并在下一次
+reconcile 时写入 v1alpha1 内容。降级迁移属于后续 KEP。
 
 ### 版本差异策略
 
@@ -688,7 +705,7 @@ reconcile 失败并按现有 backoff 重试。运行中的 Pod 不受影响。
 3. **发布命名规则，由客户端推导**
    - workload / Service 名称存在截断和兼容规则。
 4. **压缩 v1alpha1**
-   - 每次成员变化仍需重写全量数据。
+   - 可以降低对象大小，但消费者需要理解压缩内容。
 5. **运行时 DNS / EndpointSlice**
    - 提供 readiness 信息，缺少静态序号拓扑。
 

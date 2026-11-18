@@ -141,15 +141,6 @@ group:
     - prefill
     - decode
 roles:
-  prefill:
-    size: 2
-    instances:
-      - address: pd-inference-prefill-0.s-pd-inference-prefill
-        ports:
-          http: 8000
-      - address: pd-inference-prefill-1.s-pd-inference-prefill
-        ports:
-          http: 8000
   decode:
     size: 4
     instances:
@@ -163,6 +154,15 @@ roles:
         ports:
           http: 8000
       - address: pd-inference-decode-3.s-pd-inference-decode
+        ports:
+          http: 8000
+  prefill:
+    size: 2
+    instances:
+      - address: pd-inference-prefill-0.s-pd-inference-prefill
+        ports:
+          http: 8000
+      - address: pd-inference-prefill-1.s-pd-inference-prefill
         ports:
           http: 8000
 ```
@@ -212,8 +212,8 @@ Service compatibility is implemented in:
 The current v1alpha1 content is a full enumeration:
 
 - Each address entry is roughly 40–120 bytes.
-- With the example names in this KEP, one entry is about 118 bytes.
-- A role with 4000 replicas and 5 Pods per instance is about 2.4 MB, which
+- With the example names in this KEP, one entry is about 124.7 bytes.
+- A role with 4000 replicas and 5 Pods per instance is about 2.38 MiB, which
   exceeds the 1 MiB ConfigMap limit.
 
 Even below the limit, every membership change rewrites the whole object and
@@ -306,7 +306,8 @@ Rules:
    normally sets the latest version. RBGs created after this KEP should always
    carry the field; RBGs that predate migration should have it set manually.
 3. The controller uses the field to select the ConfigMap content version.
-4. If the ConfigMap is deleted, the controller rebuilds the same version.
+4. If the ConfigMap is deleted, the controller rebuilds the same version at
+   the next reconcile.
 5. The ConfigMap's `apiVersion` matches the spec field.
 6. v1alpha1 content has no `apiVersion`.
 
@@ -371,6 +372,8 @@ Placeholders:
 - `{componentIndex}`: final component ordinal, equal to
   `offset + zero-based index within the component`.
 
+These are the only placeholders.
+
 Replacement rules:
 
 1. Perform string replacement.
@@ -407,7 +410,7 @@ components:
 Therefore:
 
 - Leader `componentIndex` is `0`.
-- Worker `componentIndex` ranges from `1` to `size - 1`.
+- Worker `componentIndex` ranges from `offset` to `offset + size - 1`.
 - The template remains a string replacement.
 - Behavior matches `FormatComponentPodName()`.
 
@@ -415,7 +418,7 @@ StandalonePattern:
 
 ```yaml
 components:
-  - name: default
+  - name: prefill
     size: 1
     offset: 0
     base: "pd-inference-prefill-{roleIndex}.s-pd-inference-prefill"
@@ -464,6 +467,20 @@ Encoding:
 - `members` is the number of selected ordinals.
 - `excludedOrdinals` is the normalized range record for holes below the
   highest selected ordinal.
+
+Range grammar:
+
+- Entries are separated by commas.
+- Each entry is either `n` or `a-b`.
+- Ranges are inclusive.
+- Values are nonnegative decimal integers.
+- The maximum value is `2147483647`.
+- Entries are sorted in ascending order.
+- Overlapping and adjacent ranges are merged.
+- The canonical form contains no spaces.
+
+A decoder expands the entries into an ordinal set and rejects malformed,
+descending, or out-of-range values.
 
 #### Write and Replace
 
@@ -571,8 +588,10 @@ See [Migration](#migration).
 Upgrade changes only discovery ConfigMap content. Pod templates, volumes, and
 mounts remain unchanged.
 
-After downgrade to a controller that predates v1, that controller cannot parse
-v1 content. Downgrade migration is a follow-up KEP.
+After downgrade to a controller that predates v1, that controller does not
+recognize `spec.discoveryConfigVersion`. It continues to follow the existing
+discovery mode and writes v1alpha1 content on the next reconcile. Downgrade
+migration is a follow-up KEP.
 
 ### Version Skew Strategy
 
@@ -732,7 +751,7 @@ Inspect RBG Warning Events, controller logs, and the ConfigMap.
 3. **Publish naming rules and let clients derive addresses**
    - workload and Service names have truncation and compatibility rules.
 4. **Compress v1alpha1**
-   - every membership change still rewrites the full data.
+   - reduces object size, but consumers must understand compressed content.
 5. **Runtime DNS / EndpointSlice**
    - provides readiness information, but lacks static ordinal topology.
 
