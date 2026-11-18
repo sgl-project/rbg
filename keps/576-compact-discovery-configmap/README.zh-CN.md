@@ -21,7 +21,7 @@
     - [备注、约束与注意事项（可选）](#备注约束与注意事项可选)
     - [风险与缓解](#风险与缓解)
   - [设计细节](#设计细节)
-    - [Discovery Mode Annotation](#discovery-mode-annotation)
+    - [Discovery Config Version Annotation](#discovery-config-version-annotation)
     - [v1 内容格式](#v1-内容格式)
       - [地址模板](#地址模板)
       - [组件编号](#组件编号)
@@ -103,17 +103,20 @@
 apiVersion: v1
 ```
 
-RBG metadata 通过现有的 discovery-mode annotation 持久化内容选择：
+RBG metadata 通过一个专用 annotation 持久化内容版本：
 
 ```yaml
 metadata:
   annotations:
-    rbg.workloads.x-k8s.io/discovery-config-mode: compact
+    rbg.workloads.x-k8s.io/discovery-config-version: v1
 ```
 
-控制器继续使用同一个 RBG 级 ConfigMap `<rbg>` 和同一个 `config.yaml` key。当 annotation 为 `compact` 时，控制器写入 v1 内容并替换 v1alpha1 内容。
+控制器继续使用同一个 RBG 级 ConfigMap `<rbg>` 和同一个 `config.yaml` key。当 annotation 为 `v1` 时，控制器写入 v1 内容并替换 v1alpha1 内容。
 
 本 KEP 定义存储格式、替换语义和迁移步骤。消费者兼容层属于后续 KEP。
+
+本设计假设 legacy discovery 支持已被移除，只保留当前 `refine` 行为，因此
+不再需要 discovery mode 选择器。
 
 ## 动机
 
@@ -212,12 +215,14 @@ Service 兼容逻辑位于：
 
 1. 存储大小与 role / component 数量相关，与副本数无关。
 2. 用 `apiVersion` 标识 ConfigMap 内容版本。
-3. 在现有的 discovery-mode annotation 中持久化内容选择。
+3. 在一个专用 annotation 中持久化内容版本。
 4. 保留同一个 `<rbg>` ConfigMap 和 `config.yaml` key。
 5. v1 内容替换 v1alpha1 内容。
 6. 正确表达三种 RoleInstanceSet pattern 的 Pod DNS。
 7. 保留当前 `memberOrdinals` 的成员选择语义。
 8. 存储对象超过上限时可见失败。
+9. 去掉 legacy 支持、只保留现有 `refine` 行为，从而移除 discovery mode
+   选择器。
 
 ### 非目标
 
@@ -225,6 +230,7 @@ Service 兼容逻辑位于：
 2. 运行时 readiness / liveness 由 DNS / EndpointSlice 承担。
 3. Deprecated Deployment / StatefulSet / LeaderWorkerSet workload 保持现状。
 4. 动态端口分配维持现有环境变量和注解机制。
+5. 支持 legacy discovery mode。
 
 ## 方案
 
@@ -232,8 +238,9 @@ Service 兼容逻辑位于：
 
 - **v1alpha1 内容**：当前 `refine` 模式写入的逐实例全量枚举，没有 `apiVersion` 字段。
 - **v1 内容**：本 KEP 定义的紧凑格式，显式写入 `apiVersion: v1`。
-- **Discovery-mode annotation**：`rbg.workloads.x-k8s.io/discovery-config-mode`
-  annotation，取值为 `legacy`、`refine` 和 `compact`。
+- **Discovery-config-version annotation**：
+  `rbg.workloads.x-k8s.io/discovery-config-version` annotation，取值为
+  `v1alpha1` 和 `v1`。
 - **成员**：被 discovery 选中的 RoleInstance 序号。
 - **组件**：RoleInstanceSet 实例内的一个命名 Pod 组。
 - `<rbg>`：RBG 对象名。
@@ -262,36 +269,37 @@ Service 兼容逻辑位于：
 |---|---|
 | v1 内容编码的地址集合与当前 builder 输出不同 | 单元测试展开 v1 内容，并与当前 builder 输出做结构化比较 |
 | workload / Service 名称触发 Kubernetes 名称截断 | 控制器计算完整地址模板，包含截断和兼容规则 |
-| controller 升级后意外改变内容版本 | discovery-mode annotation 记录选择的格式，controller 重建 ConfigMap 时使用该 annotation |
-| 消费者只支持 v1alpha1 | 通过 discovery-mode annotation 显式迁移；消费者兼容层属于后续 KEP |
+| controller 升级后意外改变内容版本 | discovery-config-version annotation 记录选择的版本，controller 重建 ConfigMap 时使用该 annotation |
+| 消费者只支持 v1alpha1 | 通过 discovery-config-version annotation 显式迁移；消费者兼容层属于后续 KEP |
 
 ## 设计细节
 
-### Discovery Mode Annotation
+### Discovery Config Version Annotation
 
 这次 KEP 的修改发现 ConfigMap 内容修改带来兼容性问题，为避免后续继续出现此类问题，给 config 添加版本。
 
-RBG metadata 记录 mode：
+RBG metadata 记录版本：
 
 ```yaml
 metadata:
   annotations:
-    rbg.workloads.x-k8s.io/discovery-config-mode: compact
+    rbg.workloads.x-k8s.io/discovery-config-version: v1
 ```
 
 规则：
 
 1. annotation key 是
-   `rbg.workloads.x-k8s.io/discovery-config-mode`。
-2. 支持的取值是 `legacy`、`refine` 和 `compact`。
-3. 现有 `legacy` 和 `refine` RBG 保持当前行为。
-4. 新 RBG 默认使用 `compact`；创建时显式设置 `refine` 是文档化的
+   `rbg.workloads.x-k8s.io/discovery-config-version`。
+2. 支持的取值是 `v1alpha1` 和 `v1`。
+3. legacy discovery 支持被移除，只保留现有 `refine` 行为。
+4. 没有 annotation 的存量 RBG 按 `v1alpha1` 处理。
+5. 新 RBG 默认使用 `v1`；创建时显式设置 `v1alpha1` 是文档化的
    opt-out。
-5. 控制器根据该 annotation 选择 ConfigMap 内容。
-6. ConfigMap 被删除后，控制器在下一次 reconcile 时按当前 mode 重建内容。
-7. `compact` 对应 v1 内容。
-8. `refine` 和 `legacy` 继续写入 v1alpha1 内容。
-9. v1alpha1 内容没有 `apiVersion`。
+6. 控制器根据该 annotation 选择 ConfigMap 内容版本。
+7. ConfigMap 被删除后，控制器在下一次 reconcile 时按 annotation 版本
+   重建内容。
+8. v1alpha1 内容没有 `apiVersion`。
+9. v1 内容写入 `apiVersion: v1`。
 
 | 内容版本 | 标记 | 含义 |
 |---|---|---|
@@ -465,7 +473,7 @@ excludedOrdinals: "1,3"
 控制器在 role reconcile 之前写入同一个 `<rbg>` ConfigMap：
 
 1. 计算成员和地址模板。
-2. 按 discovery-mode annotation 生成内容。
+2. 按 discovery-config-version annotation 生成内容。
 3. 写入 `<rbg>/config.yaml`。
 4. 目标版本为 `v1` 时，替换 v1alpha1 内容。
 
@@ -486,21 +494,21 @@ v1 内容序列化后的上限是 512 KiB。
 
 ### 迁移
 
-1. 部署支持 `compact` 的 controller。
-2. 现有 `legacy` 和 `refine` RBG 保持当前内容。
+1. 部署支持 v1 的 controller。
+2. 没有 annotation 的存量 RBG 保持 v1alpha1 内容。
 3. 要迁移某个 RBG，设置：
 
    ```yaml
    metadata:
      annotations:
-       rbg.workloads.x-k8s.io/discovery-config-mode: compact
+       rbg.workloads.x-k8s.io/discovery-config-version: v1
    ```
 
 4. 等待 reconcile 完成，确认 ConfigMap 内容为 `apiVersion: v1`。
 
 回退步骤：
 
-1. 将 annotation 改回 `refine`。
+1. 将 annotation 改回 `v1alpha1`。
 2. 等待 reconcile 完成，确认 ConfigMap 恢复为 v1alpha1。
 
 消费者兼容层属于后续 KEP。
@@ -510,8 +518,8 @@ v1 内容序列化后的上限是 512 KiB。
 #### 单元测试
 
 - v1 字段完整性。
-- `legacy`、`refine` 和 `compact` 的行为。
-- first reconcile 的默认值行为，包括 `refine` opt-out。
+- annotation 缺失、`v1alpha1` 和 `v1` 的行为。
+- 新 RBG 的默认值行为，包括 `v1alpha1` opt-out。
 - `apiVersion` 缺失时按 v1alpha1 解析。
 - 三种 pattern 的地址模板。
 - LeaderWorkerPattern 的 leader / worker offset。
@@ -522,7 +530,7 @@ v1 内容序列化后的上限是 512 KiB。
 #### 集成测试
 
 - 同一个 `<rbg>` ConfigMap 被替换为 v1 内容。
-- ConfigMap 被删除后，按 discovery-mode annotation 重建对应内容。
+- ConfigMap 被删除后，按 discovery-config-version annotation 重建对应内容。
 - ConfigMap 数量保持为 1。
 - 写入失败时 reconcile 失败并重试。
 - 迁移后 ConfigMap 内容为 v1。
@@ -549,7 +557,7 @@ v1 内容序列化后的上限是 512 KiB。
 #### GA
 
 - 两个发布周期行为稳定。
-- `legacy` 和 `refine` 群体保持不变。
+- v1alpha1 和 v1 行为保持稳定。
 
 #### 废弃
 
@@ -561,16 +569,16 @@ v1 内容序列化后的上限是 512 KiB。
 
 升级只改变 discovery ConfigMap 内容，Pod template、volume 和 mount 保持不变。
 
-降级到 v1 之前的 controller 后，该 controller 不识别 `compact`。
-`compact` RBG 的原地降级不支持。降级迁移属于后续 KEP。
+降级到 v1 之前的 controller 后，该 controller 忽略
+discovery-config-version annotation，并继续写入 v1alpha1 内容。降级迁移
+属于后续 KEP。
 
 ### 版本差异策略
 
-ConfigMap 中的 `apiVersion` 和 RBG metadata 中的 discovery-mode annotation
-让消费者和控制器识别选择的内容。
+ConfigMap 中的 `apiVersion` 和 RBG metadata 中的
+discovery-config-version annotation 让消费者和控制器识别选择的内容。
 
-旧 controller 不识别 `compact`，并对 `legacy` / `refine` RBG 继续写入
-v1alpha1 内容。
+旧 controller 忽略该 annotation，并继续写入 v1alpha1 内容。
 
 ## 生产就绪评审问卷
 
@@ -578,7 +586,8 @@ v1alpha1 内容。
 
 #### 如何在运行中的集群启用 / 禁用该功能？
 
-将 discovery-mode annotation 设置为 `compact`。回滚时改回 `refine`。
+将 discovery-config-version annotation 设置为 `v1`。回滚时改回
+`v1alpha1`。
 
 #### 启用该功能是否改变默认行为？
 
@@ -586,12 +595,13 @@ v1alpha1 内容。
 
 #### 启用后能否禁用？
 
-将 discovery-mode annotation 改回 `refine`，等待 reconcile 完成。
+将 discovery-config-version annotation 改回 `v1alpha1`，等待 reconcile
+完成。
 
 #### 禁用后再次启用会发生什么？
 
-控制器根据 RBG 的 discovery-mode annotation 和已提交 membership，确定性地
-重建 v1 内容。
+控制器根据 RBG 的 discovery-config-version annotation 和已提交
+membership，确定性地重建 v1 内容。
 
 #### 是否有启用 / 禁用测试？
 
@@ -621,7 +631,7 @@ ConfigMap 写入可能失败。reconcile 返回错误并重试。运行中的 wo
 
 #### 运维如何判断功能正在使用？
 
-检查 discovery-mode annotation 和 ConfigMap 的 `apiVersion`。
+检查 discovery-config-version annotation 和 ConfigMap 的 `apiVersion`。
 
 #### 使用者如何判断功能正常？
 
@@ -689,7 +699,8 @@ reconcile 失败并按现有 backoff 重试。运行中的 Pod 不受影响。
   - 检测：Warning Event。
   - 缓解：保留当前合法内容，跳过本次替换。
 - 内容版本不匹配：
-  - 检测：比较 discovery-mode annotation 和 ConfigMap `apiVersion`。
+  - 检测：比较 discovery-config-version annotation 和 ConfigMap
+    `apiVersion`。
   - 缓解：设置期望版本并等待 reconcile。
 
 #### SLO 不满足时应采取什么步骤？
