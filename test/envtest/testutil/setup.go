@@ -235,20 +235,13 @@ func SetupInstanceSetController(mgr manager.Manager) error {
 
 // SetPodRunningAndReady updates a pod's status to Running with Ready condition
 // and proper ContainerStatuses. This simulates kubelet behavior in envtest.
+// Conditions the kubelet does not own (for example controller-managed
+// readiness-gate conditions) are preserved instead of being dropped, so the
+// fixture does not trigger extra reconciliation to restore them.
 func SetPodRunningAndReady(pod *corev1.Pod) {
 	pod.Status.Phase = corev1.PodRunning
-	pod.Status.Conditions = []corev1.PodCondition{
-		{
-			Type:               corev1.PodReady,
-			Status:             corev1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-		},
-		{
-			Type:               corev1.ContainersReady,
-			Status:             corev1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-		},
-	}
+	SetPodCondition(pod, corev1.PodReady, corev1.ConditionTrue)
+	SetPodCondition(pod, corev1.ContainersReady, corev1.ConditionTrue)
 	// Build ContainerStatuses from pod spec containers
 	pod.Status.ContainerStatuses = make([]corev1.ContainerStatus, len(pod.Spec.Containers))
 	for i, c := range pod.Spec.Containers {
@@ -270,6 +263,29 @@ func SetPodContainerRestarted(pod *corev1.Pod, containerName string, restartCoun
 			return
 		}
 	}
+}
+
+// SetPodCondition upserts a pod condition. LastTransitionTime only moves when
+// the condition status actually changes; existing conditions of other types
+// are left in place.
+func SetPodCondition(pod *corev1.Pod, conditionType corev1.PodConditionType, status corev1.ConditionStatus) {
+	now := metav1.Now()
+	for i := range pod.Status.Conditions {
+		if pod.Status.Conditions[i].Type == conditionType {
+			if pod.Status.Conditions[i].Status != status {
+				pod.Status.Conditions[i].Status = status
+				pod.Status.Conditions[i].LastTransitionTime = now
+			}
+			pod.Status.Conditions[i].LastProbeTime = now
+			return
+		}
+	}
+	pod.Status.Conditions = append(pod.Status.Conditions, corev1.PodCondition{
+		Type:               conditionType,
+		Status:             status,
+		LastProbeTime:      now,
+		LastTransitionTime: now,
+	})
 }
 
 func boolPtr(b bool) *bool {
