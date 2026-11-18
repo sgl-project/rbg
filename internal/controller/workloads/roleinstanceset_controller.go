@@ -46,14 +46,18 @@ type RoleInstanceSetReconciler struct {
 	recorder      record.EventRecorder
 }
 
-func NewRoleInstanceSetReconciler(mgr ctrl.Manager) *RoleInstanceSetReconciler {
+func NewRoleInstanceSetReconciler(mgr ctrl.Manager) (*RoleInstanceSetReconciler, error) {
+	statefulMode, err := statefulmode.NewReconciler(mgr)
+	if err != nil {
+		return nil, fmt.Errorf("create stateful-mode RoleInstanceSet reconciler: %w", err)
+	}
 	return &RoleInstanceSetReconciler{
 		statelessMode: statelessmode.NewReconciler(mgr),
-		statefulMode:  statefulmode.NewReconciler(mgr),
+		statefulMode:  statefulMode,
 		client:        mgr.GetClient(),
 		apiReader:     mgr.GetAPIReader(),
 		recorder:      mgr.GetEventRecorderFor("roleinstanceset-controller"),
-	}
+	}, nil
 }
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=roleinstancesets,verbs=get;list;watch;create;update;patch;delete

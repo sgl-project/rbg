@@ -421,7 +421,11 @@ func main() {
 		os.Exit(1)
 	}
 
-	roleInstanceSetReconciler := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
+	roleInstanceSetReconciler, err := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
+	if err != nil {
+		setupLog.Error(err, "unable to create roleinstanceset controller", "controller", "RoleInstanceSet")
+		os.Exit(1)
+	}
 	if err = roleInstanceSetReconciler.CheckCrdExists(); err != nil {
 		setupLog.Error(err, "unable to create roleinstanceset controller", "controller", "RoleInstanceSet")
 		os.Exit(1)
