@@ -226,6 +226,59 @@ func TestInjectEngineRuntimeFragments(t *testing.T) {
 	}
 }
 
+// TestInjectEngineRuntimeFragmentsAppendsOwnedCopies pins the ownership
+// boundary between the plan and the rendered templates: the resolver stores
+// one profile object per reference and FragmentsFor feeds the same object to
+// every position's render, while the later patch passes mutate the appended
+// container in place (the role-side capability pass writes through
+// container.SecurityContext). The append must therefore deliver a deep copy —
+// a shallow struct append shares the profile's nested pointers, so a
+// capability added in one position's render leaks into every other
+// position's already-appended container and into the shared profile object.
+func TestInjectEngineRuntimeFragmentsAppendsOwnedCopies(t *testing.T) {
+	ctx := context.Background()
+
+	profile := makeProfile("ik", nil)
+	profile.Spec.InitContainers = []v1.Container{{
+		Name: "ik-init", Image: "ik-init:latest",
+		SecurityContext: &v1.SecurityContext{},
+	}}
+	profile.Spec.Containers = []v1.Container{{
+		Name: "ik-sidecar", Image: "ik-sidecar:latest",
+		SecurityContext: &v1.SecurityContext{},
+	}}
+	fragment := EngineRuntimeFragment{
+		Profile: profile,
+		Runtime: workloadsv1alpha2.EngineRuntime{ProfileName: "ik"},
+	}
+	declared := map[string]struct{}{"ik-init": {}, "ik-sidecar": {}}
+
+	renderA, renderB := renderSpec(), renderSpec()
+	require.NoError(t, InjectEngineRuntimeFragments(ctx, renderA, []EngineRuntimeFragment{fragment}, "worker", nil, nil))
+	require.NoError(t, InjectEngineRuntimeFragments(ctx, renderB, []EngineRuntimeFragment{fragment}, "worker", nil, nil))
+
+	_, err := applyRole(ctx, renderA, "ik-sidecar",
+		[]workloadsv1alpha2.ContainerPatch{jp("/securityContext/capabilities/add/-", "SYS_RESOURCE")}, "ik", declared)
+	require.NoError(t, err)
+	_, err = applyRole(ctx, renderA, "ik-init",
+		[]workloadsv1alpha2.ContainerPatch{jp("/securityContext/capabilities/add/-", "SYS_PTRACE")}, "ik", declared)
+	require.NoError(t, err)
+
+	assert.Equal(t, []v1.Capability{"SYS_RESOURCE"},
+		renderA.Spec.Containers[1].SecurityContext.Capabilities.Add)
+	assert.Equal(t, []v1.Capability{"SYS_PTRACE"},
+		renderA.Spec.InitContainers[0].SecurityContext.Capabilities.Add)
+
+	assert.Nil(t, renderB.Spec.Containers[1].SecurityContext.Capabilities,
+		"a capability patched into position A's render must not leak into position B's appended sidecar")
+	assert.Nil(t, renderB.Spec.InitContainers[0].SecurityContext.Capabilities,
+		"a capability patched into position A's render must not leak into position B's appended init container")
+	assert.Nil(t, profile.Spec.Containers[0].SecurityContext.Capabilities,
+		"a patch landed in a rendered template must not write back into the plan's shared profile object")
+	assert.Nil(t, profile.Spec.InitContainers[0].SecurityContext.Capabilities,
+		"a patch landed in a rendered template must not write back into the plan's shared profile object")
+}
+
 // TestInjectEngineRuntimeFragmentsNameCollision pins the KEP-531 duplicate
 // delivery rule: a cross-profile container or volume name collision skips the
 // later profile's same-named entry — the earlier reference wins — and emits an

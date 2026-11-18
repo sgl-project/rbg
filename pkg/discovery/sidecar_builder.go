@@ -93,19 +93,31 @@ func InjectEngineRuntimeFragments(
 			profileContainerNames[initContainer.Name] = struct{}{}
 			if skipOrAppend("initContainer", initContainer.Name, profileName,
 				hasNamedContainer(podSpec.Spec.InitContainers, initContainer.Name)) {
-				podSpec.Spec.InitContainers = append(podSpec.Spec.InitContainers, initContainer)
+				// The plan shares one profile object across every position's
+				// render, and the later patch passes mutate the appended
+				// container in place (the capability pass writes through
+				// SecurityContext) — each template must own its copy, or a
+				// patch in one position's render leaks into the others.
+				podSpec.Spec.InitContainers = append(podSpec.Spec.InitContainers, *initContainer.DeepCopy())
 			}
 		}
 		for _, container := range fragment.Profile.Spec.Containers {
 			profileContainerNames[container.Name] = struct{}{}
 			if skipOrAppend("container", container.Name, profileName,
 				hasNamedContainer(podSpec.Spec.Containers, container.Name)) {
-				podSpec.Spec.Containers = append(podSpec.Spec.Containers, container)
+				podSpec.Spec.Containers = append(podSpec.Spec.Containers, *container.DeepCopy())
 			}
 		}
 		for _, vol := range fragment.Profile.Spec.Volumes {
 			if skipOrAppend("volume", vol.Name, profileName,
 				hasNamedVolume(podSpec.Spec.Volumes, vol.Name)) {
+				// Deliberately shallow, unlike the containers above: no render
+				// pass writes into a volume's nested content — the patch
+				// grammar has no volume root and the injectors only read
+				// names — so the DeepCopy would be pure cost. The shared
+				// pointer is the same hazard shape as the containers', so a
+				// pass that starts writing volume content must add its copy
+				// here.
 				podSpec.Spec.Volumes = append(podSpec.Spec.Volumes, vol)
 			}
 		}
