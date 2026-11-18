@@ -94,8 +94,6 @@ kubectl get configmap RBG_NAME -n NAMESPACE
 
 只修改注解不会触发 reconcile：控制器只按 RoleBasedGroup 的 spec 变化入队，注解变化不入队。请重启控制器，或在注解变更的同时提交一次经过审批的 spec 变更，等待 ConfigMap 出现。若 Role 已按步骤 3 设为 `Stateless`，本节不适用：无状态 Role 不挂载 discovery ConfigMap。
 
-该限制对应已知问题 #595；控制器修复为对任意发现模式都创建 ConfigMap 后，应删除本节。
-
 ### 迁移操作
 
 #### Deployment、StatefulSet、LeaderWorker Role
@@ -165,12 +163,6 @@ v1alpha1 `InstanceSet` 选择器不受兼容开关保护。它从 v0.7.0 起就�
 - 如果 set 控制器按未迁移模板删除并重建子对象，重建的子对象会通过 set 子对象的创建时豁免继承旧类型，该 Role 必须再次迁移。
 
 先迁移 set 模板。每个子对象都会在同一轮 reconcile 中删除旧 workload，因此传播的变更会让所有子对象的该 Role 同时降为零 Pod。请把它规划为该 Role 在整个 set 内的完全中断，而不是灰度 rollout。迁移前先按 discovery ConfigMap 前置条件的说明，在模板上设置发现模式注解。如果确实需要逐子对象灰度，必须使用单独审查过的方案，协调或隔离子对象与 set reconcile 的关系。不要假设在父模板未更新时，某个子对象的迁移可以永久保持。
-
-## 回滚
-
-每个 Role 迁移前，保留不可变对象副本、resourceVersion 和 revision 历史。这些记录可用于审计和恢复非 workload 字段，但不能让 workload 类型变更可逆。
-
-一旦 Role 切换到 `RoleInstanceSet`，恢复保存的 Deployment、StatefulSet 或 LeaderWorkerSet 选择器属于新的弃用使用，validator 会拒绝。恢复 InstanceSet 选择器同样不可行：写入会被接受，但整个 RoleBasedGroup 会停在 preflight 失败，且 status 仍显示 `Ready=True`，只有反复出现的 `FailedReconcileWorkload` 警告事件可见。因此不要以恢复弃用 workload 类型作为回滚手段；提交迁移前，先与业务负责人约定 `RoleInstanceSet` 失败时的应急方案。
 
 ## 3. 将对象重写为 v1alpha2 存储编码
 
@@ -246,7 +238,7 @@ kubectl get customresourcedefinition \
 3. 根据重写记录确认：凡是所属 CRD 曾列出 `v1alpha1` 的 kind，其每个对象都已完成重写；API 无法报告对象编码，完整性只能来自记录本身。然后按上述说明更新并验证全部四个 `status.storedVersions` 值。
 4. 设置 `controller.deprecatedWorkloadTypes.enabled=false`，然后确认控制器健康，且普通 v1alpha2 更新不会被弃用 gate 拒绝。
 5. 将清单、客户端和自动化迁移到 `v1alpha2`。
-6. 只有在与业务负责人约定的回滚窗口结束后，才清理保存的迁移产物。
+6. 只有在与业务负责人约定的恢复窗口结束后，才清理保存的迁移产物。
 
 ## 风险与失败模式
 

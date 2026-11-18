@@ -172,8 +172,7 @@ Before cutting a release that serves a deprecated API version:
    to the migration guides: each root README links the guide in its own language, and the chart
    README links the guides or the NOTES points to the chart README, which links them.
 3. Confirm the migration guides cover role inventory, type-exact compatibility, per-role rollout,
-   RoleBasedGroupSet template ordering, rollback limits, legacy workload cleanup, and
-   storage-version rewriting.
+   RoleBasedGroupSet template ordering, legacy workload cleanup, and storage-version rewriting.
 4. Run `helm lint deploy/helm/rbgs`, `make test-chart`, and the Markdown checks that CI runs.
 
 For `0.9.0`, also verify that the chart/documentation slice (#552) and the removal of the v1alpha1

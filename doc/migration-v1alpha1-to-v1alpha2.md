@@ -94,8 +94,6 @@ kubectl get configmap RBG_NAME -n NAMESPACE
 
 An annotation-only change does not enqueue a reconcile: the controller watches RoleBasedGroup spec changes, not annotation changes. Restart the controller, or submit an approved spec change alongside the annotation, and wait for the ConfigMap to appear before continuing. This prerequisite does not apply to a Deployment role switched to `Stateless` in step 3 below: stateless roles do not mount the ConfigMap.
 
-This limitation is tracked in #595; remove this section once the controller creates the ConfigMap in every discovery mode.
-
 ### Migration steps
 
 #### Deployment, StatefulSet, and LeaderWorkerSet roles
@@ -165,14 +163,6 @@ A `RoleBasedGroupSet` is not an independent per-child staging mechanism. Its con
 - If the set controller deletes and re-creates the child from the unmigrated template, the re-created child inherits the legacy type through the create-time exemption for set-owned children, and the role must be migrated again.
 
 Migrate the set template first. Each child deletes its old workload in the same reconcile pass, so the propagated change takes every child's role to zero Pods at the same time. Plan it as a full outage of that role across the set, not as a staged rollout. Set the discovery-mode annotation on the template as described in the Discovery ConfigMap prerequisite above before migrating. If per-child staging is required, use an explicitly reviewed plan that coordinates or isolates the child from set reconciliation. Do not assume that a child can be permanently migrated while its parent template remains unchanged.
-
-## Rollback
-
-Before each role migration, retain an immutable copy of the object, its resource version, and revision history. These records remain useful for audit and for restoring non-workload fields, but they do not make the workload-type change reversible.
-
-Once a role has switched to `RoleInstanceSet`, restoring the saved Deployment, StatefulSet, or LeaderWorkerSet selector is a new deprecated use and the validator rejects it. Restoring an InstanceSet selector is equally invalid: the write is accepted, but the whole RoleBasedGroup stops at preflight, status keeps showing `Ready=True`, and only the repeated `FailedReconcileWorkload` warning events reveal it. Do not use restoring a deprecated workload type as the rollback; agree an emergency plan with the business owner before submitting the migration.
-
-If the old workload was already removed, do not manually recreate it with the same name. Let the controller own the replacement workload.
 
 ## 3. Rewrite objects in the v1alpha2 storage encoding
 
@@ -252,7 +242,7 @@ Each value must contain only `v1alpha2`. If `v1alpha1` remains before the status
 3. Confirm from your rewrite records that every object of the kinds whose CRDs listed `v1alpha1` was rewritten; the API cannot report an object's encoding, so completeness comes from the records, not from a later read. Then update and verify all four `status.storedVersions` values as described above.
 4. Set `controller.deprecatedWorkloadTypes.enabled=false`, then verify that the controller remains healthy and that a normal v1alpha2 update is not rejected by the deprecation gate.
 5. Move manifests, clients, and automation to `v1alpha2`.
-6. Retire the saved migration artifacts only after the rollback window agreed with the business owner has elapsed.
+6. Retire the saved migration artifacts only after the recovery window agreed with the business owner has elapsed.
 
 ## Risks and failure modes
 

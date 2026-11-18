@@ -83,8 +83,7 @@ Every `v1alpha1` request returns a CRD deprecation warning; `v1alpha1` will be r
 `0.10.0`.
 
 See the [manual v1alpha1-to-v1alpha2 migration guide](../../../doc/migration-v1alpha1-to-v1alpha2.md) for
-role inventory, per-role rollout, rollback procedure, InstanceSet cleanup, and storage-version
-migration.
+role inventory, per-role rollout, InstanceSet cleanup, and storage-version migration.
 
 ## Installing
 
