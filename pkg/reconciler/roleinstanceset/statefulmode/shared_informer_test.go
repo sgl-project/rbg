@@ -78,7 +78,7 @@ func TestSharedIndexInformerForKindErrorsOnNonIndexInformer(t *testing.T) {
 	for _, want := range []string{
 		"does not expose a single SharedIndexInformer",
 		"DefaultNamespaces",
-		"DefaultFieldSelector",
+		"ByObject",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("error %q does not mention %q", err.Error(), want)

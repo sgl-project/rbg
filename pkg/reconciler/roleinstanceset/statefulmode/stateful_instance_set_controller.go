@@ -100,10 +100,10 @@ func NewReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 // sharedIndexInformerForKind returns the SharedIndexInformer backing the
 // manager cache for the given kind. The stateful-mode listers are built on a
 // single informer indexer, so a cache.Informer that does not expose one is a
-// setup error. This happens when the cache is configured with
-// cache.Options.DefaultNamespaces: controller-runtime then returns a
-// multiNamespaceInformer, which aggregates one informer per namespace and has
-// no single indexer.
+// setup error. This happens when these kinds are cached per namespace, through
+// cache.Options.DefaultNamespaces or cache.Options.ByObject[...].Namespaces:
+// controller-runtime then returns a multiNamespaceInformer, which aggregates one
+// informer per namespace and has no single indexer.
 func sharedIndexInformerForKind(cacher ctrlcache.Cache, gvk schema.GroupVersionKind) (toolscache.SharedIndexInformer, error) {
 	informer, err := cacher.GetInformerForKind(context.Background(), gvk)
 	if err != nil {
@@ -112,8 +112,9 @@ func sharedIndexInformerForKind(cacher ctrlcache.Cache, gvk schema.GroupVersionK
 	sharedInformer, ok := informer.(toolscache.SharedIndexInformer)
 	if !ok {
 		return nil, fmt.Errorf("informer for %s is a %T, which does not expose a single SharedIndexInformer; "+
-			"this controller does not support a cache configured with DefaultNamespaces, not even for one namespace. "+
-			"Restrict its scope with cache.Options.DefaultFieldSelector on metadata.namespace instead", gvk, informer)
+			"this controller does not support per-namespace cache configurations "+
+			"(cache.Options.DefaultNamespaces or cache.Options.ByObject[...].Namespaces). "+
+			"Scope these kinds with a per-type metadata.namespace field selector in cache.Options.ByObject instead", gvk, informer)
 	}
 	return sharedInformer, nil
 }
