@@ -200,46 +200,35 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 2: Initialize discovery config mode.
-	// IMPORTANT: This must be done BEFORE constructAndUpdateRoleStatuses, because
-	// shouldUseLegacyDiscoveryConfig checks rbg.Status.RoleStatuses to determine if
-	// this is a new RBG. If roleStatuses is populated first, it will incorrectly
-	// use legacy mode for new RBGs.
-	if needRequeue, err := r.ensureDiscoveryConfigMode(ctx, rbg); err != nil {
-		return ctrl.Result{}, err
-	} else if needRequeue {
-		return ctrl.Result{RequeueAfter: time.Second}, nil
-	}
-
-	// Step 3: Reconcile refined discovery ConfigMap.
+	// Step 2: Reconcile the discovery ConfigMap.
 	// This must happen before reconcileRoles to ensure ConfigMap exists before workloads are created.
-	if err := r.reconcileRefinedDiscoveryConfigMap(ctx, rbg); err != nil {
+	if err := r.reconcileDiscoveryConfigMap(ctx, rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfigMap, err.Error())
 		return ctrl.Result{}, err
 	}
 
-	// Step 4: Construct role statuses
+	// Step 3: Construct role statuses
 	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 5: Ensure CoordinatedPolicy for objects that originated from v1alpha1.
+	// Step 4: Ensure CoordinatedPolicy for objects that originated from v1alpha1.
 	// When v1alpha1 support is removed, delete this step and coordinatedpolicy_migration_controller.go.
 	if err := EnsureV1alpha1CoordinatedPolicy(ctx, r.client, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 6: Calculate coordination strategies for scaling and rolling update
+	// Step 5: Calculate coordination strategies for scaling and rolling update
 	// Coordination configuration is now fetched from CoordinatedPolicy CR with the same name/namespace.
 	scalingTargets, rollingUpdateStrategies, err := r.handleCoordinationStrategies(ctx, rbg, roleStatuses)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 7: Reconcile PodGroup for gang scheduling.
+	// Step 6: Reconcile PodGroup for gang scheduling.
 	// The strategy is resolved once here and carried on ctx so that the PodGroup
-	// spec and every role's pod template built in Step 8 agree on one value.
+	// spec and every role's pod template built in Step 7 agree on one value.
 	ctx, gangStrategy, gangErr := gangcommon.ResolveGangStrategy(ctx, r.client, rbg)
 	if gangErr == nil {
 		gangErr = r.reconcilePodGroup(ctx, rbg, gangStrategy)
@@ -273,10 +262,10 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.V(1).Info("Raised coordinated scaling targets to the gang minimum", "roles", raised)
 	}
 
-	// Step 8: Reconcile roles. Even a failed role must not prevent cleanup of
+	// Step 7: Reconcile roles. Even a failed role must not prevent cleanup of
 	// workloads removed from the spec.
 	roleErr := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies)
-	// Step 9: Cleanup orphaned resources.
+	// Step 8: Cleanup orphaned resources.
 	if err := stderrors.Join(roleErr, r.cleanup(ctx, rbg)); err != nil {
 		return ctrl.Result{}, err
 	}
@@ -389,74 +378,14 @@ func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv
 	return errors.Wrap(kerrors.NewAggregate(errs), "invalid role workload declarations")
 }
 
-func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
-	ctx context.Context,
-	rbg *workloadsv1alpha2.RoleBasedGroup,
-) (bool, error) {
-	// If Mode is already set, skip requeue and return
-	mode := rbg.GetDiscoveryConfigMode()
-	if mode == constants.LegacyDiscoveryConfigMode || mode == constants.RefineDiscoveryConfigMode {
-		return false, nil
-	}
-
-	// determine mode, update annotation
-	legacy, err := r.shouldUseLegacyDiscoveryConfig(ctx, rbg)
-	if err != nil {
-		return true, err
-	}
-	if legacy {
-		mode = constants.LegacyDiscoveryConfigMode
-	} else {
-		mode = constants.RefineDiscoveryConfigMode
-	}
-
-	old := rbg.DeepCopy()
-	rbg.SetDiscoveryConfigMode(mode)
-	if err := r.client.Patch(ctx, rbg, client.MergeFrom(old)); err != nil {
-		return true, err
-	}
-
-	log.FromContext(ctx).Info("Initialized discovery config mode", "mode", mode)
-	// Don't requeue here - continue to reconcile ConfigMap and workloads in the same loop
-	// to avoid race condition where workload is created before ConfigMap exists
-	return false, nil
-}
-
-func (r *RoleBasedGroupReconciler) shouldUseLegacyDiscoveryConfig(
-	ctx context.Context,
-	rbg *workloadsv1alpha2.RoleBasedGroup,
-) (bool, error) {
-	// Existing observed status indicates it is an old object already reconciled before.
-	if rbg.Status.ObservedGeneration > 0 || len(rbg.Status.RoleStatuses) > 0 {
-		return true, nil
-	}
-
-	for i := range rbg.Spec.Roles {
-		role := &rbg.Spec.Roles[i]
-		roleCm := &corev1.ConfigMap{}
-		err := r.client.Get(
-			ctx,
-			types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace},
-			roleCm,
-		)
-		if err == nil {
-			return true, nil
-		}
-		if !apierrors.IsNotFound(err) {
-			return false, err
-		}
-	}
-
-	return false, nil
-}
-
-func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
+// reconcileDiscoveryConfigMap applies the RBG-level discovery ConfigMap that the injector
+// mounts into every stateful role. It ignores the deprecated discovery-config-mode
+// annotation: since v0.7.0 the injector mounts this ConfigMap in every mode, so skipping it
+// for objects once classified as legacy left their Pods unable to start (#595).
+func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
-	if rbg.GetDiscoveryConfigMode() != constants.RefineDiscoveryConfigMode {
-		return nil
-	}
 	if !rbg.HasStatefulRole() {
 		return nil
 	}

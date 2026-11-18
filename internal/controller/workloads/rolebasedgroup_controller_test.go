@@ -2396,7 +2396,7 @@ func TestRaiseScalingTargetsToGangMinimum(t *testing.T) {
 	}
 }
 
-// stubGangScheduler lets a test drive Step 7 of Reconcile without a real PodGroup CRD.
+// stubGangScheduler lets a test drive Step 6 of Reconcile without a real PodGroup CRD.
 type stubGangScheduler struct {
 	err error
 }
@@ -2507,7 +2507,7 @@ func TestReconcileIncompatibleGangConfig(t *testing.T) {
 	assert.Nil(t, gangConfigured())
 
 	require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, current))
-	current.Annotations[constants.GangSchedulingAnnotationKey] = gangAnnotation
+	metav1.SetMetaDataAnnotation(&current.ObjectMeta, constants.GangSchedulingAnnotationKey, gangAnnotation)
 	require.NoError(t, fakeClient.Update(ctx, current))
 
 	stub.err = errors.New("podgroup apiserver hiccup")

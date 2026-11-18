@@ -116,13 +116,21 @@ const (
 // ========== Discovery Config Mode ==========
 
 // DiscoveryConfigMode defines the mode for discovery config
+//
+// Deprecated: the controller ignores the discovery config mode since v0.9.0; see
+// DiscoveryConfigModeAnnotationKey.
 type DiscoveryConfigMode string
 
 const (
-	// LegacyDiscoveryConfigMode uses legacy shared ConfigMap behavior
+	// LegacyDiscoveryConfigMode marked objects reconciled before the mode existed, which
+	// mounted per-role ConfigMaps.
+	//
+	// Deprecated: see DiscoveryConfigModeAnnotationKey.
 	LegacyDiscoveryConfigMode DiscoveryConfigMode = "legacy"
 
 	// RefineDiscoveryConfigMode enables refined shared ConfigMap behavior
+	//
+	// Deprecated: see DiscoveryConfigModeAnnotationKey.
 	RefineDiscoveryConfigMode DiscoveryConfigMode = "refine"
 )
 

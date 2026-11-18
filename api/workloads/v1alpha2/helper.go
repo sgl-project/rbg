@@ -488,6 +488,9 @@ func applyStrategicMergePatch(base corev1.PodTemplateSpec, patch *runtime.RawExt
 }
 
 // GetDiscoveryConfigMode returns the discovery config mode from annotations.
+//
+// Deprecated: the controller ignores the discovery config mode since v0.9.0; see
+// constants.DiscoveryConfigModeAnnotationKey.
 func (rbg *RoleBasedGroup) GetDiscoveryConfigMode() constants.DiscoveryConfigMode {
 	if rbg == nil || rbg.Annotations == nil {
 		return ""
@@ -496,6 +499,9 @@ func (rbg *RoleBasedGroup) GetDiscoveryConfigMode() constants.DiscoveryConfigMod
 }
 
 // SetDiscoveryConfigMode sets the discovery config mode in annotations.
+//
+// Deprecated: the controller ignores the discovery config mode since v0.9.0; see
+// constants.DiscoveryConfigModeAnnotationKey.
 func (rbg *RoleBasedGroup) SetDiscoveryConfigMode(mode constants.DiscoveryConfigMode) {
 	if rbg == nil {
 		return

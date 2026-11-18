@@ -130,6 +130,10 @@ const (
 	RoleInstanceGangSchedulingAnnotationKey = RBGPrefix + "role-instance-gang-scheduling"
 
 	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
+	//
+	// Deprecated: the controller ignores this annotation since v0.9.0 and applies the
+	// RBG-level discovery ConfigMap whenever the group has a stateful role. Controllers
+	// from v0.7.0 wrote it, so stored objects may still carry it.
 	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
 )
 
