@@ -112,13 +112,14 @@ func sharedIndexInformerForKind(cacher ctrlcache.Cache, gvk schema.GroupVersionK
 	sharedInformer, ok := informer.(toolscache.SharedIndexInformer)
 	if !ok {
 		return nil, fmt.Errorf("informer for %s is a %T, which does not expose a single SharedIndexInformer; "+
-			"this controller does not support a cache configured with DefaultNamespaces. "+
-			"Restrict its scope with cache.Options.DefaultFieldSelector on metadata.namespace, or watch a single namespace", gvk, informer)
+			"this controller does not support a cache configured with DefaultNamespaces, not even for one namespace. "+
+			"Restrict its scope with cache.Options.DefaultFieldSelector on metadata.namespace instead", gvk, informer)
 	}
 	return sharedInformer, nil
 }
 
-// newReconciler returns a new reconcile.Reconciler
+// newReconciler returns a new reconcile.Reconciler, or an error if the manager
+// cache cannot provide the shared-index informers for its listers.
 func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	cacher := mgr.GetCache()
 	instanceSetInformer, err := sharedIndexInformerForKind(cacher, controllerKind)
