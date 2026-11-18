@@ -99,7 +99,11 @@ func (c *realControl) executeRoleInstanceNotReadyPolicy(instance *workloadsv1alp
 	case constants.RoleInstanceLifecycleStatePreparingUpdate:
 		err = c.groupReadinessControl.AddNotReadyKey(instance, getReadinessMessage(preparingUpdateHookKey))
 	case constants.RoleInstanceLifecycleStateNormal:
-		err = c.groupReadinessControl.RemoveNotReadyKey(instance, getReadinessMessage(preparingUpdateHookKey))
+		key := preparingUpdateHookKey
+		if GetRoleInstanceLifecycleState(instance) == constants.RoleInstanceLifecycleStatePreparingDelete {
+			key = preparingDeleteHookKey
+		}
+		err = c.groupReadinessControl.RemoveNotReadyKey(instance, getReadinessMessage(key))
 	}
 
 	if err != nil {
@@ -121,9 +125,14 @@ func (c *realControl) UpdateRoleInstanceLifecycle(instance *workloadsv1alpha2.Ro
 
 	instance = instance.DeepCopy()
 	if adp, ok := c.adp.(clientdapter.AdapterWithPatch); ok {
-		before := instance.DeepCopy()
-		SetRoleInstanceLifecycle(state)(instance)
-		gotPod, err = adp.PatchRoleInstance(instance, client.MergeFromWithOptions(before, client.MergeFromWithOptimisticLock{}))
+		body := fmt.Sprintf(
+			`{"metadata":{"labels":{"%s":"%s"},"annotations":{"%s":"%s"}}}`,
+			constants.RoleInstanceSetLifecycleStateKey,
+			string(state),
+			constants.RoleInstanceSetLifecycleTimestampKey,
+			time.Now().Format(time.RFC3339),
+		)
+		gotPod, err = adp.PatchRoleInstance(instance, client.RawPatch(types.MergePatchType, []byte(body)))
 	} else {
 		SetRoleInstanceLifecycle(state)(instance)
 		gotPod, err = c.adp.UpdateRoleInstance(instance)

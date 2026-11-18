@@ -515,6 +515,10 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 		return &status, err
 	}
 
+	if err := ssc.restoreRetainedInstances(replicas, topo, updateRevision.Name); err != nil {
+		return &status, err
+	}
+
 	// Refresh in-place readiness condition for all created instances. Without
 	// this, freshly created instances would carry InPlaceUpdateReady=False
 	// from the instance controller and could deadlock processReplica in
@@ -1227,7 +1231,9 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 		return false, nil
 	}
 
-	if monotonic && condemned[i] != firstUnhealthyInstance && !isHealthy(condemned[i]) {
+	preDelete := set.Spec.Lifecycle != nil && set.Spec.Lifecycle.PreDelete != nil
+	preparingDelete := preDelete && instancelifecycle.GetRoleInstanceLifecycleState(condemned[i]) == constants.RoleInstanceLifecycleStatePreparingDelete
+	if monotonic && !preparingDelete && condemned[i] != firstUnhealthyInstance && !isHealthy(condemned[i]) {
 		return true, nil
 	}
 
@@ -1236,7 +1242,27 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 		return monotonic, err
 	}
 
-	return false, nil
+	return monotonic && preDelete, nil
+}
+
+// restoreRetainedInstances cancels a drain when the desired topology again
+// includes the instance and a rolling update does not still need to replace it.
+func (ssc *defaultStatefulInstanceSetControl) restoreRetainedInstances(
+	replicas []*workloadsv1alpha2.RoleInstance, topo topology, updateRev string,
+) error {
+	for i, instance := range replicas {
+		if !isCreated(instance) || isTerminating(instance) ||
+			instancelifecycle.GetRoleInstanceLifecycleState(instance) != constants.RoleInstanceLifecycleStatePreparingDelete {
+			continue
+		}
+		if topo.inRollout && i+topo.startOrdinal >= topo.partition && getInstanceRevision(instance) != updateRev {
+			continue
+		}
+		if _, _, err := ssc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStateNormal, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (ssc *defaultStatefulInstanceSetControl) updateInstanceSetStatus(
