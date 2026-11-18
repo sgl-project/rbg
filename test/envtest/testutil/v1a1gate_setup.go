@@ -29,6 +29,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
@@ -142,16 +143,21 @@ func SetupV1alpha1GateTestEnv() {
 	}, 10*time.Second, 100*time.Millisecond).Should(Succeed())
 
 	By("installing the v1alpha2 validating webhook configuration")
-	installV1a2GateWebhooks()
+	EnableV1a2Gate()
 }
 
-// installV1a2GateWebhooks installs the v1alpha2 validating webhook
-// configuration pointing at the test webhook server. matchPolicy is left
-// unset (Equivalent, the default) so v1alpha1 writes are routed through
-// conversion to the v1alpha2 gate — the production composition.
-func installV1a2GateWebhooks() {
-	opts := TestEnv.WebhookInstallOptions
-	config := buildValidatingWebhookConfig(opts, []gateWebhookSpec{
+// v1a2GateConfigName is the name of the suite's validating webhook
+// configuration. Grandfathering specs toggle this configuration to seed
+// objects that predate the gate.
+const v1a2GateConfigName = "v1a1-gate-test-validating"
+
+// EnableV1a2Gate (re)installs the v1alpha2 validating webhook configuration
+// pointing at the test webhook server, then waits for the gate to be active.
+// matchPolicy is left unset (Equivalent, the default) so v1alpha1 writes are
+// routed through conversion to the v1alpha2 gate — the production
+// composition. It is idempotent: an existing configuration is reused.
+func EnableV1a2Gate() {
+	config := buildValidatingWebhookConfig(TestEnv.WebhookInstallOptions, []gateWebhookSpec{
 		{
 			name:     "vrolebasedgroup.kb.io",
 			path:     "/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroup",
@@ -163,24 +169,56 @@ func installV1a2GateWebhooks() {
 			resource: "rolebasedgroupsets",
 		},
 	})
-	Expect(K8sClient.Create(Ctx, config)).To(Succeed())
+	if err := K8sClient.Create(Ctx, config); err != nil && !apierrors.IsAlreadyExists(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
 
 	// Wait for the gate to be active: a dry-run deprecated create through
 	// the v1alpha2 API must be rejected.
 	Eventually(func() bool {
-		probe := &workloadsv1alpha2.RoleBasedGroup{
-			ObjectMeta: metav1ObjectMeta("gate-readiness-v1a2", "default"),
-			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
-				Roles: []workloadsv1alpha2.RoleSpec{{
-					Name:        "worker",
-					Replicas:    ptrToInt32(1),
-					Annotations: map[string]string{"rbg.workloads.x-k8s.io/role-workload-type": "apps/v1/StatefulSet"},
-				}},
-			},
-		}
-		err := K8sClient.Create(Ctx, probe, &client.CreateOptions{DryRun: []string{"All"}})
-		return err != nil && containsStr(err.Error(), "new uses are not accepted")
+		return deprecatedCreateRejected()
 	}, 10*time.Second, 250*time.Millisecond).Should(BeTrue(), "the v1alpha2 gate did not become active")
+}
+
+// DisableV1a2Gate deletes the suite's validating webhook configuration and
+// waits for the gate to be inactive: a dry-run deprecated create through the
+// v1alpha2 API must be accepted. Grandfathering specs use it to seed objects
+// that predate the gate.
+func DisableV1a2Gate() {
+	config := &admissionregistrationv1.ValidatingWebhookConfiguration{
+		ObjectMeta: objectMeta(v1a2GateConfigName),
+	}
+	Expect(K8sClient.Delete(Ctx, config)).To(Succeed())
+
+	Eventually(func() bool {
+		return deprecatedCreateAccepted()
+	}, 10*time.Second, 250*time.Millisecond).Should(BeTrue(), "the v1alpha2 gate did not become inactive")
+}
+
+// deprecatedCreateRejected reports whether a dry-run deprecated v1alpha2
+// create is rejected by the gate.
+func deprecatedCreateRejected() bool {
+	err := K8sClient.Create(Ctx, gateReadinessProbe(), &client.CreateOptions{DryRun: []string{"All"}})
+	return err != nil && containsStr(err.Error(), "new uses are not accepted")
+}
+
+// deprecatedCreateAccepted reports whether a dry-run deprecated v1alpha2
+// create passes with the gate offline.
+func deprecatedCreateAccepted() bool {
+	return K8sClient.Create(Ctx, gateReadinessProbe(), &client.CreateOptions{DryRun: []string{"All"}}) == nil
+}
+
+func gateReadinessProbe() *workloadsv1alpha2.RoleBasedGroup {
+	return &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1ObjectMeta("gate-readiness-v1a2", "default"),
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{{
+				Name:        "worker",
+				Replicas:    ptrToInt32(1),
+				Annotations: map[string]string{"rbg.workloads.x-k8s.io/role-workload-type": "apps/v1/StatefulSet"},
+			}},
+		},
+	}
 }
 
 type gateWebhookSpec struct {

@@ -20,8 +20,12 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
@@ -99,6 +103,45 @@ var _ = Describe("v1alpha1 request path through the conversion chain", Ordered, 
 		Expect(err.Error()).To(ContainSubstring("new uses are not accepted"))
 	})
 
+	It("rejects a v1alpha1 create whose role omits the workload key", func() {
+		// The CRD schema defaults an absent workload key to apps/v1
+		// StatefulSet; conversion then hands the deprecated type to the
+		// v1alpha2 gate. The typed Go client cannot produce this request —
+		// a zero WorkloadSpec marshals "workload":{"apiVersion":"","kind":""}
+		// — so submit an unstructured object with the key omitted, the way
+		// kubectl-style YAML does.
+		obj := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "workloads.x-k8s.io/v1alpha1",
+			"kind":       "RoleBasedGroup",
+			"metadata": map[string]interface{}{
+				"name":      "gate-absent-key",
+				"namespace": gateNamespace,
+			},
+			"spec": map[string]interface{}{
+				"roles": []interface{}{map[string]interface{}{
+					"name":     "worker",
+					"replicas": int64(1),
+					"template": map[string]interface{}{
+						"spec": map[string]interface{}{
+							"containers": []interface{}{map[string]interface{}{
+								"name":  "nginx",
+								"image": "nginx:latest",
+							}},
+						},
+					},
+				}},
+			},
+		}}
+		obj.SetGroupVersionKind(schema.GroupVersionKind{
+			Group:   "workloads.x-k8s.io",
+			Version: "v1alpha1",
+			Kind:    "RoleBasedGroup",
+		})
+		err := testutil.K8sClient.Create(testutil.Ctx, obj)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("new uses are not accepted"))
+	})
+
 	It("leaves v1alpha1 deletes ungated", func() {
 		rbg := buildV1a1RBG("gate-delete")
 		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
@@ -107,6 +150,64 @@ var _ = Describe("v1alpha1 request path through the conversion chain", Ordered, 
 })
 
 const gateNamespace = "v1a1-gate-test"
+
+var _ = Describe("v1alpha1 grandfathering through conversion", Ordered, func() {
+	const seededName = "gate-grandfather"
+
+	BeforeAll(func() {
+		// Seed an object whose role predates the gate: with the gate
+		// offline, create it through v1alpha1 with the deprecated
+		// apps/v1 StatefulSet type, then bring the gate back. The plain
+		// defer guarantees the gate is re-enabled even if the seed fails.
+		testutil.DisableV1a2Gate()
+		defer testutil.EnableV1a2Gate()
+
+		rbg := buildV1a1RBG(seededName)
+		rbg.Spec.Roles[0].Workload = workloadsv1alpha1.WorkloadSpec{
+			APIVersion: "apps/v1",
+			Kind:       "StatefulSet",
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+	})
+
+	getSeeded := func() *workloadsv1alpha1.RoleBasedGroup {
+		fresh := &workloadsv1alpha1.RoleBasedGroup{}
+		ExpectWithOffset(1, testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKey{Namespace: gateNamespace, Name: seededName}, fresh)).To(Succeed())
+		return fresh
+	}
+
+	It("accepts a same-type v1alpha1 update of the pre-gate StatefulSet role", func() {
+		// The admission request converts both the new and the old object
+		// to v1alpha2; the type-exact exemption keeps a pre-gate
+		// deprecated role writable through that chain.
+		fresh := getSeeded()
+		*fresh.Spec.Roles[0].Replicas = 2
+		Expect(testutil.K8sClient.Update(testutil.Ctx, fresh)).To(Succeed())
+	})
+
+	It("rejects a v1alpha1 switch from StatefulSet to Deployment", func() {
+		fresh := getSeeded()
+		fresh.Spec.Roles[0].Workload.Kind = "Deployment"
+		err := testutil.K8sClient.Update(testutil.Ctx, fresh)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("new uses are not accepted"))
+	})
+
+	It("rejects adding a new deprecated role through a v1alpha1 update", func() {
+		fresh := getSeeded()
+		newRole := buildV1a1RBG(seededName).Spec.Roles[0]
+		newRole.Name = "worker-extra"
+		newRole.Workload = workloadsv1alpha1.WorkloadSpec{
+			APIVersion: "apps/v1",
+			Kind:       "StatefulSet",
+		}
+		fresh.Spec.Roles = append(fresh.Spec.Roles, newRole)
+		err := testutil.K8sClient.Update(testutil.Ctx, fresh)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("new uses are not accepted"))
+	})
+})
 
 var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 
@@ -151,10 +252,9 @@ var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 		// workload:{"apiVersion":"","kind":""} — the key is present with
 		// empty values, not omitted. The CRD schema requires apiVersion
 		// to match an apiVersion pattern, so schema validation rejects
-		// the empty string before any admission webhook. A genuinely
-		// absent key (kubectl-style YAML) would trigger the CRD top-level
-		// default of apps/v1 StatefulSet, which the v1alpha2 gate then
-		// rejects as a new use; that path is not covered in-repo.
+		// the empty string before any admission webhook. The genuinely
+		// absent-key path (kubectl-style YAML, defaulted to apps/v1
+		// StatefulSet and rejected by the gate) is covered above.
 		rbg := &workloadsv1alpha1.RoleBasedGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: "warn-defaulted", Namespace: gateNamespace},
 			Spec: workloadsv1alpha1.RoleBasedGroupSpec{
@@ -177,15 +277,14 @@ var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 		}
 		err := testutil.K8sClient.Create(testutil.Ctx, rbg)
 		Expect(err).To(HaveOccurred())
-		Expect(err.Error()).To(ContainSubstring("workload.apiVersion"))
+		// A schema rejection is an Invalid (422) error; a webhook denial
+		// would surface as Forbidden (403). Asserting the error type keeps
+		// this spec honest about which layer rejected the request.
+		Expect(apierrors.IsInvalid(err)).To(BeTrue())
 	})
 
-	// v1alpha1-path grandfathering (same-type update through the conversion
-	// chain) and type-exact switch (StatefulSet -> Deployment) have no in-repo
-	// coverage: the v1alpha2 deprecation suite covers them only through the
-	// v1alpha2 API, not via v1alpha1 conversion. In this suite the gate is
-	// already active, so the mutating webhook defaults every create to
-	// RoleInstanceSet; testing grandfathering would require the two-phase
-	// (seed-then-gate) setup, which belongs in the deprecation suite's
-	// architecture. Track as a follow-up before 0.10.0 if needed.
+	// v1alpha1-path grandfathering, type switching, and key-absent workload
+	// defaulting are covered by the sibling Describes above (see #579). The
+	// v1alpha2 deprecation suite remains the coverage for the same behaviors
+	// through the v1alpha2 API.
 })
