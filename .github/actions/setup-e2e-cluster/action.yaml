@@ -6,7 +6,7 @@ inputs:
     description: Kind cluster name
     required: true
   install_mode:
-    description: Controller installation mode (helm or manifest)
+    description: Controller installation mode (helm, manifest, or none — none leaves the cluster empty for suites that install both ends themselves, like the KEP-531 drills)
     required: false
     default: helm
   image_tag:
@@ -197,7 +197,7 @@ runs:
         fi
 
     - name: Deploy controller with Helm
-      if: ${{ inputs.install_mode != 'manifest' }}
+      if: ${{ inputs.install_mode != 'manifest' && inputs.install_mode != 'none' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -228,6 +228,7 @@ runs:
         kubectl get deploy -n rbgs-system
 
     - name: Wait for controller readiness
+      if: ${{ inputs.install_mode != 'none' }}
       shell: bash
       run: |
         set -euo pipefail
@@ -259,7 +260,7 @@ runs:
         done <<< "$expected_crds"
 
     - name: Verify controller scheduler configuration
-      if: ${{ inputs.scheduler != 'default' }}
+      if: ${{ inputs.scheduler != 'default' && inputs.install_mode != 'none' }}
       shell: bash
       run: |
         args=$(kubectl get deployment rbgs-controller-manager -n rbgs-system -o jsonpath='{.spec.template.spec.containers[0].args}')
@@ -272,6 +273,7 @@ runs:
         fi
 
     - name: Wait for webhook certificate bootstrap
+      if: ${{ inputs.install_mode != 'none' }}
       shell: bash
       run: |
         for i in $(seq 1 30); do

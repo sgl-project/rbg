@@ -18,13 +18,19 @@ package v1alpha2
 
 import (
 	"context"
+	"fmt"
+	goruntime "runtime"
+	"sort"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -961,7 +967,6 @@ func TestRoleBasedGroupValidator_ValidateUpdate_TypeExactGrandfathering(t *testi
 		Client:                        newFakeValidatorClient(t),
 		EnableDeprecatedWorkloadTypes: true,
 	}
-
 	t.Run("same deprecated type stays grandfathered", func(t *testing.T) {
 		newRBG := oldRBG.DeepCopy()
 		newRBG.Spec.Roles[0].Replicas = ptr.To(int32(3))
@@ -984,4 +989,657 @@ func TestRoleBasedGroupValidator_ValidateUpdate_TypeExactGrandfathering(t *testi
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "new uses are not accepted")
 	})
+}
+
+// --- KEP-531 engine-runtime shared validation (ValidateEngineRuntimes) ---
+
+// envExtraPatch builds one extraPatches entry creating an env var.
+func envExtraPatch(name string) ContainerPatch {
+	return ContainerPatch{JSONPatch: &ContainerJSONPatch{
+		Op:    "add",
+		Path:  "/env/-",
+		Value: runtime.RawExtension{Raw: []byte(`{"name":"` + name + `","value":"v"}`)},
+	}}
+}
+
+// targetEntry builds a targetContainers entry with optional extraPatches.
+func targetEntry(name string, patches ...ContainerPatch) EngineRuntimeTargetContainer {
+	return EngineRuntimeTargetContainer{Name: name, ExtraPatches: patches}
+}
+
+// TestValidateEngineRuntimes covers the three role-side engine-runtime
+// invariants the KEP routes through the RoleBasedGroup webhook's shared
+// validation function (KEP-531 Validation Layer Split): same-profile
+// effective-set overlap (D6, with the compatibility-pair exemption), the
+// standalonePattern component rule, and duplicate env-name creation within
+// one targetContainers entry's extraPatches.
+func TestValidateEngineRuntimes(t *testing.T) {
+	tests := []struct {
+		name        string
+		role        *RoleSpec
+		wantErr     bool
+		errContains string
+	}{
+		{
+			name: "no engine runtimes",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+			},
+		},
+		{
+			name: "single scoped reference",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName:      "vllm-runtime",
+					Component:        "worker",
+					TargetContainers: []EngineRuntimeTargetContainer{targetEntry("engine")},
+				}},
+			},
+		},
+		{
+			name: "D6: scoped pair on one component",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime", Component: "worker",
+						TargetContainers: []EngineRuntimeTargetContainer{targetEntry("engine")}},
+					{ProfileName: "vllm-runtime", Component: "worker"},
+				},
+			},
+			wantErr:     true,
+			errContains: `role "lg" reference "vllm-runtime"`,
+		},
+		{
+			name: "D6: scoped pair on disjoint components legal",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime", Component: "leader",
+						TargetContainers: []EngineRuntimeTargetContainer{targetEntry("engine")}},
+					{ProfileName: "vllm-runtime", Component: "worker"},
+				},
+			},
+		},
+		{
+			name: "D6: different profiles on one component legal",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "a", Component: "worker"},
+					{ProfileName: "b", Component: "worker"},
+				},
+			},
+		},
+		{
+			name: "D6: compatibility duplicates legal",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime", Containers: []corev1.Container{{Name: "c"}}},
+					{ProfileName: "vllm-runtime", Containers: []corev1.Container{{Name: "c"}}},
+				},
+			},
+		},
+		{
+			name: "D6: compatibility plus scoped overlap under leaderWorkerPattern (leader)",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime"},
+					{ProfileName: "vllm-runtime", Component: "leader"},
+				},
+			},
+			wantErr:     true,
+			errContains: `role "lg" reference "vllm-runtime"`,
+		},
+		{
+			name: "D6: leaderWorkerPattern disjoint mix legal (compat plus component worker)",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime"},
+					{ProfileName: "vllm-runtime", Component: "worker",
+						TargetContainers: []EngineRuntimeTargetContainer{targetEntry("engine")}},
+				},
+			},
+		},
+		{
+			name: "D6: compatibility plus scoped overlap under customComponentsPattern (broadcast)",
+			role: &RoleSpec{
+				Name: "lg",
+				Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
+					Components: []InstanceComponent{
+						{Name: "engine-comp"}, {Name: "aux-comp"},
+					},
+				}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime"},
+					{ProfileName: "vllm-runtime", Component: "aux-comp"},
+				},
+			},
+			wantErr:     true,
+			errContains: `role "lg" reference "vllm-runtime"`,
+		},
+		{
+			name: "D6: customComponentsPattern scoped pair on one component",
+			role: &RoleSpec{
+				Name: "lg",
+				Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
+					Components: []InstanceComponent{
+						{Name: "engine-comp"}, {Name: "aux-comp"},
+					},
+				}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime", Component: "engine-comp"},
+					{ProfileName: "vllm-runtime", Component: "engine-comp"},
+				},
+			},
+			wantErr:     true,
+			errContains: `role "lg" reference "vllm-runtime"`,
+		},
+		{
+			name: "D6: compatibility plus scoped overlap under standalonePattern",
+			role: &RoleSpec{
+				Name:    "sgl",
+				Pattern: Pattern{StandalonePattern: &StandalonePattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime"},
+					{ProfileName: "vllm-runtime", Component: "sgl"},
+				},
+			},
+			wantErr:     true,
+			errContains: `role "sgl" reference "vllm-runtime"`,
+		},
+		{
+			name: "standalone: component equal to role name legal",
+			role: &RoleSpec{
+				Name:    "sgl",
+				Pattern: Pattern{StandalonePattern: &StandalonePattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName:      "vllm-runtime",
+					Component:        "sgl",
+					TargetContainers: []EngineRuntimeTargetContainer{targetEntry("engine")},
+				}},
+			},
+		},
+		{
+			name: "standalone: component mismatch rejected",
+			role: &RoleSpec{
+				Name:    "sgl",
+				Pattern: Pattern{StandalonePattern: &StandalonePattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName: "vllm-runtime",
+					Component:   "other",
+				}},
+			},
+			wantErr:     true,
+			errContains: `role "sgl" reference "vllm-runtime" (engineRuntimes[0]): component "other" must equal the role's name "sgl" under standalonePattern`,
+		},
+		{
+			name: "standalone: role name outside the DNS-label grammar still resolves by name",
+			role: &RoleSpec{
+				Name:    "MyRole",
+				Pattern: Pattern{StandalonePattern: &StandalonePattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName:      "vllm-runtime",
+					Component:        "MyRole",
+					TargetContainers: []EngineRuntimeTargetContainer{targetEntry("engine")},
+				}},
+			},
+		},
+		{
+			name: "duplicate env name within one entry's extraPatches rejected",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName: "vllm-runtime",
+					Component:   "worker",
+					TargetContainers: []EngineRuntimeTargetContainer{
+						targetEntry("engine", envExtraPatch("FOO"), envExtraPatch("FOO")),
+					},
+				}},
+			},
+			wantErr:     true,
+			errContains: `role "lg" reference "vllm-runtime" targetContainers["engine"].extraPatches[1]: duplicate env name "FOO"`,
+		},
+		{
+			name: "same env name in different entries legal",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName: "vllm-runtime",
+					Component:   "worker",
+					TargetContainers: []EngineRuntimeTargetContainer{
+						targetEntry("engine", envExtraPatch("FOO")),
+						targetEntry("runtime-sidecar", envExtraPatch("FOO")),
+					},
+				}},
+			},
+		},
+		{
+			name: "same env name across references of one profile legal",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime", Component: "leader",
+						TargetContainers: []EngineRuntimeTargetContainer{targetEntry("engine", envExtraPatch("FOO"))}},
+					{ProfileName: "vllm-runtime", Component: "worker",
+						TargetContainers: []EngineRuntimeTargetContainer{targetEntry("engine", envExtraPatch("FOO"))}},
+				},
+			},
+		},
+		{
+			name: "distinct env names in one entry legal",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName: "vllm-runtime",
+					Component:   "worker",
+					TargetContainers: []EngineRuntimeTargetContainer{
+						targetEntry("engine", envExtraPatch("FOO"), envExtraPatch("BAR")),
+					},
+				}},
+			},
+		},
+		{
+			name: "non-env patches never collide",
+			role: &RoleSpec{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName: "vllm-runtime",
+					Component:   "worker",
+					TargetContainers: []EngineRuntimeTargetContainer{
+						targetEntry("engine",
+							ContainerPatch{JSONPatch: &ContainerJSONPatch{
+								Op: "add", Path: "/command/0",
+								Value: runtime.RawExtension{Raw: []byte(`"bash"`)},
+							}},
+							ContainerPatch{JSONPatch: &ContainerJSONPatch{
+								Op: "add", Path: "/command/0",
+								Value: runtime.RawExtension{Raw: []byte(`"-c"`)},
+							}}),
+					},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := ValidateEngineRuntimes(tt.role)
+			if tt.wantErr {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+				return
+			}
+			assert.NoError(t, err)
+		})
+	}
+}
+
+// TestValidateEngineRuntimesOverlapErrorCap pins the bound on the pairwise
+// D6 loop: the engineRuntimes list is uncapped by API contract, so a
+// pathological object holding many same-profile overlapping references must
+// not allocate an error per overlapping pair (O(n^2)) in admission or the
+// render-time re-run — every overlap is still rejected, but the error list
+// stops at the cap.
+func TestValidateEngineRuntimesOverlapErrorCap(t *testing.T) {
+	role := &RoleSpec{
+		Name:    "r",
+		Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+	}
+	// 100 scoped references to one profile, all defaulting to the leader
+	// component: every pair overlaps.
+	runtimes := make([]EngineRuntime, 100)
+	for i := range runtimes {
+		runtimes[i] = EngineRuntime{
+			ProfileName: "p", Component: "leader",
+			TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}},
+		}
+	}
+	role.EngineRuntimes = runtimes
+
+	err := ValidateEngineRuntimes(role)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "must not have overlapping effective component sets")
+	aggregate, ok := err.(utilerrors.Aggregate)
+	require.True(t, ok, "expected an aggregate error")
+	assert.LessOrEqual(t, len(aggregate.Errors()), 20)
+}
+
+// TestValidateEngineRuntimesScopeOwnershipLinear pins the complexity of the
+// D6 check: each reference is recorded once — compat references per profile,
+// every other reference under its one component — so an uncapped list with no
+// same-profile overlap validates in linear time and bounded memory. A
+// pairwise scan walks n^2/2 comparisons before concluding nothing overlaps,
+// and the per-(reference, component) recording the check originally used held
+// n × C coverage entries under customComponentsPattern — 9M at n = C = 3000,
+// which OOMKilled a serving replica on a server-side dry run of nothing but
+// the validation. The overlap semantics themselves are pinned by the D6 table
+// above and the error-cap test.
+func TestValidateEngineRuntimesScopeOwnershipLinear(t *testing.T) {
+	t.Run("leaderWorkerPattern: distinct profiles default without overlap", func(t *testing.T) {
+		role := &RoleSpec{
+			Name:    "r",
+			Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+		}
+		const n = 100_000
+		runtimes := make([]EngineRuntime, n)
+		for i := range runtimes {
+			runtimes[i] = EngineRuntime{ProfileName: fmt.Sprintf("p-%d", i)}
+		}
+		role.EngineRuntimes = runtimes
+
+		start := time.Now()
+		require.NoError(t, ValidateEngineRuntimes(role))
+		assert.Less(t, time.Since(start), 2*time.Second,
+			"the scope-ownership check must stay linear in the engineRuntimes list")
+	})
+
+	t.Run("customComponentsPattern: broadcast compat references stay O(n + components)", func(t *testing.T) {
+		const n = 3000
+		role := &RoleSpec{
+			Name:    "r",
+			Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{}},
+		}
+		components := make([]InstanceComponent, n)
+		for i := range components {
+			components[i] = InstanceComponent{Name: fmt.Sprintf("comp-%d", i)}
+		}
+		role.CustomComponentsPattern.Components = components
+		// every reference is the pure compatibility shape, so it covers the
+		// full default set — the shape the per-component recording exploded on
+		runtimes := make([]EngineRuntime, n)
+		for i := range runtimes {
+			runtimes[i] = EngineRuntime{ProfileName: fmt.Sprintf("p-%d", i)}
+		}
+		role.EngineRuntimes = runtimes
+
+		var before, after goruntime.MemStats
+		goruntime.ReadMemStats(&before)
+		start := time.Now()
+		err := ValidateEngineRuntimes(role)
+		elapsed := time.Since(start)
+		goruntime.ReadMemStats(&after)
+		require.NoError(t, err)
+		assert.Less(t, elapsed, 2*time.Second,
+			"the scope-ownership check must stay linear in the engineRuntimes list")
+		assert.Less(t, after.Mallocs-before.Mallocs, uint64(500_000),
+			"each reference must be recorded once, not once per covered component")
+	})
+}
+
+// TestValidateEngineRuntimesErrorCap pins the aggregate-wide error cap: the
+// presence, vocabulary, env and deprecated-surface rules each return one error
+// per reference over an uncapped list, and the webhook path renders the
+// aggregate with err.Error(), whose += build is quadratic in the message
+// length — 5k violations answered with a 618 KiB error in 4.4 s, and 10k hit
+// the webhook's 10 s timeout. Every violation is still counted, but the
+// message stops at maxEngineRuntimeValidationErrors plus one summary line.
+func TestValidateEngineRuntimesErrorCap(t *testing.T) {
+	const n = 10_000
+	role := &RoleSpec{
+		Name: "r",
+		Pattern: Pattern{CustomComponentsPattern: &CustomComponentsPattern{
+			Components: []InstanceComponent{{Name: "engine-comp"}},
+		}},
+	}
+	// one presence violation per reference: targetContainers without
+	// component outside standalonePattern
+	runtimes := make([]EngineRuntime, n)
+	for i := range runtimes {
+		runtimes[i] = EngineRuntime{
+			ProfileName:      fmt.Sprintf("p-%d", i),
+			TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}},
+		}
+	}
+	role.EngineRuntimes = runtimes
+
+	start := time.Now()
+	err := ValidateEngineRuntimes(role)
+	elapsed := time.Since(start)
+	require.Error(t, err)
+	assert.Less(t, elapsed, 2*time.Second,
+		"validation must stay linear even when every reference violates")
+	assert.Contains(t, err.Error(), "targetContainers requires component")
+	assert.Contains(t, err.Error(),
+		fmt.Sprintf("and %d more engine runtime validation errors", n-maxEngineRuntimeValidationErrors))
+	assert.Less(t, len(err.Error()), 64*1024,
+		"the rendered error message must stay bounded")
+	aggregate, ok := err.(utilerrors.Aggregate)
+	require.True(t, ok, "expected an aggregate error")
+	assert.Len(t, aggregate.Errors(), maxEngineRuntimeValidationErrors+1)
+}
+
+// TestRoleBasedGroupValidator_EngineRuntimes pins the webhook call sites:
+// the shared validation function runs on both create and update and
+// surfaces the same attributed errors.
+func TestRoleBasedGroupValidator_EngineRuntimes(t *testing.T) {
+	newRBG := func() *RoleBasedGroup {
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+			Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime", Component: "worker"},
+					{ProfileName: "vllm-runtime", Component: "worker"},
+				},
+			}}},
+		}
+	}
+	cleanRBG := func() *RoleBasedGroup {
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+			Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{
+					{ProfileName: "vllm-runtime", Component: "worker"},
+				},
+			}}},
+		}
+	}
+
+	v := &RoleBasedGroupValidator{
+		Client:                        newFakeValidatorClient(t),
+		EnableDeprecatedWorkloadTypes: true,
+	}
+	_, err := v.ValidateCreate(context.Background(), newRBG())
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `role "lg" reference "vllm-runtime"`)
+	assert.Contains(t, err.Error(), `component "worker"`)
+
+	// An update that re-submits the stored object verbatim does not newly
+	// introduce the violation, so it is exempt (old-vs-new semantics); an
+	// update that introduces the overlapping reference against a clean old
+	// object is rejected.
+	_, err = v.ValidateUpdate(context.Background(), newRBG(), newRBG())
+	assert.NoError(t, err)
+
+	newlyInvalid := newRBG()
+	newlyInvalid.Spec.Roles[0].EngineRuntimes = append(
+		newlyInvalid.Spec.Roles[0].EngineRuntimes,
+		EngineRuntime{ProfileName: "other", Component: "worker"})
+	_, err = v.ValidateUpdate(context.Background(), cleanRBG(), newlyInvalid)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `role "lg" reference "vllm-runtime"`)
+	assert.Contains(t, err.Error(), `component "worker"`)
+
+	// A clean spec passes both call sites.
+	clean := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+			Name:    "lg",
+			Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+			EngineRuntimes: []EngineRuntime{
+				{ProfileName: "vllm-runtime", Component: "leader"},
+				{ProfileName: "vllm-runtime", Component: "worker"},
+			},
+		}}},
+	}
+	_, err = v.ValidateCreate(context.Background(), clean)
+	assert.NoError(t, err)
+	_, err = v.ValidateUpdate(context.Background(), clean, clean)
+	assert.NoError(t, err)
+}
+
+func TestRoleBasedGroupValidator_EngineRuntimesUpdateExemption(t *testing.T) {
+	// An object written while the webhook was absent can carry an invalid
+	// engine-runtime reference (targetContainers without component). An
+	// update must reject only what it newly introduces, so an update that
+	// leaves the role's engine-runtime surface untouched passes, while one
+	// that introduces the violation — or changes the surface — is rejected.
+	wedgedRBG := func() *RoleBasedGroup {
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+			Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+				Name:    "lg",
+				Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+				EngineRuntimes: []EngineRuntime{{
+					ProfileName:      "vllm-runtime",
+					TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}},
+				}},
+			}}},
+		}
+	}
+	v := &RoleBasedGroupValidator{
+		Client:                        newFakeValidatorClient(t),
+		EnableDeprecatedWorkloadTypes: true,
+	}
+
+	t.Run("label-only update on wedged object passes", func(t *testing.T) {
+		oldObj := wedgedRBG()
+		newObj := wedgedRBG()
+		newObj.Labels = map[string]string{"app": "x"}
+		_, err := v.ValidateUpdate(context.Background(), oldObj, newObj)
+		assert.NoError(t, err)
+	})
+
+	t.Run("adding a clean role alongside the wedged one passes", func(t *testing.T) {
+		newObj := wedgedRBG()
+		newObj.Spec.Roles = append(newObj.Spec.Roles, RoleSpec{
+			Name:           "aux",
+			Pattern:        Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+			EngineRuntimes: []EngineRuntime{{ProfileName: "other", Component: "worker"}},
+		})
+		_, err := v.ValidateUpdate(context.Background(), wedgedRBG(), newObj)
+		assert.NoError(t, err)
+	})
+
+	t.Run("newly introduced violation is rejected", func(t *testing.T) {
+		oldObj := wedgedRBG()
+		newObj := wedgedRBG()
+		newObj.Spec.Roles[0].EngineRuntimes = append(newObj.Spec.Roles[0].EngineRuntimes,
+			EngineRuntime{ProfileName: "p2", TargetContainers: []EngineRuntimeTargetContainer{{Name: "c"}}})
+		_, err := v.ValidateUpdate(context.Background(), oldObj, newObj)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reference "p2"`)
+	})
+
+	t.Run("changed surface on the wedged role is still rejected", func(t *testing.T) {
+		newObj := wedgedRBG()
+		newObj.Spec.Roles[0].EngineRuntimes[0].ProfileName = "renamed"
+		_, err := v.ValidateUpdate(context.Background(), wedgedRBG(), newObj)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reference "renamed"`)
+	})
+}
+
+func TestRoleBasedGroupSetValidator_EngineRuntimesUpdateExemption(t *testing.T) {
+	wedgedRBGS := func() *RoleBasedGroupSet {
+		return &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+			Spec: RoleBasedGroupSetSpec{GroupTemplate: RoleBasedGroupTemplateSpec{
+				Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+					Name:    "lg",
+					Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+					EngineRuntimes: []EngineRuntime{{
+						ProfileName:      "vllm-runtime",
+						TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}},
+					}},
+				}}},
+			}},
+		}
+	}
+	v := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+
+	t.Run("label-only update on wedged object passes", func(t *testing.T) {
+		newObj := wedgedRBGS()
+		newObj.Labels = map[string]string{"app": "x"}
+		_, err := v.ValidateUpdate(context.Background(), wedgedRBGS(), newObj)
+		assert.NoError(t, err)
+	})
+
+	t.Run("newly introduced violation is rejected", func(t *testing.T) {
+		newObj := wedgedRBGS()
+		newObj.Spec.GroupTemplate.Spec.Roles[0].EngineRuntimes = append(
+			newObj.Spec.GroupTemplate.Spec.Roles[0].EngineRuntimes,
+			EngineRuntime{ProfileName: "p2", TargetContainers: []EngineRuntimeTargetContainer{{Name: "c"}}})
+		_, err := v.ValidateUpdate(context.Background(), wedgedRBGS(), newObj)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), `reference "p2"`)
+	})
+}
+
+// TestValidateEngineRuntimesScopeOwnershipErrorOrder pins the D6
+// aggregate's error order: the (profile, component) keys the check
+// indexes by are Go maps, so an unsorted walk reports — and caps — a
+// different subset run-to-run. The reported pairs must come back in a
+// deterministic ascending order.
+func TestValidateEngineRuntimesScopeOwnershipErrorOrder(t *testing.T) {
+	role := &RoleSpec{
+		Name:    "r",
+		Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{}},
+	}
+	runtimes := make([]EngineRuntime, 0, 15)
+	for i := 0; i < 6; i++ {
+		name := fmt.Sprintf("p-%d", i)
+		runtimes = append(runtimes,
+			EngineRuntime{ProfileName: name, Component: "leader", TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}}},
+			EngineRuntime{ProfileName: name, Component: "leader", TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}}},
+		)
+	}
+	// One profile overlapping on two components: two scoped references
+	// plus a bare compat reference defaulting to the full {leader, worker} set.
+	runtimes = append(runtimes,
+		EngineRuntime{ProfileName: "multi", Component: "leader", TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}}},
+		EngineRuntime{ProfileName: "multi", Component: "worker", TargetContainers: []EngineRuntimeTargetContainer{{Name: "engine"}}},
+		EngineRuntime{ProfileName: "multi"},
+	)
+	role.EngineRuntimes = runtimes
+
+	var first []string
+	for run := 0; run < 20; run++ {
+		err := ValidateEngineRuntimes(role)
+		agg, ok := err.(utilerrors.Aggregate)
+		require.True(t, ok, "expected an aggregate error")
+		msgs := make([]string, len(agg.Errors()))
+		for i, e := range agg.Errors() {
+			msgs[i] = e.Error()
+		}
+		sorted := append([]string(nil), msgs...)
+		sort.Strings(sorted)
+		assert.Equal(t, sorted, msgs,
+			"scope-ownership errors must be reported in ascending (profile, component) order")
+		if first == nil {
+			first = msgs
+			continue
+		}
+		assert.Equal(t, first, msgs, "error order must be stable across runs")
+	}
 }

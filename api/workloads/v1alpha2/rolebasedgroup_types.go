@@ -61,6 +61,7 @@ type TemplateRef struct {
 
 // RoleBasedGroupSpec defines the desired state of RoleBasedGroup.
 type RoleBasedGroupSpec struct {
+	// Roles is the set of role specifications.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:Required
@@ -284,6 +285,15 @@ const (
 // RoleSpec defines the specification for a role in the group
 // +kubebuilder:validation:XValidation:rule="!(has(self.standalonePattern) && has(self.leaderWorkerPattern))",message="standalonePattern and leaderWorkerPattern are mutually exclusive"
 // +kubebuilder:validation:XValidation:rule="!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.sharedServiceSelection) || self.leaderWorkerPattern.sharedServiceSelection != 'LeaderOnly' || !has(self.annotations) || !('rbg.workloads.x-k8s.io/role-workload-type' in self.annotations) || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'] == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'",message="leaderWorkerPattern.sharedServiceSelection=LeaderOnly is only supported for RoleInstanceSet + leaderWorkerPattern"
+// The targetContainers-requires-component rule (with the standalonePattern
+// exemption) is enforced in the admission webhook's shared validation
+// (ValidateEngineRuntimes), not CEL: a comprehension over the uncapped
+// engineRuntimes list at roles[].scope yields an O(n^2) cost estimate
+// (uncapped inner list x uncapped roles), which the apiserver's CEL budget
+// rejects by more than 100x on every supported version — the KEP-531
+// cost-budget remedy. Verified empirically: the RBGSet CRD (which embeds
+// roles under both spec.template.roles and groupTemplate.spec.roles)
+// cannot even be created with the rule (envtest, kube-apiserver 1.31).
 type RoleSpec struct {
 	// Unique identifier for the role
 	// +kubebuilder:validation:Required
@@ -501,16 +511,104 @@ func (w *WorkloadSpec) String() string {
 	return fmt.Sprintf("%s/%s", w.APIVersion, w.Kind)
 }
 
+// EngineRuntime references one ClusterEngineRuntimeProfile, carrying the
+// role's targeting: where its pod-level fragments apply (component) and
+// the reference's container surface, organized per container
+// (targetContainers) — each entry the consent to the profile's
+// containerPatches at that container and the carrier of the role's own
+// extraPatches for it.
 type EngineRuntime struct {
-	// ProfileName specifies the name of the engine runtime profile to be used
+	// ProfileName specifies the name of the ClusterEngineRuntimeProfile
+	// applied to this role, resolved at render time. The field keeps the
+	// published schema: required, no minLength.
 	ProfileName string `json:"profileName"`
 
-	// InjectContainers specifies the containers to be injected with the engine runtime
+	// Component names the one component of the role's pattern this
+	// reference operates on — `leader`/`worker` under
+	// leaderWorkerPattern, a declared component name under
+	// customComponentsPattern, the role's own name under
+	// standalonePattern; under standalonePattern any other name is a
+	// render error. Absent, the reference keeps the pattern's default
+	// component set: the leader only under leaderWorkerPattern, every
+	// declared component under customComponentsPattern, the single
+	// role-named component under standalonePattern. A role consumes the
+	// same profile in several components through several references with
+	// the same profileName. targetContainers requires this field, except
+	// under standalonePattern where the pattern's one component is the
+	// only possible target, so the patch dimensions always operate on the
+	// one named component.
+	// Deliberately unmarked beyond MinLength: the source vocabulary
+	// (RoleSpec.Name, InstanceComponent.Name) is unmarked, so a bound
+	// here stricter than the fields it references would refuse writable
+	// values; the render-time position gate resolves the name.
+	//
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	Component string `json:"component,omitempty"`
+
+	// TargetContainers organizes the reference's container surface per
+	// container: one entry per container the reference touches, keyed
+	// by name — role-declared or profile-declared. Listing a name is
+	// the consent: at a role-declared container the profile's
+	// containerPatches fire, and the entry's extraPatches carry the
+	// role's own rules for it, landing after the profile's; at a
+	// profile-declared container the entry fires just its own
+	// extraPatches — a publisher's rules never land around its own
+	// sidecar's command. Absent, the profile's
+	// patches fire nowhere — a warning event is emitted when the
+	// profile declares containerPatches, including when the entries
+	// name only profile-declared containers. The map list rejects a
+	// container listed twice. Requires component, except under
+	// standalonePattern.
+	//
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	TargetContainers []EngineRuntimeTargetContainer `json:"targetContainers,omitempty"`
+
+	// Containers is the legacy role-customization channel: env and args
+	// from full corev1.Container objects appended into profile-declared
+	// containers within the reference's component, every other field
+	// silently ignored. Superseded by containerPatches and
+	// targetContainers[].extraPatches; retained for compatibility, same
+	// merge and same call sites.
+	// +optional
+	Containers []corev1.Container `json:"containers,omitempty"`
+
+	// Retained exactly as published on main: optional and inert. No
+	// semantics are attached; removed at the next API version boundary.
+	//
 	// +optional
 	InjectContainers []string `json:"injectContainers,omitempty"`
+}
 
-	// Containers specifies the engine runtime containers to be overridden
-	Containers []corev1.Container `json:"containers,omitempty"`
+// EngineRuntimeTargetContainer is one entry of an EngineRuntime's
+// targetContainers list: the consent to the profile's containerPatches at
+// the named container and the carrier of the role's own patches for it,
+// which land after the profile's (D8).
+type EngineRuntimeTargetContainer struct {
+	// Name is the rendered container this entry addresses —
+	// role-declared or profile-declared, containers and init containers
+	// alike. A name the role's own template also declares resolves to
+	// the role-owned container; a name injected only by a different
+	// reference or profile is a render error.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// ExtraPatches are the role's RFC 6902 patch rules for the entry's
+	// container, applied in list order after the profile's
+	// containerPatches — what the role writes lands where it is written
+	// (D10). See ContainerPatch.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=atomic
+	ExtraPatches []ContainerPatch `json:"extraPatches,omitempty"`
 }
 
 type InstanceComponent struct {

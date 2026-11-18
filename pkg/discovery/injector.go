@@ -37,10 +37,6 @@ type GroupInfoInjector interface {
 		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha2.RoleBasedGroup,
 		role *workloadsv1alpha2.RoleSpec,
 	) error
-	InjectSidecar(
-		context context.Context, podSpec *corev1.PodTemplateSpec, rbg *workloadsv1alpha2.RoleBasedGroup,
-		role *workloadsv1alpha2.RoleSpec,
-	) error
 }
 
 type DefaultInjector struct {
@@ -160,14 +156,6 @@ func (i *DefaultInjector) InjectLeaderWorkerSetEnv(ctx context.Context,
 	}
 
 	return nil
-}
-
-func (i *DefaultInjector) InjectSidecar(
-	ctx context.Context, podSpec *corev1.PodTemplateSpec,
-	rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
-) error {
-	builder := NewSidecarBuilder(i.client, rbg, role)
-	return builder.Build(ctx, podSpec)
 }
 
 // mergeEnvVars deduplicates both slices (preserving last occurrence per name),

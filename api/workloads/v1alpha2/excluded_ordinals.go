@@ -47,13 +47,13 @@ func ValidateRoleExcludedOrdinals(rbg *RoleBasedGroup, role *RoleSpec) error {
 	if len(errs) == 0 {
 		return nil
 	}
-	return apierrors.NewInvalid(GroupVersion.WithKind("RoleBasedGroup").GroupKind(), rbg.Name, errs)
+	return apierrors.NewInvalid(GroupVersion.WithKind(roleBasedGroupKind).GroupKind(), rbg.Name, errs)
 }
 
 func isRBGSetManaged(rbg *RoleBasedGroup) bool {
 	for _, owner := range rbg.OwnerReferences {
 		gv, err := schema.ParseGroupVersion(owner.APIVersion)
-		if err == nil && gv.Group == GroupVersion.Group && owner.Kind == "RoleBasedGroupSet" {
+		if err == nil && gv.Group == GroupVersion.Group && owner.Kind == roleBasedGroupSetKind {
 			return true
 		}
 	}
@@ -65,7 +65,7 @@ func validateExcludedOrdinals(rbg *RoleBasedGroup, managed bool) error {
 	if len(errs) == 0 {
 		return nil
 	}
-	return apierrors.NewInvalid(GroupVersion.WithKind("RoleBasedGroup").GroupKind(), rbg.Name, errs)
+	return apierrors.NewInvalid(GroupVersion.WithKind(roleBasedGroupKind).GroupKind(), rbg.Name, errs)
 }
 
 func validateExcludedOrdinalsRoles(roles []RoleSpec, path *field.Path, managed bool) field.ErrorList {
@@ -105,7 +105,7 @@ func validateRBGSetExcludedOrdinals(rbgs *RoleBasedGroupSet) error {
 	if len(errs) == 0 {
 		return nil
 	}
-	return apierrors.NewInvalid(GroupVersion.WithKind("RoleBasedGroupSet").GroupKind(), rbgs.Name, errs)
+	return apierrors.NewInvalid(GroupVersion.WithKind(roleBasedGroupSetKind).GroupKind(), rbgs.Name, errs)
 }
 
 // CommittedOrdinals reads desired membership, independently of live instances.
