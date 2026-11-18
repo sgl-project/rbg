@@ -143,6 +143,14 @@ func TestClassifyPodOperationError(t *testing.T) {
 			apierrors.NewBadRequest(`admission webhook "example" denied the request`)),
 			workloadsv1alpha2.ReasonPodAdmissionRejected},
 		{"unclassified", apierrors.NewServerTimeout(corev1.Resource("pods"), "POST", 1), workloadsv1alpha2.ReasonPodOperationUnclassified},
+		// A ValidatingAdmissionPolicy with the default reason rejects with 422
+		// Invalid and mentions neither a webhook nor a plugin.
+		{"validating admission policy", &apierrors.StatusError{ErrStatus: metav1.Status{
+			Status:  metav1.StatusFailure,
+			Code:    422,
+			Reason:  metav1.StatusReasonInvalid,
+			Message: `ValidatingAdmissionPolicy 'require-labels' with binding 'check-pods' denied request: metadata.labels: required`,
+		}}, workloadsv1alpha2.ReasonPodAdmissionRejected},
 		{"pod security admission via forbidden", apierrors.NewForbidden(
 			corev1.Resource("pods"), "ri-0", apierrors.NewBadRequest(`violates PodSecurity "restricted:latest"`)),
 			workloadsv1alpha2.ReasonPodAdmissionRejected},

@@ -286,6 +286,63 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			wantStatus: corev1.ConditionTrue,
 		},
 		{
+			name: "stale RI status does not complete the rollout",
+			// Right after the set writes an RI's new spec, the RI still reports
+			// status for the previous generation: its revision label already moved,
+			// and its Ready condition predated the update. Such status must not
+			// count toward completion.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(2))
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, ReadyReplicas: 3, AvailableReplicas: 3,
+				CurrentRevision: "old", UpdateRevision: "new",
+				UpdatedReplicas: 1, UpdatedReadyReplicas: 1, ExpectedUpdatedReplicas: 1,
+			},
+			instances: []*workloadsv1alpha2.RoleInstance{
+				{},
+				{},
+				{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Status: workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1}},
+			},
+			wantReason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "terminating RI with stale status does not block completion",
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(2))
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, ReadyReplicas: 3, AvailableReplicas: 3,
+				CurrentRevision: "old", UpdateRevision: "new",
+				UpdatedReplicas: 1, UpdatedReadyReplicas: 1, ExpectedUpdatedReplicas: 1,
+			},
+			instances: []*workloadsv1alpha2.RoleInstance{
+				{},
+				{},
+				{ObjectMeta: metav1.ObjectMeta{
+					Generation:        2,
+					DeletionTimestamp: ptr.To(metav1.Now()),
+				}, Status: workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1}},
+			},
+			wantReason: workloadconstants.ProgressingReasonConverged,
+			wantStatus: corev1.ConditionFalse,
+		},
+		{
 			name: "ri recovery aggregates to recovering",
 			set:  newTestSet(3),
 			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
@@ -772,6 +829,17 @@ func TestClassifySetOperationError(t *testing.T) {
 		apierrors.NewForbidden(corev1.Resource("roleinstances"), "ri-b", apierrors.NewBadRequest("exceeded quota")))
 	if got := ClassifySetOperationError(joined); got != workloadconstants.ProgressingReasonPermissionDenied {
 		t.Fatalf("permission must outrank quota in a joined error, got %s", got)
+	}
+	// A ValidatingAdmissionPolicy with the default reason rejects with 422
+	// Invalid and mentions neither a webhook nor a plugin.
+	vap := &apierrors.StatusError{ErrStatus: metav1.Status{
+		Status:  metav1.StatusFailure,
+		Code:    422,
+		Reason:  metav1.StatusReasonInvalid,
+		Message: `ValidatingAdmissionPolicy 'require-labels' with binding 'check-roleinstances' denied request: metadata.labels: required`,
+	}}
+	if got := ClassifySetOperationError(vap); got != workloadconstants.ProgressingReasonAdmissionDenied {
+		t.Fatalf("ValidatingAdmissionPolicy denial must be admission, got %s", got)
 	}
 	if got := ClassifySetOperationError(nil); got != "" {
 		t.Fatalf("got %s", got)

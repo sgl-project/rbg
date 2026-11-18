@@ -219,6 +219,17 @@ func isRBGBlockerFamily(reason string) bool {
 	return false
 }
 
+// isRBGRecomputedBlockerFamily reports whether the family is a blocker fact the
+// RBG re-observes on every reconcile from runtime state (gang waiting and
+// dependencies). Such facts must not be carried as entry blockers or retained
+// across unclassified errors: once the fresh observation clears, a carried
+// condition would keep reporting the family — with an empty role list — instead
+// of letting the status move on.
+func isRBGRecomputedBlockerFamily(reason string) bool {
+	return reason == constants.ProgressingReasonWaitingForGang ||
+		reason == constants.ProgressingReasonWaitingForDependencies
+}
+
 // retainRBGBlockerFamily keeps a previously confirmed blocker family for the current
 // target when the new controller-owned error cannot be classified: an unclassifiable
 // error does not establish that the confirmed blocker no longer holds, and the new
@@ -235,6 +246,7 @@ func retainRBGBlockerFamily(rbg *workloadsv1alpha2.RoleBasedGroup, entryBlocker 
 			source.Status != metav1.ConditionTrue ||
 			source.ObservedGeneration != rbg.Generation ||
 			source.Reason == constants.ProgressingReasonUnclassifiedBlocker ||
+			isRBGRecomputedBlockerFamily(source.Reason) ||
 			!isRBGBlockerFamily(source.Reason) {
 			continue
 		}
@@ -269,6 +281,9 @@ func rbgEntryOwnBlocker(rbg *workloadsv1alpha2.RoleBasedGroup) *metav1.Condition
 		condition.Status != metav1.ConditionTrue ||
 		condition.ObservedGeneration != rbg.Generation ||
 		condition.Reason == constants.ProgressingReasonUnclassifiedBlocker ||
+		// Gang waiting and dependencies are re-observed every reconcile; a
+		// persisted entry copy of them must not outlive the fresh observation.
+		isRBGRecomputedBlockerFamily(condition.Reason) ||
 		!isRBGBlockerFamily(condition.Reason) {
 		return nil
 	}
@@ -369,29 +384,40 @@ func podGroupControlledByRBG(podGroup *unstructured.Unstructured, rbg *workloads
 	return false
 }
 
-// podGroupWaiting classifies gang waiting from the runtime facts. The
-// Unschedulable condition is the reliable signal: Volcano can hold the group in
-// Inqueue with an Unschedulable condition while the gang cannot be filled. As a
-// phase-level fallback, Pending waits for admission and Unknown means part of
-// the gang cannot be scheduled; Inqueue, scheduler-plugins' Scheduling, Running,
-// and the terminal phases do not wait.
+// podGroupWaiting classifies gang waiting from the runtime facts. The phase is
+// evaluated first: Volcano never clears a written Unschedulable condition — once
+// the gang fits, the plugin writes Scheduled=True instead, and Volcano itself
+// only trusts Unschedulable while its transitionID matches the current
+// scheduling session. A group that is Running, already Scheduling
+// (scheduler-plugins), in a terminal phase, or has no phase is therefore not
+// waiting regardless of leftover conditions. Pending waits for admission and
+// Unknown means part of the gang cannot be scheduled. While the group is still
+// Inqueue, an Unschedulable=True condition means the gang cannot currently be
+// filled.
 func podGroupWaiting(podGroup *unstructured.Unstructured) bool {
-	conditions, ok, _ := unstructured.NestedSlice(podGroup.Object, "status", "conditions")
-	if ok {
-		for _, raw := range conditions {
-			condition, valid := raw.(map[string]interface{})
-			if !valid {
-				continue
-			}
-			conditionType, _, _ := unstructured.NestedString(condition, "type")
-			status, _, _ := unstructured.NestedString(condition, "status")
-			if conditionType == "Unschedulable" && status == "True" {
-				return true
+	phase, _, _ := unstructured.NestedString(podGroup.Object, "status", "phase")
+	switch phase {
+	case "Pending", "Unknown":
+		return true
+	case "Inqueue":
+		conditions, ok, _ := unstructured.NestedSlice(podGroup.Object, "status", "conditions")
+		if ok {
+			for _, raw := range conditions {
+				condition, valid := raw.(map[string]interface{})
+				if !valid {
+					continue
+				}
+				conditionType, _, _ := unstructured.NestedString(condition, "type")
+				status, _, _ := unstructured.NestedString(condition, "status")
+				if conditionType == "Unschedulable" && status == "True" {
+					return true
+				}
 			}
 		}
+		return false
+	default:
+		return false
 	}
-	phase, _, _ := unstructured.NestedString(podGroup.Object, "status", "phase")
-	return phase == "Pending" || phase == "Unknown"
 }
 
 // classifyGangIncompatibility distinguishes missing scheduler capability from an
@@ -531,6 +557,7 @@ func rbgCurrentBlocker(
 	entryMessages := map[string]string{}
 	if entryBlocker != nil && entryBlocker.Status == metav1.ConditionTrue &&
 		entryBlocker.Reason != "" && entryBlocker.Reason != constants.ProgressingReasonUnclassifiedBlocker &&
+		!isRBGRecomputedBlockerFamily(entryBlocker.Reason) &&
 		isRBGBlockerFamily(entryBlocker.Reason) {
 		// A controller-owned blocker confirmed for the current target is carried
 		// until the role operation itself is retried later in this reconcile; the

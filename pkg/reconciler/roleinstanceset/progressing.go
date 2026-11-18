@@ -28,6 +28,7 @@ import (
 
 	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 // familyPriority is the blocker-family reporting order from KEP-502. It affects
@@ -81,7 +82,7 @@ func classifySingleSetOperationError(err error) string {
 		// HTTP 403 is ambiguous: quota, admission, and RBAC all reject with
 		// Forbidden. Only a positive RBAC match (User "..." cannot ...) is an RBAC
 		// denial; other 403 responses are admission rejections.
-		if mentionsAdmissionWebhook(err) {
+		if utils.MentionsAdmissionRejection(err) {
 			return workloadconstants.ProgressingReasonAdmissionDenied
 		}
 		if isQuotaExceededError(err) {
@@ -92,7 +93,7 @@ func classifySingleSetOperationError(err error) string {
 		}
 		return workloadconstants.ProgressingReasonAdmissionDenied
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
-		if mentionsAdmissionWebhook(err) {
+		if utils.MentionsAdmissionRejection(err) {
 			return workloadconstants.ProgressingReasonAdmissionDenied
 		}
 		return workloadconstants.ProgressingReasonUnclassifiedBlocker
@@ -130,15 +131,6 @@ func isQuotaExceededError(err error) bool {
 	// Quota rejections are Forbidden with an "exceeded quota" detail, which is not
 	// distinguishable through a typed helper.
 	return strings.Contains(err.Error(), "exceeded quota")
-}
-
-func mentionsAdmissionWebhook(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := err.Error()
-	return strings.Contains(msg, "admission webhook") ||
-		strings.Contains(msg, "admission plugin")
 }
 
 // isRBACDenial positively matches the stable RBAC Forbidden shape
@@ -330,10 +322,38 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 		condition.Message = "instances are ready but have not satisfied minReadySeconds"
 		return condition
 	}
+	if instancesBehindGeneration(instances) {
+		// The set dispatched a new spec to at least one RI, but that RI's
+		// persisted status still describes the old generation: its revision label
+		// already moved, and its Ready condition and phase predate the update.
+		// Status written for an older generation must not count toward
+		// completion, or the set briefly reports Converged before the RI has even
+		// started updating.
+		condition.Reason = workloadconstants.ProgressingReasonRoleInstanceUpdated
+		return condition
+	}
 
 	condition.Status = v1.ConditionFalse
 	condition.Reason = workloadconstants.ProgressingReasonConverged
 	return condition
+}
+
+// instancesBehindGeneration reports whether any non-terminating RoleInstance
+// still reports status for an older generation than its current spec. Such
+// status describes the previous target: the instance's revision label has
+// already moved with the dispatched spec, while its readiness facts have not
+// been recomputed yet. Synthetic (nil) slots and instances being deleted carry
+// no current status to wait for.
+func instancesBehindGeneration(instances []*workloadsv1alpha2.RoleInstance) bool {
+	for _, instance := range instances {
+		if instance == nil || instance.DeletionTimestamp != nil {
+			continue
+		}
+		if instance.Status.ObservedGeneration < instance.Generation {
+			return true
+		}
+	}
+	return false
 }
 
 // setEstablishmentReasons are Progressing reasons that prove the set previously got

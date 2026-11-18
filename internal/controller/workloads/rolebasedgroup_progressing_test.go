@@ -456,6 +456,45 @@ func TestOwnBlockerCompetesWithFreshChildBlockers(t *testing.T) {
 	}
 }
 
+func TestRecomputedBlockerFamiliesAreNotCarried(t *testing.T) {
+	// Gang waiting and dependencies are re-observed on every reconcile. A
+	// persisted entry copy must not outlive the fresh observation: carrying it
+	// would keep reporting WaitingForDependencies with an empty role list after
+	// the dependencies became ready.
+	entry := metav1.Condition{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+		Status:             metav1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonWaitingForDependencies,
+		Message:            "dependencies for roles b are not ready",
+		ObservedGeneration: 6,
+	}
+
+	t.Run("fresh observation clears the family", func(t *testing.T) {
+		rbg := newProgressingRBG()
+		got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), convergedObservations(), expectedRevisions(), false, nil, &entry, nil)
+		if got.Status != metav1.ConditionFalse || got.Reason != workloadconstants.ProgressingReasonConverged {
+			t.Fatalf("got status=%s reason=%s", got.Status, got.Reason)
+		}
+	})
+
+	t.Run("entry snapshot is not captured for recomputed families", func(t *testing.T) {
+		rbg := newProgressingRBG()
+		rbg.Status.Conditions = []metav1.Condition{entry}
+		if got := rbgEntryOwnBlocker(rbg); got != nil {
+			t.Fatalf("recomputed blocker families must not be carried, got %+v", got)
+		}
+	})
+
+	t.Run("unclassified errors do not retain recomputed families", func(t *testing.T) {
+		rbg := newProgressingRBG()
+		rbg.Status.Conditions = []metav1.Condition{entry}
+		reason, _ := retainRBGBlockerFamily(rbg, &entry, workloadconstants.ProgressingReasonUnclassifiedBlocker, "operation failed")
+		if reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
+			t.Fatalf("recomputed blocker families must not be retained, got %s", reason)
+		}
+	})
+}
+
 func TestPodGroupWaitingPhase(t *testing.T) {
 	podGroup := func(phase string, unschedulable bool) *unstructured.Unstructured {
 		object := map[string]interface{}{
@@ -494,6 +533,23 @@ func TestPodGroupWaitingPhase(t *testing.T) {
 		if podGroupWaiting(podGroup(phase, false)) {
 			t.Fatalf("phase %q must not be a waiting fact", phase)
 		}
+	}
+
+	// Volcano never clears a written Unschedulable condition: once the gang fits,
+	// the plugin writes Scheduled=True instead and its own jobStatus only trusts
+	// Unschedulable while the transitionID matches the current session. A
+	// Running group is therefore not waiting, whatever conditions it carries.
+	running := &unstructured.Unstructured{Object: map[string]interface{}{
+		"status": map[string]interface{}{
+			"phase": "Running",
+			"conditions": []interface{}{
+				map[string]interface{}{"type": "Unschedulable", "status": "True", "reason": "NotEnoughResources"},
+				map[string]interface{}{"type": "Scheduled", "status": "True"},
+			},
+		},
+	}}
+	if podGroupWaiting(running) {
+		t.Fatal("a Running PodGroup with a leftover Unschedulable condition must not be a waiting fact")
 	}
 }
 

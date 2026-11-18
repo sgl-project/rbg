@@ -87,17 +87,19 @@ var _ = Describe("Stateful RoleInstance orphan Pod recovery", func() {
 			}
 			for _, condition := range currentInstance.Status.Conditions {
 				// KEP-502: a same-name Pod from a previous controller UID awaiting
-				// garbage collection cannot be classified into a blocker family, so
-				// the blocked creation is reported through the Progressing
-				// condition with PodOperationUnclassified instead of FailedScale.
+				// garbage collection is the recreate flow racing garbage collection,
+				// not a current blocker. The Warning Event records the failed
+				// attempt; reporting PodOperationUnclassified here would flash
+				// blocker reasons at RIS and RBG on every RecreatePod rollout.
 				if condition.Type == workloadsv1alpha2.RoleInstanceProgressing &&
 					condition.Status == corev1.ConditionTrue &&
 					condition.Reason == workloadsv1alpha2.ReasonPodOperationUnclassified {
-					return true, nil
+					return false, fmt.Errorf("unexpected unclassified blocker: %+v", condition)
 				}
 			}
-			return false, nil
-		}, timeout, interval).Should(BeTrue(), "the blocked creation should be reported through Progressing")
+			return true, nil
+		}, 2*time.Second, interval).Should(BeTrue(),
+			"the recreate race must not publish an unclassified blocker condition")
 
 		Expect(testutil.K8sClient.Delete(testutil.Ctx, oldPod)).To(Succeed())
 		Eventually(func() (bool, error) {

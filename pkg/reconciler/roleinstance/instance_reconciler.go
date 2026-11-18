@@ -229,13 +229,15 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		// The event carries the classification of the error that actually happened;
 		// only the condition retains a previously confirmed blocker family.
 		r.emitOperationFailureEvent(instance, scaleReason, podsScaleErr)
-		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-			Type:               workloadsv1alpha2.RoleInstanceProgressing,
-			Status:             v1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-			Reason:             r.stableBlockerReason(instance, scaleReason),
-			Message:            podsScaleErr.Error(),
-		})
+		if !isSameNameForeignPodConflict(podsScaleErr) {
+			newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+				Type:               workloadsv1alpha2.RoleInstanceProgressing,
+				Status:             v1.ConditionTrue,
+				LastTransitionTime: metav1.Now(),
+				Reason:             r.stableBlockerReason(instance, scaleReason),
+				Message:            podsScaleErr.Error(),
+			})
+		}
 	}
 	// Propagate the Restarting condition mutated during Scale: True while a
 	// recreation wave is in progress, and False (RestartCompleted) once every

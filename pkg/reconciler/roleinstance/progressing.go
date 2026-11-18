@@ -25,6 +25,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 // roleInstancePhaseFacts carries the controller-observed facts used by the RI phase
@@ -204,7 +205,7 @@ func classifySinglePodOperationError(operation string, err error) string {
 		// only a positive RBAC match (User "..." cannot ...) is an RBAC denial.
 		// Other 403 responses (PodSecurity, LimitRanger, ServiceAccount admission,
 		// NamespaceLifecycle, ValidatingAdmissionPolicy) are admission rejections.
-		if mentionsAdmissionWebhook(err) {
+		if utils.MentionsAdmissionRejection(err) {
 			return workloadsv1alpha2.ReasonPodAdmissionRejected
 		}
 		if isQuotaExceededError(err) {
@@ -217,7 +218,7 @@ func classifySinglePodOperationError(operation string, err error) string {
 	case apierrors.IsInvalid(err), apierrors.IsBadRequest(err):
 		// Admission rejections and invalid object errors are surfaced by the API
 		// server as Invalid/BadRequest with the rejecting plugin in the message.
-		if mentionsAdmissionWebhook(err) {
+		if utils.MentionsAdmissionRejection(err) {
 			return workloadsv1alpha2.ReasonPodAdmissionRejected
 		}
 		return workloadsv1alpha2.ReasonPodOperationUnclassified
@@ -271,13 +272,19 @@ func isQuotaExceededError(err error) bool {
 	return strings.Contains(err.Error(), "exceeded quota")
 }
 
-func mentionsAdmissionWebhook(err error) bool {
+// isSameNameForeignPodConflict reports whether a Pod operation failed because a
+// same-name Pod left behind by a previous RoleInstance UID (or one still being
+// deleted) occupies the target name. This is the recreate flow racing garbage
+// collection, not a current blocker: reporting it as PodOperationUnclassified
+// would flash blocker reasons at RIS and RBG on every RecreatePod rollout. The
+// error is still returned for the retry; only the blocker condition is skipped.
+func isSameNameForeignPodConflict(err error) bool {
 	if err == nil {
 		return false
 	}
 	msg := err.Error()
-	return strings.Contains(msg, "admission webhook") ||
-		strings.Contains(msg, "admission plugin")
+	return strings.Contains(msg, "is not controlled by RoleInstance ") ||
+		strings.Contains(msg, "is terminating")
 }
 
 // instanceProgressingBlocker returns the highest-priority blocker Progressing
