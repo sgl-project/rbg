@@ -229,7 +229,11 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		// The event carries the classification of the error that actually happened;
 		// only the condition retains a previously confirmed blocker family.
 		r.emitOperationFailureEvent(instance, scaleReason, podsScaleErr)
-		if !isSameNameForeignPodConflict(podsScaleErr) {
+		// A Scale aggregate can mix a same-name foreign-Pod conflict with a
+		// sibling's real failure; the condition is skipped only when every
+		// constituent is the recreate race, so a mixed aggregate still publishes
+		// the classified blocker and event and status agree.
+		if !onlySameNameForeignPodConflicts(podsScaleErr) {
 			newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
 				Type:               workloadsv1alpha2.RoleInstanceProgressing,
 				Status:             v1.ConditionTrue,

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -426,6 +427,52 @@ func TestSameNameForeignPodConflictIsNotABlocker(t *testing.T) {
 	require.False(t, slices.ContainsFunc(computed.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
 		return condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue
 	}), "a recreate race with garbage collection must not publish a blocker condition")
+}
+
+func TestMixedForeignConflictAndQuotaFailurePublishesBlocker(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = instance.Generation
+	revisions := revisioncontrol.NewRevisionControl()
+	revision, err := revisions.NewRevision(instance, 1, new(int32))
+	require.NoError(t, err)
+	instance.Status.CurrentRevision = revision.Name
+	instance.Status.UpdateRevision = revision.Name
+
+	// One component's target name is occupied by a Pod from the previous
+	// instance UID, and creating the sibling component's Pod is rejected by
+	// quota: the Scale aggregate mixes both. The quota blocker must still be
+	// published, matching the classified Warning Event.
+	foreign := newReadinessTestPod(instance, "router")
+	foreign.OwnerReferences[0].UID = "previous-instance-uid"
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(instance).WithObjects(instance, foreign).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cc client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if pod, ok := obj.(*v1.Pod); ok && strings.Contains(pod.Name, "sidecar") {
+					return apierrors.NewForbidden(
+						v1.Resource("pods"), pod.Name, apierrors.NewBadRequest("pods is forbidden: exceeded quota"))
+				}
+				return cc.Create(ctx, obj, opts...)
+			},
+		}).Build()
+	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+	t.Cleanup(func() { control.ClearRestarting(instance) })
+	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control, recorder: record.NewFakeRecorder(20)}
+
+	computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
+	result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, nil)
+	require.ErrorContains(t, result.err, "exceeded quota")
+
+	var blocker *workloadsv1alpha2.RoleInstanceCondition
+	for i := range computed.Conditions {
+		condition := &computed.Conditions[i]
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue {
+			blocker = condition
+		}
+	}
+	require.NotNil(t, blocker, "a mixed aggregate must publish the classified blocker")
+	require.Equal(t, workloadsv1alpha2.ReasonPodCreateQuotaExceeded, blocker.Reason)
 }
 
 func TestAuxiliaryOwnerReferencesDoNotBlockMemberRepair(t *testing.T) {

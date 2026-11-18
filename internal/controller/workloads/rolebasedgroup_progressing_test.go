@@ -23,12 +23,16 @@ import (
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -325,7 +329,7 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := computeRBGProgressingCondition(tc.rbg, tc.roleStatuses, tc.observations, tc.expected, tc.gangWaiting, tc.depsNotReady, nil, nil)
+			got := computeRBGProgressingCondition(tc.rbg, tc.roleStatuses, tc.observations, tc.expected, rbgRuntimeFacts{gangWaiting: tc.gangWaiting, depsNotReady: tc.depsNotReady}, nil, nil)
 			if got.Reason != tc.wantReason || got.Status != tc.wantStatus {
 				t.Fatalf("got status=%s reason=%s message=%s, want status=%s reason=%s", got.Status, got.Reason, got.Message, tc.wantStatus, tc.wantReason)
 			}
@@ -353,7 +357,7 @@ func TestEntryBlockerCarryAndSnapshot(t *testing.T) {
 			"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
 			"decode":  observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
 		}
-		got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), false, nil, &entry, nil)
+		got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), rbgRuntimeFacts{}, &entry, nil)
 		if got.Status != metav1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonPermissionDenied {
 			t.Fatalf("got status=%s reason=%s", got.Status, got.Reason)
 		}
@@ -426,7 +430,7 @@ func TestOwnBlockerCompetesWithFreshChildBlockers(t *testing.T) {
 		"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
 		"decode":  observation(workloadconstants.ProgressingReasonPermissionDenied, corev1.ConditionTrue, "hash"),
 	}
-	got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), false, nil, nil,
+	got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), rbgRuntimeFacts{}, nil,
 		&rbgOwnBlocker{reason: workloadconstants.ProgressingReasonWaitingForQuota, message: "exceeded quota"})
 	if got.Status != metav1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonPermissionDenied {
 		t.Fatalf("got status=%s reason=%s", got.Status, got.Reason)
@@ -434,7 +438,7 @@ func TestOwnBlockerCompetesWithFreshChildBlockers(t *testing.T) {
 
 	// The own blocker wins when its family has the higher precedence, and its
 	// message stays visible.
-	got = computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), false, nil, nil,
+	got = computeRBGProgressingCondition(rbg, readyRoleStatuses(), observations, expectedRevisions(), rbgRuntimeFacts{}, nil,
 		&rbgOwnBlocker{reason: workloadconstants.ProgressingReasonInvalidSpec, message: "invalid excluded ordinals"})
 	if got.Status != metav1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonInvalidSpec ||
 		got.Message != "invalid excluded ordinals" {
@@ -446,7 +450,7 @@ func TestOwnBlockerCompetesWithFreshChildBlockers(t *testing.T) {
 		"prefill": observation(workloadconstants.ProgressingReasonConverged, corev1.ConditionFalse, "hash"),
 		"decode":  observation(workloadconstants.ProgressingReasonWaitingForQuota, corev1.ConditionTrue, "hash"),
 	}
-	got = computeRBGProgressingCondition(rbg, readyRoleStatuses(), quotaChild, expectedRevisions(), false, nil, nil,
+	got = computeRBGProgressingCondition(rbg, readyRoleStatuses(), quotaChild, expectedRevisions(), rbgRuntimeFacts{}, nil,
 		&rbgOwnBlocker{reason: workloadconstants.ProgressingReasonWaitingForQuota, message: "exceeded quota"})
 	if got.Status != metav1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonWaitingForQuota {
 		t.Fatalf("got status=%s reason=%s", got.Status, got.Reason)
@@ -471,7 +475,7 @@ func TestRecomputedBlockerFamiliesAreNotCarried(t *testing.T) {
 
 	t.Run("fresh observation clears the family", func(t *testing.T) {
 		rbg := newProgressingRBG()
-		got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), convergedObservations(), expectedRevisions(), false, nil, &entry, nil)
+		got := computeRBGProgressingCondition(rbg, readyRoleStatuses(), convergedObservations(), expectedRevisions(), rbgRuntimeFacts{}, &entry, nil)
 		if got.Status != metav1.ConditionFalse || got.Reason != workloadconstants.ProgressingReasonConverged {
 			t.Fatalf("got status=%s reason=%s", got.Status, got.Reason)
 		}
@@ -613,21 +617,81 @@ func TestUnreadyDependencies(t *testing.T) {
 	// The dependency gate observes the dispatched child replicas, not the RBG's
 	// final target: a coordinated step of 1/1 must not report the dependency as
 	// blocked while the final target is three.
-	ready := newReconciler(seedRIS(1, 1)).unreadyDependencies(ctx, rbg)
+	ready, readyErr := newReconciler(seedRIS(1, 1)).unreadyDependencies(ctx, rbg)
 	if len(ready) != 0 {
 		t.Fatalf("dispatched dependency replicas must satisfy the gate, got %v", ready)
 	}
+	if readyErr != nil {
+		t.Fatalf("unexpected observation error: %v", readyErr)
+	}
 
-	notReady := newReconciler(seedRIS(1, 0)).unreadyDependencies(ctx, rbg)
+	notReady, notReadyErr := newReconciler(seedRIS(1, 0)).unreadyDependencies(ctx, rbg)
 	if len(notReady) != 1 || notReady[0] != "decode" {
 		t.Fatalf("got %v", notReady)
 	}
+	if notReadyErr != nil {
+		t.Fatalf("unexpected observation error: %v", notReadyErr)
+	}
 
 	// A missing dependency child is a fact: the dependency is not ready.
-	missing := newReconciler(fake.NewClientBuilder().WithScheme(scheme).Build()).unreadyDependencies(ctx, rbg)
+	missing, missingErr := newReconciler(fake.NewClientBuilder().WithScheme(scheme).Build()).unreadyDependencies(ctx, rbg)
 	if len(missing) != 1 || missing[0] != "decode" {
 		t.Fatalf("missing dependency child must be not ready, got %v", missing)
 	}
+	if missingErr != nil {
+		t.Fatalf("unexpected observation error: %v", missingErr)
+	}
+}
+
+func TestGangObservationReadErrorReportsIncomplete(t *testing.T) {
+	ctx := context.Background()
+	rbg := newProgressingRBG()
+	rbg.Annotations = map[string]string{workloadconstants.GangSchedulingAnnotationKey: "true"}
+
+	scheme := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	podGroupReadErr := apierrors.NewForbidden(
+		schema.GroupResource{Group: "scheduling.volcano.sh", Resource: "podgroups"},
+		rbg.Name, stderrors.New("podgroups is forbidden"))
+	readErrClient := func(t *testing.T, podGroupErr error) client.Client {
+		t.Helper()
+		return fake.NewClientBuilder().WithScheme(scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cc client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if unstructuredObj, ok := obj.(*unstructured.Unstructured); ok && unstructuredObj.GetKind() == "PodGroup" {
+						return podGroupErr
+					}
+					return cc.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+	}
+
+	t.Run("read failure reports observation incomplete", func(t *testing.T) {
+		c := readErrClient(t, podGroupReadErr)
+		r := &RoleBasedGroupReconciler{client: c, apiReader: c, scheme: scheme, workloadReconciler: map[string]reconciler.WorkloadReconciler{}}
+		r.updateRBGProgressingCondition(ctx, rbg, readyRoleStatuses(), expectedRevisions(), r.observeRuntimeFacts(ctx, rbg), nil)
+		condition := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing))
+		if condition == nil || condition.Status != metav1.ConditionUnknown || condition.Reason != "ObservationIncomplete" {
+			t.Fatalf("a failed PodGroup read must report Unknown/ObservationIncomplete, got %+v", condition)
+		}
+		if !strings.Contains(condition.Message, "podgroups is forbidden") {
+			t.Fatalf("message must describe the observation error, got %q", condition.Message)
+		}
+	})
+
+	t.Run("missing pod group is a fact, not an error", func(t *testing.T) {
+		c := readErrClient(t, apierrors.NewNotFound(schema.GroupResource{Group: "scheduling.volcano.sh", Resource: "podgroups"}, rbg.Name))
+		r := &RoleBasedGroupReconciler{client: c, apiReader: c, scheme: scheme, workloadReconciler: map[string]reconciler.WorkloadReconciler{}}
+		gangWaiting, err := r.observeGangWaiting(ctx, rbg)
+		if err != nil {
+			t.Fatalf("an absent PodGroup must not be an observation error: %v", err)
+		}
+		if gangWaiting {
+			t.Fatal("an absent PodGroup must not be a waiting fact")
+		}
+	})
 }
 
 func TestRetainRBGBlockerFamily(t *testing.T) {

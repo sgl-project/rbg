@@ -287,6 +287,25 @@ func isSameNameForeignPodConflict(err error) bool {
 		strings.Contains(msg, "is terminating")
 }
 
+// onlySameNameForeignPodConflicts reports whether every constituent of a joined
+// or aggregated Pod operation error is a same-name foreign-Pod conflict. A
+// Scale aggregate can mix the conflict with a sibling's real failure: the
+// blocker condition must only be skipped when the whole failure is the recreate
+// race, otherwise the sibling's quota, permission, or admission blocker is
+// still classified and published.
+func onlySameNameForeignPodConflicts(err error) bool {
+	constituents := flattenPodOperationErrors(err)
+	if len(constituents) == 0 {
+		return false
+	}
+	for _, single := range constituents {
+		if !isSameNameForeignPodConflict(single) {
+			return false
+		}
+	}
+	return true
+}
+
 // instanceProgressingBlocker returns the highest-priority blocker Progressing
 // condition recorded by this reconcile, if any: scale and update operations can both
 // fail in one reconcile, and a lower-priority failure appended first must not hide a

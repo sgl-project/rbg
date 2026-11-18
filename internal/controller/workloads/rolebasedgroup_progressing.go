@@ -18,6 +18,7 @@ package workloads
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -115,7 +116,7 @@ func (r *RoleBasedGroupReconciler) updateRBGProgressingCondition(
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 	roleStatuses []workloadsv1alpha2.RoleStatus,
 	expectedRevisions map[string]string,
-	gangWaiting bool,
+	facts rbgRuntimeFacts,
 	entryBlocker *metav1.Condition,
 ) map[string]bool {
 	if !allRolesUseRoleInstanceSet(rbg) {
@@ -123,22 +124,22 @@ func (r *RoleBasedGroupReconciler) updateRBGProgressingCondition(
 	}
 
 	observations, readErr := r.collectRISObservations(ctx, rbg)
-	if readErr != nil {
-		// An observation failure must not fabricate a converged verdict or a blocker:
-		// report Unknown with ObservationIncomplete per KEP-502.
+	if observationErr := stderrors.Join(readErr, facts.observationError()); observationErr != nil {
+		// An observation failure must not fabricate a converged verdict, a
+		// blocker, or a cleared waiting fact: report Unknown with
+		// ObservationIncomplete per KEP-502.
 		apimeta.SetStatusCondition(&rbg.Status.Conditions, metav1.Condition{
 			Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
 			Status:             metav1.ConditionUnknown,
 			LastTransitionTime: metav1.Now(),
 			Reason:             "ObservationIncomplete",
-			Message:            readErr.Error(),
+			Message:            observationErr.Error(),
 			ObservedGeneration: rbg.Generation,
 		})
 		return nil
 	}
-	depsNotReady := r.unreadyDependencies(ctx, rbg)
 
-	condition := computeRBGProgressingCondition(rbg, roleStatuses, observations, expectedRevisions, gangWaiting, depsNotReady, entryBlocker, nil)
+	condition := computeRBGProgressingCondition(rbg, roleStatuses, observations, expectedRevisions, facts, entryBlocker, nil)
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, condition)
 
 	_, recovering := missingChildRoles(rbg, observations)
@@ -176,13 +177,18 @@ func (r *RoleBasedGroupReconciler) reportRBGProgressingBlocker(
 	// quota failure must not hide a RoleInstanceSet's current permission denial.
 	// The historical entry blocker keeps its stricter generation confirmation;
 	// the new own-operation failure is a current fact without one.
+	// A failed runtime observation keeps the plain own-blocker condition: an
+	// incomplete observation must not replace a confirmed controller-owned
+	// failure with Unknown.
 	if observations, readErr := r.collectRISObservations(ctx, rbg); readErr == nil {
-		if computed := computeRBGProgressingCondition(
-			rbg, rbg.Status.RoleStatuses, observations, nil,
-			r.observeGangWaiting(ctx, rbg), r.unreadyDependencies(ctx, rbg),
-			entryBlocker, &rbgOwnBlocker{reason: reason, message: message},
-		); isRBGBlockerFamily(computed.Reason) && computed.Status == metav1.ConditionTrue {
-			condition = computed
+		facts := r.observeRuntimeFacts(ctx, rbg)
+		if facts.observationError() == nil {
+			if computed := computeRBGProgressingCondition(
+				rbg, rbg.Status.RoleStatuses, observations, nil, facts,
+				entryBlocker, &rbgOwnBlocker{reason: reason, message: message},
+			); isRBGBlockerFamily(computed.Reason) && computed.Status == metav1.ConditionTrue {
+				condition = computed
+			}
 		}
 	}
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, condition)
@@ -203,9 +209,44 @@ func (r *RoleBasedGroupReconciler) finalizeRBGProgressingCondition(
 	if !allRolesUseRoleInstanceSet(rbg) {
 		return nil
 	}
-	r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRevisions, r.observeGangWaiting(ctx, rbg), nil)
+	r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRevisions, r.observeRuntimeFacts(ctx, rbg), nil)
 	_, err := utils.ApplyObjectConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.ApplyStatus)
 	return err
+}
+
+// rbgRuntimeFacts carries the RBG-owned runtime facts and their observation
+// errors. A read error means the fact is unknown, not false: publishing a
+// cleared waiting or dependency fact on a failed read would fabricate an
+// observation, contrary to KEP-502's ObservationIncomplete rule.
+type rbgRuntimeFacts struct {
+	// gangWaiting reports whether the RBG's gang is currently waiting.
+	gangWaiting bool
+	// gangReadErr is set when the PodGroup could not be read for a reason other
+	// than being absent.
+	gangReadErr error
+	// depsNotReady lists roles whose dependency gate is currently unmet.
+	depsNotReady []string
+	// depsReadErr is set when a dependency readiness observation failed.
+	depsReadErr error
+}
+
+// observationError joins the runtime observation errors, or returns nil when
+// every fact was observed.
+func (facts rbgRuntimeFacts) observationError() error {
+	return stderrors.Join(facts.gangReadErr, facts.depsReadErr)
+}
+
+// observeRuntimeFacts collects the gang and dependency facts the RBG itself
+// observes on every reconcile.
+func (r *RoleBasedGroupReconciler) observeRuntimeFacts(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) rbgRuntimeFacts {
+	gangWaiting, gangReadErr := r.observeGangWaiting(ctx, rbg)
+	depsNotReady, depsReadErr := r.unreadyDependencies(ctx, rbg)
+	return rbgRuntimeFacts{
+		gangWaiting:  gangWaiting,
+		gangReadErr:  gangReadErr,
+		depsNotReady: depsNotReady,
+		depsReadErr:  depsReadErr,
+	}
 }
 
 // isRBGBlockerFamily reports whether the reason is a current-blocker family reason
@@ -337,30 +378,38 @@ var gangPodGroupGVKs = [][2]string{
 // computation. A missing PodGroup before its first reconcile is not a waiting
 // fact, and a same-name PodGroup that is not controlled by this RBG is never
 // this RBG's fact.
-func (r *RoleBasedGroupReconciler) observeGangWaiting(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) bool {
+func (r *RoleBasedGroupReconciler) observeGangWaiting(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) (bool, error) {
 	if r.apiReader == nil {
 		// No gang observation is available; do not report a waiting fact.
-		return false
+		return false, nil
 	}
 	strategy, err := gangcommon.GetGangStrategy(ctx, r.client, rbg)
 	if err != nil || strategy == nil {
 		// Gang scheduling is not enabled, or the strategy cannot be determined;
 		// neither is a waiting fact.
-		return false
+		return false, nil
 	}
 	for _, gvk := range gangPodGroupGVKs {
 		podGroup := &unstructured.Unstructured{}
 		podGroup.SetAPIVersion(gvk[0])
 		podGroup.SetKind(gvk[1])
 		if err := r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}, podGroup); err != nil {
-			continue
+			if apierrors.IsNotFound(err) || apimeta.IsNoMatchError(err) {
+				// This backend has no PodGroup for the RBG: a fact, not an
+				// observation failure.
+				continue
+			}
+			// A read failure cannot confirm either waiting or not-waiting.
+			// Returning the error lets the caller report ObservationIncomplete
+			// instead of fabricating a cleared waiting fact.
+			return false, err
 		}
 		if !podGroupControlledByRBG(podGroup, rbg) {
 			continue
 		}
-		return podGroupWaiting(podGroup)
+		return podGroupWaiting(podGroup), nil
 	}
-	return false
+	return false, nil
 }
 
 // podGroupControlledByRBG reports whether the PodGroup carries this RBG's controller
@@ -436,9 +485,11 @@ func classifyGangIncompatibility(err error) string {
 // child replicas, including the maxSkew coordination exception). Reusing the
 // execution predicate keeps the reported blocker from disagreeing with the gate
 // during coordinated rollouts. Dependencies are declared in the RBG spec and cross
-// roles, so RIS cannot observe them.
-func (r *RoleBasedGroupReconciler) unreadyDependencies(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) []string {
+// roles, so RIS cannot observe them. Read failures other than NotFound are
+// returned: an unobserved dependency gate is unknown, not ready.
+func (r *RoleBasedGroupReconciler) unreadyDependencies(ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup) ([]string, error) {
 	var notReady []string
+	var observationErrs []error
 	for i := range rbg.Spec.Roles {
 		role := &rbg.Spec.Roles[i]
 		if len(role.Dependencies) == 0 {
@@ -454,7 +505,8 @@ func (r *RoleBasedGroupReconciler) unreadyDependencies(ctx context.Context, rbg 
 			}
 			workloadReconciler, err := r.getOrCreateWorkloadReconciler(ctx, depRole.GetWorkloadSpec())
 			if err != nil {
-				// An observation error must not fabricate a blocker.
+				// An observation error must not fabricate a ready or blocked fact.
+				observationErrs = append(observationErrs, fmt.Errorf("observe dependency %s for role %s: %w", dependency, role.Name, err))
 				continue
 			}
 			ready, err := workloadReconciler.CheckWorkloadReady(ctx, rbg, depRole)
@@ -464,7 +516,8 @@ func (r *RoleBasedGroupReconciler) unreadyDependencies(ctx context.Context, rbg 
 					notReady = append(notReady, role.Name)
 					break
 				}
-				// An observation error must not fabricate a blocker.
+				// An observation error must not fabricate a ready or blocked fact.
+				observationErrs = append(observationErrs, fmt.Errorf("check dependency %s for role %s: %w", dependency, role.Name, err))
 				continue
 			}
 			if !ready {
@@ -474,7 +527,7 @@ func (r *RoleBasedGroupReconciler) unreadyDependencies(ctx context.Context, rbg 
 		}
 	}
 	sort.Strings(notReady)
-	return notReady
+	return notReady, stderrors.Join(observationErrs...)
 }
 
 // computeRBGProgressingCondition builds the single RBG Progressing condition.
@@ -483,8 +536,7 @@ func computeRBGProgressingCondition(
 	roleStatuses []workloadsv1alpha2.RoleStatus,
 	observations map[string]risObservation,
 	expectedRevisions map[string]string,
-	gangWaiting bool,
-	depsNotReady []string,
+	facts rbgRuntimeFacts,
 	entryBlocker *metav1.Condition,
 	ownBlocker *rbgOwnBlocker,
 ) metav1.Condition {
@@ -495,7 +547,7 @@ func computeRBGProgressingCondition(
 		ObservedGeneration: rbg.Generation,
 	}
 
-	blockerReason, blockerMessage := rbgCurrentBlocker(observations, gangWaiting, depsNotReady, entryBlocker, ownBlocker)
+	blockerReason, blockerMessage := rbgCurrentBlocker(observations, facts, entryBlocker, ownBlocker)
 	if blockerReason != "" {
 		condition.Reason = blockerReason
 		condition.Message = blockerMessage
@@ -537,8 +589,7 @@ func computeRBGProgressingCondition(
 
 func rbgCurrentBlocker(
 	observations map[string]risObservation,
-	gangWaiting bool,
-	depsNotReady []string,
+	facts rbgRuntimeFacts,
 	entryBlocker *metav1.Condition,
 	ownBlocker *rbgOwnBlocker,
 ) (string, string) {
@@ -547,12 +598,12 @@ func rbgCurrentBlocker(
 	// permission, admission, quota, and resources blockers.
 	// RBG does not probe Pod-level errors itself.
 	byFamily := make(map[string][]string)
-	if gangWaiting {
+	if facts.gangWaiting {
 		byFamily[constants.ProgressingReasonWaitingForGang] = []string{}
 	}
-	if len(depsNotReady) > 0 {
+	if len(facts.depsNotReady) > 0 {
 		byFamily[constants.ProgressingReasonWaitingForDependencies] = append(
-			byFamily[constants.ProgressingReasonWaitingForDependencies], depsNotReady...)
+			byFamily[constants.ProgressingReasonWaitingForDependencies], facts.depsNotReady...)
 	}
 	entryMessages := map[string]string{}
 	if entryBlocker != nil && entryBlocker.Status == metav1.ConditionTrue &&

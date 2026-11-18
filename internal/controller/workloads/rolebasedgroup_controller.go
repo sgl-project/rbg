@@ -970,7 +970,7 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 
 	// Record the KEP-502 Progressing condition before the unchanged-status check so
 	// condition-only changes still produce an SSA patch.
-	preservedEvidence := r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash, r.observeGangWaiting(ctx, rbg), entryBlocker)
+	preservedEvidence := r.updateRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash, r.observeRuntimeFacts(ctx, rbg), entryBlocker)
 
 	// update role status
 	for i := range roleStatuses {
