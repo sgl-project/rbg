@@ -20,7 +20,7 @@ English | [简体中文](README.zh-CN.md)
     - [Notes, Constraints, and Caveats (Optional)](#notes-constraints-and-caveats-optional)
     - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
-    - [ConfigMap Versioning](#configmap-versioning)
+    - [Discovery Mode Annotation](#discovery-mode-annotation)
     - [v1 Content Format](#v1-content-format)
         - [Address Templates](#address-templates)
         - [Component Indexing](#component-indexing)
@@ -105,16 +105,18 @@ new content explicitly writes:
 apiVersion: v1
 ```
 
-RBG spec persists the content version:
+RBG metadata persists the content choice through the existing discovery-mode
+annotation:
 
 ```yaml
-spec:
-  discoveryConfigVersion: v1alpha1
+metadata:
+  annotations:
+    rbg.workloads.x-k8s.io/discovery-config-mode: compact
 ```
 
 The controller continues to use the same RBG-level ConfigMap `<rbg>` and the
-same `config.yaml` key. When `discoveryConfigVersion` is `v1`, the controller
-writes v1 content and replaces the v1alpha1 content.
+same `config.yaml` key. When the annotation is `compact`, the controller writes
+v1 content and replaces the v1alpha1 content.
 
 This KEP defines the storage format, replacement semantics, and migration
 steps. Consumer compatibility is a follow-up KEP.
@@ -224,7 +226,7 @@ kubelet redistributes it to every node with a mounting Pod.
 1. Make stored size depend on role and component count, and keep it
    independent of replica count.
 2. Identify ConfigMap content with `apiVersion`.
-3. Persist the content version in RBG spec.
+3. Persist the content choice in the existing discovery-mode annotation.
 4. Keep the same `<rbg>` ConfigMap and `config.yaml` key.
 5. Let v1 content replace v1alpha1 content.
 6. Represent Pod DNS correctly for the three RoleInstanceSet patterns.
@@ -249,8 +251,9 @@ kubelet redistributes it to every node with a mounting Pod.
   by `refine`; it has no `apiVersion` field.
 - **v1 content**: the compact format defined by this KEP; it writes
   `apiVersion: v1`.
-- **`discoveryConfigVersion`**: the RBG spec field that persists the content
-  version.
+- **Discovery-mode annotation**: the
+  `rbg.workloads.x-k8s.io/discovery-config-mode` annotation, whose values are
+  `legacy`, `refine`, and `compact`.
 - **Member**: a RoleInstance ordinal selected for discovery.
 - **Component**: a named Pod group inside a RoleInstanceSet instance.
 - `<rbg>`: the RBG object name.
@@ -281,35 +284,39 @@ can upgrade consumers without changing the controller's storage format again.
 |---|---|
 | v1 content encodes a different address set from the current builder | Unit tests expand v1 content and compare it structurally with current builder output |
 | Workload or Service names trigger Kubernetes name truncation | The controller computes the full address template, including truncation and compatibility rules |
-| A controller upgrade unexpectedly changes the content version | RBG spec records `discoveryConfigVersion`, and the controller uses that field when rebuilding the ConfigMap |
-| A consumer supports only v1alpha1 | Migration is explicit through `spec.discoveryConfigVersion`; consumer compatibility is a follow-up KEP |
+| A controller upgrade unexpectedly changes the content version | The discovery-mode annotation records the selected format, and the controller uses it when rebuilding the ConfigMap |
+| A consumer supports only v1alpha1 | Migration is explicit through the discovery-mode annotation; consumer compatibility is a follow-up KEP |
 
 ## Design Details
 
-### ConfigMap Versioning
+### Discovery Mode Annotation
 
 This KEP adds content versioning because changing the ConfigMap format
 creates compatibility problems, and future changes should be identifiable by
 version.
 
-RBG spec records the version:
+RBG metadata records the mode:
 
 ```yaml
-spec:
-  discoveryConfigVersion: v1alpha1
+metadata:
+  annotations:
+    rbg.workloads.x-k8s.io/discovery-config-mode: compact
 ```
 
 Rules:
 
-1. `discoveryConfigVersion` is optional and accepts `v1alpha1` or `v1`.
-2. When the field is missing, the webhook applies defaulting rules and
-   normally sets the latest version. RBGs created after this KEP should always
-   carry the field; RBGs that predate migration should have it set manually.
-3. The controller uses the field to select the ConfigMap content version.
-4. If the ConfigMap is deleted, the controller rebuilds the same version at
-   the next reconcile.
-5. The ConfigMap's `apiVersion` matches the spec field.
-6. v1alpha1 content has no `apiVersion`.
+1. The annotation key is
+   `rbg.workloads.x-k8s.io/discovery-config-mode`.
+2. The supported values are `legacy`, `refine`, and `compact`.
+3. Existing `legacy` and `refine` RBGs keep their current behavior.
+4. New RBGs default to `compact`; setting `refine` at creation is the
+   documented opt-out.
+5. The controller uses the annotation to select the ConfigMap content.
+6. If the ConfigMap is deleted, the controller rebuilds the content for the
+   current mode at the next reconcile.
+7. `compact` maps to v1 content.
+8. `refine` and `legacy` continue to write v1alpha1 content.
+9. v1alpha1 content has no `apiVersion`.
 
 | Content version | Marker | Meaning |
 |---|---|---|
@@ -487,7 +494,7 @@ descending, or out-of-range values.
 The controller writes the ConfigMap before role reconciliation:
 
 1. compute membership and address templates
-2. generate content according to `spec.discoveryConfigVersion`
+2. generate content according to the discovery-mode annotation
 3. write `<rbg>/config.yaml`
 4. when the target version is `v1`, replace v1alpha1 content
 
@@ -510,22 +517,21 @@ Stored size is therefore independent of replica count and ordinal span.
 
 ### Migration
 
-1. Install the CRD that adds `discoveryConfigVersion`.
-2. Set existing RBGs to:
+1. Deploy the controller that supports `compact`.
+2. Existing `legacy` and `refine` RBGs keep their current content.
+3. To migrate an RBG, set:
 
    ```yaml
-   spec:
-     discoveryConfigVersion: v1alpha1
+   metadata:
+     annotations:
+       rbg.workloads.x-k8s.io/discovery-config-mode: compact
    ```
 
-3. Deploy the controller that supports v1.
-4. Wait for reconcile and verify that ConfigMap content is still v1alpha1.
-5. Change `discoveryConfigVersion` to `v1`.
-6. Wait for reconcile and verify that ConfigMap content is `apiVersion: v1`.
+4. Wait for reconcile and verify that ConfigMap content is `apiVersion: v1`.
 
 Rollback:
 
-1. Change `discoveryConfigVersion` back to `v1alpha1`.
+1. Change the annotation back to `refine`.
 2. Wait for reconcile and verify that ConfigMap content is v1alpha1.
 
 Consumer compatibility is a follow-up KEP.
@@ -535,7 +541,8 @@ Consumer compatibility is a follow-up KEP.
 #### Unit tests
 
 - v1 field completeness.
-- Behavior for `discoveryConfigVersion` missing, `v1alpha1`, and `v1`.
+- Behavior for `legacy`, `refine`, and `compact`.
+- First-reconcile defaulting, including the `refine` opt-out.
 - Parsing missing `apiVersion` as v1alpha1.
 - Address templates for the three patterns.
 - LeaderWorkerPattern leader and worker offsets.
@@ -546,8 +553,8 @@ Consumer compatibility is a follow-up KEP.
 #### Integration tests
 
 - The same `<rbg>` ConfigMap is replaced with v1 content.
-- After ConfigMap deletion, the controller rebuilds the version recorded in
-  `discoveryConfigVersion`.
+- After ConfigMap deletion, the controller rebuilds the content selected by
+  the discovery-mode annotation.
 - ConfigMap count remains 1.
 - A write failure fails reconcile and retries.
 - ConfigMap content is v1 after migration.
@@ -589,17 +596,16 @@ Upgrade changes only discovery ConfigMap content. Pod templates, volumes, and
 mounts remain unchanged.
 
 After downgrade to a controller that predates v1, that controller does not
-recognize `spec.discoveryConfigVersion`. It continues to follow the existing
-discovery mode and writes v1alpha1 content on the next reconcile. Downgrade
-migration is a follow-up KEP.
+recognize `compact`. In-place downgrade of `compact` RBGs is unsupported.
+Downgrade migration is a follow-up KEP.
 
 ### Version Skew Strategy
 
-`apiVersion` in the ConfigMap and `discoveryConfigVersion` in RBG spec let
-consumers and controllers identify the content version.
+`apiVersion` in the ConfigMap and the discovery-mode annotation in RBG metadata
+let consumers and controllers identify the selected content.
 
-Older controllers ignore `discoveryConfigVersion` and continue writing
-v1alpha1 content.
+Older controllers do not recognize `compact` and continue writing v1alpha1
+content for `legacy` and `refine` RBGs.
 
 ## Production Readiness Review Questionnaire
 
@@ -607,8 +613,8 @@ v1alpha1 content.
 
 #### How can this feature be enabled or disabled in a live cluster?
 
-Set `spec.discoveryConfigVersion` to `v1`. Set it back to `v1alpha1` to roll
-back.
+Set the discovery-mode annotation to `compact`. Set it back to `refine` to
+roll back.
 
 #### Does enabling the feature change any default behavior?
 
@@ -617,12 +623,12 @@ unchanged.
 
 #### Can the feature be disabled after it is enabled?
 
-Set `discoveryConfigVersion` back to `v1alpha1` and wait for reconcile.
+Set the discovery-mode annotation back to `refine` and wait for reconcile.
 
 #### What happens if the feature is enabled again after being disabled?
 
-The controller deterministically rebuilds v1 content from RBG spec and
-committed membership.
+The controller deterministically rebuilds v1 content from the RBG's
+discovery-mode annotation and committed membership.
 
 #### Are there tests for enabling and disabling the feature?
 
@@ -653,7 +659,7 @@ No.
 
 #### How can an operator determine whether the feature is in use?
 
-Inspect `spec.discoveryConfigVersion` and the ConfigMap's `apiVersion`.
+Inspect the discovery-mode annotation and the ConfigMap's `apiVersion`.
 
 #### How can a user determine whether the feature is working?
 
@@ -723,7 +729,7 @@ unaffected.
   - Detection: Warning Event.
   - Mitigation: keep current valid content and skip the replacement.
 - Content version mismatch:
-  - Detection: compare `spec.discoveryConfigVersion` with ConfigMap
+  - Detection: compare the discovery-mode annotation with ConfigMap
     `apiVersion`.
   - Mitigation: set the desired version and wait for reconcile.
 
