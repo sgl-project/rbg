@@ -235,6 +235,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | Retry duplicates | Use recoverable records or idempotency; no exactly-once |
 | Foreground/direct deletion bypass | Reject foreground; direct is Recovery |
 | Executor outage blocks progress | Diagnostics; no automatic skip in Alpha |
+| Executor marker writes | Documented Alpha risk; enforce ownership at Beta |
 | Broad metadata permissions | Limit scope; use admission/proxy for fields |
 
 ## Design Details
@@ -877,7 +878,17 @@ configuration described above; the controller owns phase, `hook-state`, the
 effective RI snapshot, the marker-key record, the reserved finalizer, and the
 mirrored signal labels on member Pods; the executor only removes markers.
 Users, metadata synchronization, and executors must not write the
-marker-key record. Admission or a restricted proxy may enforce this boundary.
+marker-key record. Alpha documents this boundary without enforcing it:
+executors require `patch` on `roleinstances`, and native RBAC cannot restrict
+a PATCH to specific labels, so marker-write permission is equivalent to
+release authority. A buggy or compromised executor can remove, retain,
+forge, or write `hook-state`, markers, or the marker-key record and thereby
+bypass or fabricate lifecycle barriers. This equivalence is an explicitly
+accepted Alpha risk rather than an implementation gap. Field-level
+enforcement is required before Beta: an admission webhook or a restricted
+proxy must restrict executors to removing only label keys currently listed
+in the marker-key record and must reject writes to `hook-state` and the
+record from non-controller identities.
 
 An executor that polls with GET and PATCHes markers needs `get` and `patch`
 on `roleinstances` in the target namespace. LIST/WATCH additionally requires
@@ -885,7 +896,8 @@ on `roleinstances` in the target namespace. LIST/WATCH additionally requires
 selector and cannot be applied directly to an unrestricted informer.
 
 Native RBAC cannot restrict PATCH to a specific label. Strict field-level
-isolation requires admission control or a restricted proxy.
+isolation requires admission control or a restricted proxy and is required
+before Beta.
 
 ### Relationship to Existing Mechanisms
 
@@ -1144,8 +1156,9 @@ controller-write/executor-remove signal-label coordination; complete the
 core tests and provide an executor integration example.
 
 Before Beta, validate real applications, multi-Pod coordination, permissions,
-recovery and upgrade compatibility, and overhead at scale. Complete
-operational diagnostics and recovery procedures.
+recovery and upgrade compatibility, and overhead at scale. Enforce
+field-level marker ownership with admission control or a restricted proxy.
+Complete operational diagnostics and recovery procedures.
 
 Stable requires sustained production feedback and resolution of Beta issues.
 This KEP does not assign a release milestone.

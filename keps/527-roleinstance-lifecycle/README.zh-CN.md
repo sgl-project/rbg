@@ -170,6 +170,7 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | 重试造成重复副作用 | executor 使用可恢复记录或业务幂等去重，不承诺恰好一次 |
 | foreground 级联或直接删除 Pod 绕过存活引擎屏障 | 准入拒绝 foreground 传播；直接删除 Pod 归入 Recovery |
 | executor 故障导致长期等待 | 暴露阶段、marker 和 executor 诊断；Alpha 不自动跳过 |
+| executor 拥有 marker 写权限 | Alpha 显式记录释放权限等价性；进入 Beta 前由准入或受限代理强制字段级隔离 |
 | metadata 回写权限过宽 | 限定命名空间、资源和身份；字段级限制需要 admission 或受限代理 |
 
 ## 设计细节
@@ -668,14 +669,22 @@ controller 负责写入 hook marker，executor 负责清除自己处理的 marke
 字段所有权明确：用户拥有上文定义的权威 lifecycle 配置；controller 拥有
 phase、`hook-state`、RI 生效快照、marker key 记录、保留 finalizer 以及
 成员 Pod 上的镜像信号标签；executor 只负责清除 marker。用户、metadata
-同步和 executor 都不得写 marker key 记录。该边界可由 admission 或
-受限代理执行。
+同步和 executor 都不得写 marker key 记录。Alpha 阶段只记录该边界，
+不强制执行：executor 需要 `roleinstances` 的 `patch` 权限，而原生 RBAC
+无法把 PATCH 限制到特定 labels，因此 marker 写权限等价于释放权限。
+有缺陷或被入侵的 executor 可以删除、保留、伪造或写入 `hook-state`、
+markers 或 marker key 记录，从而绕过或伪造 lifecycle 屏障。该等价性是
+Alpha 阶段显式接受的风险，不是实现缺口。字段级强制执行是进入 Beta
+前的必备条件：必须由准入 webhook 或受限代理把 executor 限制为只删除
+marker key 记录中当前列出的 label key，并拒绝非 controller 身份写入
+`hook-state` 和该记录。
 
 executor 采用 GET 轮询并 PATCH marker 时，基本权限是目标命名空间内
 `roleinstances` 的 `get`、`patch`。
 采用 LIST/WATCH 时另需 `list`、`watch`；`resourceNames` 限制需要匹配的 field selector，
 不能直接用于全量 informer。
-原生 RBAC 无法限制 PATCH 只修改特定 label，严格字段级隔离需要 admission 或受限代理。
+原生 RBAC 无法限制 PATCH 只修改特定 label，严格字段级隔离需要 admission 或受限代理，
+该隔离是进入 Beta 前的必备条件。
 
 ### 与现有机制的关系
 
@@ -841,7 +850,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 
 进入 alpha 前，先解决“已确定设计与遗留问题”中的三个 implementable 前置问题，实现四个挂载点、
 controller 写入与 executor 清除的信号标签协作，完成核心测试并提供 executor 接入示例。
-进入 beta 前验证真实业务、多 Pod 协调、权限、恢复和升级兼容、规模开销，完善故障诊断及运维恢复流程。
+进入 beta 前验证真实业务、多 Pod 协调、权限、恢复和升级兼容、规模开销，
+通过准入校验或受限代理强制字段级 marker 所有权，完善故障诊断及运维恢复流程。
 进入 stable 需持续生产反馈并解决 beta 问题；本 KEP 不指定发布里程碑。
 
 ### 升级与降级策略
