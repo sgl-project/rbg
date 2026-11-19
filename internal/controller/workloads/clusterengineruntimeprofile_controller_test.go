@@ -30,6 +30,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -238,4 +239,28 @@ func TestProfilesReferencedBy(t *testing.T) {
 	assert.Empty(t, profilesReferencedBy(&workloadsv1alpha2.RoleBasedGroupSpec{}))
 	assert.Nil(t, profilesReferencedByRBG(context.Background(), &workloadsv1alpha2.RoleBasedGroupSet{}))
 	assert.Nil(t, profilesReferencedByRBGSet(context.Background(), &workloadsv1alpha2.RoleBasedGroup{}))
+}
+
+// TestClusterEngineRuntimeProfileLabelBackfill pins the upgrade path of the
+// webhook's label-scoped reference lookup (#597): objects written before the
+// has-engine-runtimes label shipped — or past the admission defaulters —
+// get the label converged by the profile controller, in both directions.
+func TestClusterEngineRuntimeProfileLabelBackfill(t *testing.T) {
+	ctx := context.Background()
+	referencing := controllerRBG("grp-old", "ns-a", "ik")
+	stale := controllerRBG("grp-stale", "ns-a", "ik")
+	stale.Spec.Roles[0].EngineRuntimes = nil
+	stale.Labels = map[string]string{constants.HasEngineRuntimesLabelKey: "true"}
+
+	r, _, c := controllerHarness(t, referencing, stale, cerpFor("ik"))
+	reconcileProfile(t, ctx, r, "ik")
+
+	got := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-old"}, got))
+	assert.Equal(t, "true", got.Labels[constants.HasEngineRuntimesLabelKey],
+		"a referencing object written before the label must be backfilled")
+
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-stale"}, got))
+	assert.NotContains(t, got.Labels, constants.HasEngineRuntimesLabelKey,
+		"a stale label on an object that no longer references any profile must be removed")
 }
