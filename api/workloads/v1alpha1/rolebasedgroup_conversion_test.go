@@ -1670,7 +1670,7 @@ func TestRoleBasedGroup_RoundTrip_LegacyRestartPolicyStringDocumentsRewrite(t *t
 			Name: "engine", Replicas: ptr.To(int32(1)),
 			Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
 				Size:           ptr.To(int32(2)),
-				RestartPolicy:  v2.RecreateRoleInstanceOnPodRestart,
+				RestartPolicy:  v2.RecreateRoleInstanceOnPodRestart, //nolint:staticcheck // the legacy pre-v0.8 wire shape is the subject of this test
 				TemplateSource: v2.TemplateSource{Template: podTemplate("engine")},
 			}},
 		}}},
@@ -1687,7 +1687,7 @@ func TestRoleBasedGroup_RoundTrip_LegacyRestartPolicyStringDocumentsRewrite(t *t
 	// into a type-only config. This matches main's behavior for the same
 	// write (not a regression), the resolved policy is identical, and the
 	// shape is v1alpha2-native, so the next round trip is lossless.
-	assert.Empty(t, role.LeaderWorkerPattern.RestartPolicy,
+	assert.Empty(t, role.LeaderWorkerPattern.RestartPolicy, //nolint:staticcheck // the legacy pre-v0.8 wire shape is the subject of this test
 		"the legacy string is folded into the config on write-back")
 	config := role.LeaderWorkerPattern.RestartPolicyConfig
 	require.NotNil(t, config)
