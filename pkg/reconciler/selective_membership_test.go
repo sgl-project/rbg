@@ -85,7 +85,7 @@ func TestSelectiveMembershipCommitsCountAndRecordTogether(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), group))
 	r := NewRoleInstanceSetReconciler(scheme, c)
 	// The ordinary public reconcile path must not force-apply replicas first.
-	err := r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable-hash")
+	_, err := r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable-hash")
 	require.True(t, apierrors.IsConflict(err), "%v", err)
 	actual := &workloadsv1alpha2.RoleInstanceSet{}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(child), actual))
@@ -104,9 +104,11 @@ func TestSelectiveMembershipCommitsCountAndRecordTogether(t *testing.T) {
 	latest.Generation++
 	require.NoError(t, c.Update(ctx, latest))
 	c.fail = false
-	require.Error(t, r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable-hash"), "stale parent must not be committed")
+	_, err = r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable-hash")
+	require.Error(t, err, "stale parent must not be committed")
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), latest))
-	require.NoError(t, r.reconcileRoleInstanceSet(ctx, latest, &latest.Spec.Roles[0], nil, "stable-hash"))
+	_, err = r.reconcileRoleInstanceSet(ctx, latest, &latest.Spec.Roles[0], nil, "stable-hash")
+	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(child), actual))
 	members, err := actual.CommittedOrdinals()
 	require.NoError(t, err)
@@ -117,7 +119,8 @@ func TestSelectiveMembershipCommitsCountAndRecordTogether(t *testing.T) {
 	require.NoError(t, c.Update(ctx, latest))
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), latest))
 	for i := 0; i < 3; i++ {
-		require.NoError(t, r.reconcileRoleInstanceSet(ctx, latest, &latest.Spec.Roles[0], nil, "stable-hash"))
+		_, err = r.reconcileRoleInstanceSet(ctx, latest, &latest.Spec.Roles[0], nil, "stable-hash")
+		require.NoError(t, err)
 	}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(child), actual))
 	members, err = actual.CommittedOrdinals()
@@ -131,7 +134,8 @@ func TestSelectiveInitialCreationAndFixedCount(t *testing.T) {
 	ctx := context.Background()
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), group))
 	r := NewRoleInstanceSetReconciler(scheme, c)
-	require.NoError(t, r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable"))
+	_, err := r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable")
+	require.NoError(t, err)
 	actual := &workloadsv1alpha2.RoleInstanceSet{}
 	key := types.NamespacedName{Namespace: group.Namespace, Name: group.GetWorkloadName(&group.Spec.Roles[0])}
 	require.NoError(t, c.Get(ctx, key, actual))
@@ -144,7 +148,8 @@ func TestSelectiveInitialCreationAndFixedCount(t *testing.T) {
 	group.Spec.Roles[0].Annotations[constants.ExcludedOrdinalsAnnotationKey] = "0,2,4"
 	require.NoError(t, c.Update(ctx, group))
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), group))
-	require.NoError(t, r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable"))
+	_, err = r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable")
+	require.NoError(t, err)
 	require.NoError(t, c.Get(ctx, key, actual))
 	members, err = actual.CommittedOrdinals()
 	require.NoError(t, err)
@@ -187,7 +192,8 @@ func TestSelectiveInvalidRecordAndWrongOwnerBlockCommit(t *testing.T) {
 			ctx := context.Background()
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), group))
 			r := NewRoleInstanceSetReconciler(scheme, c)
-			require.Error(t, r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable"))
+			_, err := r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable")
+			require.Error(t, err)
 			require.Empty(t, c.patches)
 			actual := &workloadsv1alpha2.RoleInstanceSet{}
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(child), actual))
@@ -224,7 +230,8 @@ func TestSelectiveWriterUsesUncachedRecordAfterInputRemoval(t *testing.T) {
 	c := &staleMembershipClient{Client: backend, stale: stale}
 	r := NewRoleInstanceSetReconciler(scheme, c)
 	r.SetAPIReader(backend)
-	require.NoError(t, r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable"))
+	_, err := r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable")
+	require.NoError(t, err)
 	actual := &workloadsv1alpha2.RoleInstanceSet{}
 	require.NoError(t, backend.Get(ctx, client.ObjectKeyFromObject(child), actual))
 	members, err := actual.CommittedOrdinals()
@@ -247,7 +254,8 @@ func TestSelectiveStatusOnlyParentUpdateDoesNotBlockCommit(t *testing.T) {
 	require.NotEqual(t, group.ResourceVersion, latest.ResourceVersion)
 	require.Equal(t, group.Generation, latest.Generation)
 	r := NewRoleInstanceSetReconciler(scheme, c)
-	require.NoError(t, r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable"))
+	_, err := r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable")
+	require.NoError(t, err)
 	require.Len(t, c.patches, 1)
 	actual := &workloadsv1alpha2.RoleInstanceSet{}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(child), actual))
@@ -278,7 +286,7 @@ func TestSelectiveDenseOrphanAdoption(t *testing.T) {
 			c := &membershipPatchClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(group, child).Build()}
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(group), group))
 			r := NewRoleInstanceSetReconciler(scheme, c)
-			err := r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable")
+			_, err := r.reconcileRoleInstanceSet(ctx, group, &group.Spec.Roles[0], nil, "stable")
 			actual := &workloadsv1alpha2.RoleInstanceSet{}
 			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(child), actual))
 			if tc.bad {
@@ -319,7 +327,7 @@ func TestSelectiveRejectsChangedParentIdentityOrGeneration(t *testing.T) {
 			}
 			c := &membershipPatchClient{Client: fake.NewClientBuilder().WithScheme(scheme).WithObjects(latest, child).Build()}
 			r := NewRoleInstanceSetReconciler(scheme, c)
-			err := r.reconcileRoleInstanceSet(ctx, observed, &observed.Spec.Roles[0], nil, "stable")
+			_, err := r.reconcileRoleInstanceSet(ctx, observed, &observed.Spec.Roles[0], nil, "stable")
 			require.True(t, apierrors.IsConflict(err), "%v", err)
 			require.Empty(t, c.patches)
 		})

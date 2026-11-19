@@ -75,7 +75,7 @@ func EnsureV1alpha1CoordinatedPolicy(ctx context.Context, c client.Client, rbg *
 	logger.V(1).Info("applying CoordinatedPolicy from v1alpha1 annotation",
 		"name", rbg.Name, "namespace", rbg.Namespace)
 
-	if err := utils.PatchObjectApplyConfiguration(ctx, c, policyApplyConfig, utils.PatchSpec); err != nil {
+	if _, err := utils.ApplyObjectConfiguration(ctx, c, policyApplyConfig, utils.ApplySpec); err != nil {
 		return fmt.Errorf("apply CoordinatedPolicy %s/%s: %w", rbg.Namespace, rbg.Name, err)
 	}
 

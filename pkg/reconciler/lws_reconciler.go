@@ -127,7 +127,7 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 		return nil
 	}
 
-	if err = utils.PatchObjectApplyConfiguration(ctx, r.client, lwsApplyConfig, utils.PatchSpec); err != nil {
+	if _, err = utils.ApplyObjectConfiguration(ctx, r.client, lwsApplyConfig, utils.ApplySpec); err != nil {
 		logger.Error(err, "Failed to patch lws apply configuration")
 		return err
 	}

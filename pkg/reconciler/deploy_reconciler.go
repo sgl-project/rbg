@@ -125,7 +125,7 @@ func (r *DeploymentReconciler) Reconciler(
 		return nil
 	}
 
-	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, deployApplyConfig, utils.PatchSpec); err != nil {
+	if _, err := utils.ApplyObjectConfiguration(ctx, r.client, deployApplyConfig, utils.ApplySpec); err != nil {
 		logger.Error(err, "Failed to patch deployment apply configuration")
 		return err
 	}

@@ -498,7 +498,8 @@ func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
 				WithController(true),
 		)
 
-	return utils.PatchObjectApplyConfiguration(ctx, r.client, cmApplyConfig, utils.PatchSpec)
+	_, err = utils.ApplyObjectConfiguration(ctx, r.client, cmApplyConfig, utils.ApplySpec)
+	return err
 }
 
 func (r *RoleBasedGroupReconciler) reconcilePodGroup(
@@ -860,7 +861,8 @@ func (r *RoleBasedGroupReconciler) updateRBGStatus(
 	}
 
 	rbgApplyConfig := toRBGApplyConfigurationForStatus(rbg)
-	return utils.PatchObjectApplyConfiguration(ctx, r.client, rbgApplyConfig, utils.PatchStatus)
+	_, err := utils.ApplyObjectConfiguration(ctx, r.client, rbgApplyConfig, utils.ApplyStatus)
+	return err
 
 }
 
@@ -906,8 +908,8 @@ func (r *RoleBasedGroupReconciler) setGangConfiguredCondition(
 		return nil
 	}
 
-	if err := utils.PatchObjectApplyConfiguration(
-		ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus); err != nil {
+	if _, err := utils.ApplyObjectConfiguration(
+		ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.ApplyStatus); err != nil {
 		return err
 	}
 	// Emitted only after the condition is durably recorded, so a failed patch retries
