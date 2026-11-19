@@ -86,7 +86,7 @@ var SystemManagedRoleAnnotations = map[string]struct{}{
 	ExcludedOrdinalsAnnotationKey:      {},
 	CommittedSkipOrdinalsAnnotationKey: {},
 	// A recovery request is read from a RoleInstance only. A copy on a role
-	// would reach the RoleInstanceSet, where nothing acts on it.
+	// would reach the role's workload, where nothing acts on it.
 	RoleInstanceRecoverAnnotationKey: {},
 }
 

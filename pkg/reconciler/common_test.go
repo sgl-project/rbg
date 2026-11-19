@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"maps"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -563,6 +564,69 @@ func TestWorkloadReconcilers_ManageTheirOwnWorkload(t *testing.T) {
 			controller := metav1.GetControllerOf(got)
 			require.NotNil(t, controller)
 			assert.Equal(t, claimTestCurrentUID, controller.UID)
+		})
+	}
+}
+
+// TestDeprecatedWorkloadBuildersDropRecoverAnnotation keeps the deprecated
+// workload builders on the same rule as the RoleInstanceSet builder.
+func TestDeprecatedWorkloadBuildersDropRecoverAnnotation(t *testing.T) {
+	ctx := context.Background()
+	scheme := claimTestScheme(t)
+	annotations := map[string]string{
+		constants.RoleInstanceRecoverAnnotationKey: "true",
+		"team": "a",
+	}
+	newGroup := func(role workloadsv1alpha2.RoleSpec) *workloadsv1alpha2.RoleBasedGroup {
+		return wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+			WithRoles([]workloadsv1alpha2.RoleSpec{role}).
+			Obj()
+	}
+
+	tests := []struct {
+		name  string
+		build func(t *testing.T, c client.Client) client.Object
+	}{
+		{
+			name: "Deployment",
+			build: func(t *testing.T, c client.Client) client.Object {
+				role := wrappersv2.BuildStandaloneRole("worker").WithWorkload("apps/v1", "Deployment").
+					WithAnnotations(maps.Clone(annotations)).Obj()
+				cfg, err := NewDeploymentReconciler(scheme, c).constructDeployApplyConfiguration(
+					ctx, newGroup(role), &role, &appsv1.Deployment{}, nil, expectedRevisionHash)
+				require.NoError(t, err)
+				return claimTestAppliedObject(t, cfg, &appsv1.Deployment{})
+			},
+		},
+		{
+			name: "StatefulSet",
+			build: func(t *testing.T, c client.Client) client.Object {
+				role := wrappersv2.BuildStandaloneRole("worker").WithWorkload("apps/v1", "StatefulSet").
+					WithAnnotations(maps.Clone(annotations)).Obj()
+				cfg, err := NewStatefulSetReconciler(scheme, c).constructStatefulSetApplyConfiguration(
+					ctx, newGroup(role), &role, &appsv1.StatefulSet{}, expectedRevisionHash)
+				require.NoError(t, err)
+				return claimTestAppliedObject(t, cfg, &appsv1.StatefulSet{})
+			},
+		},
+		{
+			name: "LeaderWorkerSet",
+			build: func(t *testing.T, c client.Client) client.Object {
+				role := wrappersv2.BuildLeaderWorkerRole("worker").Obj()
+				role.Annotations = maps.Clone(annotations)
+				cfg, err := NewLeaderWorkerSetReconciler(scheme, c).constructLWSApplyConfiguration(
+					ctx, newGroup(role), &role, nil, expectedRevisionHash)
+				require.NoError(t, err)
+				return claimTestAppliedObject(t, cfg, &lwsv1.LeaderWorkerSet{})
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			workload := tt.build(t, fake.NewClientBuilder().WithScheme(scheme).Build())
+			assert.NotContains(t, workload.GetAnnotations(), constants.RoleInstanceRecoverAnnotationKey)
+			assert.Equal(t, "a", workload.GetAnnotations()["team"], "user annotations on the role must still reach the workload")
 		})
 	}
 }

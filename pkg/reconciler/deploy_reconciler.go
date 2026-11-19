@@ -178,7 +178,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 						WithMatchLabels(matchLabels),
 				),
 		).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithAnnotations(labels.Merge(workloadRoleAnnotations(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), deployLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
