@@ -200,7 +200,10 @@ until the upgrade has completed the cluster accepts
 `engineRuntimes[].component`, `engineRuntimes[].targetContainers` and
 `ClusterEngineRuntimeProfile.spec.containerPatches`, but the previous controller doesn't know them:
 it renders a new reference across the pattern's default components, and its own updates to a
-RoleBasedGroup can drop them. Write those fields only once the upgrade has completed.
+RoleBasedGroup can drop them. Write those fields only once the upgrade has completed. A
+ClusterEngineRuntimeProfile update or delete can be rejected while the upgrade itself is in
+progress — the new webhook entry is served only by the new controller — so retry it once the
+upgrade has completed.
 
 **Rolling back.** `helm rollback` restores the previous controller and webhook configuration but
 keeps the new CRDs: the CRD upgrader runs only on install and upgrade. The previous controller

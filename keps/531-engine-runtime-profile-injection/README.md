@@ -1507,7 +1507,9 @@ renderer). Every scenario below is a combination of their versions.
 as a `pre-upgrade` hook (`deploy/helm/rbgs/templates/crd-upgrade/crd-upgrade.yaml`),
 so a single `helm upgrade` applies the CRDs ahead of the controller: the order
 every release upgrades in, and the one the upgrade-compatibility suite
-exercises. When the upgrade begins no object carries the new fields: the
+(`test/e2e/upgrade`) exercises — the KEP-531 drill suite (`test/e2e/drills`)
+is the documented exception, still running the two-pass order until the code
+follow-up switches it. When the upgrade begins no object carries the new fields: the
 previous schemas declare none of them and preserve no unknown fields, so every
 earlier write pruned them. Every pre-existing reference therefore renders as
 on main across the upgrade (Compatibility Guarantees #1). The one rule: write
@@ -1517,17 +1519,21 @@ renders a new reference across the pattern's default components, and its own
 updates to a RoleBasedGroup can drop them.
 
 The reverse order, controller first, is not supported: the new controller
-persists state the previous release's CRDs prune
-(`RoleInstanceSet.status.rolloutReplacementState`,
-`RoleInstance.status.lastReadyGeneration`, this KEP's CERP tracking status),
-so surge rollouts stall and restart policies lose their readiness record.
+persists state the previous release's CRDs prune — this KEP's CERP tracking
+status on every earlier release, and on hops from v0.8.0 and earlier also
+`RoleInstanceSet.status.rolloutReplacementState` and
+`RoleInstance.status.lastReadyGeneration` (the v0.9.0-alpha.4 CRDs already
+carry both), whose pruning stalls surge rollouts and loses restart policies'
+readiness record.
 
 **What goes live when.** Everything goes live with the upgrade: the
 immutability admission once the new controller serves the CERP webhook entry
 the same upgrade applies; the persisted reference tracking with the new
 controller's startup reconcile; adoption, per workload (`component` or
 `targetContainers`, never cluster-wide), when the workload spec first carries
-them.
+them. Until the new controller serves that entry, its `failurePolicy: Fail`
+means CERP updates and deletes are rejected rather than slipping past
+unvalidated — retry them once the upgrade has completed.
 
 **Rollback.** `helm rollback` restores the previous controller and webhook
 configuration but keeps the new CRDs, because the CRD upgrader runs only on

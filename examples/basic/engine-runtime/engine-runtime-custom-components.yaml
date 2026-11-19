@@ -16,8 +16,10 @@
 # to the routing tier: a metrics sidecar, a shared config volume, and
 # profile-side patches (env default + the volume's mount). containerPatches
 # are target-less — a cluster-scoped publisher cannot know consumer
-# container names — so they fire at whichever targetContainers a referencing
-# role lists.
+# container names — so they fire at whichever role-declared containers the
+# referencing role's targetContainers entries name; an entry that names a
+# profile-declared container receives only that entry's own extraPatches,
+# never the profile's containerPatches.
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: ClusterEngineRuntimeProfile
 metadata:
