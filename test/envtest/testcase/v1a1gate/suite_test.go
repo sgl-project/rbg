@@ -37,7 +37,7 @@ var _ = BeforeSuite(func() {
 	testutil.SetupV1alpha1GateTestEnv()
 	// Create the shared namespace once, before any Describe: Ginkgo randomizes
 	// top-level container order, so per-container creation is order-flaky.
-	testutil.CreateNamespace("v1a1-gate-test")
+	testutil.CreateNamespace(gateNamespace)
 })
 
 var _ = AfterSuite(func() {
