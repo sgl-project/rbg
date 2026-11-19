@@ -22,6 +22,8 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 func TestRoleBasedGroupDefaulter_Default(t *testing.T) {
@@ -131,4 +133,67 @@ func TestRoleBasedGroupSetDefaulter_Default(t *testing.T) {
 	roles := rbgset.Spec.GroupTemplate.Spec.Roles
 	assert.Equal(t, RecreatePodUpdateStrategyType, roles[0].RolloutStrategy.RollingUpdate.Type)
 	assert.Equal(t, InPlaceIfPossibleUpdateStrategyType, roles[1].RolloutStrategy.RollingUpdate.Type)
+}
+
+// TestRoleBasedGroupDefaulter_EngineRuntimeLabel pins the has-engine-runtimes
+// label maintenance the ClusterEngineRuntimeProfile admission webhook's
+// scoped reference lookup depends on (#597).
+func TestRoleBasedGroupDefaulter_EngineRuntimeLabel(t *testing.T) {
+	stamp := func(rbg *RoleBasedGroup) {
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(context.Background(), rbg))
+	}
+
+	t.Run("a referencing role stamps the label", func(t *testing.T) {
+		rbg := &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{
+			{Name: "worker", EngineRuntimes: []EngineRuntime{{ProfileName: "ik"}}},
+		}}}
+		stamp(rbg)
+		assert.Equal(t, "true", rbg.Labels[constants.HasEngineRuntimesLabelKey])
+	})
+
+	t.Run("a non-referencing role carries no label", func(t *testing.T) {
+		rbg := &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{
+			{Name: "worker"},
+		}}}
+		stamp(rbg)
+		assert.NotContains(t, rbg.Labels, constants.HasEngineRuntimesLabelKey)
+	})
+
+	t.Run("removing the last reference removes the label", func(t *testing.T) {
+		rbg := &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{
+			{Name: "worker", EngineRuntimes: []EngineRuntime{{ProfileName: "ik"}}},
+		}}}
+		stamp(rbg)
+		rbg.Spec.Roles[0].EngineRuntimes = nil
+		stamp(rbg)
+		assert.NotContains(t, rbg.Labels, constants.HasEngineRuntimesLabelKey)
+	})
+}
+
+// TestRoleBasedGroupSetDefaulter_EngineRuntimeLabel pins the set-side label
+// maintenance, keyed on the group template (#597).
+func TestRoleBasedGroupSetDefaulter_EngineRuntimeLabel(t *testing.T) {
+	stamp := func(rbgs *RoleBasedGroupSet) {
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(context.Background(), rbgs))
+	}
+
+	t.Run("a referencing group template stamps the label", func(t *testing.T) {
+		rbgs := &RoleBasedGroupSet{Spec: RoleBasedGroupSetSpec{
+			GroupTemplate: RoleBasedGroupTemplateSpec{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{
+				{Name: "worker", EngineRuntimes: []EngineRuntime{{ProfileName: "ik"}}},
+			}}},
+		}}
+		stamp(rbgs)
+		assert.Equal(t, "true", rbgs.Labels[constants.HasEngineRuntimesLabelKey])
+	})
+
+	t.Run("a non-referencing group template carries no label", func(t *testing.T) {
+		rbgs := &RoleBasedGroupSet{Spec: RoleBasedGroupSetSpec{
+			GroupTemplate: RoleBasedGroupTemplateSpec{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{
+				{Name: "worker"},
+			}}},
+		}}
+		stamp(rbgs)
+		assert.NotContains(t, rbgs.Labels, constants.HasEngineRuntimesLabelKey)
+	})
 }
