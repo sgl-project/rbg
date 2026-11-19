@@ -118,6 +118,12 @@ executor 负责业务重试、退避和幂等恢复。hook `signalLabel` 不参�
 `RoleInstanceSet.spec.roleInstanceTemplate.lifecycle` 中声明。两种归属都由
 RIS controller 把生效快照传递到 `RoleInstance.spec.lifecycle`，
 RI controller 只读取本地快照，不需要反向读取 RBG 或 RIS。
+lifecycle 配置是控制面配置，不是工作负载模板内容。启用或修改 hooks 不得产生
+新的 workload revision、不得改变 revision 哈希，也不得被归类为 workload 更新：
+实现必须把 Role 级与 `roleInstanceTemplate` 的 lifecycle 字段从
+ControllerRevision patch、revision 哈希计算和更新分类中排除，使仅改配置的
+变更不滚动成员 Pod。若 revision 格式无法排除该字段，则必须先定义独立的仅
+配置传播路径，本 KEP 才可实施。
 controller 写入 `signalLabel` 表示本轮 hook 待执行；前置 hooks 由 executor 清除 `signalLabel` 放行实际负载操作。
 postReady 由 controller 写入 `signalLabel` 后立即进入 `Running`，executor 在后台处理并清除 `signalLabel`；
 controller 不等待 postReady 完成。
@@ -184,7 +190,9 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | `postReady` | 受控操作达到工作负载 Ready | 已提前进入 `Running`；清 `signalLabel` 后清 state |
 | `preDelete` | RI 最终删除流程中，controller 主动终止业务 Pod 之前 | 开始删除业务 Pod 并完成 RI 删除收尾 |
 
-本文中的“工作负载 Ready”指 RI 满足原有健康条件。
+本文中的“工作负载 Ready”指 KEP-502 为 phase 完成定义的 controller 可观测就绪谓词，
+即 RI controller 自行评估的健康条件；显式排除外部拥有的 readiness gate 等 controller
+无法观测的条件，因此 `postReady` 不会因外部 gate 而延迟。
 
 `postReady` 不是 Pod 对象创建通知，也不是容器 `postStart`。
 仅创建 Pod、写入 RI spec 或更新 revision 不足以触发它；controller 必须先确认本轮目标已达到工作负载 Ready。
@@ -236,6 +244,8 @@ hook-state；`Running` 是 `status.phase` 的取值。`Updating`、`Recovering` 
 `Terminating` 在两个字段中同名，是因为 hook-state 记录当前操作；
 没有进行中的操作或后台 hook 时清空。未知 hook-state 值非法：
 controller 不得推进，executor 不得执行，诊断必须暴露非法值，且不能自动清理。
+故障排除章节定义唯一受支持的恢复方式：经确认的 break-glass 流程，只移除非法
+`hook-state`。
 
 `signalLabel` 是 controller 在 hook 触发时写入的运行时 label；`signalLabels` 是声明这些 label 匹配规
 则的配置字段。本文中的 `hook-state` 是上表 label key 的固定简称。`signalLabel` key 和 value 由用户通过
@@ -245,7 +255,8 @@ controller 不得推进，executor 不得执行，诊断必须暴露非法值，
 
 四个 hooks 使用相同的协作方向：
 
-1. controller 确定本轮操作后，在同一次 RI labels 写入中设置 `hook-state` 和对应 `signalLabel`。
+1. controller 确定本轮操作后，在同一次 RI metadata 写入中设置 `hook-state`、对应
+   `signalLabel` 及其 `signalLabel` key 记录。
 2. executor 观察到 `hook-state` 和自己的 `signalLabel` 匹配，开始执行业务动作。
 3. 前置 hooks 由 executor 成功或决定放行后清除 `signalLabel`；失败时保留并自行退避重试。
 4. controller 等前置 hooks 的所有相关 `signalLabel` 不再匹配后，继续实际负载操作。
@@ -261,7 +272,12 @@ controller 只在进入前置 hook 阶段时写入一次 `signalLabel`，等待�
 进入 postReady 时可幂等写入已有 `signalLabel`；executor 只负责清除，不负责首次添加，也不在处理完成后加回。
 
 executor 清除 `signalLabel` 前必须重读 RI，只有当前 `hook-state` 仍匹配自己执行的
-hook 且 RI UID 未变化时才执行清除。如果 `hook-state` 已推进或改变，该
+hook 且 RI UID 未变化时才执行清除。重读和清除必须是同一次条件写入，而不是
+分开的 GET 和 PATCH：清除 PATCH 必须携带对所见 `hook-state` 值和
+resourceVersion 的 JSON Patch `test` 操作（或等价前置条件），冲突时必须重读并
+重试，不得直接清除。该条件写入同时隔离同一 hook 的重复调用：后续调用重写
+`signalLabel` 时即使 `hook-state` 取值不变，resourceVersion 也会变化。如果
+`hook-state` 已推进或改变，该
 `signalLabel` 属于其他 hook 或调用——例如记录清空后 key 被重新分配给
 `preDelete`——executor 必须保留它交给 controller。`signalLabel` key 记录清空只能
 证明 label 已清理，不能证明被取代的执行已停止。
@@ -358,6 +374,13 @@ controller 保留的运行时 key：即 hook-state key，或任一受管 RI 的
 信号 key，该 key 不得被重新分配给另一个 hook，避免已退役的 executor
 清掉现在属于其他 hook 的 `signalLabel`，例如把 pending postReady 的 key
 重新分配给 preDelete。
+本节的跨资源准入校验——跨配置代际的 key 重分配、所属 RIS selector 规则和
+互斥规则——都必须 fail-closed：webhook 通过 API server 权威读取受影响对象，
+不使用 informer 缓存；读取失败或数据不一致时拒绝请求，冲突时重新检查。
+过期的读取结果不得批准重分配某个受管 RI 仍记录的 key。作为 controller 侧
+兜底，RI controller 写入 `signalLabel` 前重新校验 key 归属：若生效配置中的
+某个 key 仍被任一受管 RI 记录给其他 hook，controller 拒绝该操作并暴露冲突，
+不写入该 `signalLabel`。
 
 实现必须使用固定 hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state`，
@@ -448,6 +471,7 @@ sequenceDiagram
     participant R as RI 对象
     participant P as 业务 Pod
     participant E as Hook executor
+    C->>R: 记录本轮更新目标
     C->>R: 写入 hook-state=PreUpdate 和 update-block=true
     C->>R: 切换 phase=Updating
     R-->>E: 观察到 preUpdate 且 `signalLabel` 匹配
@@ -586,10 +610,14 @@ Kubernetes background GC 在 owner 对象仍然存在时不会删除 dependent �
 controller 仍必须在 `signalLabel` 放行前避免主动删除成员 Pod。
 
 新建 RI 在生效配置包含 preDelete 时，创建请求即带保留 finalizer。
-存量稳定 RI 启用 preDelete 时，controller 先补充保留 finalizer，
-再暴露生效的 preDelete 配置。如果 RI 已有 deletionTimestamp，
-controller 无法补充 finalizer，因此该 RI 不暴露 preDelete，
-本次删除继续且不触发该 hook；Kubernetes 不允许删除开始后新增 finalizer。
+存量稳定 RI 启用 preDelete 时，RIS controller 写入生效配置，RI controller 在
+下一次 reconcile 补充保留 finalizer：这是两个 controller 的两次独立 metadata
+写入，因此该顺序是收敛目标而不是原子保证。由此存在一个已接受的启用窗口：
+两次写入之间的删除请求会设置 deletionTimestamp，此时无法再补充 finalizer，
+Kubernetes 不允许删除开始后新增 finalizer；该 RI 不暴露 preDelete，
+本次删除继续且不触发该 hook。这是 Alpha 阶段显式接受的限制：启用
+preDelete 后，运维必须先确认所有受管 RI 都带有保留 finalizer，再允许删除；
+controller 发现生效 preDelete 配置但缺少 finalizer 的 RI 时发出事件。
 从生效配置中删除 hook 属于普通禁用。controller 停止匹配其 `signalLabel`，
 按 `signalLabel` key 记录清理遗留运行时 labels 及其 Pod 镜像；对 preDelete 还要在正常配置收敛中
 清理 RI 上的保留 finalizer。如果删除过程中移除 preDelete，清理
@@ -600,15 +628,24 @@ Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放�
 
 受支持的删除路径是 controller 发起的删除和默认 background 级联。
 `RoleInstanceLifecycleHooks` 开启期间，准入拒绝 RBGSet、RBG、RIS 和 RI
-所有使用 `Foreground` 传播的删除请求。webhook 检查
-`DeleteOptions.propagationPolicy`，且不依赖 informer 缓存：cache miss
-和成功 lookup 都无法证明没有可达 RI 启用 preDelete，因为新建 RI 或刚启用
-的 hook 可能已提交而 watch 事件尚未到达。客户端可以改用 background
-传播重试。该拒绝在 gate 开启期间是集群级的：同样作用于未配置 hooks 的
+所有使用 `Foreground` 和 `Orphan` 传播的删除请求，包括已废弃的
+`orphanDependents` 选项：foreground GC 可能在 hook 放行前删除 dependent
+Pods；orphan 删除会在保留 RI finalizer 仍存在时剥离成员 Pod 的
+ownerReferences，使成员发现和文档规定的 hook 后 Pod 删除失去定义。webhook
+检查 `DeleteOptions`，且不依赖 informer 缓存：cache miss 和成功 lookup
+都无法证明没有可达 RI 启用 preDelete，因为新建 RI 或刚启用的 hook 可能
+已提交而 watch 事件尚未到达。客户端可以改用 background 传播重试。webhook
+以 `failurePolicy=Fail` 注册，必须在 gate 启用前完成部署和注册，并保持
+注册到 gate 关闭之后：webhook 不可用时删除请求被拒绝而不是绕过屏障，
+gate 切换期间不会出现 webhook 缺失或 fail-open 并存的状态。该拒绝在
+gate 开启期间是集群级的：同样作用于未配置 hooks 的
 负载，这些负载其余行为不变，gate 关闭后恢复 Foreground 删除。
 foreground GC 可能在 hook 放行前删除 dependent Pods。
 namespace 删除不在存活引擎保证范围内：namespace controller 可能直接删除
-成员 Pods；若保留 RI finalizer 残留，运维需要使用 break-glass 流程。
+成员 Pods。删除包含生效 preDelete RI 的 namespace 之前，运维必须停止新操作、
+让在途 hooks 完成、确认没有保留 RI finalizer 残留后再删除 namespace；
+teardown 已开始且 finalizer 残留时，运维需要使用 break-glass 流程。经过
+测试的 namespace teardown 流程是进入 Beta 的前置条件。
 外部直接删除 Pod 后 deletionTimestamp 无法撤销，该路径仍属于 Recovery，
 不触发 preDelete，也不提供存活引擎屏障。
 
@@ -696,7 +733,9 @@ phase、`hook-state`、RI 生效快照、`signalLabel` key 记录、保留 final
 Alpha 阶段显式接受的风险，不是实现缺口。字段级强制执行是进入 Beta
 前的必备条件：必须由准入 webhook 或受限代理把 executor 限制为只删除
 `signalLabel` key 记录中当前列出的 label key，并拒绝非 controller 身份写入
-`hook-state` 和该记录。
+`hook-state`、`signalLabel` key 记录、保留 preDelete finalizer、`spec.lifecycle`
+生效快照和 phase：允许删除 `signalLabel` 的同一 `patch` 权限也能删除保留
+finalizer 或修改生效快照，二者都会让删除在 preDelete 等待期间继续。
 
 executor 采用 GET 轮询并 PATCH `signalLabel` 时，基本权限是目标命名空间内
 `roleinstances` 的 `get`、`patch`。
@@ -729,7 +768,8 @@ RIS controller 将其复制到 `RoleInstance.spec.lifecycle` 作为生效副本�
 及其 `signalLabel` key 记录；
 前置 hooks 放行后切换到 `Updating`、`Recovering` 或 `Terminating`，不清空 state；
 postReady 则立即进入 `Running` 并异步收尾。
-postReady 只覆盖 Create、Update、Recovery 的受控操作，工作负载 Ready 指 RI 的原有健康条件；
+postReady 只覆盖 Create、Update、Recovery 的受控操作，工作负载 Ready 指上述 controller
+可观测谓词，排除外部 readiness gate；
 普通 Ready 抖动和存量 `Running` 启用均不重放。
 连续操作规则已确认：Update 中合并 Update 和 Recovery，Update 可打断 Recovery，Delete 抢占其他操作；
 `Creating` 将 Update／Recovery 的目标变化并入当前 Create 收敛，包括修正初始镜像错误，
@@ -739,7 +779,8 @@ postReady 只覆盖 Create、Update、Recovery 的受控操作，工作负载 Re
 preDelete 屏障已确认：controller 在 RI 上保留专属 finalizer，preDelete 放行后再删除成员 Pod 并清除；
 Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需要 lifecycle finalizer。
 上线与回滚边界已确认：先部署 executor 和权限再启用，存量 postReady 不因当前 Ready 重放；
-已确定的 hook 语义不得修改，新逻辑使用新 hook；有未完成操作时不得直接降级。
+已确定的 hook 语义不得修改，新逻辑使用新 hook；不理解该协议的版本不得接管
+未完成的操作。
 
 Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS lifecycle 互斥；
 旧协议保持原有字段不变；新协议只暴露 `signalLabels`。
@@ -795,6 +836,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - executor 只在阶段和 `signalLabel` 匹配时处理，前置 hooks 放行后清除，postReady 后台完成或取消后清除。
 - executor 只在 `hook-state` 仍匹配自身调用且 RI UID 未变化时清除 `signalLabel`；
   key 被重新分配且记录清空后，迟到的 postReady 清理无法删除 preDelete `signalLabel`。
+- executor 的清除是单次条件写入：controller 重写该调用后，JSON Patch `test`
+  失败或 resourceVersion 冲突使 `signalLabel` 保持原样并触发重读重试。
 - preUpdate `signalLabel` 未清除时不更新 Pod，preRecover `signalLabel` 未清除时不恢复 Pod；
   preDelete `signalLabel` 未清除时不删除 Pod。
 - postReady 仅在目标完成且工作负载 Ready 后触发，普通 Ready 抖动不重复触发。
@@ -815,6 +858,10 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   `signalLabelB` 并保持阻塞直到 `signalLabelB` 被清除；尚未写入的
   `signalLabel` 不视为已释放。`signalLabelA` 按协议遗留 label 处理：清理
   其 RI label 和 Pod 镜像，并在两份副本确认消失前保持记录。
+- 跨资源准入校验在读失败或数据过期时 fail-closed；某个 key 仍被其他 hook
+  记录在受管 RI 上时，controller 拒绝写入该 `signalLabel`。
+- 仅 lifecycle 配置变化不生成 ControllerRevision、不改变 revision 哈希，
+  也不滚动成员 Pod。
 - `signalLabel` key 记录与 `signalLabel` 同批写入、跨重启保留，仅在对应 label 及其
   Pod 镜像移除后清空；
   回滚前置条件是 `hook-state` label 不存在、记录为空且没有保留的
@@ -841,17 +888,22 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 连续更新、旧 postReady 任务迟到、同名 RI 重建及多执行者接管，验证 state 驱动的取消、恢复和幂等清理。
 - preDelete 的 GC 传播、零 Pod 删除，以及新旧 lifecycle 兼容性。
 - RI 保留 finalizer 的添加、preDelete 等待期间保持，以及成员 Pod 删除完成后的移除。
-- 新建 RI 的创建请求包含保留 finalizer；存量启用先加 finalizer 再暴露 hook，
-  RI 已开始删除时不暴露该 hook，删除继续且不触发 preDelete。
+- 新建 RI 的创建请求包含保留 finalizer；存量启用在下一次 reconcile 补充
+  finalizer 并记录已接受的启用窗口；RI 已开始删除时不暴露该 hook，删除继续
+  且不触发 preDelete。
 - 默认 background 删除在 preDelete 放行前保留成员 Pod，gate 开启期间准入
-  拒绝 RBGSet、RBG、RIS 和 RI 所有删除入口的 foreground 删除，并明确
-  namespace 删除不提供存活引擎保证。
+  拒绝 RBGSet、RBG、RIS 和 RI 所有删除入口的 foreground 和 orphan 删除，
+  webhook 不可用时拒绝删除（`failurePolicy=Fail`），namespace 删除按文档化
+  运维流程处理且不提供存活引擎保证。
 - Update 和 Recovery 内部替换 Pod 时不执行 preDelete，也不使用成员 Pod finalizer。
 - 禁用 hook 后，下一次 reconcile 起停止 `signalLabel` 匹配，
   清理遗留运行时 labels、其 Pod 镜像和 RI 上的保留 finalizer，
   即使其他 lifecycle 操作尚未完成。
 - 紧急 break-glass 只移除精确匹配的阻塞 `signalLabel`，controller 正常推进，
   不直接修改 phase、finalizer 或 Pod。
+- 同时携带新旧 lifecycle 配置的对象被 RI controller 隔离，直到完成修正。
+- 损坏 `hook-state` 的 break-glass 在确认运行时 `signalLabels` 和
+  `signalLabel` key 记录已清理后，只移除非法的 `hook-state`。
 
 #### 端到端测试
 
@@ -915,9 +967,13 @@ feature gate 为 `RoleInstanceLifecycleHooks`。先部署支持该阶段协议�
 executor 并授予必要权限，再开启该 gate。该 gate 默认关闭；
 关闭期间拒绝新协议字段，旧 RIS lifecycle 协议保持现有行为。
 gate 边界：开启 gate 不会回溯校验存量对象，但互斥规则作用于后续每次
-写入，已同时携带新旧配置的对象必须在下一次更新前修正。gate 关闭期间，
+写入，已同时携带新旧配置的对象必须在下一次更新前修正。修正之前，
+RI controller 必须 fail safe：拒绝在该对象上执行新协议并报告互斥违规，
+因此新协议不会与旧 RIS 协议在同一对象上并发执行。gate 关闭期间，
 controller 不写入也不匹配新协议运行时 labels；存量 `hook-state`、
-`signalLabel` 和 `signalLabel` key 记录保留给兼容 controller 收尾。旧 `inPlaceUpdate`
+`signalLabel` 和 `signalLabel` key 记录保留给兼容 controller 收尾，
+且该 controller 在没有在途状态后于正常收敛中移除保留 preDelete
+finalizer，因此受支持的禁用不会把 RI 删除楔死在 finalizer 之后。旧 `inPlaceUpdate`
 hook 在公布弃用版本前继续支持 standalone RIS 用户。
 关闭或重新启用功能时，执行中的 `signalLabel` 和未完成阶段保持不变；
 不理解当前协议的版本不接管未完成操作。
@@ -981,6 +1037,14 @@ Alpha 不提供自动忽略失败策略。executor 永久不可用时，唯一�
 业务动作不再需要，记录决策，然后只移除精确匹配的阻塞 `signalLabel` key，
 让 controller 正常推进。不得直接修改 phase、保留的 RI finalizer
 或成员 Pods。该流程不是常规回滚，也不能替代恢复 executor。
+
+损坏的 `hook-state` 使用另一套经确认的流程，因为只移除 `signalLabel` 的
+break-glass 无法恢复 `hook-state` 未知而永不推进的对象：先停止新操作、
+保存 RI metadata 供诊断、确认没有运行时 `signalLabels` 和 `signalLabel` key
+记录条目（如有则按同样的精确性清理）、记录决策，然后只移除非法的
+`hook-state` label。不得修改 phase、保留 RI finalizer、成员 Pods 或生效
+lifecycle 快照。controller 会在下一次受控 hook 触发时重写 `hook-state`；
+运维必须在放行下一操作前确认业务状态。
 
 ## 实现历史
 

@@ -159,6 +159,16 @@ controller propagates the effective snapshot to
 `RoleInstance.spec.lifecycle`, and the RI controller reads that local snapshot
 without reading back from RBG or RIS.
 
+Lifecycle configuration is control-plane configuration, not workload template
+content. Enabling or changing hooks must not create a new workload revision,
+change a revision hash, or be classified as a workload update: implementations
+exclude the Role-level and `roleInstanceTemplate` lifecycle fields from
+ControllerRevision patches, revision-hash computation, and update
+classification, so configuration-only changes propagate without rolling
+member Pods. If a revision format cannot exclude the field, the implementation
+must provide a separate config-only propagation path before this KEP is
+implementable.
+
 A controller-written `signalLabel` indicates that the current hook invocation is
 pending. For pre-operation hooks, the executor removes the `signalLabel` to
 allow the workload operation to proceed. For `postReady`, the controller writes
@@ -249,8 +259,11 @@ local instance is not sufficient evidence that it is safe to exit.
 | `postReady` | Controlled operation is workload Ready | Already `Running` |
 | `preDelete` | Before final Pod termination | Delete Pods; finish RI |
 
-In this KEP, workload Ready means the RI satisfies its existing health
-conditions.
+In this KEP, workload Ready is the controller-observed readiness predicate
+defined by KEP-502 for phase completion: the health conditions the RI
+controller itself evaluates. It excludes externally owned readiness gates and
+other conditions outside controller observation, so `postReady` is not delayed
+by an external gate the controller cannot observe.
 
 `postReady` is neither a Pod creation notification nor a container
 `postStart`. Creating a Pod, writing the RI spec, or updating a revision is
@@ -313,7 +326,9 @@ both fields because the hook-state records which operation is in progress;
 it is cleared once no operation or background hook remains. Unknown
 hook-state values are invalid: the controller
 must not advance, the executor must not execute, and diagnostics must expose
-the invalid value without automatic cleanup.
+the invalid value without automatic cleanup. Troubleshooting defines the only
+supported recovery: a validated break-glass procedure that removes only the
+invalid `hook-state`.
 
 A `signalLabel` is the runtime label the controller writes when a hook is
 triggered; `signalLabels` is the configuration field that declares the matching
@@ -353,8 +368,15 @@ entering `postReady`, it may idempotently write an already-present
 initially or restore them after processing.
 
 Before removing a `signalLabel`, the executor re-reads the RI and removes the
-`signalLabel` only when the current `hook-state` still matches the hook it executed
-and the RI UID is unchanged. If `hook-state` has advanced or changed, the
+`signalLabel` only when the current `hook-state` still matches the hook it
+executed and the RI UID is unchanged. The re-read and the removal must be one
+conditional write, not a separate GET and PATCH: the removal PATCH must carry a
+JSON Patch `test` operation for the observed `hook-state` value and the
+resourceVersion (or an equivalent precondition), and a conflict must make the
+executor re-read and retry before removing anything. The conditional write also
+fences repeated invocations of the same hook: a later invocation that rewrites
+the `signalLabel` changes the resourceVersion even when `hook-state` keeps the
+same value. If `hook-state` has advanced or changed, the
 `signalLabel` belongs to a different hook or invocation — for example, a key
 reassigned to `preDelete` after its record was cleaned — and the executor
 must leave it for the controller. An emptied `signalLabel`-key record proves only
@@ -473,6 +495,18 @@ from one hook to another while any RI governed by the configuration still
 records that key, so a retired executor cannot remove a `signalLabel` that now
 belongs to a different hook, such as a pending `postReady` key reassigned to
 `preDelete`.
+
+The cross-resource admission checks in this section — key reassignment across
+configuration generations, the owning RIS selector rules, and mutual
+exclusion — are fail-closed: the webhook reads the affected objects
+authoritatively through the API server rather than an informer cache, rejects
+a request when a read fails or returns inconsistent data, and re-checks on
+conflict. A stale lookup must not approve reassigning a key that a governed RI
+still records. As a controller-side backstop, the RI controller revalidates
+key ownership before writing a `signalLabel`: if a key in the effective
+configuration is still recorded on any governed RI for a different hook, the
+controller refuses the operation and surfaces the conflict instead of writing
+the `signalLabel`.
 
 The implementation must use the exact hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state` and must not reuse the
@@ -750,12 +784,19 @@ controller is still responsible for not deleting member Pods before the
 `signalLabel` is released.
 
 New RIs are created with the reserved finalizer when their effective
-configuration includes `preDelete`. For an existing stable RI, the controller
-adds the finalizer before exposing the effective `preDelete` configuration.
-If the RI already has a deletionTimestamp, the controller cannot add the
-finalizer, so the hook is never exposed on that RI and its deletion
-continues without `preDelete`; Kubernetes does not allow a new finalizer to
-be added after deletion has begun. Removing a hook from the effective
+configuration includes `preDelete`. For an existing stable RI, the RIS
+controller writes the effective configuration and the RI controller adds the
+finalizer during its next reconciliation; these are two separate metadata
+writes by two controllers, so that order is a convergence goal rather than an
+atomic guarantee. This leaves an accepted enablement window: a deletion
+request that sets `deletionTimestamp` between the two writes cannot be
+blocked, because Kubernetes does not allow a new finalizer to be added after
+deletion has begun. In that case the hook is never exposed on that RI and its
+deletion continues without `preDelete`. This is an explicit Alpha limitation:
+after enabling `preDelete`, operators must verify that every governed RI
+carries the reserved finalizer before permitting deletions, and the controller
+emits an event when an RI has effective `preDelete` configuration without the
+finalizer. Removing a hook from the effective
 configuration is a normal disable: the controller stops matching its `signalLabels`,
 removes stale runtime labels and their Pod mirrors identified through the
 `signalLabel`-key record, and,
@@ -771,19 +812,31 @@ triggering `preDelete`. No member Pod requires a lifecycle finalizer.
 
 Controller-initiated deletion and default background cascade are the supported
 deletion paths. While `RoleInstanceLifecycleHooks` is enabled, admission
-rejects every `Foreground` propagation for RBGSet, RBG, RIS, and RI deletion
-requests. The webhook checks `DeleteOptions.propagationPolicy` and does not
+rejects every `Foreground` and `Orphan` propagation for RBGSet, RBG, RIS, and
+RI deletion requests, including the deprecated `orphanDependents` option:
+Foreground GC may delete dependent Pods before the hook is released, and
+Orphan deletion strips member Pod owner references while the reserved RI
+finalizer remains, leaving member discovery and the documented post-hook Pod
+deletion undefined. The webhook checks `DeleteOptions` and does not
 depend on informer caches: neither a cache miss nor a successful lookup can
 prove that no reachable RI has `preDelete` in effect, because RI creation or
 hook enablement may have committed before its watch event arrived. The client
-may retry with background propagation. This rejection is cluster-wide while
+may retry with background propagation. The webhook is registered with
+`failurePolicy=Fail`, must be deployed and registered before the gate is
+enabled, and must remain registered until after the gate is disabled: while it
+is unavailable, deletion requests are rejected rather than bypassing the
+barrier, and gate transitions never coexist with an absent or fail-open
+webhook. This rejection is cluster-wide while
 the gate is enabled: it also applies to workloads that configure no hooks,
 which otherwise keep their existing behavior and regain Foreground deletion
-when the gate is disabled. Foreground GC may delete dependent
-Pods before the hook is released. Namespace teardown is outside the
+when the gate is disabled. Namespace teardown is outside the
 live-engine guarantee:
-the namespace controller may delete member Pods directly, and an operator must
-use the break-glass procedure if a reserved RI finalizer remains. A direct
+the namespace controller may delete member Pods directly. Before deleting a
+namespace that contains RIs with effective `preDelete`, an operator must stop
+new operations, let in-flight hooks finish, verify that no reserved RI
+finalizer remains, and only then delete the namespace; if a finalizer remains
+after teardown has started, the operator must use the break-glass procedure. A
+tested namespace-teardown procedure is a Beta graduation requirement. A direct
 external Pod deletion cannot be undone by clearing its deletionTimestamp. That
 path still belongs to Recovery, does not trigger `preDelete`, and provides no
 live-engine barrier.
@@ -909,8 +962,12 @@ buggy or compromised executor can remove, retain, forge, or write `hook-state`,
 lifecycle barriers. This equivalence is an explicitly accepted Alpha risk rather
 than an implementation gap. Field-level enforcement is required before Beta: an
 admission webhook or a restricted proxy must restrict executors to removing only
-label keys currently listed in the `signalLabel`-key record and must reject
-writes to `hook-state` and the record from non-controller identities.
+label keys currently listed in the `signalLabel`-key record, and must reject
+non-controller writes to `hook-state`, the `signalLabel`-key record, the
+reserved `preDelete` finalizer, the effective `spec.lifecycle` snapshot, and
+the phase: the same `patch` permission that permits `signalLabel` removal can
+also remove the reserved finalizer or edit the effective snapshot, either of
+which lets deletion continue while `preDelete` is pending.
 
 An executor that polls with GET and PATCHes `signalLabels` needs `get` and `patch`
 on `roleinstances` in the target namespace. LIST/WATCH additionally requires
@@ -957,7 +1014,7 @@ cleared. `postReady` enters `Running` immediately and finishes
 asynchronously.
 
 `postReady` covers only controlled Create, Update, and Recovery operations.
-Workload Ready means the RI's existing health conditions. Neither ordinary
+Workload Ready is the controller-observed predicate above. Neither ordinary
 Ready fluctuations
 nor enabling the feature on an existing `Running` RI replays the hook.
 
@@ -1058,6 +1115,9 @@ lifecycle and distinguish workload backends.
   own invocation and the RI UID is unchanged; after a key is reassigned and its
   record cleaned, a delayed `postReady` cleanup cannot remove a `preDelete`
   `signalLabel`.
+- Executor removal is one conditional write: a JSON Patch `test` failure or a
+  resourceVersion conflict after the controller rewrites the invocation leaves
+  the `signalLabel` untouched and triggers a re-read and retry.
 - A pending preUpdate `signalLabel` prevents Pod updates, a pending preRecover
   `signalLabel` prevents Pod recovery, and a pending preDelete `signalLabel`
   prevents Pod deletion.
@@ -1091,6 +1151,11 @@ lifecycle and distinguish workload backends.
   released. The controller treats `signalLabelA` as a stale protocol label: its
   RI label and Pod mirrors are removed, and `signalLabelA` stays in the
   `signalLabel`-key record until both copies are confirmed absent.
+- Cross-resource admission checks fail closed on read failure or stale data,
+  and the controller refuses to write a `signalLabel` whose key another hook
+  still records on a governed RI.
+- Lifecycle-only configuration changes create no ControllerRevision, change no
+  revision hash, and roll no member Pods.
 - The `signalLabel`-key record is written with the `signalLabel`, retained across
   restarts, and cleared only after the corresponding label and its Pod
   mirrors are removed; the
@@ -1131,13 +1196,16 @@ lifecycle and distinguish workload backends.
   between old and new lifecycle protocols.
 - Reserved RI finalizer addition, retention while `preDelete` is pending, and
   removal after member Pod deletion is complete.
-- New RIs are created with the reserved finalizer; existing enablement adds
-  it before exposing the hook, and an RI already being deleted never exposes
-  the hook; that deletion continues without `preDelete`.
+- New RIs are created with the reserved finalizer; existing enablement adds it
+  during the next reconciliation and documents the accepted enablement window,
+  and an RI already being deleted never exposes the hook; that deletion
+  continues without `preDelete`.
 - Default background deletion retains member Pods until `preDelete` is
-  released, admission rejects foreground deletion at every RBGSet, RBG, RIS,
-  and RI entry while the feature gate is enabled, and namespace teardown is
-  documented as outside the live-engine guarantee.
+  released, admission rejects Foreground and Orphan deletion at every RBGSet,
+  RBG, RIS, and RI entry while the feature gate is enabled and rejects deletion
+  while the webhook is unavailable (`failurePolicy=Fail`), and namespace
+  teardown follows the documented operator procedure outside the live-engine
+  guarantee.
 - Update and Recovery replace Pods during internal replacement without
   executing `preDelete` and without member Pod finalizers.
 - Hook disablement stops `signalLabel` matching on the next reconciliation and
@@ -1146,6 +1214,11 @@ lifecycle and distinguish workload backends.
 - The emergency break-glass procedure removes only the exact blocking `signalLabel`
   and lets the controller advance without direct phase, finalizer, or Pod
   edits.
+- An object that carries both the legacy and new lifecycle configurations is
+  quarantined by the RI controller until corrected.
+- The corrupted-`hook-state` break-glass removes only the invalid `hook-state`
+  after runtime `signalLabels` and the `signalLabel`-key record are confirmed
+  clean.
 
 #### E2E Tests
 
@@ -1244,14 +1317,20 @@ the gate. The gate defaults to false. While it is disabled, the new protocol
 fields are rejected and the legacy RIS lifecycle protocol retains its existing
 behavior.
 
-Gate edges: enabling the gate does not retroactively validate existing
-objects, but the mutual-exclusion rule applies to every subsequent write, so
-an object that already carries both the legacy and new configurations must
-be corrected before its next update. With the gate disabled, the controller
-neither writes nor matches new-protocol runtime labels; existing
-`hook-state`, `signalLabels`, and the `signalLabel`-key record remain for a compatible
-controller to finish. The legacy `inPlaceUpdate` hook remains supported for
-standalone RIS users until a deprecation release is announced.
+Gate edges: enabling the gate does not retroactively validate existing objects,
+but the mutual-exclusion rule applies to every subsequent write, so an object
+that already carries both the legacy and new configurations must be corrected
+before its next update. Until it is corrected, the RI controller must fail safe:
+it refuses to execute the new protocol on such an object and reports a
+mutual-exclusion violation, so the new protocol never runs concurrently with the
+legacy RIS protocol on one object. With the gate disabled, the controller
+neither writes nor matches new-protocol runtime labels; existing `hook-state`,
+`signalLabels`, and the `signalLabel`-key record remain for a compatible
+controller to finish, and that controller removes the reserved `preDelete`
+finalizer during normal convergence once no in-flight state remains, so a
+supported disable never wedges RI deletion behind the finalizer. The legacy
+`inPlaceUpdate` hook remains supported for standalone RIS users until a
+deprecation release is announced.
 
 Disabling or re-enabling the feature leaves in-flight `signalLabels` and unfinished
 phases intact. A version that does not understand the current protocol does
@@ -1352,6 +1431,17 @@ decision, and remove only the exact blocking `signalLabel` key. The controller
 then advances normally. Do not modify the phase, reserved RI finalizer, or
 member Pods directly. This procedure is not a routine rollback or a substitute
 for restoring an executor.
+
+A corrupted `hook-state` uses a separate validated procedure, because the
+`signalLabel`-only break-glass cannot recover an object whose `hook-state` is
+unknown and therefore never advances: stop new operations, capture the RI
+metadata for diagnosis, confirm that no runtime `signalLabels` or
+`signalLabel`-key-record entries remain and clean them with the same exactness
+if they do, record the decision, and remove only the invalid `hook-state`
+label. Do not modify the phase, reserved RI finalizer, member Pods, or the
+effective lifecycle snapshot. The controller rewrites `hook-state` at the next
+controlled hook trigger, and the operator must verify application state before
+allowing the next operation.
 
 ## Implementation History
 
