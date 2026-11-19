@@ -181,9 +181,11 @@ the listed roles using the [migration guide](../../../doc/migration-v1alpha1-to-
 to `false` only after reconciliation has completed and the legacy workloads have been deleted.
 
 Repeat your normal release values (`-f` / `--set`) on every upgrade. An upgrade that passes any
-value flag resets every value you do not state back to the chart default; an upgrade that passes
-none reuses the previous revision's values wholesale. Either way, values you do not restate are
-not carried forward as you might expect.
+value flag resets every value you do not state back to the chart default. An upgrade that passes
+none copies the previous revision's user-supplied values onto the new chart verbatim — a key the
+new chart no longer reads (for example a pre-v0.8.0 flat key) lingers as an inert override, and
+changed chart defaults apply where the old values do not cover them. Either way, the values in
+effect after the upgrade are the ones you restate, not the ones you expect to persist.
 
 Controller rollouts drain admission traffic: each old manager Pod sleeps 5s in a preStop hook
 before SIGTERM (`terminationGracePeriodSeconds: 35`). An upgrade that picks this up rolls only the
