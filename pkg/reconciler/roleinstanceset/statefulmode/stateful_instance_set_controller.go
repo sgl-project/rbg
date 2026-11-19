@@ -94,7 +94,11 @@ var (
 // the listers this controller needs (for example when the cache is configured
 // with cache.Options.DefaultNamespaces).
 func NewReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
-	return newReconciler(mgr)
+	r, err := newReconciler(mgr)
+	if err != nil {
+		return nil, fmt.Errorf("create stateful-mode RoleInstanceSet reconciler: %w", err)
+	}
+	return r, nil
 }
 
 // sharedIndexInformerForKind returns the SharedIndexInformer backing the
@@ -104,6 +108,12 @@ func NewReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 // cache.Options.DefaultNamespaces or cache.Options.ByObject[...].Namespaces:
 // controller-runtime then returns a multiNamespaceInformer, which aggregates one
 // informer per namespace and has no single indexer.
+//
+// The remedy requires care: a cache.Options.ByObject entry with a nil
+// Namespaces inherits cache.Options.DefaultNamespaces, so a per-type field
+// selector alone does not opt out. The entry must also set Namespaces to an
+// empty (non-nil) map, which caches all namespaces for that type and lets the
+// field selector do the scoping.
 func sharedIndexInformerForKind(cacher ctrlcache.Cache, gvk schema.GroupVersionKind) (toolscache.SharedIndexInformer, error) {
 	informer, err := cacher.GetInformerForKind(context.Background(), gvk)
 	if err != nil {
@@ -112,9 +122,11 @@ func sharedIndexInformerForKind(cacher ctrlcache.Cache, gvk schema.GroupVersionK
 	sharedInformer, ok := informer.(toolscache.SharedIndexInformer)
 	if !ok {
 		return nil, fmt.Errorf("informer for %s is a %T, which does not expose a single SharedIndexInformer; "+
-			"this controller does not support per-namespace cache configurations "+
+			"the stateful-mode controller cannot cache RoleInstanceSet or RoleInstance per namespace "+
 			"(cache.Options.DefaultNamespaces or cache.Options.ByObject[...].Namespaces). "+
-			"Scope these kinds with a per-type metadata.namespace field selector in cache.Options.ByObject instead", gvk, informer)
+			"To scope both kinds to one namespace, give each a cache.Options.ByObject entry with "+
+			"Field: fields.OneTermEqualSelector(\"metadata.namespace\", ns) and, when DefaultNamespaces is set, "+
+			"Namespaces: map[string]cache.Config{} so the entry does not inherit DefaultNamespaces", gvk, informer)
 	}
 	return sharedInformer, nil
 }
@@ -125,7 +137,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	cacher := mgr.GetCache()
 	instanceSetInformer, err := sharedIndexInformerForKind(cacher, controllerKind)
 	if err != nil {
-		return nil, fmt.Errorf("stateful-mode RoleInstanceSet reconciler setup: %w", err)
+		return nil, err
 	}
 	if _, err := instanceSetInformer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 		DeleteFunc: forgetRolloutStatusExpectation,
@@ -134,7 +146,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 	}
 	instanceInformer, err := sharedIndexInformerForKind(cacher, workloadsv1alpha2.GroupVersion.WithKind("RoleInstance"))
 	if err != nil {
-		return nil, fmt.Errorf("stateful-mode RoleInstanceSet reconciler setup: %w", err)
+		return nil, err
 	}
 
 	roleInstanceSetLister := instancelisters.NewRoleInstanceSetLister(instanceSetInformer.GetIndexer())
