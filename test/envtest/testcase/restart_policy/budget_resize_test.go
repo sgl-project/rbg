@@ -91,24 +91,15 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 					if snapshot.DeletionTimestamp != nil || snapshot.Status.Phase == v1.PodFailed {
 						continue
 					}
-					if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-						pod := &v1.Pod{}
-						if err := cli.Get(ctx, client.ObjectKeyFromObject(&snapshot), pod); err != nil {
-							return client.IgnoreNotFound(err)
-						}
-						if pod.DeletionTimestamp != nil {
-							return nil
-						}
-						conditions := pod.Status.Conditions
-						testutil.SetPodRunningAndReady(pod)
-						for _, condition := range conditions {
-							if condition.Type != v1.PodReady && condition.Type != v1.ContainersReady {
-								pod.Status.Conditions = append(pod.Status.Conditions, condition)
-							}
-						}
-						return cli.Status().Update(ctx, pod)
-					}); err != nil {
-						return err
+					// SetPodRunningAndReady upserts the kubelet conditions and
+					// already preserves the controller-written gate conditions
+					// (see testutil); the former manual re-append duplicated
+					// them on every poll until the status write exceeded
+					// etcd's request limit. The conflict-safe write rereads
+					// the Pod on every retry instead of reusing the snapshot.
+					if err := testutil.UpdatePodStatusOnConflict(ctx,
+						client.ObjectKeyFromObject(&snapshot), testutil.SetPodRunningAndReady); err != nil {
+						return client.IgnoreNotFound(err)
 					}
 				}
 				return nil
