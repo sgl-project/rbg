@@ -81,7 +81,8 @@ func TestRBGPredicateExclusiveTopologyAnnotation(t *testing.T) {
 		{name: "changed", old: map[string]string{key: "old"}, new: map[string]string{key: "new"}, want: true},
 		{name: "empty value added", new: map[string]string{key: ""}, want: true},
 		{name: "unchanged", old: map[string]string{key: "node"}, new: map[string]string{key: "node"}},
-		{name: "unrelated annotation", new: map[string]string{"example.com/key": "value"}},
+		{name: "non-topology annotation", new: map[string]string{"example.com/key": "value"}, want: true},
+		{name: "rollout request", new: map[string]string{constants.RolloutRequestAnnotationKey: "1"}, want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			old := &workloadsv1alpha2.RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Annotations: tt.old}}

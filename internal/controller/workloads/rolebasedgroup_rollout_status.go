@@ -63,7 +63,8 @@ func (r *RoleBasedGroupReconciler) finalizeRolloutStatus(
 	if request != "" {
 		rbg.Status.ObservedRolloutRequest = request
 	}
-	return utils.PatchObjectApplyConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.PatchStatus)
+	_, err := utils.ApplyObjectConfiguration(ctx, r.client, toRBGApplyConfigurationForStatus(rbg), utils.ApplyStatus)
+	return err
 }
 
 // targetRoleWorkload uses uncached reads: cached capacity counts may describe the
