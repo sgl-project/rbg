@@ -142,10 +142,11 @@ the defects this KEP answers:
 - The legacy `containers` env/args merge keeps working unchanged, within the
   reference's component scope.
 - Pre-existing objects render byte-for-byte identically to main.
-- Validation is split: CEL at write time checks shape only; the cross-field
+- Validation is split: OpenAPI shape rules and the one CEL rule (the five-root
+  path allowlist) apply at write time; the cross-field
   presence rule runs in the admission webhooks (its CEL form exceeds the
-  apiserver's per-CRD cost budget); vocabularies and existence are decided at
-  render time.
+  apiserver's per-CRD cost budget); the webhooks also check the component
+  vocabulary, and vocabularies and existence are re-checked at render time.
 
 ## Non-Goals
 
@@ -1061,8 +1062,9 @@ and enforcement was never status's to begin with.
 
 ### Validation Model
 
-CEL at write time checks shape only: the DNS-label patterns on container
-names, list bounds, the `op` enum, and the five-root path allowlist (shared
+Write-time shape validation is OpenAPI-native — the DNS-label patterns on
+container names, list bounds, the `op` enum — plus one CEL rule, the five-root
+path allowlist (shared
 rule text and messages on both the CERP and the reference side). The
 cross-field presence rule — `targetContainers` requires `component`, except
 under `standalonePattern` — is enforced by the admission webhooks
@@ -1402,13 +1404,12 @@ grants, and their mitigations:
 
 ### Upgrade / Downgrade Drills
 
-- The chart two-pass upgrade: `helm upgrade` with `--set
-  crdUpgrade.enabled=false` swapping only the controller image and rendering
-  identically to main (the new-controller/old-CRD row), then the default
-  settings applying the new CRD without restarting the controller; a
-  controller-only rollback between the passes landing in the old/old row;
-  the dangerous old-controller/new-CRD row never traversed across the
-  sequence.
+- The chart upgrade: a single `helm upgrade` from the previous release
+  applying the new CRDs ahead of the controller rollout, pre-existing
+  references rendering identically to main throughout; a `helm rollback`
+  after the upgrade landing in the old-controller/new-CRD row, safe after the
+  documented cleanup. The drills still run the two-pass order until the code
+  follow-up switches them.
 - A strict write against the pre-upgrade CRD schema rejected as an unknown
   field; a non-strict write pruned to an unscoped reference resolving to the
   default component set, including the pruning shape that surfaces: the pruned
@@ -1457,8 +1458,9 @@ Alpha (v0.9.0):
 - [ ] Field surfaces landed: CERP `spec.containerPatches`; RBG `component`,
   `targetContainers` entries with `extraPatches` (v1alpha2 + v1alpha1 mirror via
   `convertEngineRuntimes`)
-- [ ] CEL rules generated into both served schemas (the five-root path
-  allowlist, the DNS-label entry-name rule); the role-level cross-field
+- [ ] Validation generated into both served schemas: the five-root path
+  allowlist as the one CEL rule, the DNS-label entry-name rule, list bounds
+  and the `op` enum as OpenAPI-native shape rules; the role-level cross-field
   presence rule enforced in the admission webhooks instead — its CEL form
   exceeds the apiserver's per-CRD cost budget, pinned by the envtest spec
   "KEP-531 presence rule placement"
@@ -1498,62 +1500,46 @@ renderer). Every scenario below is a combination of their versions.
 |---|---|---|
 | old | old | main, exactly. |
 | new | old | Unscoped references only: `profileName`-only references render identically to main. New fields cannot be stored: a strict client is rejected with `unknown field`, the correct outcome; a non-strict client has `component` silently pruned and stores an active **unscoped** reference, the same hazard and mechanism as the CRD rollback in the Downgrade section below. Where the pruned reference's default set intersects a surviving component-scoped reference of the same profile, scope ownership turns the silent change into a render error, the one pruning shape that surfaces. |
-| old | new | Fields are storable but ignored: a `component: worker` reference silently degrades to the pattern's default component set (the injection moves from worker to leader), and the new patch fields on both sides are stored but never fire. **The most dangerous combination**: this is where a controller-only rollback lands after the CRD upgrade (Upgrade below). |
+| old | new | Fields are storable but ignored: a `component: worker` reference silently degrades to the pattern's default component set (the injection moves from worker to leader), and the new patch fields on both sides are stored but never fire. **The most dangerous combination** once the new fields are stored: every chart upgrade passes through it during the controller rollout, before any object can carry them, and a `helm rollback` after the upgrade lands in it (Upgrade and Rollback below). |
 | new | new | Full semantics. |
 
-**Upgrade: controller first, CRD second.** The two pieces are swapped in a
-fixed order: the controller image first, the CRD second. The order is chosen
-so the documented dangerous row (old controller, new CRD: fields stored but
-silently ignored) is never traversed on the way up. It is reachable only
-through a controller-only rollback, described below.
+**Upgrade: one `helm upgrade`, CRDs first.** The chart's CRD upgrader Job runs
+as a `pre-upgrade` hook (`deploy/helm/rbgs/templates/crd-upgrade/crd-upgrade.yaml`),
+so a single `helm upgrade` replaces the CRDs and then rolls out the controller:
+the order every release upgrades in, and the one the upgrade-compatibility
+suite exercises. The old-controller/new-CRD row lasts only for the controller
+rollout, and when it begins no object carries the new fields: the previous
+schemas declare none of them and preserve no unknown fields, so every earlier
+write pruned them. Every pre-existing reference therefore renders as on main on
+both sides of the rollout (Compatibility Guarantees #1). The one rule: write
+`component`, `targetContainers` and `containerPatches` only once no previous
+controller Pod remains. During the rollout such a write can be admitted
+without the new validation, rendered across the pattern's default components
+by the old controller, or dropped by the old controller's own typed writes (a
+replica update through a scaling adapter).
 
-**The chart's default order is the reverse.** The CRD upgrader Job runs as a
-`pre-upgrade` hook (`deploy/helm/rbgs/templates/crd-upgrade/crd-upgrade.yaml`),
-enabled by default in `values.yaml`. A plain `helm upgrade` therefore
-replaces the CRD before the new controller is running and traverses the
-dangerous row. Upgrading through the chart takes two passes:
+The reverse order, controller first, is not supported: the new controller
+persists state the previous release's CRDs prune
+(`RoleInstanceSet.status.rolloutReplacementState`,
+`RoleInstance.status.lastReadyGeneration`, this KEP's CERP tracking status),
+so surge rollouts stall and restart policies lose their readiness record.
+Clusters that manage the CRDs themselves (`crdUpgrade.enabled=false`) apply
+the new CRDs before upgrading the controller, as `doc/install.md` does.
 
-1. **Pass one swaps the controller only.** Run `helm upgrade` with `--set
-   crdUpgrade.enabled=false`. The cluster lands in the new-controller/old-CRD
-   window row, where every reference renders exactly as on main
-   (Compatibility Guarantees #1). The new fields cannot be stored: a strict
-   client is rejected with `unknown field` at write time, and the render never
-   sees them. A non-strict client has the new fields silently pruned, so users
-   must not write the new fields through non-strict paths during the window.
-   Doing so stores an active unscoped reference (the window row's pruning
-   hazard, shared with the CRD rollback below).
-2. **Pass two swaps the CRD only.** Run `helm upgrade` again with the default
-   settings. The controller image is unchanged from pass one, so Helm does not
-   restart it; the only change is the CRD replacement, applied while the new
-   controller is running. The cluster lands in the new-controller/new-CRD row
-   with full semantics.
+**What goes live when.** Everything goes live with the controller rollout: the
+immutability admission once the new controller serves the CERP webhook entry
+the same upgrade applies; the persisted reference tracking with the new
+controller's startup reconcile; adoption, per workload (`component` or
+`targetContainers`, never cluster-wide), once no previous controller Pod
+remains.
 
-**Rollback inside the sequence.** Between the passes, rolling the controller
-image back lands in the old-controller/old-CRD row, which renders as main and
-is safe. After pass two, rollback follows the Downgrade procedure below. A
-bare controller-only rollback at that point traverses the dangerous row; the
-Downgrade depths exist to avoid exactly that.
+**Rollback.** `helm rollback` restores the previous controller and webhook
+configuration but keeps the new CRDs, because the CRD upgrader runs only on
+install and upgrade. It lands in the old-controller/new-CRD row with whatever
+new-field usage exists, so the Downgrade procedure below applies, cleanup
+first.
 
-**What goes live when.** The immutability admission is live from the
-controller swap in pass one (it binds on pre-existing CERP fields). The
-persisted reference tracking lands with the CRD in pass two (Version skew
-below). Adoption is per-workload (`component` or `targetContainers`), never
-cluster-wide, and begins only after pass two. One window between the passes:
-the new CERP status fields the new controller writes are pruned by the old CRD
-schema, and nothing re-triggers that write until a reference changes or the
-controller restarts. For the reference count and the Frozen condition the gap
-is display-only and self-healing — enforcement was never status's to begin
-with, and both rebuild on the next reconcile after pass two. The drift signal
-is not: the warning event is derived from the persisted `referencedGeneration`
-baseline, which the old CRD never stores, so on the old-CRD row every
-reconcile re-baselines at the live generation and the event never fires; after
-pass two the first persisted baseline absorbs any spec edit made between the
-passes — such an edit (possible only with the webhook bypassed, since the
-freeze admission is live from pass one) is never reported.
-
-**Chart follow-up.** A chart sequencing change that defers the CRD hook until
-the new controller is ready would make the two passes unnecessary; it is an
-implementation-PR follow-up, not part of this KEP's contract. The CERP
+**Webhook configuration.** The CERP
 webhook entry ships as a release artifact (chart /
 `config/webhook/manifests.yaml`) applied at install time; the controller
 image never creates or restores it, so re-enabling admission after an entry
@@ -1592,17 +1578,12 @@ specs, so kubelet and core-control-plane skew are irrelevant. The only skew
 surfaces are the controller×CRD matrix above and one deliberate exception: the
 immutability admission ships with the controller image and binds on the
 **pre-existing** CERP fields too, so any new-controller row freezes referenced
-profiles regardless of CRD version. The persisted reference tracking lands
-with the new CRD: the old CRD's status schema (a bare `type: object`) prunes
-the new status fields on write. The controller's watch fires on either row and
-the reconcile runs, but the `EngineRuntimeProfileMutatedWhileReferenced`
-warning does not: it compares `metadata.generation` against the persisted
-`referencedGeneration` baseline, which the old CRD never stores, so on the
-old-CRD row every reconcile re-baselines at the live generation and the event
-never fires — a referenced-profile edit made between the passes is absorbed
-into the first baseline persisted after pass two and never reported. This is
-the one behavior a controller-only upgrade changes: the edit it blocks is the
-unconsented content drift this KEP exists to prevent.
+profiles regardless of CRD version. The persisted reference tracking needs
+the new CRD: on the old one, reachable only through the unsupported
+controller-first order, its status fields are pruned and the drift warning
+never fires. The drift warning and the freeze admission are also the two
+behaviors a controller rollback removes — the unconsented content drift this
+KEP exists to prevent is only caught while the new controller runs.
 
 ## Feature Enablement and Rollback
 
@@ -1734,5 +1715,5 @@ the CRD was retained; after a CRD rollback the pruned specs must be rewritten.
   and the render-time re-run instead of the RoleSpec CEL rule — the CEL form
   exceeds the apiserver's per-CRD cost budget by more than 100x (Validation
   Model).
-- 2026-11-18: KEP text amended to match the shipped placement and to record
-  the two-pass upgrade status window (#601).
+- 2026-11-19: KEP text amended for the webhook placement of the presence rule,
+  and the documented upgrade changed to a single `helm upgrade` (#601).

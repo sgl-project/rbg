@@ -180,54 +180,41 @@ the inventory before upgrading: if it is empty and the old RBG-owned workloads a
 the listed roles using the [migration guide](../../../doc/migration-v1alpha1-to-v1alpha2.md), and switch
 to `false` only after reconciliation has completed and the legacy workloads have been deleted.
 
+Repeat your normal release values (`-f` / `--set`) on every upgrade. An upgrade that passes any
+value flag resets every value you do not state back to the chart default; an upgrade that passes
+none reuses the previous revision's values wholesale. Either way, values you do not restate are
+not carried forward as you might expect.
+
 Controller rollouts drain admission traffic: each old manager Pod sleeps 5s in a preStop hook
 before SIGTERM (`terminationGracePeriodSeconds: 35`). An upgrade that picks this up rolls only the
 controller Pods, which take about 5s longer to terminate; RBG workloads are not affected. On large
 clusters where endpoint propagation takes longer, raise both with a post-renderer or kustomize
 patch; keep the grace period at least the sleep plus 30s.
 
-### CRD changes with semantic weight: upgrade in two passes
+### Engine runtime profiles (KEP-531) in chart v0.9.0
 
-The CRD upgrader Job runs as a `pre-install,pre-upgrade` hook and is enabled by default, so a
-plain `helm upgrade` swaps the CRDs **before** the new controller is running. For most releases
-that window is harmless — a new field nobody writes yet is inert, and the old controller ignoring
-it costs nothing — so a single `helm upgrade` remains the normal procedure. The exception is a
-release whose new CRD fields are unsafe in their *stored-but-ignored* state: a non-strict client
-gets the field silently pruned into a different meaning, or the old controller's treatment of the
-stored value differs from the field's absent-state behavior. Those releases upgrade through the
-chart in two passes instead, so the window is never traversed on the way up.
-
-The first such release ships [KEP-531 engine runtime
-profiles](../../../doc/features/engine-runtime.md) (the `component` / `targetContainers`
-reference fields and `ClusterEngineRuntimeProfile.spec.containerPatches`): in the window the new
-fields are storable but ignored — a reference with `component: worker` silently degrades to the
-pattern's default component set (the injection moves), and the patches on both sides never fire.
+Upgrade with a single `helm upgrade` as usual. The CRD upgrader runs before the controller rolls
+out, so until the previous controller Pods are gone the cluster accepts
+`engineRuntimes[].component`, `engineRuntimes[].targetContainers` and
+`ClusterEngineRuntimeProfile.spec.containerPatches`, but the previous controller doesn't know them:
+it renders a new reference across the pattern's default components, and its own updates to a
+RoleBasedGroup can drop them. Write those fields only after the rollout has completed and no
+previous controller Pod is still terminating: `rollout status` succeeds and `get pods` lists no
+Pod as `Terminating` — `--wait` alone does not guarantee this, because Helm's readiness check
+counts only the new ReplicaSet's ready Pods.
 
 ```bash
-# Pass one: swap the controller only, keep the old CRDs.
-helm upgrade rbgs <chart> --version <new-version> -n rbgs-system \
-  --set crdUpgrade.enabled=false
-# Pass two: swap the CRDs. The controller image is unchanged from pass one,
-# so Helm does not restart it; the only change is the CRD replacement.
-helm upgrade rbgs <chart> --version <new-version> -n rbgs-system
+kubectl -n rbgs-system rollout status deployment/rbgs-controller-manager
+kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 ```
 
-Until pass two has finished, **do not write the new fields**: under the old CRD schema a strict
-client (kubectl default) is rejected with `unknown field`, but a non-strict client has
-`component` / `targetContainers` / `containerPatches` silently pruned — a pruned scoped
-reference becomes a permanently unscoped active reference.
-
-`helm rollback` does not undo pass two: the CRD upgrader is a Helm hook and hooks don't run on
-rollback, so the rollback restores the old controller and the old webhook configuration but
-leaves the new CRDs in place — exactly the dangerous window row. Before rolling back past a
-release that ships KEP-531, remove the references that use the new fields from the Role specs and confirm
-no profile carries `containerPatches`, per the KEP's [Downgrade
-procedure](../../../keps/531-engine-runtime-profile-injection/README.md) (a cluster whose
-references set only `profileName` can roll back at any depth, safely).
-
-The general fix — deferring the CRD hook until the new controller is ready — would remove the
-window for every such release and make the two passes unnecessary; it is a recorded chart
-follow-up in the KEP.
+**Rolling back.** `helm rollback` restores the previous controller and webhook configuration but
+keeps the new CRDs: the CRD upgrader runs only on install and upgrade. The previous controller
+ignores the new fields, so a scoped reference silently becomes unscoped and the patches stop
+firing. Before rolling back past this release, remove `component` and `targetContainers` from
+RoleBasedGroup and RoleBasedGroupSet specs and `containerPatches` from the profiles, as in the
+KEP's [Downgrade procedure](../../../keps/531-engine-runtime-profile-injection/README.md). A
+cluster whose references set only `profileName` can roll back safely.
 
 ### Breaking change: values regrouped in chart v0.8.0
 

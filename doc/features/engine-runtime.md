@@ -12,7 +12,7 @@ Engine runtime profiles are useful for:
 
 ## Common recipes
 
-- **Inject a sidecar everywhere** — reference the profile with `profileName` only. Under `customComponentsPattern` and `standalonePattern` the fragments reach every component; under `leaderWorkerPattern` they reach the leader only (main's worker-side skip). See [Using Engine Runtime Profiles](#using-engine-runtime-profiles).
+- **Inject a sidecar everywhere** — reference the profile with `profileName` only. Under `customComponentsPattern` and `standalonePattern` the fragments reach every component; under `leaderWorkerPattern` they reach the leader only — the pattern's default component set. See [Using Engine Runtime Profiles](#using-engine-runtime-profiles).
 - **Scope delivery to one component** — add `component: <name>` to the reference. The fragments land only in that component's pods; every other component — of the same role or the same profile — is untouched. Under `customComponentsPattern` the name is a declared component (see the [custom-components example](../../examples/basic/engine-runtime/engine-runtime-custom-components.yaml)); under `leaderWorkerPattern` it is `leader` or `worker`; under `standalonePattern` it is the role's own name.
 - **Wrap the engine command** — profile-side `/command/0` inserts prepend to the target's declared `command` (in [reverse order](#profile-side-patches) for multi-element prefixes); the role declares `command` and re-declares the image's default arguments through `args`. See [Patch grammar](#patch-grammar).
 - **Add env or mounts to the engine container** — list the container in `targetContainers` and write the change as the entry's `extraPatches` (all five roots, any index), or let the profile's `containerPatches` fire at it. See [Consent and targets](#consent-and-targets-the-reference-side).
@@ -146,7 +146,7 @@ Rules that bound the reference side:
 - The list is a map keyed by `name`, so the apiserver rejects a container listed twice at write time.
 - An entry name resolving to a container injected only by a *different* reference or profile is a render error; a name colliding with a profile-declared container that the role's own template also declares resolves to the role-owned container.
 - Entries may name init containers as readily as sidecars — the grammar distinguishes targets by name, not by kind.
-- **Unaimed patches**: if the reference lists no `targetContainers` while the profile declares `containerPatches`, the patches fire nowhere, the render **succeeds**, and an `UnaimedContainerPatch` warning event is recorded — a profile gaining `containerPatches` cannot break a pre-existing referencing workload.
+- **Unaimed patches**: if no `targetContainers` entry of the reference names a container the role declares — either because the reference lists no `targetContainers`, or because every entry it lists targets profile-declared containers — while the profile declares `containerPatches`, the patches fire nowhere, the render **succeeds**, and an `UnaimedContainerPatch` warning event is recorded — a profile gaining `containerPatches` cannot break a pre-existing referencing workload.
 
 ### `component`
 
@@ -259,7 +259,7 @@ The patch passes (stages 3–4) run **after** the built-in env injectors, which 
 
 - **Env names resolve by position, not by refusal.** Kubernetes applies a container's env list in order and the last same-named entry wins. A **role-side append of an existing name is the override gesture** — it lands last and wins positionally, the same override the legacy `containers[].env` merge performs. A **profile-side rule may only default**: an entry for a name the target already carries must land *ahead* of the role-owned entry via `/env/0` head insert, so the role's later entry wins; a profile-side `-` append onto a role-owned name is a render error — profile content never wins a same-name contest with role content. Two entries within one patch list creating the same env name are an error, on both sides. A **legal** insert whose name the target already carries from another source — the role template, another reference, or a different patch side — does not fail: the later entry wins positionally, and an `EngineRuntimeEnvCollision` warning event names the container, the env name, both sources, and the winner. The legacy `containers[].env` merge predates the consent model and does not emit the event.
 - **volumeMounts are idempotent only under full-field equality.** A patch mount whose `(name, mountPath)` key matches an existing entry is a no-op only when the unmarshalled `VolumeMount` structs are fully equal — `readOnly`, `subPath`, `subPathExpr`, `mountPropagationMode`, `recursiveReadOnly` compared alongside the key, an absent field and an explicit zero counting as equal. A partial match is a render error attributed to the patch author's object. The same volume at a different `mountPath` is a legitimate second mount; a `mountPath` already used by a different volume name is a render error.
-- **Capabilities pass through verbatim, no normalization.** The renderer holds no capability list — a well-formed unknown name passes silently and the runtime decides, exactly as for hand-written pod specs. One form hazard gets a render-time warning event attributed to the role: a name not matching the canonical uppercase form (`SYS_ADMIN`), such as lowercase or a `CAP_`-prefixed name, which containerd silently drops. A duplicate capability is an idempotent no-op.
+- **Capabilities pass through verbatim, no normalization.** The renderer holds no capability list — a well-formed unknown name passes silently and the runtime decides, exactly as for hand-written pod specs. One form hazard gets a render-time warning event attributed to the role: a name not matching the canonical uppercase form (`SYS_ADMIN`). The forms are not equally dangerous: lowercase works on both containerd and CRI-O — a style warning — while a `CAP_`-prefixed name works only on CRI-O (it normalizes the prefix); containerd silently drops it. A duplicate capability is an idempotent no-op.
 - **Cross-profile name collisions.** When two different profiles declare the same container or volume name, the earlier reference wins and the later profile's same-named entry is skipped — a skipped container can be a control the operator believes present, so the skip is surfaced as an `EngineRuntimeNameCollision` warning event. Profile publishers should prefix container and volume names to avoid collisions across publishers.
 
 Any stage error — an unknown target container, a duplicate env name within one list, a mismatched value shape, a profile-side entry addressing a role-side-only root — fails the whole render: the controller emits an `EngineRuntimeRenderFailed` warning event naming the owning side and index; no partially patched template is delivered.
@@ -377,35 +377,36 @@ The controller writes status only on change, avoiding churn on unrelated reconci
 
 ## Warning events and admission errors
 
-Every warning below is emitted on the RoleBasedGroup that owns the reference (the profile for the
-last one), on transitions only, and none of them is fatal to unrelated roles. A warning event is
+Every warning below is emitted on the RoleBasedGroup that owns the reference — except
+`EngineRuntimeProfileMutatedWhileReferenced`, which is emitted on the profile itself — and none of
+them is fatal to unrelated roles. `UnaimedContainerPatch`,
+`EngineRuntimeNameCollision` and `EngineRuntimeEnvCollision` fire on transitions only —
+deduplicated while the same configuration persists — as does
+`EngineRuntimeProfileMutatedWhileReferenced` (deduplicated on the condition-reason flip).
+`EngineRuntimeRenderFailed`, `EngineRuntimeWrapShadowed` and `EngineRuntimeCapabilityFormHazard`
+re-fire on every reconcile that re-observes them, by design: a persisting render failure,
+shadowed wrap, or risky capability form should keep surfacing. A warning event is
 the signal for behavior that is legal but likely unintended; a render failure is always an
 `EngineRuntimeRenderFailed` event plus a failed template delivery, never a silent partial patch.
 
 | Event / error | Meaning | What to do |
 |---|---|---|
-| `EngineRuntimeRenderFailed` | A render-stage rule was violated: an unknown target container, a duplicate env name within one patch list, a mismatched value shape, a profile-side entry addressing a role-side-only root, or a `/command/0` or `/args` insert onto a container that declares neither. The event names the owning side and index; no template is delivered. | Fix the owning object named in the event (the profile or the role) — the fielded shape is the one the event's message describes |
-| `UnaimedContainerPatch` | The reference lists no `targetContainers` while the profile declares `containerPatches`, so the patches fire nowhere. The render succeeds — a profile gaining patches cannot break a pre-existing referencing workload. | Add `targetContainers` entries on the roles that should consume the patches, or drop the patches |
+| `EngineRuntimeRenderFailed` | A render-stage rule was violated. The most common triggers: a reference to a profile that does not exist (a typo, or a profile deleted with the webhook bypassed), or a stored object that breaks a write-time rule — presence, vocabulary, overlap — because it was written without the webhook; the resolver re-runs the webhook's validation at render time. The rest: an unknown target container, a duplicate env name within one patch list, a mismatched value shape, a profile-side entry addressing a role-side-only root, a `command` insert onto a container that declares no `command` — the insert would create one and silently discard the image ENTRYPOINT — or an `args` insert onto a container that declares neither `command` nor `args` — the insert would create them and silently discard the image CMD. The event names the owning side and index; no template is delivered. | Fix the owning object named in the event (the profile or the role) — the fielded shape is the one the event's message describes |
+| `UnaimedContainerPatch` | No `targetContainers` entry of the reference names a container the role declares — either the reference lists no `targetContainers`, or every entry it lists targets profile-declared containers — while the profile declares `containerPatches`, so the patches fire nowhere. The render succeeds — a profile gaining patches cannot break a pre-existing referencing workload. | Name a role-declared container in some `targetContainers` entry of the reference, or drop the patches |
 | `EngineRuntimeNameCollision` | Two different profiles declare the same container or volume name; the earlier reference won and the later profile's entry was skipped — a skipped container can be a control the operator believes present. | Reorder `engineRuntimes` to change the winner, or have the profile publishers prefix container and volume names |
 | `EngineRuntimeEnvCollision` | A legal env insert whose name the target already carries from another source; the later entry wins positionally. | Review whether the override is intended; the role's same-named entry is the override gesture |
 | `EngineRuntimeWrapShadowed` | A role-side command-root insert lands ahead of a profile-side one on the same container, so the role's wrap shadows the profile's. | Decide which wrap is intended; if both are, merge them into one |
-| `EngineRuntimeCapabilityFormHazard` | A capability name not in canonical uppercase form (`sys_resource`, `CAP_SYS_ADMIN`), which containerd silently drops. | Write the canonical form (`SYS_RESOURCE`) |
+| `EngineRuntimeCapabilityFormHazard` | A capability name not in canonical uppercase form. The two shapes are not equally dangerous: lowercase (`sys_resource`) works on both containerd and CRI-O — the warning is style, not an outage; a `CAP_`-prefixed name (`CAP_SYS_ADMIN`) works only on CRI-O (it normalizes the prefix) and is silently dropped by containerd, and an unknown name is silently dropped by containerd and rejected by CRI-O. | Write the canonical form (`SYS_RESOURCE`) |
 | `EngineRuntimeProfileMutatedWhileReferenced` | The controller observed a spec change on a referenced profile — evidence that admission did not block it (the webhook is missing, misconfigured, or uninstalled), not that the edit was sanctioned. | Re-apply the webhook configuration from the release artifacts, and treat the changed content per [Profile Mutability](#profile-mutability): migrate references to a new profile |
-| frozen-profile admission error | The ClusterEngineRuntimeProfile webhook rejected an update or delete of a referenced profile, naming the referencing objects. | Publish the revision as a new profile and migrate the references one at a time, or remove the reference first |
+| frozen-profile admission error | The ClusterEngineRuntimeProfile webhook rejected a spec update or delete of a referenced profile, naming the referencing objects. | Publish the revision as a new profile and migrate the references one at a time, or remove the reference first |
 
 ## Upgrading and rolling back
 
-The feature ships as two independently versioned pieces — the CRD schema and the controller image.
-Upgrades through the Helm chart are normally a single `helm upgrade`; they become a **two-pass**
-procedure (pass one swaps the controller with `--set crdUpgrade.enabled=false`, pass two swaps the
-CRDs) only for releases whose new CRD fields are unsafe in their stored-but-ignored state while the
-old controller is still running — KEP-531 is the first such release, because a non-strict client
-gets `component` / `targetContainers` / `containerPatches` silently pruned, and a pruned scoped
-reference becomes a permanently unscoped active reference. `helm rollback` restores the old
-controller and webhook configuration but leaves the new CRDs in place, so remove the new-field usage
-before rolling back past a KEP-531 release. The general criterion, the concrete commands, the
-don't-write-new-fields window between the passes, and the rollback cleanup are in the
-[chart README's Upgrading section](../../deploy/helm/rbgs/README.md#upgrading); the full
+Upgrade with a single `helm upgrade`: the chart replaces the CRDs before the controller rolls out.
+Write `component`, `targetContainers` and `containerPatches` only once no previous controller Pod
+remains, because the previous controller ignores them. `helm rollback` keeps the new CRDs, so
+remove those fields before rolling back past this release. The commands are in the
+[chart README's Upgrading section](../../deploy/helm/rbgs/README.md#upgrading), and the full
 controller×CRD behavior matrix is in the
 [KEP's Upgrade / Downgrade Strategy](../../keps/531-engine-runtime-profile-injection/README.md).
 

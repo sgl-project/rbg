@@ -4,8 +4,8 @@
 # Step 1's profile is referenced with `component: router`, so its pod-level
 # fragments (sidecar, volume) and its containerPatches deliver to the router
 # component's pods only — the prefill and decode components render from their
-# own templates unchanged. With `component` absent the same reference would
-# deliver the fragments to every declared component, main's default set;
+# own templates unchanged. A `profileName`-only reference instead delivers the
+# fragments to every declared component, the pattern's default component set;
 # naming one component is the narrowing this example exercises.
 #
 # The images are publicly pullable stand-ins, so the example runs on any
