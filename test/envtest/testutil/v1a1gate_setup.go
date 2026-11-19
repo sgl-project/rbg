@@ -202,9 +202,13 @@ func DisableV1a2Gate() {
 		Expect(err).NotTo(HaveOccurred())
 	}
 
-	Eventually(func() bool {
-		return deprecatedCreateAccepted()
-	}, 10*time.Second, 250*time.Millisecond).Should(BeTrue(), "the v1alpha2 gate did not become inactive")
+	// Returning the probe error itself (nil once the dry-run create is
+	// accepted) keeps an unrelated probe failure distinguishable from the
+	// gate simply staying active: the Eventually failure message then names
+	// the actual error instead of reporting a bare inactivity timeout.
+	Eventually(func() error {
+		return K8sClient.Create(Ctx, gateReadinessProbe(), &client.CreateOptions{DryRun: []string{"All"}})
+	}, 10*time.Second, 250*time.Millisecond).Should(Succeed(), "the v1alpha2 gate did not become inactive: the dry-run deprecated create is still failing")
 }
 
 // deprecatedCreateRejected reports whether a dry-run deprecated v1alpha2
@@ -212,12 +216,6 @@ func DisableV1a2Gate() {
 func deprecatedCreateRejected() bool {
 	err := K8sClient.Create(Ctx, gateReadinessProbe(), &client.CreateOptions{DryRun: []string{"All"}})
 	return err != nil && containsStr(err.Error(), "new uses are not accepted")
-}
-
-// deprecatedCreateAccepted reports whether a dry-run deprecated v1alpha2
-// create passes with the gate offline.
-func deprecatedCreateAccepted() bool {
-	return K8sClient.Create(Ctx, gateReadinessProbe(), &client.CreateOptions{DryRun: []string{"All"}}) == nil
 }
 
 func gateReadinessProbe() *workloadsv1alpha2.RoleBasedGroup {

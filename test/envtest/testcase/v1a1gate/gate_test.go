@@ -139,6 +139,10 @@ var _ = Describe("v1alpha1 request path through the conversion chain", Ordered, 
 		})
 		err := testutil.K8sClient.Create(testutil.Ctx, obj)
 		Expect(err).To(HaveOccurred())
+		// Pin the actual default, not just any deprecated type: the CRD
+		// schema defaults the absent workload key to apps/v1 StatefulSet.
+		Expect(err.Error()).To(ContainSubstring(
+			`workload type "apps/v1/StatefulSet"`))
 		Expect(err.Error()).To(ContainSubstring("new uses are not accepted"))
 	})
 
@@ -190,6 +194,16 @@ var _ = Describe("v1alpha1 grandfathering through conversion", Ordered, func() {
 	It("rejects a v1alpha1 switch from StatefulSet to Deployment", func() {
 		fresh := getSeeded()
 		fresh.Spec.Roles[0].Workload.Kind = "Deployment"
+		err := testutil.K8sClient.Update(testutil.Ctx, fresh)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("new uses are not accepted"))
+	})
+
+	It("rejects a role rename through a v1alpha1 update", func() {
+		// The type-exact exemption is keyed on role name and workload type:
+		// a renamed role is a new use even with the same deprecated type.
+		fresh := getSeeded()
+		fresh.Spec.Roles[0].Name = "worker-renamed"
 		err := testutil.K8sClient.Update(testutil.Ctx, fresh)
 		Expect(err).To(HaveOccurred())
 		Expect(err.Error()).To(ContainSubstring("new uses are not accepted"))
@@ -279,9 +293,11 @@ var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 		err := testutil.K8sClient.Create(testutil.Ctx, rbg)
 		Expect(err).To(HaveOccurred())
 		// A schema rejection is an Invalid (422) error; a webhook denial
-		// would surface as Forbidden (403). Asserting the error type keeps
-		// this spec honest about which layer rejected the request.
+		// would surface as Forbidden (403). The field path pins the
+		// rejection to the empty workload.apiVersion specifically, so an
+		// unrelated validation error cannot satisfy this spec.
 		Expect(apierrors.IsInvalid(err)).To(BeTrue())
+		Expect(err.Error()).To(ContainSubstring("spec.roles[0].workload.apiVersion"))
 	})
 
 	// v1alpha1-path grandfathering, type switching, and key-absent workload
