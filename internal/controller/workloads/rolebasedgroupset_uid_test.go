@@ -235,3 +235,94 @@ func TestCreateRollingGroupSetChildAdoptsOrphan(t *testing.T) {
 	assert.Empty(t, adopted.Labels[constants.GroupSetRevisionLabelKey],
 		"adoption must not apply the new template outside the rollout budget")
 }
+
+// An orphan derives the legacy discovery config mode while it has no controller, and
+// the metadata sync keeps the mode a child carries, so the adoption is the one place
+// that can undo it (#603). Both paths adopt through claimGroupSetOrphan.
+func TestGroupSetAdoptionDropsDerivedLegacyDiscoveryMode(t *testing.T) {
+	modeKey := constants.DiscoveryConfigModeAnnotationKey
+	legacy := string(constants.LegacyDiscoveryConfigMode)
+	refine := string(constants.RefineDiscoveryConfigMode)
+
+	tests := []struct {
+		name         string
+		templateMode string
+		orphanMode   string
+		wantMode     string
+		wantPresent  bool
+	}{
+		{name: "legacy is dropped when the template declares no mode", orphanMode: legacy},
+		{name: "legacy declared by the template is kept", templateMode: legacy, orphanMode: legacy, wantMode: legacy, wantPresent: true},
+		{name: "refine on the orphan is kept", orphanMode: refine, wantMode: refine, wantPresent: true},
+		{name: "an orphan without a mode stays without one"},
+	}
+
+	for _, tt := range tests {
+		t.Run("static/"+tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+			role := wrappersv2.BuildStandaloneRole("worker").Obj()
+			set := &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "demo", Namespace: "default", UID: "set-uid"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					Replicas: ptr.To[int32](1),
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Annotations: map[string]string{"team": "a"},
+						Spec:        workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{role}},
+					},
+				},
+			}
+			if tt.templateMode != "" {
+				set.Spec.GroupTemplate.Annotations[modeKey] = tt.templateMode
+			}
+			orphan := newRBGForSet(set, 0)
+			orphan.OwnerReferences = nil
+			delete(orphan.Annotations, modeKey)
+			if tt.orphanMode != "" {
+				orphan.Annotations[modeKey] = tt.orphanMode
+			}
+
+			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(set, orphan).WithObjects(set, orphan).Build()
+			r := &RoleBasedGroupSetReconciler{client: c, scheme: scheme}
+			_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(set)})
+			require.NoError(t, err)
+
+			adopted := &workloadsv1alpha2.RoleBasedGroup{}
+			require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(orphan), adopted))
+			require.True(t, metav1.IsControlledBy(adopted, set), "the orphan must be adopted")
+			mode, present := adopted.Annotations[modeKey]
+			assert.Equal(t, tt.wantPresent, present)
+			assert.Equal(t, tt.wantMode, mode)
+			assert.Equal(t, "a", adopted.Annotations["team"], "other annotations must survive the adoption")
+		})
+
+		t.Run("rolling/"+tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			template := revisionTestTemplate(nil)
+			if tt.templateMode != "" {
+				template.Annotations = map[string]string{modeKey: tt.templateMode}
+			}
+			set := revisionTestRollingSet(1, &groupSetRevision{template: template})
+			orphan := revisionTestReadyChild(set, 0, &groupSetRevision{template: template})
+			orphan.OwnerReferences = nil
+			delete(orphan.Annotations, modeKey)
+			if tt.orphanMode != "" {
+				if orphan.Annotations == nil {
+					orphan.Annotations = map[string]string{}
+				}
+				orphan.Annotations[modeKey] = tt.orphanMode
+			}
+			r, _ := revisionTestRollingReconciler(t, set, orphan)
+			require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), set))
+			require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(orphan), orphan))
+
+			require.NoError(t, r.adoptGroupSetChild(ctx, set, orphan))
+
+			adopted := revisionTestGetChild(t, r, set, 0)
+			require.True(t, metav1.IsControlledBy(adopted, set), "the orphan must be adopted")
+			mode, present := adopted.Annotations[modeKey]
+			assert.Equal(t, tt.wantPresent, present)
+			assert.Equal(t, tt.wantMode, mode)
+		})
+	}
+}

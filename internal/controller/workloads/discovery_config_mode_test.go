@@ -127,15 +127,51 @@ func TestEnsureDiscoveryConfigMode(t *testing.T) {
 			wantModeAnnotation: true,
 		},
 		{
-			name: "legacy RBG owned by another kind should stay in legacy mode",
+			name: "child of another kind with observed status should derive legacy mode",
 			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
 				ref := roleBasedGroupSetControllerRef()
 				ref.Kind = "Other"
 				rbg.OwnerReferences = []metav1.OwnerReference{ref}
-				rbg.SetDiscoveryConfigMode(constants.LegacyDiscoveryConfigMode)
 			},
 			wantRequeue:        false,
 			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "child of a RoleBasedGroupSet in another API group with observed status should derive legacy mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				ref := roleBasedGroupSetControllerRef()
+				ref.APIVersion = "example.com/v1alpha2"
+				rbg.OwnerReferences = []metav1.OwnerReference{ref}
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "RBG a RoleBasedGroupSet owns without controlling it should derive legacy mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				ref := roleBasedGroupSetControllerRef()
+				ref.Controller = ptr.To(false)
+				rbg.OwnerReferences = []metav1.OwnerReference{ref}
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "RoleBasedGroupSet child of another served version with observed status should set refine mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				ref := roleBasedGroupSetControllerRef()
+				ref.APIVersion = workloadsv1alpha2.GroupVersion.Group + "/v1alpha1"
+				rbg.OwnerReferences = []metav1.OwnerReference{ref}
+			},
+			wantRequeue:        false,
+			wantMode:           constants.RefineDiscoveryConfigMode,
 			wantModeAnnotation: true,
 		},
 	}

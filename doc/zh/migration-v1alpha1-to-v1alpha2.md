@@ -25,7 +25,7 @@ workload 类型内容迁移必须使用 `v1alpha2` 表达和写入路径。在 `
 
 - 将 RBG 控制器升级到 `0.9.0` 或更新版本，并确认控制器、conversion webhook 和 admission webhook 健康。
 - 确认待迁移 Role 当前 ready，且没有其他 rollout 正在进行。`InstanceSet` Role 是例外：它从 v0.7.0 起就不再 reconcile，且不支持的 workload 类型会让整个 RoleBasedGroup 无法通过 preflight reconcile。
-- 在提交任何有状态 Role 的迁移前，先完成 discovery ConfigMap 前置条件。从 v0.6.0 或更早版本升级上来的 RBG 以及 RoleBasedGroupSet 子对象都处于 `legacy` 发现模式；参见[discovery ConfigMap 前置条件](#discovery-configmap-前置条件)。
+- 在提交任何有状态 Role 的迁移前，先完成 discovery ConfigMap 前置条件。从 v0.6.0 或更早版本升级上来的 RBG 处于 `legacy` 发现模式，显式带有 `legacy` 的 RoleBasedGroupSet 子对象也是如此；参见[discovery ConfigMap 前置条件](#discovery-configmap-前置条件)。
 - 与自动扩缩容、流量管理、调度以及可能在迁移期间修改 RBG 的业务流程协调。
 - 在变更窗口内冻结外部写入。
 - 修改前保存当前对象，并记录 revision。
@@ -81,7 +81,7 @@ discovery ConfigMap 是控制器创建的 Pod 发现信息（`config.yaml`），
 | --- | --- | --- |
 | v0.7.0 及以后创建，或全新 v0.9.0 安装 | `refine` | 无需操作。 |
 | 从 v0.6.0 或更早版本升级上来 | 派生为 `legacy` | 把 RBG 的发现模式注解设为 `refine`，触发一次 reconcile。 |
-| RoleBasedGroupSet 子对象（任意来源） | `refine`（显式设置为 `legacy` 的除外） | 没有这个注解的子对象无需操作，v0.7.0 和 v0.8.0 留下的子对象就是这种状态：升级后第一次 reconcile 时，控制器会把它固定为 `refine`。这次改动只写入注解，不会重启 Pod，也不会产生新的 revision。带有 `legacy` 的子对象会保持不变；要切换它，请在 `spec.groupTemplate.annotations` 中设置 `rbg.workloads.x-k8s.io/discovery-config-mode: refine`。set controller 会把模板注解应用到子对象上，除此之外保留子对象已有的模式。 |
+| RoleBasedGroupSet 子对象（任意来源） | `refine`（显式设置为 `legacy` 的除外） | 没有这个注解的子对象无需操作，v0.7.0 和 v0.8.0 留下的子对象就是这种状态：升级后第一次 reconcile 时，控制器会把它固定为 `refine`，并创建或更新它的 discovery ConfigMap。workload spec、revision 和 Pod 都不会变化。带有 `legacy` 的子对象会保持不变；要切换它，请在 `spec.groupTemplate.annotations` 中设置 `rbg.workloads.x-k8s.io/discovery-config-mode: refine`。set controller 会把模板注解应用到子对象上，除此之外保留子对象已有的模式。唯一的例外是被 set 接管的孤儿对象：它在没有 set 期间派生出的 `legacy` 会被移除（模板声明了模式时除外），随后被固定为 `refine`。 |
 
 对普通 RoleBasedGroup，先设置注解，再确认与 RBG 同名的 ConfigMap 已创建：
 

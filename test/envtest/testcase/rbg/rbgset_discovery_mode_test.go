@@ -23,6 +23,8 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -167,5 +169,51 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 			g.Expect(after.Status.UpdateRevision).To(Equal(before.Status.UpdateRevision))
 			g.Expect(after.Spec.RoleInstanceTemplate).To(Equal(before.Spec.RoleInstanceTemplate))
 		}, timeout, interval).Should(Succeed())
+	})
+
+	It("pins an orphan that derived legacy mode once a set adopts it", func() {
+		waitForReconciledChild()
+
+		// A child of v0.7.0 or v0.8.0 whose set was deleted with cascade=orphan:
+		// reconciled, without a controller and without the mode annotation.
+		set := &workloadsv1alpha2.RoleBasedGroupSet{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, set)).To(Succeed())
+		Expect(testutil.K8sClient.Delete(testutil.Ctx, set)).To(Succeed())
+		Eventually(func(g Gomega) {
+			err := testutil.K8sClient.Get(testutil.Ctx, setKey, &workloadsv1alpha2.RoleBasedGroupSet{})
+			g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
+		}, timeout, interval).Should(Succeed())
+
+		child := getChild(Default)
+		old := child.DeepCopy()
+		child.OwnerReferences = nil
+		delete(child.Annotations, constants.DiscoveryConfigModeAnnotationKey)
+		Expect(testutil.K8sClient.Patch(testutil.Ctx, child, client.MergeFrom(old))).To(Succeed())
+
+		// Without a controller it is derived like any RoleBasedGroup that has status.
+		Eventually(func(g Gomega) {
+			child := getChild(g)
+			g.Expect(child.OwnerReferences).To(BeEmpty())
+			g.Expect(child.GetDiscoveryConfigMode()).To(Equal(constants.LegacyDiscoveryConfigMode))
+		}, timeout, interval).Should(Succeed())
+
+		// A set of the same name adopts the orphan and scales its role.
+		role := wrappers.BuildStandaloneRole("worker").WithReplicas(2).Obj()
+		adopter := wrappers.BuildBasicRoleBasedGroupSet(setKey.Name, namespace).Obj()
+		adopter.Spec.GroupTemplate.Annotations = map[string]string{"team": "a"}
+		adopter.Spec.GroupTemplate.Spec.Roles = []workloadsv1alpha2.RoleSpec{role}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, adopter)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			child := getChild(g)
+			g.Expect(metav1.IsControlledBy(child, adopter)).To(BeTrue())
+			g.Expect(child.UID).To(Equal(old.UID))
+			g.Expect(child.Spec.Roles[0].Replicas).To(Equal(ptr.To[int32](2)))
+			g.Expect(child.GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(workerSize(g)).To(Equal(2))
+		}, timeout, interval).Should(Succeed())
+		Consistently(func(g Gomega) {
+			g.Expect(getChild(g).GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+		}, 3*time.Second, interval).Should(Succeed())
 	})
 })
