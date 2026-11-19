@@ -50,6 +50,7 @@
     - [Coordinated Rolling Update](../examples/basic/coordinated-policy/coordinated-rolling-update.yaml)
     - [Coordinated Scaling](../examples/basic/coordinated-policy/coordinated-scaling.yaml)
     - [Engine Runtime Profile](../examples/basic/engine-runtime/engine-runtime-profile.yaml)
+    - [Engine Runtime Profile (Scoped to a Component)](../examples/basic/engine-runtime/engine-runtime-custom-components.yaml)
 
   - Inference Examples
     - [Aggregated Standalone](../examples/inference/agg-standalone.yaml)

@@ -10,6 +10,14 @@ Engine runtime profiles are useful for:
 - **Shared Dependencies**: Common runtime libraries across all inference pods
 - **Consistent Configuration**: Same sidecar configuration for all roles
 
+## Common recipes
+
+- **Inject a sidecar everywhere** — reference the profile with `profileName` only. Under `customComponentsPattern` and `standalonePattern` the fragments reach every component; under `leaderWorkerPattern` they reach the leader only (main's worker-side skip). See [Using Engine Runtime Profiles](#using-engine-runtime-profiles).
+- **Scope delivery to one component** — add `component: <name>` to the reference. The fragments land only in that component's pods; every other component — of the same role or the same profile — is untouched. Under `customComponentsPattern` the name is a declared component (see the [custom-components example](../../examples/basic/engine-runtime/engine-runtime-custom-components.yaml)); under `leaderWorkerPattern` it is `leader` or `worker`; under `standalonePattern` it is the role's own name.
+- **Wrap the engine command** — profile-side `/command/0` inserts prepend to the target's declared `command` (in [reverse order](#profile-side-patches) for multi-element prefixes); the role declares `command` and re-declares the image's default arguments through `args`. See [Patch grammar](#patch-grammar).
+- **Add env or mounts to the engine container** — list the container in `targetContainers` and write the change as the entry's `extraPatches` (all five roots, any index), or let the profile's `containerPatches` fire at it. See [Consent and targets](#consent-and-targets-the-reference-side).
+- **Migrate from the legacy `containers` merge** — replace `engineRuntimes[].containers` env/args appends with `targetContainers[].extraPatches` entries: one grammar for every modification, precise addressing into init containers and volumeMounts too. See [Migrating from the legacy `containers` merge](#migrating-from-the-legacy-containers-merge).
+
 ## ClusterEngineRuntimeProfile CRD
 
 ```yaml
@@ -367,6 +375,40 @@ The controller maintains the reference state in the profile's `status`, as displ
 
 The controller writes status only on change, avoiding churn on unrelated reconciles. A bypassed spec edit additionally emits the `EngineRuntimeProfileMutatedWhileReferenced` warning event on the profile, deduplicated on the condition-reason flip so it does not re-fire on every reconcile.
 
+## Warning events and admission errors
+
+Every warning below is emitted on the RoleBasedGroup that owns the reference (the profile for the
+last one), on transitions only, and none of them is fatal to unrelated roles. A warning event is
+the signal for behavior that is legal but likely unintended; a render failure is always an
+`EngineRuntimeRenderFailed` event plus a failed template delivery, never a silent partial patch.
+
+| Event / error | Meaning | What to do |
+|---|---|---|
+| `EngineRuntimeRenderFailed` | A render-stage rule was violated: an unknown target container, a duplicate env name within one patch list, a mismatched value shape, a profile-side entry addressing a role-side-only root, or a `/command/0` or `/args` insert onto a container that declares neither. The event names the owning side and index; no template is delivered. | Fix the owning object named in the event (the profile or the role) — the fielded shape is the one the event's message describes |
+| `UnaimedContainerPatch` | The reference lists no `targetContainers` while the profile declares `containerPatches`, so the patches fire nowhere. The render succeeds — a profile gaining patches cannot break a pre-existing referencing workload. | Add `targetContainers` entries on the roles that should consume the patches, or drop the patches |
+| `EngineRuntimeNameCollision` | Two different profiles declare the same container or volume name; the earlier reference won and the later profile's entry was skipped — a skipped container can be a control the operator believes present. | Reorder `engineRuntimes` to change the winner, or have the profile publishers prefix container and volume names |
+| `EngineRuntimeEnvCollision` | A legal env insert whose name the target already carries from another source; the later entry wins positionally. | Review whether the override is intended; the role's same-named entry is the override gesture |
+| `EngineRuntimeWrapShadowed` | A role-side command-root insert lands ahead of a profile-side one on the same container, so the role's wrap shadows the profile's. | Decide which wrap is intended; if both are, merge them into one |
+| `EngineRuntimeCapabilityFormHazard` | A capability name not in canonical uppercase form (`sys_resource`, `CAP_SYS_ADMIN`), which containerd silently drops. | Write the canonical form (`SYS_RESOURCE`) |
+| `EngineRuntimeProfileMutatedWhileReferenced` | The controller observed a spec change on a referenced profile — evidence that admission did not block it (the webhook is missing, misconfigured, or uninstalled), not that the edit was sanctioned. | Re-apply the webhook configuration from the release artifacts, and treat the changed content per [Profile Mutability](#profile-mutability): migrate references to a new profile |
+| frozen-profile admission error | The ClusterEngineRuntimeProfile webhook rejected an update or delete of a referenced profile, naming the referencing objects. | Publish the revision as a new profile and migrate the references one at a time, or remove the reference first |
+
+## Upgrading and rolling back
+
+The feature ships as two independently versioned pieces — the CRD schema and the controller image.
+Upgrades through the Helm chart are normally a single `helm upgrade`; they become a **two-pass**
+procedure (pass one swaps the controller with `--set crdUpgrade.enabled=false`, pass two swaps the
+CRDs) only for releases whose new CRD fields are unsafe in their stored-but-ignored state while the
+old controller is still running — KEP-531 is the first such release, because a non-strict client
+gets `component` / `targetContainers` / `containerPatches` silently pruned, and a pruned scoped
+reference becomes a permanently unscoped active reference. `helm rollback` restores the old
+controller and webhook configuration but leaves the new CRDs in place, so remove the new-field usage
+before rolling back past a KEP-531 release. The general criterion, the concrete commands, the
+don't-write-new-fields window between the passes, and the rollback cleanup are in the
+[chart README's Upgrading section](../../deploy/helm/rbgs/README.md#upgrading); the full
+controller×CRD behavior matrix is in the
+[KEP's Upgrade / Downgrade Strategy](../../keps/531-engine-runtime-profile-injection/README.md).
+
 ## Use Cases
 
 - **GPU Infrastructure**: Inject NVIDIA drivers, DCGM exporters, GPU utilities
@@ -377,3 +419,4 @@ The controller writes status only on change, avoiding churn on unrelated reconci
 ## Examples
 
 - [Engine Runtime Profile Example](../../examples/basic/engine-runtime/engine-runtime-profile.yaml)
+- [Scoped delivery under customComponentsPattern](../../examples/basic/engine-runtime/engine-runtime-custom-components.yaml)
