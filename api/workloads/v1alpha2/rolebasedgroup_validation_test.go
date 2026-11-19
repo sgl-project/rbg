@@ -1643,3 +1643,64 @@ func TestValidateEngineRuntimesScopeOwnershipErrorOrder(t *testing.T) {
 		assert.Equal(t, first, msgs, "error order must be stable across runs")
 	}
 }
+
+func TestRestartBudgetWorkloadCompatibilityRawConfig(t *testing.T) {
+	for _, pattern := range []string{"leaderWorkerPattern", "customComponentsPattern"} {
+		t.Run(pattern, func(t *testing.T) {
+			tests := []struct {
+				name        string
+				config      *RestartPolicyConfig
+				legacy      RestartPolicyType
+				workload    string
+				errContains string
+			}{
+				{name: "nil config"},
+				{name: "nil budget", config: &RestartPolicyConfig{}},
+				{name: "legacy only without budget", legacy: RecreateRoleInstanceOnPodRestart},
+				{name: "explicit recreate policy", config: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](0)}},
+				{name: "omitted type", config: &RestartPolicyConfig{MaxGroupRestarts: ptr.To[int32](2)}, errContains: "requires a whole-RoleInstance recreate policy"},
+				{name: "legacy policy with budget", legacy: RecreateRoleInstanceOnPodRestart, config: &RestartPolicyConfig{MaxGroupRestarts: ptr.To[int32](2)}, errContains: "requires a whole-RoleInstance recreate policy"},
+				{name: "None policy", config: &RestartPolicyConfig{Type: RestartPolicyNone, MaxGroupRestarts: ptr.To[int32](2)}, errContains: "requires a whole-RoleInstance recreate policy"},
+				{name: "unknown policy", config: &RestartPolicyConfig{Type: "Unknown", MaxGroupRestarts: ptr.To[int32](2)}, errContains: "requires a whole-RoleInstance recreate policy"},
+				{name: "negative budget", config: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](-1)}, errContains: "must be non-negative"},
+				{name: "unsupported backend", workload: constants.LeaderWorkerSetWorkloadType, config: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](2)}, errContains: "only supported by native RoleInstanceSet workloads"},
+			}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					role := RoleSpec{Name: "worker"}
+					if pattern == "leaderWorkerPattern" {
+						role.LeaderWorkerPattern = &LeaderWorkerPattern{RestartPolicy: tt.legacy, RestartPolicyConfig: tt.config}
+					} else {
+						role.CustomComponentsPattern = &CustomComponentsPattern{RestartPolicy: tt.legacy, RestartPolicyConfig: tt.config}
+					}
+					if tt.workload != "" {
+						role.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: tt.workload}
+					}
+					err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{role})
+					if tt.errContains == "" {
+						require.NoError(t, err)
+					} else {
+						require.Error(t, err)
+						assert.Contains(t, err.Error(), tt.errContains)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestRestartBudgetWorkloadCompatibility(t *testing.T) {
+	for _, workload := range []string{constants.RoleInstanceSetWorkloadType, constants.LeaderWorkerSetWorkloadType, constants.DeploymentWorkloadType, constants.StatefulSetWorkloadType} {
+		for _, policy := range []RestartPolicyType{RestartPolicyNone, RecreateRoleInstanceOnPodRestart} {
+			for _, limit := range []int32{-1, 0, 2} {
+				role := RoleSpec{Name: "worker", Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: workload}, Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{RestartPolicyConfig: &RestartPolicyConfig{Type: policy, MaxGroupRestarts: ptr.To(limit)}}}}
+				err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{role})
+				if workload == constants.RoleInstanceSetWorkloadType && policy == RecreateRoleInstanceOnPodRestart && limit >= 0 {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+			}
+		}
+	}
+}

@@ -642,6 +642,15 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 			wantRestartPolicy: workloadsv1alpha2.RestartPolicyNone,
 		},
 		{
+			name: "role configuring only a zero group restart budget",
+			role: func() workloadsv1alpha2.RoleSpec {
+				role := wrappersv2.BuildLeaderWorkerRole("budget-role").Obj()
+				role.LeaderWorkerPattern.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, ActivateAfter: workloadsv1alpha2.RestartPolicyActivateAfterCreated, MaxGroupRestarts: ptr.To[int32](0)}
+				return role
+			},
+			wantConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, ActivateAfter: workloadsv1alpha2.RestartPolicyActivateAfterCreated, BaseDelaySeconds: ptr.To(workloadsv1alpha2.DefaultBaseDelaySeconds), MaxDelaySeconds: ptr.To(workloadsv1alpha2.DefaultMaxDelaySeconds), MaxGroupRestarts: ptr.To[int32](0)},
+		},
+		{
 			name: "role configuring both delays",
 			role: func() workloadsv1alpha2.RoleSpec {
 				return wrappersv2.BuildLeaderWorkerRole("backoff-role").
@@ -711,6 +720,7 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 				} else {
 					assert.Equal(t, ptr.To(tt.wantConfig.ActivateAfter), template.RestartPolicyConfig.ActivateAfter)
 				}
+				assert.Equal(t, tt.wantConfig.MaxGroupRestarts, template.RestartPolicyConfig.MaxGroupRestarts)
 			}
 
 			// The typed assertions above can both hold while the field the apiserver

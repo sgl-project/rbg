@@ -52,7 +52,7 @@ Leader + workers per instance (for tensor parallelism):
 | Field | Description |
 |-------|-------------|
 | `size` | *int32 — total pods per instance (1 leader + size-1 workers) |
-| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `activateAfter` (default: `Ready`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
+| `restartPolicyConfig` | *[RestartPolicyConfig](#restartpolicyconfig) — restart policy, activation, backoff and optional rebuild limit |
 | `restartPolicy` | RestartPolicyType — **Deprecated**, use `restartPolicyConfig`. Honoured only when `restartPolicyConfig.type` is unset |
 | `template` | PodTemplateSpec — base pod template |
 | `templateRef` | *TemplateRef — reference to roleTemplate |
@@ -66,7 +66,7 @@ Heterogeneous pod groups per instance:
 | Field | Description |
 |-------|-------------|
 | `components` | []ComponentSpec — list of component definitions |
-| `restartPolicyConfig` | *RestartPolicyConfig — restart behavior config: `type` (default: `RecreateRoleInstanceOnPodRestart`), `activateAfter` (default: `Ready`), `baseDelaySeconds` (default: 30), `maxDelaySeconds` (default: 600) |
+| `restartPolicyConfig` | *[RestartPolicyConfig](#restartpolicyconfig) — restart policy, activation, backoff and optional rebuild limit |
 | `restartPolicy` | RestartPolicyType — **Deprecated**, use `restartPolicyConfig`. Honoured only when `restartPolicyConfig.type` is unset |
 
 ### ComponentSpec
@@ -118,6 +118,37 @@ Reusable pod template at RBG level:
 | Field | Description |
 |-------|-------------|
 | `gracePeriodSeconds` | *int32 — wait time before forcing update |
+
+## RestartPolicyConfig
+
+Configured under `spec.roles[].leaderWorkerPattern.restartPolicyConfig` or
+`spec.roles[].customComponentsPattern.restartPolicyConfig`.
+
+| Field | Description |
+| ----- | ----------- |
+| `type` | RestartPolicyType — `None` or `RecreateRoleInstanceOnPodRestart` (default for multi-pod patterns) |
+| `activateAfter` | string — `Ready` (default) or `Created`; controls when native RoleInstance restart triggers become active |
+| `baseDelaySeconds` | *int32 — base exponential backoff delay in seconds; minimum: 0, default: 30 |
+| `maxDelaySeconds` | *int32 — maximum backoff delay in seconds; minimum: 0, must be >= `baseDelaySeconds`, default: 600 |
+| `maxGroupRestarts` | *int32 — maximum automatic whole-instance rebuilds per RoleInstance and topology/Pod-template revision; minimum: 0, unset: unlimited. `0` stops recovery on the first eligible fault. Requires explicit `type: RecreateRoleInstanceOnPodRestart`; native RoleInstanceSet workloads only |
+
+`activateAfter`, backoff delays and `maxGroupRestarts` apply to native RoleInstanceSet
+workloads, not backing Deployment, StatefulSet or LeaderWorkerSet workloads.
+
+> **Compatibility:** These settings are v1alpha2-only. Writing a spec through
+> v1alpha1 drops activation, backoff and budget settings; an omitted budget means
+> unlimited recovery. Manage budgeted workloads through v1alpha2.
+
+### RoleInstance budget status
+
+| Field | Description |
+| ----- | ----------- |
+| `status.groupRestartCount` | int32 — accepted whole-instance rebuilds for the current budget revision; does not reset after Ready or a quiet period |
+| `status.groupRestartRevision` | string — opaque budget revision identifying component topology and Pod templates, including sizes |
+| `status.restartBudgetExhausted` | bool — budget exhausted; automatic Pod creation and updates are suppressed until explicit recovery or a new topology/Pod-template revision |
+
+See [Bounded Group Recovery](../features/failure-handling.md#bounded-group-recovery)
+for examples, exhaustion behavior, recovery and configuration-change semantics.
 
 ## RestartPolicyType
 

@@ -33,6 +33,13 @@ import (
 )
 
 func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, _, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pods []*v1.Pod) (time.Duration, error) {
+	// Guard direct Update calls as well as the normal Scale -> Update path.
+	if blocked, err := c.reconcileRestartBudget(ctx, instance); blocked || err != nil {
+		if err != nil {
+			return 0, err
+		}
+		return RestartBudgetRequeueAfter, nil
+	}
 	logger := log.FromContext(ctx)
 	requeueDuration := requeueduration.Duration{}
 	coreControl := instancecore.New(instance)

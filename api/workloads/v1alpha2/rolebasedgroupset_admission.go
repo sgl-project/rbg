@@ -47,6 +47,10 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 	}
 	klog.V(4).InfoS("validating RoleBasedGroupSet on create", "name", rbgs.Name, "namespace", rbgs.Namespace)
 
+	if err := ValidateRestartPolicyWorkloadCompatibility("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		return nil, err
+	}
+
 	if err := validateRBGSetExcludedOrdinals(rbgs); err != nil {
 		return nil, err
 	}
@@ -77,6 +81,9 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj ru
 		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", newObj)
 	}
 	klog.V(4).InfoS("validating RoleBasedGroupSet on update", "name", rbgs.Name, "namespace", rbgs.Namespace)
+	if err := ValidateRestartPolicyWorkloadCompatibility("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		return nil, err
+	}
 	oldRBGS, ok := oldObj.(*RoleBasedGroupSet)
 	if !ok {
 		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", oldObj)

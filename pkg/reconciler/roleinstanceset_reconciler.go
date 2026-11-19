@@ -224,6 +224,10 @@ func (r *RoleInstanceSetReconciler) upgradeRoleInstanceSetOwnership(
 	return nil
 }
 
+func restartPolicyConfigRequiresBlock(raw *workloadsv1alpha2.RestartPolicyConfig) bool {
+	return raw != nil && (raw.BaseDelaySeconds != nil || raw.MaxDelaySeconds != nil || raw.ActivateAfter != "" || raw.MaxGroupRestarts != nil)
+}
+
 func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
@@ -276,14 +280,16 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	// upgrade with nothing to roll to: RoleInstanceSpec's getters fold the string in
 	// and default the delays to these very values.
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate()
-	if raw := role.GetRawRestartPolicyConfig(); raw != nil &&
-		(raw.BaseDelaySeconds != nil || raw.MaxDelaySeconds != nil || raw.ActivateAfter != "") {
+	if raw := role.GetRawRestartPolicyConfig(); restartPolicyConfigRequiresBlock(raw) {
 		restartPolicyApplyConfig := workloadsv1alpha2client.RestartPolicyConfig().
 			WithType(role.GetRestartPolicy()).
 			WithBaseDelaySeconds(role.GetBaseDelaySeconds()).
 			WithMaxDelaySeconds(role.GetMaxDelaySeconds())
 		if raw.ActivateAfter != "" {
 			restartPolicyApplyConfig = restartPolicyApplyConfig.WithActivateAfter(raw.ActivateAfter)
+		}
+		if raw.MaxGroupRestarts != nil {
+			restartPolicyApplyConfig.WithMaxGroupRestarts(*raw.MaxGroupRestarts)
 		}
 		roleInstanceTemplateConfig.WithRestartPolicyConfig(restartPolicyApplyConfig)
 	} else {
