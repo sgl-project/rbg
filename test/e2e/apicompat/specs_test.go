@@ -118,6 +118,8 @@ func RunDeprecatedDisabledTestCases(f *framework.Framework) {
 				"deployments.apps is forbidden",
 				"statefulsets.apps is forbidden",
 				"leaderworkersets.leaderworkerset.x-k8s.io is forbidden",
+				"instances.workloads.x-k8s.io is forbidden",
+				"instancesets.workloads.x-k8s.io is forbidden",
 			} {
 				gomega.Expect(logs).ShouldNot(gomega.ContainSubstring(forbidden),
 					"controller must not attempt to watch a deprecated type it has no RBAC for (pod %s)", pod.Name)
