@@ -65,6 +65,12 @@ const (
 	// to skip exclusive-topology affinity injection for that role.
 	RoleDisableExclusiveKey = RBGPrefix + "role-disable-exclusive"
 
+	// ConversionV2RestartPolicyConfigAnnotationKey carries the serialized
+	// v1alpha2 restart policy config on a v1alpha1 wire object during
+	// conversion. It is stripped when converting back to the hub and never
+	// persists on a stored object; never set it by hand.
+	ConversionV2RestartPolicyConfigAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-restart-policy-config"
+
 	// RoleWorkloadTypeAnnotationKey specifies the workload type for a role.
 	// This is primarily used by the conversion webhook when converting v1alpha1
 	// RoleBasedGroups that had workload field set. New v1alpha2 RBGs should
@@ -81,10 +87,11 @@ const (
 // including controller-managed values and user operational inputs. They must
 // not propagate to downstream metadata; this set is not an admission denylist.
 var SystemManagedRoleAnnotations = map[string]struct{}{
-	RoleSizeAnnotationKey:              {},
-	RoleWorkloadTypeAnnotationKey:      {},
-	ExcludedOrdinalsAnnotationKey:      {},
-	CommittedSkipOrdinalsAnnotationKey: {},
+	RoleSizeAnnotationKey:                        {},
+	RoleWorkloadTypeAnnotationKey:                {},
+	ConversionV2RestartPolicyConfigAnnotationKey: {},
+	ExcludedOrdinalsAnnotationKey:                {},
+	CommittedSkipOrdinalsAnnotationKey:           {},
 }
 
 const (

@@ -25697,10 +25697,10 @@ spec:
                     rule: '!has(self.templateRef) || !has(self.workload) || self.workload.kind
                       != ''LeaderWorkerSet'''
                   - message: template or templateRef must be set for non-InstanceSet
-                      workloads
+                      workloads without components
                     rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
-                      && (self.workload.kind == 'InstanceSet' || self.workload.kind
-                      == 'RoleInstanceSet'))
+                      && (self.workload.kind == 'InstanceSet' || (self.workload.kind
+                      == 'RoleInstanceSet' && (has(self.components) || has(self.leaderWorkerSet)))))
                   - message: template and templateRef are mutually exclusive
                     rule: '!(has(self.template) && has(self.templateRef))'
                 minItems: 1
@@ -67050,10 +67050,10 @@ spec:
                         rule: '!has(self.templateRef) || !has(self.workload) || self.workload.kind
                           != ''LeaderWorkerSet'''
                       - message: template or templateRef must be set for non-InstanceSet
-                          workloads
+                          workloads without components
                         rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
-                          && (self.workload.kind == 'InstanceSet' || self.workload.kind
-                          == 'RoleInstanceSet'))
+                          && (self.workload.kind == 'InstanceSet' || (self.workload.kind
+                          == 'RoleInstanceSet' && (has(self.components) || has(self.leaderWorkerSet)))))
                       - message: template and templateRef are mutually exclusive
                         rule: '!(has(self.template) && has(self.templateRef))'
                     minItems: 1

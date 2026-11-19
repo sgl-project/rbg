@@ -42,7 +42,7 @@ const (
 	// policy type: the delays and activateAfter are preserved through this
 	// annotation on the v1alpha1 wire object, consumed and stripped when the
 	// object converts back to the hub. It never persists on a stored object.
-	annotationV2RestartPolicyConfig = "conversion.workloads.x-k8s.io/v1alpha2-restart-policy-config"
+	annotationV2RestartPolicyConfig = constants.ConversionV2RestartPolicyConfigAnnotationKey
 )
 
 // ConvertTo converts this RoleBasedGroup (v1alpha1) to the Hub version (v1alpha2).
@@ -164,13 +164,23 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	// Restore the v1alpha2 restart policy configuration preserved by
 	// ConvertFrom, and drop the conversion-only annotation so it never
 	// persists on the hub object.
-	restartPolicyConfig := restoreV2RestartPolicyConfig(dst.Annotations)
-	if restartPolicyConfig != nil {
+	restartPolicyConfig, preserved, err := restoreV2RestartPolicyConfig(dst.Annotations)
+	if err != nil {
+		return err
+	}
+	if preserved {
 		delete(dst.Annotations, annotationV2RestartPolicyConfig)
 		if len(dst.Annotations) == 0 {
 			// A role that carried only the conversion annotation must not
 			// round trip to an empty-but-present annotations map.
 			dst.Annotations = nil
+		}
+		if src.RestartPolicy != "" && restartPolicyConfig != nil &&
+			convertRestartPolicyV1alpha1ToV2(src.RestartPolicy) != restartPolicyConfig.Type {
+			// The v1alpha1 client deliberately changed the policy type.
+			// Honor the wire value like a plain v1alpha1 write does, keeping
+			// the preserved delays and activateAfter.
+			restartPolicyConfig.Type = convertRestartPolicyV1alpha1ToV2(src.RestartPolicy)
 		}
 	} else if src.RestartPolicy != "" {
 		// A v1alpha1 role that only names the type (no preserved config)
@@ -760,16 +770,21 @@ func preserveV2RestartPolicyConfig(src *v2.RoleSpec, dst *RoleSpec) error {
 }
 
 // restoreV2RestartPolicyConfig returns the restart policy configuration
-// preserved by preserveV2RestartPolicyConfig, or nil when the annotations
-// carry none.
-func restoreV2RestartPolicyConfig(annotations map[string]string) *v2.RestartPolicyConfig {
+// preserved by preserveV2RestartPolicyConfig. found reports whether the
+// conversion annotation is present at all (even empty or unusable — the
+// caller must still strip it); err is non-nil when the annotation is
+// present but does not unmarshal into the config.
+func restoreV2RestartPolicyConfig(annotations map[string]string) (*v2.RestartPolicyConfig, bool, error) {
 	raw, ok := annotations[annotationV2RestartPolicyConfig]
-	if !ok || raw == "" {
-		return nil
+	if !ok {
+		return nil, false, nil
+	}
+	if raw == "" {
+		return nil, true, nil
 	}
 	var config v2.RestartPolicyConfig
 	if err := json.Unmarshal([]byte(raw), &config); err != nil {
-		return nil
+		return nil, true, fmt.Errorf("unmarshalling preserved restart policy config: %w", err)
 	}
-	return &config
+	return &config, true, nil
 }

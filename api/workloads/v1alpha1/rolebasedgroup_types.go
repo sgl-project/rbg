@@ -296,7 +296,7 @@ type RollingUpdate struct {
 // RoleSpec defines the specification for a role in the group
 // +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'InstanceSet'",message="templateRef is not supported for InstanceSet workloads"
 // +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'LeaderWorkerSet'",message="templateRef is not supported for LeaderWorkerSet workloads"
-// +kubebuilder:validation:XValidation:rule="(has(self.template) != has(self.templateRef)) || (has(self.workload) && (self.workload.kind == 'InstanceSet' || self.workload.kind == 'RoleInstanceSet'))",message="template or templateRef must be set for non-InstanceSet workloads"
+// +kubebuilder:validation:XValidation:rule="(has(self.template) != has(self.templateRef)) || (has(self.workload) && (self.workload.kind == 'InstanceSet' || (self.workload.kind == 'RoleInstanceSet' && (has(self.components) || has(self.leaderWorkerSet)))))",message="template or templateRef must be set for non-InstanceSet workloads without components"
 // Note: "templatePatch is only valid when templateRef is set" validation is done in controller
 // because templatePatch is runtime.RawExtension (x-kubernetes-preserve-unknown-fields) which CEL cannot inspect
 // The targetContainers-requires-component rule is enforced in the admission webhook's

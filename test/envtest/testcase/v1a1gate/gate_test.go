@@ -20,6 +20,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -189,6 +190,25 @@ var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 	// RoleInstanceSet; testing grandfathering would require the two-phase
 	// (seed-then-gate) setup, which belongs in the deprecation suite's
 	// architecture. Track as a follow-up before 0.10.0 if needed.
+})
+
+var _ = Describe("v1alpha1 role shape validation through the CEL rule", Ordered, func() {
+	It("rejects a RoleInstanceSet role with no template, templateRef, components, or leaderWorkerSet", func() {
+		// The RoleInstanceSet exemption exists so customComponentsPattern
+		// roles (no template, but components) survive the round trip; a
+		// role with neither a template source nor a pattern must not be
+		// admitted, because it converts to a standalone role with no
+		// template source that can never reconcile.
+		rbg := buildV1a1RBG("gate-empty-ris")
+		rbg.Spec.Roles[0].TemplateSource = workloadsv1alpha1.TemplateSource{}
+		rbg.Spec.Roles[0].Workload = workloadsv1alpha1.WorkloadSpec{
+			APIVersion: "workloads.x-k8s.io/v1alpha2",
+			Kind:       "RoleInstanceSet",
+		}
+		err := testutil.K8sClient.Create(testutil.Ctx, rbg)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue())
+	})
 })
 
 var _ = Describe("v1alpha1 no-op round trip", Ordered, func() {

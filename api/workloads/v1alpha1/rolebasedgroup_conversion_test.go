@@ -1587,3 +1587,111 @@ func TestRoleBasedGroup_NoOpV1alpha1RoundTripIsLossless(t *testing.T) {
 		})
 	}
 }
+
+// TestRoleBasedGroup_ConvertTo_HandCraftedRestartAnnotation pins the
+// conversion-only restart annotation as never persisting: empty values are
+// stripped, malformed values fail the conversion instead of leaking.
+func TestRoleBasedGroup_ConvertTo_HandCraftedRestartAnnotation(t *testing.T) {
+	newRole := func(annotation string) *RoleBasedGroup {
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+			Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+				Name: "worker", Replicas: ptr.To(int32(1)),
+				LeaderWorkerSet: &LeaderWorkerTemplate{Size: ptr.To(int32(2))},
+				TemplateSource:  TemplateSource{Template: podTemplate("app")},
+				Annotations:     map[string]string{annotationV2RestartPolicyConfig: annotation},
+			}}},
+		}
+	}
+
+	t.Run("empty annotation is stripped without materializing a config", func(t *testing.T) {
+		dst := &v2.RoleBasedGroup{}
+		require.NoError(t, newRole("").ConvertTo(dst))
+		assert.Nil(t, dst.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig)
+		assert.NotContains(t, dst.Spec.Roles[0].Annotations, annotationV2RestartPolicyConfig)
+	})
+
+	t.Run("malformed annotation fails the conversion", func(t *testing.T) {
+		for _, garbage := range []string{"not-json", "[1]", `{"type":`} {
+			dst := &v2.RoleBasedGroup{}
+			require.Error(t, newRole(garbage).ConvertTo(dst),
+				"annotation %q must fail the conversion, not leak", garbage)
+		}
+	})
+}
+
+// TestRoleBasedGroup_RoundTrip_RestartPolicyTypeChange honors a deliberate
+// v1alpha1 restartPolicy edit: the wire type wins, the preserved delays and
+// activateAfter stay.
+func TestRoleBasedGroup_RoundTrip_RestartPolicyTypeChange(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+				Size: ptr.To(int32(2)),
+				RestartPolicyConfig: &v2.RestartPolicyConfig{
+					Type:             v2.RecreateRoleInstanceOnPodRestart,
+					ActivateAfter:    v2.RestartPolicyActivateAfterCreated,
+					BaseDelaySeconds: ptr.To(int32(10)),
+					MaxDelaySeconds:  ptr.To(int32(300)),
+				},
+				TemplateSource: v2.TemplateSource{Template: podTemplate("engine")},
+			}},
+		}}},
+	}
+
+	v1 := &RoleBasedGroup{}
+	require.NoError(t, v1.ConvertFrom(stored))
+	// The v1alpha1 client deliberately changes the policy type.
+	v1.Spec.Roles[0].RestartPolicy = NoneRestartPolicy
+
+	rewritten := &v2.RoleBasedGroup{}
+	require.NoError(t, v1.ConvertTo(rewritten))
+	config := rewritten.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig
+	require.NotNil(t, config)
+	assert.Equal(t, v2.RestartPolicyNone, config.Type, "the wire type change must win")
+	assert.Equal(t, v2.RestartPolicyActivateAfterCreated, config.ActivateAfter)
+	assert.Equal(t, int32(10), *config.BaseDelaySeconds)
+	assert.Equal(t, int32(300), *config.MaxDelaySeconds)
+}
+
+// TestRoleBasedGroup_RoundTrip_LegacyRestartPolicyStringDocumentsRewrite pins
+// the one stored shape a no-op v1alpha1 write-back still rewrites: a
+// pre-v0.8.0 role carrying only the deprecated pattern-level restartPolicy
+// string. The string is not representable in the conversion annotation
+// (GetRawRestartPolicyConfig returns nil), so the write-back materializes a
+// type-only RestartPolicyConfig — the same rewrite main performs, resolved
+// identically at runtime, but a stored-shape and role-hash change.
+func TestRoleBasedGroup_RoundTrip_LegacyRestartPolicyStringDocumentsRewrite(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+				Size:           ptr.To(int32(2)),
+				RestartPolicy:  v2.RecreateRoleInstanceOnPodRestart,
+				TemplateSource: v2.TemplateSource{Template: podTemplate("engine")},
+			}},
+		}}},
+	}
+
+	v1 := &RoleBasedGroup{}
+	require.NoError(t, v1.ConvertFrom(stored))
+	assert.Equal(t, RecreateRoleInstanceOnPodRestart, v1.Spec.Roles[0].RestartPolicy)
+
+	rewritten := &v2.RoleBasedGroup{}
+	require.NoError(t, v1.ConvertTo(rewritten))
+	role := rewritten.Spec.Roles[0]
+	// The known, documented residual (#580): the legacy string is rewritten
+	// into a type-only config. This matches main's behavior for the same
+	// write (not a regression), the resolved policy is identical, and the
+	// shape is v1alpha2-native, so the next round trip is lossless.
+	assert.Empty(t, role.LeaderWorkerPattern.RestartPolicy,
+		"the legacy string is folded into the config on write-back")
+	config := role.LeaderWorkerPattern.RestartPolicyConfig
+	require.NotNil(t, config)
+	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, config.Type)
+	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.GetRestartPolicy(),
+		"the resolved policy is identical before and after")
+}
