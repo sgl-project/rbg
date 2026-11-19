@@ -19,6 +19,7 @@ package v1alpha2
 import (
 	"context"
 	"fmt"
+	"sync/atomic"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -31,6 +32,29 @@ const (
 	roleBasedGroupKind    = "RoleBasedGroup"
 	roleBasedGroupSetKind = "RoleBasedGroupSet"
 )
+
+// engineRuntimeLabelConverged records whether the has-engine-runtimes
+// label scan has completed at least once with no mismatch since this
+// process started. Until then the admission webhook keeps using the
+// unscoped reference lookup, so the upgrade window before the backfill
+// converges cannot admit a write that pre-label referencing objects should
+// have blocked.
+var engineRuntimeLabelConverged atomic.Bool
+
+// SetEngineRuntimeLabelConverged records whether the has-engine-runtimes
+// label backfill has converged. The ClusterEngineRuntimeProfile controller
+// sets it after a full scan finds no mismatch; it resets on process
+// restart.
+func SetEngineRuntimeLabelConverged(converged bool) {
+	engineRuntimeLabelConverged.Store(converged)
+}
+
+// EngineRuntimeLabelConverged reports whether the has-engine-runtimes label
+// backfill has converged in this process. Admission falls back to the
+// unscoped reference lookup while it has not.
+func EngineRuntimeLabelConverged() bool {
+	return engineRuntimeLabelConverged.Load()
+}
 
 // EngineRuntimeProfileReference names one live referencing object of a
 // ClusterEngineRuntimeProfile.

@@ -960,10 +960,23 @@ subject to the same review as any other.
 
 Enforcement is a CERP validating webhook: on update it compares `old.spec` to
 `new.spec` and rejects a substantive change while a live reference exists. It
-consults references across RoleBasedGroups and RoleBasedGroupSets cluster-wide
-via an **uncached lookup**: profile writes are rare platform operations, so
-the cost is negligible, and skipping the informer cache removes the stale-cache
-variant of the window below. A set's group template counts as a reference even
+consults references across RoleBasedGroups and RoleBasedGroupSets
+via an **uncached lookup**, scoped to the objects carrying the reserved
+`rbg.workloads.x-k8s.io/has-engine-runtimes` label so its cost scales with
+the number of referencing objects rather than with the cluster: profile
+writes are rare platform operations, and skipping the informer cache removes
+the stale-cache variant of the window below. The RoleBasedGroup and
+RoleBasedGroupSet admission defaulters maintain the label on every write
+(derived from the roles' `engineRuntimes`), and the profile controller
+backfills it onto referencing objects written before the label existed. Until
+that backfill converges after an upgrade or restart, the webhook falls back
+to the unscoped lookup, so pre-label references still block writes; once a
+clean scan converges, the scoped lookup takes over. Objects written with the
+webhooks disabled (`--enable-webhooks=none`, a debugging mode) can drift from
+the label; that mode has no admission to protect anyway. With leader election
+enabled, non-leader replicas serve webhooks but never run the controller, so
+their convergence flag never flips and they keep the unscoped lookup — the
+pre-optimization behavior, correct and simply unoptimized. A set's group template counts as a reference even
 at zero replicas, no child RBG required. The rejection names the referencing
 objects and points to the new-profile workflow. The webhook deploys with the
 controller image, mirroring the RoleBasedGroup webhook's deployment shape, and

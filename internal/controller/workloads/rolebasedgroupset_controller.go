@@ -539,8 +539,11 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateLabelUpdate(
 	}
 	// Check if any template label was removed from the template but still exists on RBG
 	for k := range rbg.Labels {
-		// Skip system-managed labels
-		if k == constants.GroupSetNameLabelKey || k == constants.GroupSetIndexLabelKey {
+		// Skip system-managed labels. The has-engine-runtimes label is
+		// derived from the child's own spec (the group template's roles), so
+		// it is not template-owned and must not be treated as divergence.
+		if k == constants.GroupSetNameLabelKey || k == constants.GroupSetIndexLabelKey ||
+			k == constants.HasEngineRuntimesLabelKey {
 			continue
 		}
 		if _, exists := templateLabels[k]; !exists {
@@ -653,6 +656,10 @@ func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	newLabels[constants.GroupSetNameLabelKey] = rbgset.Name
 	newLabels[constants.GroupSetIndexLabelKey] = rbg.Labels[constants.GroupSetIndexLabelKey]
 	rbg.Labels = newLabels
+	// The has-engine-runtimes label is derived from the child's own spec, so
+	// it survives the whole-label replace instead of flapping against the
+	// admission defaulters and the profile controller's backfill.
+	workloadsv1alpha2.SetHasEngineRuntimesLabel(rbg)
 
 	// Sync annotations: keys the controllers own are carried over from the child, template
 	// annotations are applied over them, and anything else is removed.
@@ -715,7 +722,7 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 	// does not fall back to the webhook's v1 default when the set predates
 	// KEP-576 or explicitly opted out.
 	rbgAnnotations = withChildDiscoveryConfigVersion(rbgAnnotations, spec.Roles, rbgset.Spec.GroupTemplate.Annotations)
-	return &workloadsv1alpha2.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   rbgset.Namespace,
 			Name:        fmt.Sprintf("%s-%d", rbgset.Name, index),
@@ -725,6 +732,10 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 		},
 		Spec: *spec,
 	}
+	// Stamp the engine-runtime reference marker the same way the admission
+	// defaulters do, so a fresh child is selectable from its first write.
+	workloadsv1alpha2.SetHasEngineRuntimesLabel(rbg)
+	return rbg
 }
 
 // withChildDiscoveryConfigVersion returns child annotations carrying the

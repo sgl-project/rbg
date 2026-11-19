@@ -44,6 +44,9 @@ func controllerHarness(t *testing.T, objs ...client.Object) (
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	// The label-convergence gate is process-global; every harness starts
+	// unconverged so the backfill scan actually runs.
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&workloadsv1alpha2.ClusterEngineRuntimeProfile{}).
 		WithObjects(objs...).Build()

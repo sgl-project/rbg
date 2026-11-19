@@ -1615,3 +1615,52 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 		)
 	}
 }
+
+// TestRoleBasedGroupSetReconciler_EngineRuntimeLabelNotDivergence pins the
+// has-engine-runtimes label as system-managed: a child whose roles reference
+// an engine runtime profile carries the label (stamped by the admission
+// defaulters), and the set controller must neither treat it as template
+// divergence nor strip it when syncing metadata — otherwise every reconcile
+// fights the defaulters in an update loop (#597).
+func TestRoleBasedGroupSetReconciler_EngineRuntimeLabelNotDivergence(t *testing.T) {
+	r := &RoleBasedGroupSetReconciler{}
+	rbgset := &workloadsv1alpha2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "set", Namespace: "ns"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+			GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+				Labels: map[string]string{"user-label-from-template": "kept"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:           "worker",
+					EngineRuntimes: []workloadsv1alpha2.EngineRuntime{{ProfileName: "ik"}},
+				}}},
+			},
+		},
+	}
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "set-0",
+			Namespace: "ns",
+			Labels: map[string]string{
+				constants.GroupSetNameLabelKey:      "set",
+				constants.GroupSetIndexLabelKey:     "0",
+				constants.HasEngineRuntimesLabelKey: "true",
+				"user-label-from-template":          "kept",
+			},
+		},
+		Spec: rbgset.Spec.GroupTemplate.Spec,
+	}
+
+	assert.False(t, r.needsTemplateLabelUpdate(rbgset, rbg),
+		"the has-engine-runtimes label must not count as template divergence")
+
+	r.syncRBGMetadata(rbgset, rbg)
+	assert.Equal(t, "true", rbg.Labels[constants.HasEngineRuntimesLabelKey],
+		"syncRBGMetadata must preserve the engine-runtime reference label")
+	assert.Equal(t, "kept", rbg.Labels["user-label-from-template"],
+		"template labels keep their exact-match behavior")
+
+	// A fresh child is stamped on creation, like the admission defaulters do.
+	fresh := newRBGForSet(rbgset, 0)
+	assert.Equal(t, "true", fresh.Labels[constants.HasEngineRuntimesLabelKey],
+		"newRBGForSet must stamp the engine-runtime reference label")
+}
