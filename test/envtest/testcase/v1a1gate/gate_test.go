@@ -286,6 +286,7 @@ var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 
 	// v1alpha1-path grandfathering, type switching, and key-absent workload
 	// defaulting are covered by the sibling Describes above (see #579). The
-	// v1alpha2 deprecation suite remains the coverage for the same behaviors
-	// through the v1alpha2 API.
+	// v1alpha2 validator unit tests cover the analogous type-exact
+	// grandfathering and switch semantics; key-absent defaulting is specific
+	// to the v1alpha1 CRD schema.
 })
