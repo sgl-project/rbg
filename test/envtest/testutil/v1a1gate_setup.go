@@ -155,7 +155,8 @@ const v1a2GateConfigName = "v1a1-gate-test-validating"
 // pointing at the test webhook server, then waits for the gate to be active.
 // matchPolicy is left unset (Equivalent, the default) so v1alpha1 writes are
 // routed through conversion to the v1alpha2 gate — the production
-// composition. It is idempotent: an existing configuration is reused.
+// composition. It is idempotent: an existing configuration is replaced
+// wholesale so a stale one (wrong host, port, or CA bundle) cannot linger.
 func EnableV1a2Gate() {
 	config := buildValidatingWebhookConfig(TestEnv.WebhookInstallOptions, []gateWebhookSpec{
 		{
@@ -195,7 +196,11 @@ func DisableV1a2Gate() {
 	config := &admissionregistrationv1.ValidatingWebhookConfiguration{
 		ObjectMeta: objectMeta(v1a2GateConfigName),
 	}
-	Expect(K8sClient.Delete(Ctx, config)).To(Succeed())
+	// Idempotent, symmetric with EnableV1a2Gate's replace-on-exists: a
+	// missing configuration is already disabled.
+	if err := K8sClient.Delete(Ctx, config); err != nil && !apierrors.IsNotFound(err) {
+		Expect(err).NotTo(HaveOccurred())
+	}
 
 	Eventually(func() bool {
 		return deprecatedCreateAccepted()
