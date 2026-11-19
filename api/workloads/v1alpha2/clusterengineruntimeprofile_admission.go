@@ -94,7 +94,15 @@ func (v *ClusterEngineRuntimeProfileValidator) ValidateDelete(ctx context.Contex
 }
 
 func (v *ClusterEngineRuntimeProfileValidator) rejectWhileReferenced(ctx context.Context, profileName, verb string) error {
-	refs, err := ListEngineRuntimeProfileReferences(ctx, v.Reader, profileName)
+	// Before the label backfill has converged (notably right after an
+	// upgrade or restart), pre-label referencing objects are invisible to
+	// the scoped lookup; fall back to the unscoped one, which cannot miss
+	// them, until the controller reports convergence.
+	listReferences := ListEngineRuntimeProfileReferences
+	if !EngineRuntimeLabelConverged() {
+		listReferences = ListAllEngineRuntimeProfileReferences
+	}
+	refs, err := listReferences(ctx, v.Reader, profileName)
 	if err != nil {
 		// failurePolicy: Fail — a lookup error blocks the write rather
 		// than passing it unenforced.

@@ -99,9 +99,6 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing engine runtime profile references: %w", err)
 	}
-	if err := r.backfillHasEngineRuntimesLabels(ctx); err != nil {
-		return ctrl.Result{}, err
-	}
 
 	desired := *profile.Status.DeepCopy()
 	changed := false
@@ -162,6 +159,14 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 		}
 	}
 
+	// Backfill after the status write: a failed label patch must not block
+	// status tracking, but it does return an error so the reconcile retries
+	// and the admission webhook keeps its unscoped fallback until the scan
+	// has completed cleanly.
+	if err := r.backfillHasEngineRuntimesLabels(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if mutatedWhileReferenced {
 		r.Recorder.Event(profile, corev1.EventTypeWarning, ReasonEngineRuntimeProfileMutatedWhileReferenced,
 			fmt.Sprintf(
@@ -181,6 +186,13 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 // not change metadata.generation, so they do not re-trigger this
 // controller's watches.
 func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(ctx context.Context) error {
+	if workloadsv1alpha2.EngineRuntimeLabelConverged() {
+		// Every admitted write maintains the label, so a converged process
+		// only re-scans on restart. Objects written with webhooks disabled
+		// (--enable-webhooks=none) can drift; that is a debugging mode and
+		// the admission fallback is irrelevant without webhooks anyway.
+		return nil
+	}
 	rbgList := &workloadsv1alpha2.RoleBasedGroupList{}
 	if err := r.List(ctx, rbgList); err != nil {
 		return fmt.Errorf("listing rolebasedgroups for engine runtime label backfill: %w", err)
@@ -212,6 +224,9 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(
 			return fmt.Errorf("backfilling engine runtime label on rolebasedgroupset %s/%s: %w", rbgs.Namespace, rbgs.Name, err)
 		}
 	}
+	// A clean full scan with no writes: the scoped admission lookup can
+	// take over from the unscoped fallback.
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
 	return nil
 }
 

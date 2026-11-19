@@ -151,6 +151,26 @@ func TestClusterEngineRuntimeProfileValidator(t *testing.T) {
 		assert.Contains(t, err.Error(), "RoleBasedGroupSet ns-a/set")
 	})
 
+	t.Run("the unconverged fallback sees pre-label references", func(t *testing.T) {
+		// The upgrade window: a referencing object written before the label
+		// shipped is invisible to the scoped lookup, so admission falls
+		// back to the unscoped one until the controller reports
+		// convergence (#597).
+		unlabeled := rbgReferencing("grp-old", "ns-old", "ik")
+		delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+
+		v := admissionHarness(t, unlabeled)
+		_, err := v.ValidateDelete(ctx, profileFor("ik"))
+		require.Error(t, err, "the unconverged fallback must not miss a pre-label reference")
+
+		SetEngineRuntimeLabelConverged(true)
+		defer SetEngineRuntimeLabelConverged(false)
+		v = admissionHarness(t, unlabeled)
+		_, err = v.ValidateDelete(ctx, profileFor("ik"))
+		require.NoError(t, err,
+			"once converged, only labeled references are visible; the window is documented in KEP-531")
+	})
+
 	t.Run("a spec edit is admitted again once the last reference leaves", func(t *testing.T) {
 		v := admissionHarness(t)
 		old := profileFor("ik")
