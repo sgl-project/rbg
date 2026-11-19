@@ -402,9 +402,9 @@ the signal for behavior that is legal but likely unintended; a render failure is
 
 ## Upgrading and rolling back
 
-Upgrade with a single `helm upgrade`: the chart replaces the CRDs before the controller rolls out.
-Write `component`, `targetContainers` and `containerPatches` only once no previous controller Pod
-remains, because the previous controller ignores them. `helm rollback` keeps the new CRDs, so
+Upgrade with a single `helm upgrade`: the chart applies the CRDs ahead of the controller.
+Write `component`, `targetContainers` and `containerPatches` only once the upgrade has completed,
+because the previous controller ignores them. `helm rollback` keeps the new CRDs, so
 remove those fields before rolling back past this release. The chart README's
 [Upgrading section](../../deploy/helm/rbgs/README.md#upgrading) covers the procedure, and the full
 controller×CRD behavior matrix is in the

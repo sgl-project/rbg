@@ -1405,7 +1405,7 @@ grants, and their mitigations:
 ### Upgrade / Downgrade Drills
 
 - The chart upgrade: a single `helm upgrade` from the previous release
-  applying the new CRDs ahead of the controller rollout, pre-existing
+  applying the new CRDs ahead of the controller, pre-existing
   references rendering identically to main throughout; a `helm rollback`
   after the upgrade landing in the old-controller/new-CRD row, safe after the
   documented cleanup. The drills still run the two-pass order until the code
@@ -1500,23 +1500,21 @@ renderer). Every scenario below is a combination of their versions.
 |---|---|---|
 | old | old | main, exactly. |
 | new | old | Unscoped references only: `profileName`-only references render identically to main. New fields cannot be stored: a strict client is rejected with `unknown field`, the correct outcome; a non-strict client has `component` silently pruned and stores an active **unscoped** reference, the same hazard and mechanism as the CRD rollback in the Downgrade section below. Where the pruned reference's default set intersects a surviving component-scoped reference of the same profile, scope ownership turns the silent change into a render error, the one pruning shape that surfaces. |
-| old | new | Fields are storable but ignored: a `component: worker` reference silently degrades to the pattern's default component set (the injection moves from worker to leader), and the new patch fields on both sides are stored but never fire. **The most dangerous combination** once the new fields are stored: every chart upgrade passes through it during the controller rollout, before any object can carry them, and a `helm rollback` after the upgrade lands in it (Upgrade and Rollback below). |
+| old | new | Fields are storable but ignored: a `component: worker` reference silently degrades to the pattern's default component set (the injection moves from worker to leader), and the new patch fields on both sides are stored but never fire. **The most dangerous combination** once the new fields are stored — a `helm rollback` after the upgrade lands in it (Rollback below). |
 | new | new | Full semantics. |
 
 **Upgrade: one `helm upgrade`, CRDs first.** The chart's CRD upgrader Job runs
 as a `pre-upgrade` hook (`deploy/helm/rbgs/templates/crd-upgrade/crd-upgrade.yaml`),
-so a single `helm upgrade` replaces the CRDs and then rolls out the controller:
-the order every release upgrades in, and the one the upgrade-compatibility
-suite exercises. The old-controller/new-CRD row lasts only for the controller
-rollout, and when it begins no object carries the new fields: the previous
-schemas declare none of them and preserve no unknown fields, so every earlier
-write pruned them. Every pre-existing reference therefore renders as on main on
-both sides of the rollout (Compatibility Guarantees #1). The one rule: write
-`component`, `targetContainers` and `containerPatches` only once no previous
-controller Pod remains. During the rollout such a write can be admitted
-without the new validation, rendered across the pattern's default components
-by the old controller, or dropped by the old controller's own typed writes (a
-replica update through a scaling adapter).
+so a single `helm upgrade` applies the CRDs ahead of the controller: the order
+every release upgrades in, and the one the upgrade-compatibility suite
+exercises. When the upgrade begins no object carries the new fields: the
+previous schemas declare none of them and preserve no unknown fields, so every
+earlier write pruned them. Every pre-existing reference therefore renders as
+on main across the upgrade (Compatibility Guarantees #1). The one rule: write
+`component`, `targetContainers` and `containerPatches` only once the upgrade
+has completed — until then the previous controller doesn't know them: it
+renders a new reference across the pattern's default components, and its own
+updates to a RoleBasedGroup can drop them.
 
 The reverse order, controller first, is not supported: the new controller
 persists state the previous release's CRDs prune
@@ -1524,12 +1522,12 @@ persists state the previous release's CRDs prune
 `RoleInstance.status.lastReadyGeneration`, this KEP's CERP tracking status),
 so surge rollouts stall and restart policies lose their readiness record.
 
-**What goes live when.** Everything goes live with the controller rollout: the
+**What goes live when.** Everything goes live with the upgrade: the
 immutability admission once the new controller serves the CERP webhook entry
 the same upgrade applies; the persisted reference tracking with the new
 controller's startup reconcile; adoption, per workload (`component` or
-`targetContainers`, never cluster-wide), once no previous controller Pod
-remains.
+`targetContainers`, never cluster-wide), when the workload spec first carries
+them.
 
 **Rollback.** `helm rollback` restores the previous controller and webhook
 configuration but keeps the new CRDs, because the CRD upgrader runs only on

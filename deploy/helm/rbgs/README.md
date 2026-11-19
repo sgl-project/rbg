@@ -193,14 +193,12 @@ patch; keep the grace period at least the sleep plus 30s.
 
 ### Engine runtime profiles (KEP-531) in chart v0.9.0
 
-Upgrade with a single `helm upgrade` as usual. The CRD upgrader runs before the controller rolls
-out, so until the previous controller Pods are gone the cluster accepts
+Upgrade with a single `helm upgrade` as usual. The CRD upgrader runs ahead of the controller, so
+until the upgrade has completed the cluster accepts
 `engineRuntimes[].component`, `engineRuntimes[].targetContainers` and
 `ClusterEngineRuntimeProfile.spec.containerPatches`, but the previous controller doesn't know them:
 it renders a new reference across the pattern's default components, and its own updates to a
-RoleBasedGroup can drop them. Write those fields only once the rollout has fully completed and no
-previous controller Pod is still terminating — `--wait` alone does not guarantee this, because
-Helm's readiness check counts only the new ReplicaSet's ready Pods.
+RoleBasedGroup can drop them. Write those fields only once the upgrade has completed.
 
 **Rolling back.** `helm rollback` restores the previous controller and webhook configuration but
 keeps the new CRDs: the CRD upgrader runs only on install and upgrade. The previous controller
