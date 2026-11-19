@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -255,7 +256,31 @@ func profilesReferencedByRBG(_ context.Context, obj client.Object) []reconcile.R
 	if !ok {
 		return nil
 	}
+	flagLabelDrift(rbg.Labels, roleSpecHasEngineRuntimes(&rbg.Spec))
 	return profilesReferencedBy(&rbg.Spec)
+}
+
+// roleSpecHasEngineRuntimes reports whether any role of the spec references
+// an engine runtime profile.
+func roleSpecHasEngineRuntimes(spec *workloadsv1alpha2.RoleBasedGroupSpec) bool {
+	for i := range spec.Roles {
+		if len(spec.Roles[i].EngineRuntimes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// flagLabelDrift un-converges the label scan when a referencing object
+// arrives without the has-engine-runtimes label — a write that bypassed the
+// admission defaulters. The next profile reconcile then re-runs the
+// backfill, so a converged process does not stay blind to bypassed writes.
+func flagLabelDrift(labels map[string]string, references bool) {
+	if references {
+		if _, ok := labels[constants.HasEngineRuntimesLabelKey]; !ok {
+			workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+		}
+	}
 }
 
 // profilesReferencedByRBGSet maps a RoleBasedGroupSet to the profiles named
@@ -266,6 +291,7 @@ func profilesReferencedByRBGSet(_ context.Context, obj client.Object) []reconcil
 	if !ok {
 		return nil
 	}
+	flagLabelDrift(rbgs.Labels, roleSpecHasEngineRuntimes(&rbgs.Spec.GroupTemplate.Spec))
 	return profilesReferencedBy(&rbgs.Spec.GroupTemplate.Spec)
 }
 
