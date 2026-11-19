@@ -713,7 +713,8 @@ const deprecatedWorkloadTypeCompatHint = "note: the v1alpha1 schema defaults spe
 // superseded by RoleInstanceSet.
 func isDeprecatedWorkloadType(wt string) bool {
 	switch wt {
-	case constants.DeploymentWorkloadType, constants.StatefulSetWorkloadType, constants.LeaderWorkerSetWorkloadType:
+	case constants.DeploymentWorkloadType, constants.StatefulSetWorkloadType,
+		constants.LeaderWorkerSetWorkloadType, constants.InstanceSetWorkloadType:
 		return true
 	default:
 		return false
@@ -742,8 +743,9 @@ func validateNoDeprecatedWorkloadTypes(fieldPath string, roles []RoleSpec) error
 }
 
 // validateNoNewDeprecatedWorkloadTypes checks that a write does not introduce a
-// deprecated workload type (Deployment, StatefulSet, or LeaderWorkerSet) into a
-// role that did not already use one. fieldPath is the JSON path of the role slice
+// deprecated workload type (Deployment, StatefulSet, LeaderWorkerSet, or the
+// v1alpha1 InstanceSet) into a role that did not already use one. fieldPath is
+// the JSON path of the role slice
 // being validated, since roles live under different paths in a RoleBasedGroup and a
 // RoleBasedGroupSet. Returns an aggregated error listing all offending roles,
 // suffixed with deprecatedWorkloadTypeCompatHint.

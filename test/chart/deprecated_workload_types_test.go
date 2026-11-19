@@ -49,9 +49,11 @@ const (
 
 // deprecatedGrants is the exact set of "apiGroup/resource" grants that the toggle
 // gates. Keep it in sync with the deprecated workload types the validator switches on
-// (api/workloads/constants: Deployment, StatefulSet, LeaderWorkerSet) and their
-// status/finalizers subresources. When enabled these must be present in the
-// ClusterRole; when disabled none of them may be.
+// (api/workloads/constants: Deployment, StatefulSet, LeaderWorkerSet, and the
+// v1alpha1 InstanceSet) and their status/finalizers subresources. The v1alpha1
+// Instance is gated too: it is not a role workload selector, but its grants are
+// dead permission now that RoleInstance replaced it. When enabled these must be
+// present in the ClusterRole; when disabled none of them may be.
 var deprecatedGrants = map[string]bool{
 	"apps/deployments":                                 true,
 	"apps/statefulsets":                                true,
@@ -61,6 +63,11 @@ var deprecatedGrants = map[string]bool{
 	"apps/statefulsets/finalizers":                     true,
 	"leaderworkerset.x-k8s.io/leaderworkersets":        true,
 	"leaderworkerset.x-k8s.io/leaderworkersets/status": true,
+	"workloads.x-k8s.io/instances":                     true,
+	"workloads.x-k8s.io/instances/status":              true,
+	"workloads.x-k8s.io/instancesets":                  true,
+	"workloads.x-k8s.io/instancesets/status":           true,
+	"workloads.x-k8s.io/instancesets/finalizers":       true,
 }
 
 // docSeparator splits a multi-document YAML stream on lines containing only "---".

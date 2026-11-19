@@ -42,9 +42,11 @@ type RoleBasedGroupValidator struct {
 	// live set has already been migrated or replaced.
 	APIReader client.Reader
 	// EnableDeprecatedWorkloadTypes reports whether existing deprecated workload
-	// types (Deployment, StatefulSet, LeaderWorkerSet) remain supported during
-	// migration. New uses are rejected in both modes; when false, existing uses are
-	// rejected as well.
+	// types (Deployment, StatefulSet, LeaderWorkerSet, and the v1alpha1
+	// InstanceSet) remain accepted during migration. New uses are rejected in both
+	// modes; when false, existing uses are rejected as well. Only the first three
+	// still have reconcilers: an InstanceSet role is writable but does not
+	// reconcile, so keeping it out of new writes is the safety net.
 	EnableDeprecatedWorkloadTypes bool
 }
 
