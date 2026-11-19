@@ -1075,7 +1075,7 @@ func TestRoleBasedGroup_ConvertTo_WorkloadAnnotationPreserved(t *testing.T) {
 	// RoleInstanceSet explicitly. This is the only way to keep using the v1alpha1
 	// API when the deprecated workload types are disabled, so the resulting annotation
 	// must match the value the v1alpha2 validator treats as non-deprecated.
-	t.Run("explicit RoleInstanceSet workload sets non-deprecated annotation", func(t *testing.T) {
+	t.Run("explicit RoleInstanceSet workload equals the default and sets no annotation", func(t *testing.T) {
 		src := &RoleBasedGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
 			Spec: RoleBasedGroupSpec{
@@ -1097,7 +1097,10 @@ func TestRoleBasedGroup_ConvertTo_WorkloadAnnotationPreserved(t *testing.T) {
 
 		require.Len(t, dst.Spec.Roles, 1)
 		role := dst.Spec.Roles[0]
-		assert.Equal(t, constants.RoleInstanceSetWorkloadType, role.Annotations[constants.RoleWorkloadTypeAnnotationKey])
+		// Naming the v1alpha2 default explicitly must not rewrite the
+		// stored object with a redundant annotation on a round trip (#580):
+		// the default resolves identically with and without it.
+		assert.NotContains(t, role.Annotations, constants.RoleWorkloadTypeAnnotationKey)
 		assert.Equal(t, constants.RoleInstanceSetWorkloadType, role.GetWorkloadType())
 	})
 }
@@ -1201,13 +1204,16 @@ func TestRoleBasedGroup_ConvertTo_RestartPolicyEmptyPreserved(t *testing.T) {
 
 	role := dst.Spec.Roles[0]
 	require.NotNil(t, role.LeaderWorkerPattern)
-	require.NotNil(t, role.LeaderWorkerPattern.RestartPolicyConfig,
-		"conversion must materialize RestartPolicyConfig even when v1alpha1 policy is empty")
-	assert.Equal(t, v2.RestartPolicyType(""),
-		role.LeaderWorkerPattern.RestartPolicyConfig.Type,
-		"empty v1alpha1 RestartPolicy must preserve as empty Type, not None")
+	// A v1alpha1 role that names no restart policy converts to no config:
+	// materializing one (with CRD-defaulted delays) would rewrite the
+	// stored shape and revision of an unchanged object (#580). The raw
+	// getter still reports the empty type and the pattern-aware getter
+	// still resolves Recreate at runtime.
+	assert.Nil(t, role.LeaderWorkerPattern.RestartPolicyConfig,
+		"conversion must not materialize RestartPolicyConfig when v1alpha1 policy is empty")
+	assert.Equal(t, v2.RestartPolicyType(""), role.GetRawRestartPolicyType())
 	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.GetRestartPolicy(),
-		"getter must resolve empty Type to Recreate (pattern-aware default)")
+		"getter must resolve the unset policy to Recreate (pattern-aware default)")
 }
 
 func TestRoleBasedGroup_ConvertTo_RestartPolicyNoneMapsToNone(t *testing.T) {
@@ -1301,8 +1307,14 @@ func TestRoleBasedGroup_RoundTrip_RestartPolicyPreserved(t *testing.T) {
 			hub := &v2.RoleBasedGroup{}
 			require.NoError(t, original.ConvertTo(hub))
 
-			// Verify the hub getter resolves to the correct RestartPolicy.
-			require.NotNil(t, hub.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig)
+			// Verify the hub getter resolves to the correct RestartPolicy. An
+			// empty policy leaves the config unset; the resolved default still
+			// applies at runtime (#580).
+			if tc.policy == "" {
+				assert.Nil(t, hub.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig)
+			} else {
+				require.NotNil(t, hub.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig)
+			}
 			assert.Equal(t, tc.expectedResolved,
 				hub.Spec.Roles[0].GetRestartPolicy(),
 				"hub (v1alpha2) getter must resolve to correct RestartPolicy")
@@ -1431,4 +1443,147 @@ func TestContainerJSONPatchConversionPreservesObjectBackedValue(t *testing.T) {
 	assert.Equal(t, obj, back.Value.Object)
 	assert.NotSame(t, obj, back.Value.Object,
 		"ConvertFrom must not alias the source Object")
+}
+
+// TestRoleBasedGroup_NoOpV1alpha1RoundTripIsLossless pins #580: reading a
+// stored v1alpha2 RoleBasedGroup through v1alpha1 and writing it back
+// unchanged must not rewrite the stored object — no annotation added, no
+// restart settings dropped or defaulted, and a customComponentsPattern role
+// must survive the CEL rule at all.
+func TestRoleBasedGroup_NoOpV1alpha1RoundTripIsLossless(t *testing.T) {
+	podTmpl := func(name string) *corev1.PodTemplateSpec {
+		return &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: name, Image: "nginx:latest"}}},
+		}
+	}
+
+	tests := []struct {
+		name string
+		role v2.RoleSpec
+	}{
+		{
+			name: "standalone role with a template gains no annotation",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+		{
+			name: "standalone role with a templateRef gains no annotation",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+					TemplateSource: v2.TemplateSource{TemplateRef: &v2.TemplateRef{Name: "base"}},
+				}},
+			},
+		},
+		{
+			name: "leaderWorker role without restart settings stays unset",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+					Size:           ptr.To(int32(2)),
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+		{
+			name: "leaderWorker role keeps its defaulted restart config",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+					Size: ptr.To(int32(2)),
+					RestartPolicyConfig: &v2.RestartPolicyConfig{
+						Type:             v2.RecreateRoleInstanceOnPodRestart,
+						BaseDelaySeconds: ptr.To(int32(30)),
+						MaxDelaySeconds:  ptr.To(int32(600)),
+					},
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+		{
+			name: "leaderWorker role keeps non-default backoff settings and activateAfter",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+					Size: ptr.To(int32(2)),
+					RestartPolicyConfig: &v2.RestartPolicyConfig{
+						Type:             v2.RecreateRoleInstanceOnPodRestart,
+						ActivateAfter:    v2.RestartPolicyActivateAfterCreated,
+						BaseDelaySeconds: ptr.To(int32(10)),
+						MaxDelaySeconds:  ptr.To(int32(300)),
+					},
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+		{
+			name: "customComponents role survives the round trip",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{CustomComponentsPattern: &v2.CustomComponentsPattern{
+					Components: []v2.InstanceComponent{
+						{Name: "prefill", Size: ptr.To(int32(1)), Template: *podTmpl("prefill")},
+						{Name: "decode", Size: ptr.To(int32(1)), Template: *podTmpl("decode")},
+					},
+				}},
+			},
+		},
+		{
+			name: "customComponents role keeps its restart config",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{CustomComponentsPattern: &v2.CustomComponentsPattern{
+					Components: []v2.InstanceComponent{
+						{Name: "prefill", Size: ptr.To(int32(1)), Template: *podTmpl("prefill")},
+					},
+					RestartPolicyConfig: &v2.RestartPolicyConfig{
+						Type:             v2.RestartPolicyNone,
+						BaseDelaySeconds: ptr.To(int32(10)),
+					},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stored := &v2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+				Spec:       v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{tt.role}},
+			}
+
+			// Read through v1alpha1: conversion must not mutate the stored
+			// object's annotations (the hub source is shared).
+			v1 := &RoleBasedGroup{}
+			require.NoError(t, v1.ConvertFrom(stored))
+			assert.Empty(t, stored.Spec.Roles[0].Annotations,
+				"ConvertFrom must not write conversion annotations into the hub source")
+
+			// The v1alpha1 wire object carries the preserved restart config
+			// only as a conversion annotation.
+			if tt.role.GetRawRestartPolicyConfig() != nil {
+				assert.Contains(t, v1.Spec.Roles[0].Annotations, annotationV2RestartPolicyConfig)
+			} else {
+				assert.NotContains(t, v1.Spec.Roles[0].Annotations, annotationV2RestartPolicyConfig)
+			}
+
+			// Write back unchanged: the stored spec must round-trip losslessly.
+			rewritten := &v2.RoleBasedGroup{}
+			require.NoError(t, v1.ConvertTo(rewritten))
+			assert.Equal(t, stored.Spec, rewritten.Spec)
+			assert.NotContains(t, rewritten.Spec.Roles[0].Annotations, annotationV2RestartPolicyConfig,
+				"the conversion annotation must be consumed, never persisted")
+		})
+	}
 }

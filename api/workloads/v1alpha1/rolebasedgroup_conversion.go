@@ -36,6 +36,13 @@ const (
 
 	// annotationV1alpha1Coordination stores the serialized v1alpha1 CoordinationRequirements.
 	annotationV1alpha1Coordination = "conversion.workloads.x-k8s.io/v1alpha1-coordination"
+
+	// annotationV2RestartPolicyConfig stores the serialized v1alpha2
+	// RestartPolicyConfig of a role. v1alpha1 can express only the restart
+	// policy type: the delays and activateAfter are preserved through this
+	// annotation on the v1alpha1 wire object, consumed and stripped when the
+	// object converts back to the hub. It never persists on a stored object.
+	annotationV2RestartPolicyConfig = "conversion.workloads.x-k8s.io/v1alpha2-restart-policy-config"
 )
 
 // ConvertTo converts this RoleBasedGroup (v1alpha1) to the Hub version (v1alpha2).
@@ -139,13 +146,43 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	// This annotation is for conversion compatibility only; it is not propagated
 	// to downstream workloads (filtered out by GetCommonAnnotationsFromRole).
 	// New v1alpha2 RBGs should NOT set this annotation.
+	//
+	// The annotation is emitted only when the workload differs from the
+	// v1alpha2 default (RoleInstanceSet): a no-op v1alpha1 read-and-write
+	// round trip of a default role must not rewrite the stored hub object
+	// with a redundant annotation (#580).
 	if src.Workload.APIVersion != "" && src.Workload.Kind != "" {
-		if dst.Annotations == nil {
-			dst.Annotations = make(map[string]string)
-		}
 		workloadType := fmt.Sprintf("%s/%s", src.Workload.APIVersion, src.Workload.Kind)
-		dst.Annotations[constants.RoleWorkloadTypeAnnotationKey] = workloadType
+		if workloadType != constants.RoleInstanceSetWorkloadType {
+			if dst.Annotations == nil {
+				dst.Annotations = make(map[string]string)
+			}
+			dst.Annotations[constants.RoleWorkloadTypeAnnotationKey] = workloadType
+		}
 	}
+
+	// Restore the v1alpha2 restart policy configuration preserved by
+	// ConvertFrom, and drop the conversion-only annotation so it never
+	// persists on the hub object.
+	restartPolicyConfig := restoreV2RestartPolicyConfig(dst.Annotations)
+	if restartPolicyConfig != nil {
+		delete(dst.Annotations, annotationV2RestartPolicyConfig)
+		if len(dst.Annotations) == 0 {
+			// A role that carried only the conversion annotation must not
+			// round trip to an empty-but-present annotations map.
+			dst.Annotations = nil
+		}
+	} else if src.RestartPolicy != "" {
+		// A v1alpha1 role that only names the type (no preserved config)
+		// converts to a config carrying just the type; the CRD defaults
+		// the delays, exactly like a v1alpha1 create always did.
+		restartPolicyConfig = &v2.RestartPolicyConfig{
+			Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
+		}
+	}
+	// src.RestartPolicy == "" with no preserved config keeps the pattern's
+	// RestartPolicyConfig unset: the v1alpha2 getter applies the
+	// pattern-aware default at runtime without changing the stored shape.
 
 	// RolloutStrategy
 	if src.RolloutStrategy != nil {
@@ -160,9 +197,7 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 			Size:                src.LeaderWorkerSet.Size,
 			LeaderTemplatePatch: src.LeaderWorkerSet.PatchLeaderTemplate,
 			WorkerTemplatePatch: src.LeaderWorkerSet.PatchWorkerTemplate,
-			RestartPolicyConfig: &v2.RestartPolicyConfig{
-				Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
-			},
+			RestartPolicyConfig: restartPolicyConfig,
 		}
 		// Template source
 		if src.Template != nil || src.TemplateRef != nil {
@@ -189,10 +224,8 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 		}
 		dst.Pattern = v2.Pattern{
 			CustomComponentsPattern: &v2.CustomComponentsPattern{
-				Components: components,
-				RestartPolicyConfig: &v2.RestartPolicyConfig{
-					Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
-				},
+				Components:          components,
+				RestartPolicyConfig: restartPolicyConfig,
 			},
 		}
 
@@ -385,9 +418,15 @@ func convertSpecV2ToV1alpha1(src *v2.RoleBasedGroupSpec, dst *RoleBasedGroupSpec
 func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 	dst.Name = src.Name
 	dst.Labels = src.Labels
-	dst.Annotations = src.Annotations
+	// Copy instead of aliasing: the v1alpha1 wire object below may carry
+	// conversion-only annotations (the preserved restart policy config),
+	// and the hub object from the apiserver must never be mutated.
+	dst.Annotations = copyAnnotations(src.Annotations)
 	dst.Replicas = src.Replicas
 	dst.RestartPolicy = RestartPolicyType(src.GetRawRestartPolicyType())
+	if err := preserveV2RestartPolicyConfig(src, dst); err != nil {
+		return err
+	}
 	dst.Dependencies = src.Dependencies
 	dst.ServicePorts = src.ServicePorts
 	dst.MinReadySeconds = src.MinReadySeconds
@@ -684,11 +723,53 @@ func removeConversionAnnotations(annotations map[string]string) {
 	delete(annotations, constants.GroupExclusiveTopologyKey)
 }
 
-// copyAnnotations returns a shallow copy of the given annotation map, never nil.
+// copyAnnotations returns a shallow copy of the given annotation map. An
+// empty (or nil) source maps to nil so a no-op round trip stays lossless
+// in memory as well as on the wire.
 func copyAnnotations(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
 	dst := make(map[string]string, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}
 	return dst
+}
+
+// preserveV2RestartPolicyConfig serializes a role's v1alpha2 restart policy
+// configuration into a conversion annotation on the v1alpha1 wire object.
+// v1alpha1 can express only the policy type; the delays and activateAfter
+// would otherwise be dropped by a no-op read-and-write round trip (#580).
+func preserveV2RestartPolicyConfig(src *v2.RoleSpec, dst *RoleSpec) error {
+	config := src.GetRawRestartPolicyConfig()
+	if config == nil {
+		return nil
+	}
+	data, err := json.Marshal(config)
+	if err != nil {
+		// The config is plain scalars so this cannot fail in practice, but a
+		// dropped config would corrupt the round trip; fail the conversion.
+		return fmt.Errorf("marshalling restart policy config for role %q: %w", src.Name, err)
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = make(map[string]string, 1)
+	}
+	dst.Annotations[annotationV2RestartPolicyConfig] = string(data)
+	return nil
+}
+
+// restoreV2RestartPolicyConfig returns the restart policy configuration
+// preserved by preserveV2RestartPolicyConfig, or nil when the annotations
+// carry none.
+func restoreV2RestartPolicyConfig(annotations map[string]string) *v2.RestartPolicyConfig {
+	raw, ok := annotations[annotationV2RestartPolicyConfig]
+	if !ok || raw == "" {
+		return nil
+	}
+	var config v2.RestartPolicyConfig
+	if err := json.Unmarshal([]byte(raw), &config); err != nil {
+		return nil
+	}
+	return &config
 }

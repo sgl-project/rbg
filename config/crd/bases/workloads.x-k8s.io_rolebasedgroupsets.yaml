@@ -16809,7 +16809,8 @@ spec:
                       - message: template or templateRef must be set for non-InstanceSet
                           workloads
                         rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
-                          && self.workload.kind == 'InstanceSet')
+                          && (self.workload.kind == 'InstanceSet' || self.workload.kind
+                          == 'RoleInstanceSet'))
                       - message: template and templateRef are mutually exclusive
                         rule: '!(has(self.template) && has(self.templateRef))'
                     minItems: 1

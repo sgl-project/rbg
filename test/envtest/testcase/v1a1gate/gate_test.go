@@ -22,6 +22,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
@@ -188,4 +189,88 @@ var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 	// RoleInstanceSet; testing grandfathering would require the two-phase
 	// (seed-then-gate) setup, which belongs in the deprecation suite's
 	// architecture. Track as a follow-up before 0.10.0 if needed.
+})
+
+var _ = Describe("v1alpha1 no-op round trip", Ordered, func() {
+	It("leaves a stored v1alpha2 RoleBasedGroup unchanged", func() {
+		// A customComponentsPattern role has neither template nor
+		// templateRef: without the RoleInstanceSet exemption in the
+		// v1alpha1 CEL rule, its round trip is rejected outright; with it,
+		// the write-back must leave the stored v1alpha2 object untouched.
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "roundtrip-components", Namespace: gateNamespace},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "engine",
+					Replicas: ptr.To(int32(1)),
+					Pattern: workloadsv1alpha2.Pattern{CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+						Components: []workloadsv1alpha2.InstanceComponent{{
+							Name: "main", Size: ptr.To(int32(1)),
+							Template: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "nginx:latest"}}},
+							},
+						}},
+					}},
+				}},
+			},
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+
+		stored := &workloadsv1alpha2.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), stored)).To(Succeed())
+		storedSpec := stored.Spec.DeepCopy()
+
+		v1 := &workloadsv1alpha1.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), v1)).To(Succeed())
+		Expect(v1.Spec.Roles[0].Components).To(HaveLen(1))
+		Expect(testutil.K8sClient.Update(testutil.Ctx, v1)).To(Succeed())
+
+		after := &workloadsv1alpha2.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), after)).To(Succeed())
+		Expect(after.Spec).To(Equal(*storedSpec),
+			"a no-op v1alpha1 read-and-write must not rewrite the stored v1alpha2 object")
+	})
+
+	It("preserves non-default restart settings through the write-back", func() {
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "roundtrip-restart", Namespace: gateNamespace},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "engine",
+					Replicas: ptr.To(int32(1)),
+					Pattern: workloadsv1alpha2.Pattern{LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+						Size: ptr.To(int32(2)),
+						RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
+							Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+							ActivateAfter:    workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+							BaseDelaySeconds: ptr.To(int32(10)),
+							MaxDelaySeconds:  ptr.To(int32(300)),
+						},
+						TemplateSource: workloadsv1alpha2.TemplateSource{Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "nginx:latest"}}},
+						}},
+					}},
+				}},
+			},
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+
+		v1 := &workloadsv1alpha1.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), v1)).To(Succeed())
+		Expect(v1.Spec.Roles[0].RestartPolicy).To(Equal(workloadsv1alpha1.RecreateRoleInstanceOnPodRestart))
+		Expect(testutil.K8sClient.Update(testutil.Ctx, v1)).To(Succeed())
+
+		after := &workloadsv1alpha2.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), after)).To(Succeed())
+		config := after.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig
+		Expect(config).NotTo(BeNil())
+		Expect(config.ActivateAfter).To(Equal(workloadsv1alpha2.RestartPolicyActivateAfterCreated))
+		Expect(*config.BaseDelaySeconds).To(Equal(int32(10)))
+		Expect(*config.MaxDelaySeconds).To(Equal(int32(300)))
+	})
 })
