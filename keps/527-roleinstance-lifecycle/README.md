@@ -347,7 +347,8 @@ this wait nor Ready evaluation. A hook that is not configured writes no
 
 The controller writes a pre-operation `signalLabel` only when entering that
 hook's phase. It must not rewrite the `signalLabel` on every reconcile while
-waiting. When entering `postReady`, it may idempotently write an already-present
+waiting, except when the effective `signalLabels` of that hook change. When
+entering `postReady`, it may idempotently write an already-present
 `signalLabel`. The executor only removes `signalLabels`; it does not create them
 initially or restore them after processing.
 
@@ -429,10 +430,10 @@ rejects `preUpdate`, `preRecover`, and `postReady`; those three hooks are
 meaningful only through the new protocol.
 
 Declarative configuration flows only downward. `hook-state` and runtime
-`signalLabels` are written to RI labels, mirrored onto member Pods, and never
-written back to RBG or RIS. `signalLabels` defines the matching rules used
-by the controller when
-writing `signalLabels` and by both parties when evaluating them; it is not
+`signalLabels` are written to RI labels and never written back to RBG or RIS.
+Only runtime `signalLabels` are mirrored onto member Pods; `hook-state` remains
+on the RI. `signalLabels` defines the matching rules used by the controller
+when writing `signalLabels` and by both parties when evaluating them; it is not
 registration state maintained by the executor.
 
 An omitted hook disables that hook. A configured hook with an omitted or
@@ -452,8 +453,8 @@ drop a configured `signalLabel` to make it writable.
 `signalLabel` keys are scoped to a hook point. Admission must reject a key used
 by more than one configured hook, including `postReady` and `preDelete`, because
 delayed cancellation cleanup from one hook can otherwise remove the
-`signalLabel` belonging to another hook. Signal label keys must also be rejected
-when they equal the exact hook-state key or use the reserved
+`signalLabel` belonging to another hook. `signalLabel` keys must also be
+rejected when they equal the exact hook-state key or use the reserved
 `rbg.workloads.x-k8s.io/` prefix. Hook `signalLabel` keys are runtime labels,
 but they must not collide with controller-reserved state. Admission also rejects
 a `signalLabel` key used by the owning RIS `spec.selector`, whether in
@@ -461,12 +462,16 @@ a `signalLabel` key used by the owning RIS `spec.selector`, whether in
 from template labels. Writing such a `signalLabel` can make an RI stop matching
 the selector, and the stateful RIS instance-reference logic then releases the
 RI's owner reference. Conversely, admission rejects an owning RIS selector that
-uses a controller-reserved key such as the hook-state key: the controller's own
-runtime writes would repeatedly match and unmatch the RI. The uniqueness check
-also spans configuration generations: a signal key may not be reassigned from
-one hook to another while any RI governed by the configuration still records
-that key, so a retired executor cannot remove a `signalLabel` that now belongs
-to a different hook, such as a pending `postReady` key reassigned to
+uses a controller-reserved runtime key: the hook-state key, or any key currently
+recorded in a governed RI's `signalLabel`-key record. The controller's own
+runtime writes would repeatedly match and unmatch the RI. Stable
+controller-written identity keys are explicitly allowed in selectors:
+`rbg.workloads.x-k8s.io/group-name`, `/group-uid`, and `/role-name` are written
+once at creation and never mutated by the lifecycle protocol. The uniqueness
+check also spans configuration generations: a signal key may not be reassigned
+from one hook to another while any RI governed by the configuration still
+records that key, so a retired executor cannot remove a `signalLabel` that now
+belongs to a different hook, such as a pending `postReady` key reassigned to
 `preDelete`.
 
 The implementation must use the exact hook-state label key
@@ -477,12 +482,20 @@ The controller always evaluates the latest effective lifecycle configuration. If
 a hook is configured, its `signalLabels` are matched; if a hook is not
 configured, no `signalLabel` matching occurs for that hook. A configuration
 change therefore takes effect on the next reconciliation without special
-in-flight handling. For example, after `signalLabelA` changes to `signalLabelB`,
-the controller checks `signalLabelB` directly and stops waiting for
-`signalLabelA`. If an active hook is removed, the controller treats it as
-absent, stops matching its `signalLabel`, removes its stale runtime labels, and
-follows the same transition as a released hook; for example, `PreUpdate`
-advances to `Updating`. This is the intended declarative semantics.
+in-flight handling. If the effective `signalLabels` of an active pre-operation
+hook change while the controller is waiting in that hook's phase, the controller
+writes the newly configured `signalLabels` before matching them. A configured
+`signalLabel` that the controller has not yet written in the current phase is
+not released: absence is a release signal only for `signalLabels` the controller
+wrote or confirmed present during that phase. For `preDelete`, this write occurs
+while the reserved finalizer is still held, so a mid-operation configuration
+change cannot shorten the deletion barrier. For example, after `signalLabelA`
+changes to `signalLabelB`, the controller writes `signalLabelB` if it is not yet
+present, checks it directly, and stops waiting for `signalLabelA`. If an active
+hook is removed, the controller treats it as absent, stops matching its
+`signalLabel`, removes its stale runtime labels, and follows the same transition
+as a released hook; for example, `PreUpdate` advances to `Updating`. This is the
+intended declarative semantics.
 
 To make stale-label cleanup and rollback verification durable, the controller
 records the `signalLabel` keys owned by the protocol in the annotation
@@ -524,9 +537,15 @@ Propagation rules:
   write or clear these keys until the next reconciliation re-syncs them, so
   the RI is the only authoritative source; safety-relevant consumers must
   verify the RI rather than trust a mirror alone.
-- Signal label keys are controller-owned on member Pods. Declaring the same
-  key in the Pod template labels is a configuration error and is rejected by
-  admission.
+- `signalLabel` keys are controller-owned on the RoleInstance and on member
+  Pods. Admission rejects a `signalLabel` key that collides with any
+  declarative label ordinary metadata synchronization writes or propagates to
+  the RoleInstance, including Pod template labels, labels declared on the RBG
+  Role or RIS templates, and common or identity labels copied onto RIs: one
+  key cannot represent both a user label and a controller-owned runtime
+  `signalLabel`. Ordinary RIS metadata synchronization must not overwrite
+  runtime `signalLabels`, which is enforceable only when admission keeps the
+  two key spaces disjoint.
 
 ### Hook Executor Service
 
@@ -992,8 +1011,10 @@ validation.
 #### Prerequisite Test Updates
 
 Establish regression baselines for create, update, component scaling,
-Recovery, Ready, and deletion when lifecycle hooks are not configured. Retain
-behavioral tests for the old RIS lifecycle and distinguish workload backends.
+Recovery, Ready, and deletion when lifecycle hooks are not configured, and
+record that the only change for such workloads while the gate is enabled is
+that Foreground deletion is rejected. Retain behavioral tests for the old RIS
+lifecycle and distinguish workload backends.
 
 #### Unit Tests
 
@@ -1004,9 +1025,10 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   the controller state key or use the reserved
   `rbg.workloads.x-k8s.io/` prefix.
 - Admission rejects an owning RIS selector that uses a controller-reserved
-  key, and rejects reassigning a signal key to a different hook while any
-  affected RI still records it, so a retired `postReady` execution cannot
-  remove a `preDelete` `signalLabel`.
+  runtime key, while allowing the stable reserved identity keys used by
+  RBG-generated selectors, and rejects reassigning a signal key to a different
+  hook while any affected RI still records it, so a retired `postReady`
+  execution cannot remove a `preDelete` `signalLabel`.
 - Admission rejects `signalLabel` keys used by the owning RIS `spec.selector` in
   `matchLabels` or `matchExpressions`, including keys selected only by
   `DoesNotExist`.
@@ -1015,7 +1037,7 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   syntax, invalid leading or trailing characters, and unsupported
   characters.
 - Admission rejects `signalLabel` keys that are declared in the Pod template
-  labels.
+  labels or in any other declarative label propagated to the RoleInstance.
 - Signal labels propagate from the RI to member Pods: present keys are
   copied, absent keys are removed, and value changes are synced; propagation
   is metadata-only and does not recreate Pods.
@@ -1063,9 +1085,12 @@ behavioral tests for the old RIS lifecycle and distinguish workload backends.
   together. After a pre-operation `signalLabel` is removed, the controller
   transitions to the actual operation state, and a restart does not repeat the
   released hook. `postReady` enters `Running` before asynchronous state cleanup.
-- A change from `signalLabelA` to `signalLabelB` immediately uses the latest configuration
-  without migrating or removing the old `signalLabel`; the old key remains recorded
-  until its label and Pod mirrors are cleaned.
+- A `signalLabelA` to `signalLabelB` change during a pending pre-operation hook
+  writes `signalLabelB` and keeps the operation blocked until `signalLabelB` is
+  removed; a configured but never-written `signalLabel` is never treated as
+  released. The controller treats `signalLabelA` as a stale protocol label: its
+  RI label and Pod mirrors are removed, and `signalLabelA` stays in the
+  `signalLabel`-key record until both copies are confirmed absent.
 - The `signalLabel`-key record is written with the `signalLabel`, retained across
   restarts, and cleared only after the corresponding label and its Pod
   mirrors are removed; the
@@ -1167,8 +1192,10 @@ This KEP does not assign a release milestone.
 
 ### Upgrade / Downgrade Strategy
 
-Workloads with no new hooks configured retain their existing behavior.
-Enabling the feature on an existing RI does not replay `postReady` or
+Workloads with no new hooks configured retain their existing behavior,
+except that Foreground deletion is rejected cluster-wide while the feature
+gate is enabled. Enabling the feature on an existing RI does not replay
+`postReady` or
 `preUpdate` solely because the RI is currently Ready or was updated in the
 past; those hooks are triggered by controlled operations. When `preDelete`
 is enabled, the controller adds the reserved finalizer to existing stable

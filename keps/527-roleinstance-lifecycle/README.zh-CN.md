@@ -256,7 +256,8 @@ controller 不得推进，executor 不得执行，诊断必须暴露非法值，
 一个匹配，controller 就保持等待；postReady `signalLabel` 不参与等待或 Ready 判断。未配置的 hook 不写入
 `signalLabel`，也不建立协作。
 
-controller 只在进入前置 hook 阶段时写入一次 `signalLabel`，等待期间不得在每次 reconcile 重新写入。
+controller 只在进入前置 hook 阶段时写入一次 `signalLabel`，等待期间不得在每次 reconcile
+重新写入；唯一例外是该 hook 的生效 `signalLabels` 发生变化。
 进入 postReady 时可幂等写入已有 `signalLabel`；executor 只负责清除，不负责首次添加，也不在处理完成后加回。
 
 executor 清除 `signalLabel` 前必须重读 RI，只有当前 `hook-state` 仍匹配自己执行的
@@ -324,7 +325,8 @@ RBG 管理的 RIS 上旧 `spec.lifecycle` 非空即视为用户配置。
 现有 `finalizersHandler` 和 `markPodNotReady` 语义。
 反之，legacy standalone RIS 路径拒绝 `preUpdate`、`preRecover` 和
 `postReady`；这三个 hook 只在新协议中生效。
-声明式配置只向下传递，`hook-state` 和运行时 `signalLabel` 写入 RI labels 并镜像到成员 Pod，不回写 RBG 或 RIS。
+声明式配置只向下传递：`hook-state` 和运行时 `signalLabel` 写入 RI labels 且不回写 RBG 或
+RIS；只有运行时 `signalLabel` 镜像到成员 Pod，`hook-state` 只保留在 RI 上。
 `signalLabels` 是 controller 写入及双方判断的匹配规则，不是由 executor 维护的登记配置。
 未配置 hook 表示禁用；配置了 hook 但 `signalLabels` 缺省或为空属于配置错误，准入校验必须拒绝。
 前置 hooks 的多个 label 表示多个协作条件，全部不再匹配后 controller 才继续。
@@ -347,8 +349,11 @@ value。controller 不会为了可写而截断、改写或丢弃配置的 `signa
 即使该 key 未出现在 template labels 中。写入这类 `signalLabel` 可能使 RI
 不再匹配 selector，stateful RIS 的实例引用管理随后会释放该 RI 的
 owner reference。反过来，准入也拒绝在所属 RIS selector 中使用
-hook-state key 等 controller 保留 key：controller 自身的运行时写入
-会使 RI 反复匹配和不匹配。
+controller 保留的运行时 key：即 hook-state key，或任一受管 RI 的
+`signalLabel` key 记录中当前记录的 key。controller 自身的运行时写入
+会使 RI 反复匹配和不匹配。稳定且由 controller 写入的身份 key 明确允许
+出现在 selector 中：`rbg.workloads.x-k8s.io/group-name`、`/group-uid`
+和 `/role-name` 在创建时写入一次，lifecycle 协议不再改动。
 唯一性校验同样覆盖配置代际：只要受该配置管理的任一 RI 仍记录某个
 信号 key，该 key 不得被重新分配给另一个 hook，避免已退役的 executor
 清掉现在属于其他 hook 的 `signalLabel`，例如把 pending postReady 的 key
@@ -360,8 +365,14 @@ hook-state key 等 controller 保留 key：controller 自身的运行时写入
 
 controller 始终按最新的生效 lifecycle 配置判断。配置了 hook 时匹配其 `signalLabel`；
 未配置 hook 时不为该 hook 执行 `signalLabel` 匹配。因此配置变更在下一次 reconcile
-直接生效，不引入特殊的在途处理。例如 `signalLabelA` 改为 `signalLabelB` 后，controller
-直接检查 `signalLabelB`，不再等待 `signalLabelA`；如果删除 active hook，controller 视其
+直接生效，不引入特殊的在途处理。若等待期间某个生效前置 hook 的
+`signalLabels` 发生变化，controller 必须先写入新配置的 `signalLabel`
+再进行匹配；controller 在当前阶段尚未写入的 `signalLabel` 不视为已
+释放，只有本阶段已写入（或已确认存在）后消失的 `signalLabel` 才构成
+释放信号。对 `preDelete`，该写入发生在保留 finalizer 仍持有时，因此
+中途变更配置不能缩短删除屏障。例如 `signalLabelA` 改为 `signalLabelB`
+后，controller 先写入尚不存在的 `signalLabelB`，直接检查
+`signalLabelB`，不再等待 `signalLabelA`；如果删除 active hook，controller 视其
 为不存在，不为它执行 `signalLabel` 匹配，清理遗留 runtime labels，并按已放行
 hook 的转换继续，例如 `PreUpdate` 切换到 `Updating`。这是预期的声明式语义。
 
@@ -398,8 +409,13 @@ Pod 级消费者因此无需 watch 或 patch RI，就能观察 hook 信号。
 - 镜像不可信。任何有 Pod 更新权限的对象都能在下一次 reconcile 同步前
   写入或清除这些 key，因此 RI 是唯一权威来源；安全相关的消费者必须
   回验 RI，不能只信镜像。
-- 信号标签 key 在成员 Pod 上由 controller 拥有；在 Pod template labels
-  中声明相同 key 属于配置错误，准入校验拒绝。
+- `signalLabel` key 在 RoleInstance 和成员 Pod 上均由 controller 拥有。准入
+  拒绝与任何会被普通 metadata 同步写入或传播到 RoleInstance 的声明式
+  label 冲突的 `signalLabel` key，包括 Pod template labels、RBG Role/RIS
+  模板中声明的 labels 以及复制到 RI 的公共或身份 labels：同一 key 不能
+  同时表示用户 label 与 controller 拥有的运行时 `signalLabel`。普通 RIS
+  metadata 同步不得覆盖运行时 `signalLabel`，这只有在其 key 空间由准入
+  保证不相交时才可执行。
 
 ### Hook executor 服务
 
@@ -756,14 +772,16 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 准入拒绝新 lifecycle 协议与用户配置的旧 RIS lifecycle 共存，
   以及 `signalLabel` key 与 controller 状态 key 冲突或使用保留的
   `rbg.workloads.x-k8s.io/` 前缀。
-- 准入拒绝所属 RIS selector 使用 controller 保留 key，并拒绝在受影响 RI
-  仍记录某个信号 key 时将其重新分配给另一个 hook，使已退役的
-  `postReady` 执行者无法清除 `preDelete` `signalLabel`。
+- 准入拒绝所属 RIS selector 使用 controller 保留的运行时 key，同时允许
+  RBG 生成 selector 所用的稳定保留身份 key；并拒绝在受影响 RI 仍记录
+  某个信号 key 时将其重新分配给另一个 hook，使已退役的 `postReady`
+  执行者无法清除 `preDelete` `signalLabel`。
 - 准入拒绝所属 RIS `spec.selector` 在 `matchLabels` 或 `matchExpressions`
   中使用的 `signalLabel` key，包括仅通过 `DoesNotExist` 选择的 key。
 - 准入拒绝不符合 Kubernetes label 语法的 `signalLabels` key/value，
   包括 name/value 超长、prefix 语法非法、首尾字符非法或包含不支持字符。
-- 准入拒绝在 Pod template labels 中声明的信号标签 key。
+- 准入拒绝在 Pod template labels 中声明的 `signalLabel` key，以及与其他
+  会传播到 RoleInstance 的声明式 label 冲突的 `signalLabel` key。
 - 信号标签从 RI 传递到成员 Pod：存在则复制、不存在则移除、value 变化
   则同步；传递仅修改 metadata，不重建 Pod。
 - 新 API 的每个 hook 只暴露 `signalLabels`；旧 RIS 协议保留原有字段，
@@ -793,8 +811,10 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   key，或与 controller 管理 label 冲突）、重启恢复和未配置 hooks 的行为；controller 不识别消费者身份。
 - `hook-state`、`signalLabel` 与 `signalLabel` key 记录同批写入；前置 hooks 清 `signalLabel`
   后切换到实际操作 state，重启后不会重复执行已放行 hook；postReady 先进入 `Running` 再异步清理 state。
-- `signalLabelA` 改为 `signalLabelB` 后直接按最新配置判断，不迁移或清理旧 `signalLabel`；
-  旧 key 在 label 和 Pod 镜像清理前保持记录。
+- 前置 hook 等待期间 `signalLabelA` 改为 `signalLabelB` 时，controller 写入
+  `signalLabelB` 并保持阻塞直到 `signalLabelB` 被清除；尚未写入的
+  `signalLabel` 不视为已释放。`signalLabelA` 按协议遗留 label 处理：清理
+  其 RI label 和 Pod 镜像，并在两份副本确认消失前保持记录。
 - `signalLabel` key 记录与 `signalLabel` 同批写入、跨重启保留，仅在对应 label 及其
   Pod 镜像移除后清空；
   回滚前置条件是 `hook-state` label 不存在、记录为空且没有保留的
