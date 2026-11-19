@@ -13,8 +13,8 @@ RBG 提供两个互补的特性来解决这个问题：
 
 ## 前提条件
 
-+ Kubernetes 集群版本 >= 1.24
-+ 已安装 RBG Controller（参考 [安装指南](https://github.com/sgl-project/rbg)）
++ Kubernetes 集群版本 >= 1.28
++ 已安装 RBG Controller（参考 [安装指南](../../install.md)）
 
 ---
 
