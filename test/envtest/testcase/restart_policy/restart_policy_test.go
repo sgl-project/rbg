@@ -1544,7 +1544,8 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 					// scenario needs the pod (and therefore the instance) to
 					// report not Ready while the replacement rank cannot
 					// rejoin. ContainersReady stays True; the gate is the
-					// blocker.
+					// blocker. (SetPodRunningAndReady intentionally does not
+					// derive PodReady from gates: see its doc comment.)
 					testutil.SetPodCondition(pod, corev1.PodReady, status)
 					testutil.SetPodCondition(pod, rankRejoined, status)
 					for i := range pod.Status.ContainerStatuses {

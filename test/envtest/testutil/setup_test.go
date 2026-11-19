@@ -115,3 +115,38 @@ func conditionTypes(pod *corev1.Pod) []corev1.PodConditionType {
 	}
 	return types
 }
+
+func TestSetPodRunningAndReadyBootstrapsPodReady(t *testing.T) {
+	// Pin the bootstrap contract documented on SetPodRunningAndReady: the
+	// fixture emulates a kubelet that has seen every gate open, even while a
+	// preserved gate condition (a controller-owned one, held False during a
+	// restart or in-place-update phase) is present. Deriving PodReady from
+	// the gates here deadlocks the controller's own gate loop; a test that
+	// owns a gate and needs it honored mirrors it into PodReady explicitly.
+	const gate corev1.PodConditionType = "test.rbg.io/controller-held"
+	pod := &corev1.Pod{
+		Spec: corev1.PodSpec{ReadinessGates: []corev1.PodReadinessGate{{ConditionType: gate}}},
+		Status: corev1.PodStatus{Conditions: []corev1.PodCondition{
+			{Type: gate, Status: corev1.ConditionFalse},
+		}},
+	}
+
+	SetPodRunningAndReady(pod)
+	assertCondition(t, pod, corev1.ContainersReady, corev1.ConditionTrue)
+	assertCondition(t, pod, corev1.PodReady, corev1.ConditionTrue)
+	assertCondition(t, pod, gate, corev1.ConditionFalse,
+		"the preserved gate itself must stay untouched")
+}
+
+func assertCondition(t *testing.T, pod *corev1.Pod, conditionType corev1.PodConditionType, want corev1.ConditionStatus, msgAndArgs ...interface{}) {
+	t.Helper()
+	for _, cond := range pod.Status.Conditions {
+		if cond.Type == conditionType {
+			if cond.Status != want {
+				t.Errorf("condition %s = %s, want %s", conditionType, cond.Status, want)
+			}
+			return
+		}
+	}
+	t.Fatalf("condition %s not found", conditionType)
+}

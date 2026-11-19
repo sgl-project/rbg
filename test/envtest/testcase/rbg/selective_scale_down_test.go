@@ -546,9 +546,10 @@ var _ = Describe("Stateful selective scale-down", func() {
 				}
 				// SetPodRunningAndReady upserts the kubelet conditions and
 				// preserves lifecycle/update readiness gate conditions the
-				// controllers write.
-				testutil.SetPodRunningAndReady(pod)
-				if err := testutil.K8sClient.Status().Update(testutil.Ctx, pod); err != nil {
+				// controllers write; the conflict-safe write rereads the Pod
+				// on every retry instead of reusing the List's version.
+				if err := testutil.UpdatePodStatusOnConflict(testutil.Ctx,
+					client.ObjectKeyFromObject(pod), testutil.SetPodRunningAndReady); err != nil {
 					return err
 				}
 			}
