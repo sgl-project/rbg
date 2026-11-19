@@ -379,7 +379,9 @@ func TestRestartBookkeepingWhenFirstDeleteFails(t *testing.T) {
 		}).Build()
 	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
 	t.Cleanup(func() { control.ClearRestarting(instance) })
-	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control}
+	// The KEP-502 operation-failure path emits an edge-triggered Warning Event;
+	// wire a recorder so the failed delete exercises the real code path.
+	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control, recorder: record.NewFakeRecorder(20)}
 	computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
 	result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, pods)
 	require.ErrorContains(t, result.err, "transient conflict")
@@ -703,7 +705,7 @@ func TestRestartingConditionLifecycleWithReadiness(t *testing.T) {
 	inProgress := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "r1", UpdateRevision: "r1"}
 	updater.setInstanceConditions(instance, inProgress, []workloadsv1alpha2.RoleInstanceCondition{
 		{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: v1.ConditionTrue, Reason: "RestartPolicyTriggered"},
-	})
+	}, pods)
 	require.True(t, hasRestarting(inProgress, v1.ConditionTrue),
 		"an in-progress wave must survive a Ready pod snapshot")
 	instance.Status = *inProgress
@@ -714,7 +716,7 @@ func TestRestartingConditionLifecycleWithReadiness(t *testing.T) {
 	}
 	updater.setInstanceConditions(instance, completed, []workloadsv1alpha2.RoleInstanceCondition{
 		{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: v1.ConditionFalse, Reason: "RestartCompleted"},
-	})
+	}, pods)
 	require.False(t, hasRestarting(completed, v1.ConditionFalse),
 		"a completed wave must be dropped when the instance is Ready")
 
@@ -727,7 +729,7 @@ func TestRestartingConditionLifecycleWithReadiness(t *testing.T) {
 	notReady := &workloadsv1alpha2.RoleInstanceStatus{
 		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: instance.Status.LastReadyGeneration,
 	}
-	updater.setInstanceConditions(instance, notReady, nil)
+	updater.setInstanceConditions(instance, notReady, nil, pods)
 	require.True(t, hasRestarting(notReady, v1.ConditionFalse),
 		"a completed wave must persist while the instance is not Ready")
 }
@@ -874,7 +876,7 @@ func TestBudgetRestartCommitResponseLostKeepsGuard(t *testing.T) {
 				control := synccontrol.New(cli, base, record.NewFakeRecorder(20), nil)
 				control.ClearRestarting(instance)
 				t.Cleanup(func() { control.ClearRestarting(instance) })
-				r := &reconciler{revisionControl: revisions, syncControl: control}
+				r := &reconciler{revisionControl: revisions, syncControl: control, recorder: record.NewFakeRecorder(20)}
 				computed := instance.Status.DeepCopy()
 				result := r.syncInstance(ctx, instance, computed, revision, revision, nil, pods[1:], pods[:1])
 				require.Error(t, result.err)
