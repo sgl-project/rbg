@@ -27,6 +27,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
@@ -45,6 +46,48 @@ const (
 	// When batching pod creates, initialBatchSize is the size of the initial batch.
 	initialBatchSize = 1
 )
+
+// RecreatePodConflictError reports a same-name Pod collision that is provably
+// part of the recreate flow racing garbage collection: the Pod is already being
+// deleted, or it is controlled by a previous incarnation of the same
+// RoleInstance (same name, different UID). A collision with a genuinely foreign
+// Pod is returned as a plain error instead, so it is still published as a
+// current blocker.
+type RecreatePodConflictError struct {
+	Pod      string
+	Instance string
+	UID      types.UID
+}
+
+func (e *RecreatePodConflictError) Error() string {
+	return fmt.Sprintf("pod %s is not controlled by RoleInstance %s (UID %s): awaiting garbage collection of the previous instance",
+		e.Pod, e.Instance, e.UID)
+}
+
+// newPodNotControlledError classifies a same-name Pod collision.
+func newPodNotControlledError(existingPod *v1.Pod, updateInstance *workloadsv1alpha2.RoleInstance) error {
+	if existingPod.DeletionTimestamp != nil || previousIncarnationPod(existingPod, updateInstance) {
+		return &RecreatePodConflictError{
+			Pod:      klog.KObj(existingPod).String(),
+			Instance: klog.KObj(updateInstance).String(),
+			UID:      updateInstance.UID,
+		}
+	}
+	return fmt.Errorf(
+		"pod %s is not controlled by RoleInstance %s (UID %s)",
+		klog.KObj(existingPod), klog.KObj(updateInstance), updateInstance.UID,
+	)
+}
+
+// previousIncarnationPod reports whether the Pod is controlled by a previous
+// UID of the same-named RoleInstance.
+func previousIncarnationPod(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstance) bool {
+	reference := metav1.GetControllerOfNoCopy(pod)
+	if reference == nil || reference.Kind != "RoleInstance" {
+		return false
+	}
+	return reference.Name == instance.Name && reference.UID != instance.UID
+}
 
 func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, time.Duration, error) {
@@ -328,10 +371,7 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 		}
 		if existingPod != nil {
 			if !metav1.IsControlledBy(existingPod, updateInstance) {
-				err := fmt.Errorf(
-					"pod %s is not controlled by RoleInstance %s (UID %s)",
-					klog.KObj(existingPod), klog.KObj(updateInstance), updateInstance.UID,
-				)
+				err := newPodNotControlledError(existingPod, updateInstance)
 				c.recorder.Eventf(updateInstance, v1.EventTypeWarning, "FailedCreate",
 					"cannot create replacement pod: %v", err)
 				// Gang scheduling requires all Pods to be created together. For

@@ -429,6 +429,42 @@ func TestSameNameForeignPodConflictIsNotABlocker(t *testing.T) {
 	}), "a recreate race with garbage collection must not publish a blocker condition")
 }
 
+func TestGenuinelyForeignPodConflictPublishesBlocker(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.Components = instance.Spec.Components[:1]
+	instance.Status.ObservedGeneration = instance.Generation
+	revisions := revisioncontrol.NewRevisionControl()
+	revision, err := revisions.NewRevision(instance, 1, new(int32))
+	require.NoError(t, err)
+	instance.Status.CurrentRevision = revision.Name
+	instance.Status.UpdateRevision = revision.Name
+
+	// A plain Pod with the target name that is neither being deleted nor owned
+	// by a previous incarnation of the instance: a genuine foreign conflict, not
+	// the recreate race. It must stay visible as a current blocker.
+	foreign := newReadinessTestPod(instance, "router")
+	foreign.OwnerReferences = nil
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(instance).WithObjects(instance, foreign).Build()
+	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+	t.Cleanup(func() { control.ClearRestarting(instance) })
+	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control, recorder: record.NewFakeRecorder(20)}
+
+	computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
+	result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, nil)
+	require.ErrorContains(t, result.err, "is not controlled by RoleInstance")
+	var blocker *workloadsv1alpha2.RoleInstanceCondition
+	for i := range computed.Conditions {
+		condition := &computed.Conditions[i]
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue {
+			blocker = condition
+		}
+	}
+	require.NotNil(t, blocker, "a genuinely foreign Pod must stay a published blocker")
+	require.Equal(t, workloadsv1alpha2.ReasonPodOperationUnclassified, blocker.Reason)
+}
+
 func TestMixedForeignConflictAndQuotaFailurePublishesBlocker(t *testing.T) {
 	ctx := context.Background()
 	instance := newReadinessTestInstance()

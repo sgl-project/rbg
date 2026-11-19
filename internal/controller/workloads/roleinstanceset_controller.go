@@ -20,16 +20,21 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -247,8 +252,40 @@ func (r *RoleInstanceSetReconciler) CheckCrdExists() error {
 func (r *RoleInstanceSetReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
-		For(&v1alpha2.RoleInstanceSet{}).
+		For(&v1alpha2.RoleInstanceSet{}, builder.WithPredicates(roleInstanceSetOwnStatusPredicate())).
 		Owns(&v1alpha2.RoleInstance{}).
 		Watches(&v1alpha2.RoleInstance{}, statelessmode.NewRoleInstanceEventHandler(mgr.GetClient())).
 		Complete(r)
+}
+
+// roleInstanceSetOwnStatusPredicate ignores update events where only the set's
+// own status changed. The controller writes that status itself: without the
+// filter, every status write immediately re-enqueues the set, which turns each
+// blocked-operation retry into a hot loop that skips error backoff (a quota
+// failure whose message contains a freshly generated RoleInstance name changes
+// the message on every attempt). Spec, generation, metadata, and deletion
+// changes still enqueue.
+func roleInstanceSetOwnStatusPredicate() predicate.Funcs {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldSet, oldOK := e.ObjectOld.(*v1alpha2.RoleInstanceSet)
+			newSet, newOK := e.ObjectNew.(*v1alpha2.RoleInstanceSet)
+			if !oldOK || !newOK {
+				return true
+			}
+			return !onlyStatusChanged(oldSet, newSet)
+		},
+	}
+}
+
+// onlyStatusChanged reports whether an update left the spec, generation,
+// labels, annotations, finalizers, and deletion timestamp untouched: only the
+// controller-written status can have changed.
+func onlyStatusChanged(oldSet, newSet *v1alpha2.RoleInstanceSet) bool {
+	return oldSet.Generation == newSet.Generation &&
+		equality.Semantic.DeepEqual(oldSet.Spec, newSet.Spec) &&
+		equality.Semantic.DeepEqual(oldSet.Labels, newSet.Labels) &&
+		equality.Semantic.DeepEqual(oldSet.Annotations, newSet.Annotations) &&
+		slices.Equal(oldSet.Finalizers, newSet.Finalizers) &&
+		equality.Semantic.DeepEqual(oldSet.DeletionTimestamp, newSet.DeletionTimestamp)
 }

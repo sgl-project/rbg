@@ -31,6 +31,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -120,6 +121,48 @@ func TestValidateCommittedMembershipReplacesProgressing(t *testing.T) {
 				t.Fatalf("lastTransitionTime must be preserved for a True→True transition, got %v", progressing[0].LastTransitionTime)
 			}
 		})
+	}
+}
+
+func TestRoleInstanceSetOwnStatusPredicate(t *testing.T) {
+	base := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "set", Generation: 3, Namespace: "default"},
+	}
+	predicates := roleInstanceSetOwnStatusPredicate()
+
+	// The controller's own status write: only the status changed, so the
+	// update must not re-enqueue the set and skip error backoff.
+	ownStatusWrite := base.DeepCopy()
+	ownStatusWrite.Status.ReadyReplicas = 2
+	ownStatusWrite.Status.Conditions = append(ownStatusWrite.Status.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
+		Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
+		Reason: "WaitingForQuota", Message: `roleinstances "quota-w-abcde" is forbidden: exceeded quota`,
+	})
+	if predicates.Update(event.UpdateEvent{ObjectOld: base, ObjectNew: ownStatusWrite}) {
+		t.Fatal("an own status-only update must not enqueue")
+	}
+
+	// Spec changes bump the generation and must enqueue.
+	specChange := base.DeepCopy()
+	specChange.Generation = 4
+	if !predicates.Update(event.UpdateEvent{ObjectOld: base, ObjectNew: specChange}) {
+		t.Fatal("a spec change must enqueue")
+	}
+
+	// Deletion must enqueue.
+	deleting := base.DeepCopy()
+	now := metav1.Now()
+	deleting.DeletionTimestamp = &now
+	if !predicates.Update(event.UpdateEvent{ObjectOld: base, ObjectNew: deleting}) {
+		t.Fatal("a deletion update must enqueue")
+	}
+
+	// Creates and deletes always enqueue.
+	if !predicates.Create(event.CreateEvent{Object: base}) {
+		t.Fatal("a create must enqueue")
+	}
+	if !predicates.Delete(event.DeleteEvent{Object: base}) {
+		t.Fatal("a delete must enqueue")
 	}
 }
 

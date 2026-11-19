@@ -169,7 +169,7 @@ func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newSta
 		}
 	}
 	newStatus.Conditions = append(conditions, condition)
-	applyEstablishedCondition(set, newStatus)
+	applyEstablishedCondition(set, newStatus, instances)
 }
 
 // applyEstablishedCondition carries forward or records the durable
@@ -177,8 +177,8 @@ func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newSta
 // previously proved establishment, and readiness counters drop during
 // scale-up; the separate condition keeps the classification stable across
 // such intermediate observations.
-func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus) {
-	if !setEstablished(set) {
+func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {
+	if !setEstablished(set, instances) {
 		// Still establishing, or no durable evidence yet. setEstablished reads
 		// the persisted status, so a Progressing reason about to be replaced by
 		// this write is still visible here and is captured before the erasure.
@@ -258,7 +258,7 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	// reconcile, so a non-empty revision is not evidence of establishment; only a
 	// previous convergence is. A zero-replica target is structurally complete at
 	// creation and never reports Creating.
-	if !setEstablished(set) && (observedReplicas < target || starting) {
+	if !setEstablished(set, instances) && (observedReplicas < target || starting) {
 		condition.Reason = workloadconstants.ProgressingReasonCreating
 		return condition
 	}
@@ -267,7 +267,7 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	// established: when the target did not grow, the missing instance is repair or
 	// replacement, not a scale-up. Update-driven replacement is excluded because
 	// it remains RoleInstanceUpdated.
-	if anyInstanceRecovering(instances) || establishedInstanceMissing(set, observedReplicas, target, updatePending) ||
+	if anyInstanceRecovering(instances) || establishedInstanceMissing(set, instances, observedReplicas, target, updatePending) ||
 		(persistedProgressingReason(set) == workloadconstants.ProgressingReasonRecovering && starting) {
 		condition.Reason = workloadconstants.ProgressingReasonRecovering
 		return condition
@@ -399,7 +399,7 @@ func anyInstanceStarting(instances []*workloadsv1alpha2.RoleInstance) bool {
 // a previous target. Freshly published revisions are not evidence: both modes
 // initialize CurrentRevision before any RoleInstance exists, and a ready subset during
 // OrderedReady initial creation is not establishment.
-func setEstablished(set *workloadsv1alpha2.RoleInstanceSet) bool {
+func setEstablished(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance) bool {
 	for _, condition := range set.Status.Conditions {
 		if condition.Type == workloadsv1alpha2.RoleInstanceSetEstablished {
 			// Durable establishment evidence, recorded independently of the
@@ -423,8 +423,33 @@ func setEstablished(set *workloadsv1alpha2.RoleInstanceSet) bool {
 	// of a previous target was updated to the previously expected scope and ready.
 	// During initial creation UpdatedReplicas stays below ExpectedUpdatedReplicas, so
 	// a partially created set does not qualify.
+	//
+	// The instances themselves carry durable evidence too: objects written by the
+	// previous controller generation already have the readiness latches set. A set
+	// that is degraded at upgrade time would otherwise never become established
+	// until it has been fully ready once, and its later scale-ups would report
+	// Creating. A persisted Creating condition still takes precedence, so initial
+	// creation of a fresh set is unaffected by a partially ready instance.
+	if anyInstanceCompletedStartup(instances) {
+		return true
+	}
 	return set.Status.Replicas > 0 && set.Status.ReadyReplicas == set.Status.Replicas &&
 		set.Status.UpdatedReplicas == set.Status.ExpectedUpdatedReplicas
+}
+
+// anyInstanceCompletedStartup reports whether any observed instance has a
+// durable completion latch from its own lifecycle: the phase-completion latch
+// or the full-readiness latch.
+func anyInstanceCompletedStartup(instances []*workloadsv1alpha2.RoleInstance) bool {
+	for _, instance := range instances {
+		if instance == nil {
+			continue
+		}
+		if instance.Status.LastPhaseCompleteGeneration != 0 || instance.Status.LastReadyGeneration != 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // establishedInstanceMissing reports whether an established set lost instances it
@@ -433,8 +458,8 @@ func setEstablished(set *workloadsv1alpha2.RoleInstanceSet) bool {
 // shortage lowers the persisted counters, so a persisted Recovering reason also
 // proves replacement is in progress and keeps the classification stable instead of
 // flipping to ScalingUp on the next observation.
-func establishedInstanceMissing(set *workloadsv1alpha2.RoleInstanceSet, observedReplicas, target int32, updatePending bool) bool {
-	if updatePending || !setEstablished(set) || observedReplicas >= target {
+func establishedInstanceMissing(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance, observedReplicas, target int32, updatePending bool) bool {
+	if updatePending || !setEstablished(set, instances) || observedReplicas >= target {
 		return false
 	}
 	if set.Status.Replicas >= target {

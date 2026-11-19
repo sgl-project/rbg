@@ -315,6 +315,30 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			wantStatus: corev1.ConditionTrue,
 		},
 		{
+			name: "degraded set upgraded without conditions is established by RI latches",
+			// A set degraded at upgrade time never fully converged under the new
+			// model, but its instances carry the readiness latches written by the
+			// previous controller generation: a later scale-up is ScalingUp, not
+			// Creating.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(4)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 3, 2, 3
+				set.Status.ExpectedUpdatedReplicas = 3
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "rev", "rev"
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+			},
+			instances: []*workloadsv1alpha2.RoleInstance{
+				{Status: workloadsv1alpha2.RoleInstanceStatus{LastReadyGeneration: 2}},
+				{},
+				{Status: workloadsv1alpha2.RoleInstanceStatus{LastReadyGeneration: 2}},
+			},
+			wantReason: workloadconstants.ProgressingReasonScalingUp,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
 			name: "terminating RI with stale status does not block completion",
 			set: func() *workloadsv1alpha2.RoleInstanceSet {
 				set := newTestSet(3)

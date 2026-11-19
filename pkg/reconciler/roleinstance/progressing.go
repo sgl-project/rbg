@@ -17,6 +17,7 @@ limitations under the License.
 package roleinstance
 
 import (
+	stderrors "errors"
 	"fmt"
 	"strings"
 
@@ -25,6 +26,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
@@ -272,19 +274,18 @@ func isQuotaExceededError(err error) bool {
 	return strings.Contains(err.Error(), "exceeded quota")
 }
 
-// isSameNameForeignPodConflict reports whether a Pod operation failed because a
-// same-name Pod left behind by a previous RoleInstance UID (or one still being
-// deleted) occupies the target name. This is the recreate flow racing garbage
-// collection, not a current blocker: reporting it as PodOperationUnclassified
-// would flash blocker reasons at RIS and RBG on every RecreatePod rollout. The
-// error is still returned for the retry; only the blocker condition is skipped.
+// isSameNameForeignPodConflict reports whether a Pod operation failed with a
+// collision that is provably the recreate flow racing garbage collection: the
+// same-name Pod is being deleted, or it belongs to a previous UID of the same
+// RoleInstance. A collision with a genuinely foreign Pod is not this race and
+// is still published as a current blocker. The error is still returned for the
+// retry; only the blocker condition is skipped.
 func isSameNameForeignPodConflict(err error) bool {
 	if err == nil {
 		return false
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "is not controlled by RoleInstance ") ||
-		strings.Contains(msg, "is terminating")
+	var race *synccontrol.RecreatePodConflictError
+	return stderrors.As(err, &race)
 }
 
 // onlySameNameForeignPodConflicts reports whether every constituent of a joined
