@@ -39,6 +39,7 @@ func filteredRoleAnnotations(annotations map[string]string) map[string]string {
 	result := maps.Clone(annotations)
 	delete(result, constants.ExcludedOrdinalsAnnotationKey)
 	delete(result, constants.CommittedSkipOrdinalsAnnotationKey)
+	delete(result, constants.RoleInstanceRecoverAnnotationKey)
 	return result
 }
 
