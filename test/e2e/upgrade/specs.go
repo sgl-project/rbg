@@ -18,6 +18,8 @@ package upgrade
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -34,9 +36,12 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"sigs.k8s.io/yaml"
+
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	"sigs.k8s.io/rbgs/test/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
@@ -472,6 +477,19 @@ func RunUpgradeSpecs(f *framework.Framework) {
 				gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
 				"the stored legacy strategy type in the child RoleBasedGroup was not healed",
 			)
+		},
+	)
+
+	ginkgo.It(
+		"[phase 3] pins every RoleBasedGroupSet child to the refine discovery config mode", func() {
+			// The one rewrite the hop makes to set children (#603), recorded in
+			// setChildDiscoveryModePins. That it is the annotation and nothing else
+			// is the first phase 3 spec's claim: these children get no allowance from
+			// the pod, stored-spec and revision detectors for it. What is left to
+			// assert here is the end state, and that it holds: the set controller
+			// must not take the annotation away again on a later reconcile, which is
+			// how the from-release lost it.
+			expectSetChildrenStayInRefineMode(f, before, fromProfile().rewrites.discoveryModePins)
 		},
 	)
 
@@ -1038,6 +1056,25 @@ func RunUpgradeSpecs(f *framework.Framework) {
 	)
 
 	ginkgo.It(
+		"[phase 4] keeps the discovery ConfigMap of a RoleBasedGroupSet child current", func() {
+			// What the pin to refine mode is for. Outside refine mode the controller
+			// skips the child's discovery ConfigMap, so a membership change made
+			// through the set template reached the child's spec and its pods but
+			// never /etc/rbg/config.yaml (#603). Scaling the template role must now
+			// show up in the ConfigMap, and the template sync that carries the new
+			// replica count is the write that used to remove the mode annotation.
+			children := childRBGNames(f, fxSet)
+			gomega.Expect(children).To(
+				gomega.HaveLen(1), "the set fixture has no child RoleBasedGroup, so there is nothing to observe",
+			)
+			childName := children[0]
+			mutated = append(mutated, fxSet, childName)
+
+			expectSetChildDiscoveryConfigFollowsScale(f, fxSet, childName)
+		},
+	)
+
+	ginkgo.It(
 		"[phase 4] accepts the RoleBasedGroupWarmup API the upgrade introduced", func() {
 			// A shallow check on purpose: the point is that the new API surface is
 			// reachable on an upgraded cluster, not that warmup works -- the main e2e
@@ -1369,6 +1406,114 @@ func waitForPendingPod(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedG
 			}
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.Succeed())
+}
+
+// expectSetChildrenStayInRefineMode runs expectSetChildStaysInRefineMode for every
+// recorded RoleBasedGroupSet child, each of which must predate the upgrade.
+func expectSetChildrenStayInRefineMode(f *framework.Framework, before map[string]RBGSnapshot, pins map[string]bool) {
+	gomega.Expect(pins).ToNot(gomega.BeEmpty(), "the profile records no set child to observe")
+	for _, name := range slices.Sorted(maps.Keys(pins)) {
+		gomega.Expect(before).To(gomega.HaveKey(name), "set child %s was not there before the upgrade", name)
+		expectSetChildStaysInRefineMode(f, name)
+	}
+}
+
+// expectSetChildStaysInRefineMode asserts the end state of the recorded pin for one
+// RoleBasedGroupSet child: it is in refine mode, stays there for a settle window, and
+// has the discovery ConfigMap that mode makes the controller apply.
+func expectSetChildStaysInRefineMode(f *framework.Framework, name string) {
+	key := client.ObjectKey{Namespace: f.Namespace, Name: name}
+
+	gomega.Consistently(
+		func(g gomega.Gomega) {
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			g.Expect(f.Client.Get(f.Ctx, key, child)).To(gomega.Succeed())
+			g.Expect(child.GetDiscoveryConfigMode()).To(
+				gomega.Equal(constants.RefineDiscoveryConfigMode),
+				"set child %s is not in refine mode", name,
+			)
+		}, settleDuration, time.Second,
+	).Should(gomega.Succeed())
+
+	// Refine mode is what makes the controller apply the ConfigMap named after the
+	// group, which the pods of every stateful role mount.
+	child := &workloadsv1alpha2.RoleBasedGroup{}
+	gomega.Expect(f.Client.Get(f.Ctx, key, child)).To(gomega.Succeed())
+	gomega.Expect(child.HasStatefulRole()).To(
+		gomega.BeTrue(), "set child %s has no stateful role, so it has no discovery ConfigMap to observe", name,
+	)
+	config := discoveryConfig(gomega.Default, f, name)
+	for i := range child.Spec.Roles {
+		role := &child.Spec.Roles[i]
+		if workloadsv1alpha2.IsStatefulRole(role) {
+			gomega.Expect(config.Roles).To(
+				gomega.HaveKey(role.Name), "the discovery ConfigMap of %s does not list role %s", name, role.Name,
+			)
+		}
+	}
+}
+
+// expectSetChildDiscoveryConfigFollowsScale scales the only template role of a set
+// from one instance to two and waits for the child's discovery ConfigMap to show it,
+// then checks that the template sync left the child in refine mode.
+func expectSetChildDiscoveryConfigFollowsScale(f *framework.Framework, setName, childName string) {
+	setKey := client.ObjectKey{Namespace: f.Namespace, Name: setName}
+	set := &workloadsv1alpha2.RoleBasedGroupSet{}
+	gomega.Expect(f.Client.Get(f.Ctx, setKey, set)).To(gomega.Succeed())
+	gomega.Expect(set.Spec.GroupTemplate.Spec.Roles).To(gomega.HaveLen(1))
+	roleName := set.Spec.GroupTemplate.Spec.Roles[0].Name
+	gomega.Expect(discoveryConfig(gomega.Default, f, childName).Roles[roleName].Size).To(
+		gomega.Equal(1), "the fixture's role is expected to start with one instance",
+	)
+
+	ginkgo.By("scaling " + roleName + " to 2 in the template of " + setName)
+	gomega.Expect(
+		retry.RetryOnConflict(
+			retry.DefaultRetry, func() error {
+				live := &workloadsv1alpha2.RoleBasedGroupSet{}
+				if err := f.Client.Get(f.Ctx, setKey, live); err != nil {
+					return err
+				}
+				live.Spec.GroupTemplate.Spec.Roles[0].Replicas = ptr.To(int32(2))
+				return f.Client.Update(f.Ctx, live)
+			},
+		),
+	).To(gomega.Succeed())
+
+	childKey := client.ObjectKey{Namespace: f.Namespace, Name: childName}
+	gomega.Eventually(
+		func(g gomega.Gomega) {
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			g.Expect(f.Client.Get(f.Ctx, childKey, child)).To(gomega.Succeed())
+			g.Expect(child.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(2))))
+			g.Expect(discoveryConfig(g, f, childName).Roles[roleName].Size).To(
+				gomega.Equal(2), "the discovery ConfigMap of %s was not updated", childName,
+			)
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.Succeed())
+
+	gomega.Consistently(
+		func(g gomega.Gomega) {
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			g.Expect(f.Client.Get(f.Ctx, childKey, child)).To(gomega.Succeed())
+			g.Expect(child.GetDiscoveryConfigMode()).To(gomega.Equal(constants.RefineDiscoveryConfigMode))
+		}, settleDuration, time.Second,
+	).Should(gomega.Succeed(), "the template sync moved %s out of refine mode", childName)
+}
+
+// discoveryConfig reads the discovery ConfigMap of one RoleBasedGroup, which is named
+// after the group, and parses the config.yaml its pods mount.
+func discoveryConfig(g gomega.Gomega, f *framework.Framework, rbgName string) discovery.ClusterConfig {
+	cm := &corev1.ConfigMap{}
+	g.Expect(
+		f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: rbgName}, cm),
+	).To(gomega.Succeed(), "RoleBasedGroup %s has no discovery ConfigMap", rbgName)
+
+	var config discovery.ClusterConfig
+	g.Expect(yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &config)).To(
+		gomega.Succeed(), "the discovery ConfigMap of %s does not parse", rbgName,
+	)
+	return config
 }
 
 // childRBGNames returns the sorted names of the RoleBasedGroups a RoleBasedGroupSet owns.

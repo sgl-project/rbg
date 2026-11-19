@@ -379,7 +379,13 @@ func buildLegacySetFixture(ns string) *workloadsv1alpha2.RoleBasedGroupSet {
 // legacySetChildName is the name of the child RoleBasedGroup the legacy-set fixture
 // produces, computed through the same <set>-<index> scheme the controller uses.
 func legacySetChildName() string {
-	return fxLegacySet + "-0"
+	return setChildName(fxLegacySet)
+}
+
+// setChildName is the name of the only child RoleBasedGroup a single-replica set
+// fixture produces, following the controller's <set>-<index> scheme.
+func setChildName(setName string) string {
+	return setName + "-0"
 }
 
 // legacySetChildRISName is the name of the RoleInstanceSet the legacy-set fixture's
