@@ -18,6 +18,7 @@ package v1alpha2
 
 import (
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -48,6 +49,24 @@ func (rsWrapper *RoleBasedGroupSetWrapper) WithAnnotations(annotations map[strin
 func (rsWrapper *RoleBasedGroupSetWrapper) WithReplicas(replicas int32) *RoleBasedGroupSetWrapper {
 	rsWrapper.Spec.Replicas = &replicas
 	return rsWrapper
+}
+
+func (rsWrapper *RoleBasedGroupSetWrapper) WithRolloutStrategy(
+	strategy *workloadsv1alpha2.GroupSetRolloutStrategy,
+) *RoleBasedGroupSetWrapper {
+	rsWrapper.Spec.RolloutStrategy = strategy
+	return rsWrapper
+}
+
+// BuildRecreateRolloutStrategy builds the recreate-group rollout strategy with explicit
+// budgets, so a test states every pacing parameter instead of relying on CRD defaults.
+func BuildRecreateRolloutStrategy(maxUnavailable, maxSurge, partition int32) *workloadsv1alpha2.GroupSetRolloutStrategy {
+	return &workloadsv1alpha2.GroupSetRolloutStrategy{
+		Type:           workloadsv1alpha2.RecreateStrategyType,
+		MaxUnavailable: ptr.To(intstr.FromInt32(maxUnavailable)),
+		MaxSurge:       ptr.To(intstr.FromInt32(maxSurge)),
+		Partition:      ptr.To(intstr.FromInt32(partition)),
+	}
 }
 
 func BuildBasicRoleBasedGroupSet(name, ns string) *RoleBasedGroupSetWrapper {
