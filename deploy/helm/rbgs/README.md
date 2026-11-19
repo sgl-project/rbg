@@ -198,15 +198,9 @@ out, so until the previous controller Pods are gone the cluster accepts
 `engineRuntimes[].component`, `engineRuntimes[].targetContainers` and
 `ClusterEngineRuntimeProfile.spec.containerPatches`, but the previous controller doesn't know them:
 it renders a new reference across the pattern's default components, and its own updates to a
-RoleBasedGroup can drop them. Write those fields only after the rollout has completed and no
-previous controller Pod is still terminating: `rollout status` succeeds and `get pods` lists no
-Pod as `Terminating` — `--wait` alone does not guarantee this, because Helm's readiness check
-counts only the new ReplicaSet's ready Pods.
-
-```bash
-kubectl -n rbgs-system rollout status deployment/rbgs-controller-manager
-kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
-```
+RoleBasedGroup can drop them. Write those fields only once the rollout has fully completed and no
+previous controller Pod is still terminating — `--wait` alone does not guarantee this, because
+Helm's readiness check counts only the new ReplicaSet's ready Pods.
 
 **Rolling back.** `helm rollback` restores the previous controller and webhook configuration but
 keeps the new CRDs: the CRD upgrader runs only on install and upgrade. The previous controller

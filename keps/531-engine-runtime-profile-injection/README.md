@@ -1523,8 +1523,6 @@ persists state the previous release's CRDs prune
 (`RoleInstanceSet.status.rolloutReplacementState`,
 `RoleInstance.status.lastReadyGeneration`, this KEP's CERP tracking status),
 so surge rollouts stall and restart policies lose their readiness record.
-Clusters that manage the CRDs themselves (`crdUpgrade.enabled=false`) apply
-the new CRDs before upgrading the controller, as `doc/install.md` does.
 
 **What goes live when.** Everything goes live with the controller rollout: the
 immutability admission once the new controller serves the CERP webhook entry

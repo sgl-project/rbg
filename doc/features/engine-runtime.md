@@ -405,8 +405,8 @@ the signal for behavior that is legal but likely unintended; a render failure is
 Upgrade with a single `helm upgrade`: the chart replaces the CRDs before the controller rolls out.
 Write `component`, `targetContainers` and `containerPatches` only once no previous controller Pod
 remains, because the previous controller ignores them. `helm rollback` keeps the new CRDs, so
-remove those fields before rolling back past this release. The commands are in the
-[chart README's Upgrading section](../../deploy/helm/rbgs/README.md#upgrading), and the full
+remove those fields before rolling back past this release. The chart README's
+[Upgrading section](../../deploy/helm/rbgs/README.md#upgrading) covers the procedure, and the full
 controller×CRD behavior matrix is in the
 [KEP's Upgrade / Downgrade Strategy](../../keps/531-engine-runtime-profile-injection/README.md).
 
