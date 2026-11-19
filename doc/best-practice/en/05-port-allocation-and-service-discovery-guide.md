@@ -162,6 +162,7 @@ EOF
 
 - Each Pod automatically receives injected environment variables such as `RBG_GROUP_NAME` and `RBG_ROLE_NAME`
 - Controller automatically creates a ConfigMap with the same name as the RBG, mounted at `/etc/rbg/config.yaml`
+- The mounted file may be v1alpha1 or v1. Consumers check `apiVersion`: missing means v1alpha1, and `v1` selects the compact form. See the version-aware example in the service discovery guide.
 
 ### Verification (Environment Variable Injection)
 

@@ -161,6 +161,7 @@ EOF
 
 - 每个 Pod 自动注入 `RBG_GROUP_NAME`、`RBG_ROLE_NAME` 等环境变量
 - Controller 自动创建与 RBG 同名的 ConfigMap，并挂载到 `/etc/rbg/config.yaml`
+- 挂载文件可能是 v1alpha1 或 v1。消费者应检查 `apiVersion`：缺失表示 v1alpha1，`v1` 表示紧凑格式。版本感知示例见服务发现指南。
 
 ### 验证（环境变量注入）
 
