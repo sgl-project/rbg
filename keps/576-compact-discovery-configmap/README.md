@@ -118,6 +118,10 @@ The controller continues to use the same RBG-level ConfigMap `<rbg>` and the
 same `config.yaml` key. When the annotation is `v1`, the controller writes v1
 content and replaces the v1alpha1 content.
 
+The ConfigMap is a published snapshot of committed membership, not the source
+of truth for controller state. The controller derives it from RBG spec and the
+child RoleInstanceSet's committed target, and can rebuild it at any time.
+
 This KEP defines the storage format, replacement semantics, migration steps,
 and the decoding contract consumers need while v1alpha1 and v1 coexist. A
 separate compatibility layer is out of scope.
@@ -267,6 +271,9 @@ kubelet redistributes it to every node with a mounting Pod.
 - **Discovery-config-version annotation**: the
   `rbg.workloads.x-k8s.io/discovery-config-version` annotation, whose values
   are `v1alpha1` and `v1`.
+- **Committed membership**: the member set persisted on the child
+  RoleInstanceSet. Discovery projects this state; it does not project the
+  user-facing exclusion annotation directly.
 - **Member**: a RoleInstance ordinal selected for discovery.
 - **Component**: a named Pod group inside a RoleInstanceSet instance.
 - `<rbg>`: the RBG object name.
@@ -416,7 +423,7 @@ Field reference:
 | `roles` | array | role entries in spec declaration order |
 | `roles[].name` | string | role name |
 | `roles[].members` | int | number of selected RoleInstances |
-| `roles[].excludedOrdinals` | string | normalized contiguous excluded ranges |
+| `roles[].excludedOrdinals` | string | normalized committed holes below the highest selected member; not the user annotation value |
 | `roles[].ports` | map | role-level `servicePorts`, with keys derived by the rules below |
 | `roles[].components` | array | component entries in spec declaration order |
 | `roles[].components[].name` | string | component name |
@@ -554,6 +561,10 @@ Encoding:
 - `members` is the number of selected ordinals.
 - `excludedOrdinals` is the normalized range record for holes below the
   highest selected ordinal.
+
+`excludedOrdinals` records holes in committed membership. It is not a copy of
+the user-facing `excluded-ordinals` annotation. Committed holes remain after
+that annotation is removed until the controller commits a new membership target.
 
 Range grammar:
 

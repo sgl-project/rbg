@@ -113,6 +113,10 @@ metadata:
 
 控制器继续使用同一个 RBG 级 ConfigMap `<rbg>` 和同一个 `config.yaml` key。当 annotation 为 `v1` 时，控制器写入 v1 内容并替换 v1alpha1 内容。
 
+ConfigMap 是已提交 membership 的发布快照，不是 controller 状态的事实源。
+控制器根据 RBG spec 和 child RoleInstanceSet 的 committed target 生成它，
+并且可以随时重建。
+
 本 KEP 定义存储格式、替换语义、迁移步骤，以及 v1alpha1 和 v1 共存期间
 消费者需要的解码契约。单独的兼容层不在本 KEP 范围内。
 
@@ -251,6 +255,8 @@ Service 兼容逻辑位于：
 - **Discovery-config-version annotation**：
   `rbg.workloads.x-k8s.io/discovery-config-version` annotation，取值为
   `v1alpha1` 和 `v1`。
+- **已提交 membership**：child RoleInstanceSet 上已持久化的成员集合。
+  discovery 投影该状态，不直接投影用户侧 exclusion annotation。
 - **成员**：被 discovery 选中的 RoleInstance 序号。
 - **组件**：RoleInstanceSet 实例内的一个命名 Pod 组。
 - `<rbg>`：RBG 对象名。
@@ -392,7 +398,7 @@ roles:
 | `roles` | array | 按 spec 声明顺序排列 |
 | `roles[].name` | string | 角色名 |
 | `roles[].members` | int | 被选中的 RoleInstance 数量 |
-| `roles[].excludedOrdinals` | string | 归一化的连续跳过区间 |
+| `roles[].excludedOrdinals` | string | 最高选中成员以下的已提交空洞；不是用户 annotation 原值 |
 | `roles[].ports` | map | role 级 `servicePorts`，key 按下方规则生成 |
 | `roles[].components` | array | 按 spec 声明顺序排列 |
 | `roles[].components[].name` | string | 组件名 |
@@ -527,6 +533,10 @@ excludedOrdinals: "1,3"
 
 - `members` 是被选中的序号数量。
 - `excludedOrdinals` 是最高选中序号以下空洞的归一化区间记录。
+
+`excludedOrdinals` 记录的是已提交 membership 中的空洞，不是用户侧
+`excluded-ordinals` annotation 的复制值。即使用户删除该 annotation，
+已提交空洞也会保留，直到 controller 提交新的 membership target。
 
 区间语法：
 
