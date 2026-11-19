@@ -202,6 +202,7 @@ const (
 
 // RestartPolicyConfig groups restart policy type and backoff configuration.
 // +kubebuilder:validation:XValidation:rule="!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds) || self.maxDelaySeconds >= self.baseDelaySeconds",message="maxDelaySeconds must be greater than or equal to baseDelaySeconds"
+// +kubebuilder:validation:XValidation:rule="!has(self.maxGroupRestarts) || (has(self.type) && self.type != 'None')",message="maxGroupRestarts requires an explicit whole-RoleInstance recreate policy"
 type RestartPolicyConfig struct {
 	// Type defines the restart policy when pod failures happen.
 	// Default is RecreateRoleInstanceOnPodRestart.
@@ -239,6 +240,13 @@ type RestartPolicyConfig struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=600
 	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
+
+	// MaxGroupRestarts limits accepted whole-instance rebuilds per topology/Pod-template
+	// revision. Native RoleInstanceSet only; unset is unlimited; zero stops on the
+	// first eligible fault.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 }
 
 // resolveRestartPolicyConfig folds the deprecated restartPolicy string into cfg.

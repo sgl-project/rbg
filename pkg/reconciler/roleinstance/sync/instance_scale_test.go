@@ -3637,8 +3637,13 @@ func TestScaleRetriesPendingWaveDeletions(t *testing.T) {
 	pods[1].Finalizers = []string{"test.rbg.io/hold"}
 
 	// The wave recorded both Pods before the deletion was attempted.
+	restartingCache.Delete(instanceKey(instance))
+	waveDeletesIssued.Delete(instanceKey(instance))
 	rememberRestartWave(instance, pods)
-	t.Cleanup(func() { restartingCache.Delete(instanceKey(instance)) })
+	t.Cleanup(func() {
+		restartingCache.Delete(instanceKey(instance))
+		waveDeletesIssued.Delete(instanceKey(instance))
+	})
 
 	failFirstDelete := true
 	retriedDeletes := 0

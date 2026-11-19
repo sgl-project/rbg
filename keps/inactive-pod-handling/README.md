@@ -116,6 +116,154 @@ Compatibility notes:
   without a start or Ready gate), and the vendored LWS v0.7 adapter exposes no field to
   express the distinction.
 
+## Bounded RoleInstance Recovery (phase 2)
+
+This extends the whole-instance recovery path using the circuit-breaker contract of
+[LWS KEP-820](https://github.com/kubernetes-sigs/lws/blob/cc5462087f10c3bef95e20dc452fc01c76513484/keps/820-distributed-preflight-check/README.md),
+adapted to native RoleInstanceSet/RoleInstance ownership rather than LWS ordinals
+and retained leader Pods. It does not add support to the backing LWS adapter.
+
+### API and lifetime
+
+`RestartPolicyConfig.maxGroupRestarts` is optional `*int32` with minimum zero. It
+requires an explicit `RecreateRoleInstanceOnPodRestart` policy; `activateAfter`
+selects its arming rule independently. `None` is rejected through schema validation.
+Role admission also rejects budgets on Deployment, StatefulSet and LeaderWorkerSet
+backends. Role configuration is propagated to the native RI template.
+
+The budget is v1alpha2-only, following `activateAfter`: v1alpha1 GET omits it but
+does not mutate persisted state; a v1alpha1 spec read-modify-write drops it and
+therefore configures unlimited recovery. No new v1alpha1 API field, conversion
+round-trip promise, or admission webhook is introduced. Users must manage
+budgeted workloads through v1alpha2; conversion and API-server tests pin that
+lossy-write boundary, including explicit zero.
+
+RI status is the source of truth: `groupRestartCount`, `groupRestartRevision`, and
+`restartBudgetExhausted`. RI UID is the per-replica identity. The opaque revision
+identifies component topology (including sizes), Pod templates and Pod-affecting
+component metadata, not policy, backoff, or budget. An accepted group rebuild
+consumes exactly one attempt.
+Repeated/suppressed attempts and the exhaustion termination consume none. Persist
+accounting and restart tracking with optimistic locking before deleting any Pod,
+after uncached RI UID/generation and owned failure-evidence revalidation. Keep the
+budget mutation composable with additional durable bookkeeping in a single status CAS.
+
+The durable budget is independent of backoff `restartCount`, which may reset after
+a quiet period. Ready/quiet transitions and limit/backoff edits/removal on the
+same RI do not reset budget accounting. For directly edited RIs, policy edits
+also retain the topology budget. Configuration changes through RBG/RIS follow
+the existing rollout strategy and may replace the RI. Unsetting the limit allows
+unbounded recovery before
+exhaustion without discarding an existing count. Zero stops at the first eligible
+fault, not initial creation. Exhaustion is evaluated before backoff.
+
+### Recovery configuration follows normal revisions
+
+Budget and backoff fields remain part of the RIS template and participate in
+its existing revision/update flow. Both RIS controllers apply the configuration
+stored in the selected revision; there is no separate live synchronization,
+revision overlay, or bypass of rollout constraints. A replacement RI starts its
+own budget; an in-place policy/budget/backoff change alone does not reset the
+existing RI's topology budget or clear exhaustion.
+
+### LWS-compatible topology revisions
+
+Component size is included in the budget revision, as it is in LWS's
+`leaderWorkerTemplate` revision. Changing size therefore rolls the group using
+the existing RIS update strategy and gives the new revision a fresh budget.
+This applies to both healthy and exhausted old groups. The rollout is a planned
+configuration change, not an accepted failure-recovery attempt. Do not add a
+special RI-identity preservation path, Pod resize stamps or stateless surge
+protocol for budget inheritance.
+
+Replica count is outside the component topology/template identity. Scaling
+`replicas` preserves the budget of surviving groups and starts new groups at zero.
+Existing pause, partition, availability and lifecycle constraints remain unchanged.
+
+### Exhaustion, resource release, and status
+
+Persist `restartBudgetExhausted=true`, set RI `Degraded=True` with reason
+`GroupRestartBudgetExceeded`, and force `RoleInstanceReady=False`. Suppress all
+replacement creation and updates. Then add
+`rbg.workloads.x-k8s.io/group-restart-budget-cleanup` to the COMPLETE owned group's
+Pods that can still receive it, before requesting deletion of any of them. Already
+terminating Pods cannot gain finalizers. Use owner-UID validation, optimistic
+metadata patches and UID-only deletion preconditions so concurrent kubelet status
+updates do not prevent deletion or accidentally target a same-name replacement.
+Cleanup lists Pods matching the RI member selector and filters by controller UID.
+Pods whose identifying labels or owner reference were manually changed are
+outside RBG management and require operator cleanup. No cleanup claims or
+independent Pod-finalizer controller are introduced.
+
+Accepted budgeted recovery emits `ReCreateInstance` only after the optimistic
+status transaction succeeds, with its live triggering Pod/reason. Rejected,
+backoff-delayed or duplicate budget attempts never emit a successful
+accepted-rebuild event. Existing unbudgeted event behavior is unchanged.
+
+Retained Pod API objects preserve status and coordinate recovery, not running
+containers or resource reservations. Kubernetes 1.27+ kubelet deletion transitions
+Pods to a terminal phase; only then are scheduled CPU/memory/GPU resources released.
+Never synthesize Pod phases. Native kubelet/CRI logs are best effort, NOT guaranteed;
+external log export is required for durable diagnostics. Healthy RI replicas remain
+independent. Suppression survives process restarts and missing retained Pod objects.
+
+### Recovery and teardown
+
+Recovery is requested on the RI by the exact annotation
+`rbg.workloads.x-k8s.io/recover=true`. Remove any pre-existing annotation before the
+optimistic exhaustion status patch, so stale intent cannot automatically recover a
+newly exhausted group. Post-exhaustion recovery first retries termination of the
+old group, then releases only its budget finalizers. It does not clear exhausted
+status, counters or recovery intent until an authoritative API list contains no
+old owned Pod objects. External finalizers and grace periods may hold this
+barrier; neither a successful Delete nor Ready authorizes completion. A crash or
+API error is retried from the persistent exhausted state and recovery annotation.
+Only then are suppression/count and backoff tracking cleared and the annotation
+consumed. If the status reset commits but annotation cleanup fails or the
+controller crashes, the next reconcile removes the stale `recover=true`
+annotation without resetting the budget again. A changed topology/Pod template, including size, uses the same old-group
+barrier when updating an exhausted RI directly; RIS rollout replacement follows
+teardown cleanup. Budget/backoff edits do not change the budget revision on the
+same RI; changes through a RoleInstanceSet follow the normal workload rollout
+behavior.
+
+The RI also carries the cleanup finalizer: background deletion must not remove the
+only cleanup owner before Pod finalizers are released. On RI deletion (including
+scale-down/rollout replacement), remove only budget finalizers from Pods still
+controlled by that RI UID, then remove its RI cleanup finalizer. Pods whose labels
+or owner reference were manually changed are outside RBG cleanup and require
+operator intervention. Do not reset/charge counters,
+interpret teardown as recovery, or create a replacement. The generic status writer
+must preserve persisted budget fields and Degraded across stale cached writes
+and enforce Ready=False while exhausted. Non-budget status handling is unchanged.
+
+### Downgrade prerequisites
+
+A controller without budget support cannot release the budget cleanup finalizer
+on RIs or Pods. Before downgrading, keep the budget-aware controller and current
+CRDs running, prevent parent workloads from recreating budgeted RIs, and let
+normal deletion/scale-down finish teardown for every RI carrying the finalizer.
+Verify that no affected RI or Pod retains it before switching controllers.
+Healthy, recovered, and formerly budgeted RIs are included: unsetting the limit
+or recovering alone does not remove the RI finalizer. Remove budget settings
+from source configuration before restoring replicas under the older controller.
+This is disruptive teardown, not a workload-preserving downgrade. See the
+[operational procedure](../../doc/features/failure-handling.md#controller-downgrade-prerequisites).
+
+### Verification
+
+Unit coverage includes nil/zero/positive limits, exact counts, no quiet reset,
+idempotent retention, complete-group termination including ignored/obsolete members,
+foreign owner safety, already-deleting Pods, recovery, stale preannotations, limit
+and policy edits, revision change, teardown, optimistic-lock failures and stale
+status preservation.
+
+Missing-member detection and transient deletion signal retention remain in
+issues #562/#566. Budgeted restarts reuse the existing wave guard and deletion
+retry helpers from #573; the guard completes when the original Pod UIDs are gone,
+not when replacements become Ready. No additional Pod ledger is introduced.
+A NotReady timeout remains in issue #380 or a separate RFC.
+
 ## Background and Motivation
 
 The RBG project has deficiencies in handling Pod abnormal states (e.g., Evicted, UnexpectedAdmissionError, Failed).

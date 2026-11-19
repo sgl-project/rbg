@@ -58,6 +58,10 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	}
 	klog.V(4).InfoS("validating RoleBasedGroup on create", "name", rbg.Name, "namespace", rbg.Namespace)
 
+	if err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", rbg.Spec.Roles); err != nil {
+		return nil, err
+	}
+
 	if err := ValidateExcludedOrdinals(rbg); err != nil {
 		return nil, err
 	}
@@ -197,6 +201,10 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		return nil, fmt.Errorf("expected *RoleBasedGroup but got %T", newObj)
 	}
 	klog.V(4).InfoS("validating RoleBasedGroup on update", "name", rbg.Name, "namespace", rbg.Namespace)
+
+	if err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", rbg.Spec.Roles); err != nil {
+		return nil, err
+	}
 
 	// Removing or replacing the owner in this update must not bypass placement
 	// validation. Only the new role configuration is validated, allowing cleanup.

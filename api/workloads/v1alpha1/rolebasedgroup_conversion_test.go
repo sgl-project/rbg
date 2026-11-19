@@ -1432,3 +1432,77 @@ func TestContainerJSONPatchConversionPreservesObjectBackedValue(t *testing.T) {
 	assert.NotSame(t, obj, back.Value.Object,
 		"ConvertFrom must not alias the source Object")
 }
+
+// TestRestartBudgetV2OnlyConversion models a v1alpha1 GET followed by an
+// unrelated spec update. Reading must leave the hub budget intact, but writing
+// through v1alpha1 intentionally drops v1alpha2-only restart configuration.
+func TestRestartBudgetV2OnlyConversion(t *testing.T) {
+	for _, set := range []bool{false, true} {
+		for _, pattern := range []string{"leaderWorker", "components"} {
+			for _, budget := range []*int32{nil, ptr.To(int32(0)), ptr.To(int32(9))} {
+				t.Run(fmt.Sprintf("set=%t/%s/budget=%v", set, pattern, ptr.Deref(budget, -1)), func(t *testing.T) {
+					cfg := &v2.RestartPolicyConfig{
+						Type: v2.RecreateRoleInstanceOnPodRestart, ActivateAfter: v2.RestartPolicyActivateAfterCreated,
+						BaseDelaySeconds: ptr.To(int32(0)), MaxDelaySeconds: ptr.To(int32(90)), MaxGroupRestarts: budget,
+					}
+					role := v2.RoleSpec{Name: "worker", Replicas: ptr.To(int32(1))}
+					if pattern == "leaderWorker" {
+						role.LeaderWorkerPattern = &v2.LeaderWorkerPattern{
+							Size: ptr.To(int32(2)), TemplateSource: v2.TemplateSource{Template: podTemplate("app")},
+							RestartPolicyConfig: cfg,
+						}
+					} else {
+						role.CustomComponentsPattern = &v2.CustomComponentsPattern{
+							Components:          []v2.InstanceComponent{{Name: "rank", Size: ptr.To(int32(2)), Template: *podTemplate("app")}},
+							RestartPolicyConfig: cfg,
+						}
+					}
+					spec := v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{role}}
+					var spokeSpec RoleBasedGroupSpec
+					var roundTripped v2.RoleBasedGroupSpec
+					var spokeJSON []byte
+					var err error
+					if set {
+						hub := &v2.RoleBasedGroupSet{}
+						hub.Spec.GroupTemplate.Spec = spec
+						before := hub.DeepCopy()
+						spoke := &RoleBasedGroupSet{}
+						require.NoError(t, spoke.ConvertFrom(hub))
+						assert.Equal(t, before, hub, "v1alpha1 GET must not mutate the hub object")
+						spokeSpec = spoke.Spec.Template
+						spokeJSON, err = json.Marshal(spoke)
+						require.NoError(t, err)
+						spoke.Spec.Template.Roles[0].Replicas = ptr.To(int32(3))
+						again := &v2.RoleBasedGroupSet{}
+						require.NoError(t, spoke.ConvertTo(again))
+						roundTripped = again.Spec.GroupTemplate.Spec
+						assert.Equal(t, before, hub, "a v1alpha1 spec write must not mutate its source hub in memory")
+					} else {
+						hub := &v2.RoleBasedGroup{Spec: spec}
+						before := hub.DeepCopy()
+						spoke := &RoleBasedGroup{}
+						require.NoError(t, spoke.ConvertFrom(hub))
+						assert.Equal(t, before, hub, "v1alpha1 GET must not mutate the hub object")
+						spokeSpec = spoke.Spec
+						spokeJSON, err = json.Marshal(spoke)
+						require.NoError(t, err)
+						spoke.Spec.Roles[0].Replicas = ptr.To(int32(3))
+						again := &v2.RoleBasedGroup{}
+						require.NoError(t, spoke.ConvertTo(again))
+						roundTripped = again.Spec
+						assert.Equal(t, before, hub, "a v1alpha1 spec write must not mutate its source hub in memory")
+					}
+					require.Len(t, spokeSpec.Roles, 1)
+					assert.Equal(t, RecreateRoleInstanceOnPodRestart, spokeSpec.Roles[0].RestartPolicy)
+					assert.NotContains(t, string(spokeJSON), "maxGroupRestarts", "the v1alpha1 wire representation must omit the budget, including explicit zero")
+					assert.NotContains(t, string(spokeJSON), "restartPolicyConfig", "v1alpha1 only exposes the legacy restartPolicy type")
+					require.Len(t, roundTripped.Roles, 1)
+					assert.Equal(t, ptr.To(int32(3)), roundTripped.Roles[0].Replicas)
+					assert.Equal(t, &v2.RestartPolicyConfig{Type: cfg.Type}, roundTripped.Roles[0].GetRawRestartPolicyConfig(),
+						"a v1alpha1 spec write keeps Type but drops budget, activation and backoff")
+					assert.Equal(t, budget, role.GetRawRestartPolicyConfig().MaxGroupRestarts, "the original v2 budget must remain intact")
+				})
+			}
+		}
+	}
+}

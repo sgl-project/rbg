@@ -607,3 +607,381 @@ func TestUpdateStatusPersistsRestartingCompletion(t *testing.T) {
 			cond.Reason == "RestartCompleted"
 	}), "a condition-only wave completion must be persisted")
 }
+
+func TestBudgetDrainStaleInformerStatusKeepsLiveGuard(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+		Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+		ActivateAfter:    workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+		MaxGroupRestarts: ptr.To[int32](2),
+	}
+	instance.Status.ObservedGeneration = instance.Generation
+	revisionControl := revisioncontrol.NewRevisionControl()
+	revision, err := revisionControl.NewRevision(instance, 1, ptr.To[int32](0))
+	require.NoError(t, err)
+	instance.Status.CurrentRevision = revision.Name
+	instance.Status.UpdateRevision = revision.Name
+	pods := []*v1.Pod{newReadinessTestPod(instance, "router"), newReadinessTestPod(instance, "sidecar")}
+	for i, pod := range pods {
+		pod.UID = types.UID(fmt.Sprintf("old-pod-%d", i))
+		pod.Labels = map[string]string{
+			constants.RoleInstanceNameLabelKey: instance.Name,
+			constants.ComponentNameLabelKey:    instance.Spec.Components[i].Name,
+			constants.ComponentIDLabelKey:      "0",
+		}
+		pod.Finalizers = []string{"test.rbg.io/hold-drain"}
+	}
+	pods[0].Status.Phase = v1.PodFailed
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(instance, &v1.Pod{}).WithObjects(instance, pods[0], pods[1]).Build()
+	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+	control.ClearRestarting(instance)
+	t.Cleanup(func() { control.ClearRestarting(instance) })
+	stale := instance.DeepCopy()
+	accepted := instance.DeepCopy()
+	handled, _, err := control.Scale(ctx, accepted, revision, revision, nil, pods[1:], pods[:1])
+	require.NoError(t, err)
+	require.True(t, handled)
+
+	// Run the next status computation with the old informer snapshot while
+	// retained original Pods keep the accepted restart wave in progress.
+	r := &reconciler{revisionControl: revisionControl, syncControl: control}
+	computed := stale.Status.DeepCopy()
+	result := r.syncInstance(ctx, stale, computed, revision, revision, nil, pods[1:], pods[:1])
+	require.NoError(t, result.err)
+	updater := &realStatusUpdater{Client: c, apiReader: c}
+	updater.calculateStatus(stale, computed, slices.Clone(computed.Conditions), pods[1:])
+	require.NoError(t, updater.updateStatus(ctx, stale, computed))
+	live := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.EqualValues(t, 1, live.Status.GroupRestartCount)
+	require.True(t, slices.ContainsFunc(live.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+		return cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue
+	}), "a stale status computation must not erase the active budget wave")
+}
+
+func TestBudgetRestartCommitResponseLostKeepsGuard(t *testing.T) {
+	for _, reject := range []bool{false, true} {
+		for _, retryStatus := range []bool{false, true} {
+			t.Run(fmt.Sprintf("reject=%t/statusRetry=%t", reject, retryStatus), func(t *testing.T) {
+				ctx := context.Background()
+				instance := newReadinessTestInstance()
+				instance.Spec.ReadinessGates = nil
+				instance.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+					Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+					ActivateAfter:    workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+					MaxGroupRestarts: ptr.To[int32](1), BaseDelaySeconds: ptr.To[int32](0), MaxDelaySeconds: ptr.To[int32](0),
+				}
+				instance.Status.ObservedGeneration = instance.Generation
+				revisions := revisioncontrol.NewRevisionControl()
+				revision, err := revisions.NewRevision(instance, 1, ptr.To[int32](0))
+				require.NoError(t, err)
+				instance.Status.CurrentRevision, instance.Status.UpdateRevision = revision.Name, revision.Name
+				pods := []*v1.Pod{newReadinessTestPod(instance, "router"), newReadinessTestPod(instance, "sidecar")}
+				for i, pod := range pods {
+					pod.UID = types.UID(fmt.Sprintf("original-%d", i))
+					pod.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+					pod.Finalizers = []string{"test.rbg.io/hold-original"}
+					pod.Labels = map[string]string{
+						constants.RoleInstanceNameLabelKey: instance.Name,
+						constants.ComponentNameLabelKey:    instance.Spec.Components[i].Name,
+						constants.ComponentIDLabelKey:      "0",
+					}
+				}
+				pods[0].Status.Phase = v1.PodFailed
+				base := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(instance, &v1.Pod{}).
+					WithObjects(instance, pods[0], pods[1]).Build()
+				patches, deletes, statusWrites := 0, 0, 0
+				cli := interceptor.NewClient(base, interceptor.Funcs{
+					SubResourcePatch: func(ctx context.Context, inner client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+						patches++
+						if reject {
+							return apierrors.NewConflict(schema.GroupResource{Resource: "roleinstances"}, obj.GetName(), fmt.Errorf("injected rejection"))
+						}
+						// Storage commits, but the caller never receives the successful response.
+						require.NoError(t, inner.SubResource(sub).Patch(ctx, obj.DeepCopyObject().(client.Object), patch, opts...))
+						return fmt.Errorf("injected lost commit response")
+					},
+					SubResourceUpdate: func(ctx context.Context, inner client.Client, sub string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+						statusWrites++
+						if retryStatus && statusWrites == 1 {
+							return apierrors.NewConflict(schema.GroupResource{Resource: "roleinstances"}, obj.GetName(), fmt.Errorf("injected status conflict"))
+						}
+						return inner.SubResource(sub).Update(ctx, obj, opts...)
+					},
+					Delete: func(ctx context.Context, inner client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+						deletes++
+						return inner.Delete(ctx, obj, opts...)
+					},
+				})
+				control := synccontrol.New(cli, base, record.NewFakeRecorder(20), nil)
+				control.ClearRestarting(instance)
+				t.Cleanup(func() { control.ClearRestarting(instance) })
+				r := &reconciler{revisionControl: revisions, syncControl: control}
+				computed := instance.Status.DeepCopy()
+				result := r.syncInstance(ctx, instance, computed, revision, revision, nil, pods[1:], pods[:1])
+				require.Error(t, result.err)
+				require.Equal(t, 1, patches)
+				require.Zero(t, deletes)
+				getLive := func() *workloadsv1alpha2.RoleInstance {
+					live := &workloadsv1alpha2.RoleInstance{}
+					require.NoError(t, base.Get(ctx, client.ObjectKeyFromObject(instance), live))
+					return live
+				}
+				committed := getLive()
+				require.NoError(t, newStatusUpdater(cli, base).UpdateInstanceStatus(ctx, instance, computed, pods[1:]))
+				live := getLive()
+				require.Equal(t, committed.Status.GroupRestartCount, live.Status.GroupRestartCount)
+				require.Equal(t, committed.Status.RestartCount, live.Status.RestartCount)
+				require.Equal(t, committed.Status.LastRestartTime, live.Status.LastRestartTime)
+				hasGuard := slices.ContainsFunc(live.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+					return cond.Type == workloadsv1alpha2.RoleInstanceRestarting && cond.Status == v1.ConditionTrue
+				})
+				if reject {
+					require.Zero(t, live.Status.GroupRestartCount)
+					require.False(t, hasGuard, "a rejected transaction must not acquire a guard")
+					return
+				}
+				require.EqualValues(t, 1, live.Status.GroupRestartCount)
+				require.True(t, hasGuard, "error-path status writing must preserve the committed restart intent")
+				// With no in-memory marker, the next serialized reconcile resumes the
+				// committed wave instead of exhausting the already-consumed budget.
+				retryControl := synccontrol.New(base, base, record.NewFakeRecorder(20), nil)
+				handled, _, err := retryControl.Scale(ctx, live, revision, revision, nil, pods[1:], pods[:1])
+				require.NoError(t, err)
+				require.True(t, handled)
+				require.False(t, getLive().Status.RestartBudgetExhausted)
+				require.EqualValues(t, 1, getLive().Status.GroupRestartCount)
+				for _, original := range pods {
+					pod := &v1.Pod{}
+					require.NoError(t, base.Get(ctx, client.ObjectKeyFromObject(original), pod))
+					require.Equal(t, original.UID, pod.UID)
+					require.NotNil(t, pod.DeletionTimestamp)
+				}
+			})
+		}
+	}
+}
+
+func TestBudgetRestartConditionUsesPersistedTransaction(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		live, cached v1.ConditionStatus
+		ready        bool
+		want         v1.ConditionStatus
+	}{
+		{name: "accepted replaces cached completion", live: v1.ConditionTrue, cached: v1.ConditionFalse, want: v1.ConditionTrue},
+		{name: "completion cannot be resurrected", live: v1.ConditionFalse, cached: v1.ConditionTrue, want: v1.ConditionFalse},
+		{name: "recovery removed guard", cached: v1.ConditionTrue},
+		{name: "ready drops completed guard", live: v1.ConditionFalse, cached: v1.ConditionFalse, ready: true},
+		{name: "stale ready cannot erase accepted guard", live: v1.ConditionTrue, ready: true, want: v1.ConditionTrue},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			instance := newReadinessTestInstance()
+			instance.Status.GroupRestartRevision = "budget-revision"
+			instance.Status.Conditions = nil
+			if tc.live != "" {
+				instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+					Type: workloadsv1alpha2.RoleInstanceRestarting, Status: tc.live,
+				})
+			}
+			cli := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(instance).WithObjects(instance).Build()
+			computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
+			if tc.cached != "" {
+				computed.Conditions = append(computed.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+					Type: workloadsv1alpha2.RoleInstanceRestarting, Status: tc.cached,
+				})
+			}
+			if tc.ready {
+				computed.Conditions = append(computed.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+					Type: workloadsv1alpha2.RoleInstanceReady, Status: v1.ConditionTrue,
+				})
+			}
+			before := computed.DeepCopy()
+			require.NoError(t, (&realStatusUpdater{Client: cli, apiReader: cli}).updateStatus(ctx, instance, computed))
+			require.Equal(t, before, computed, "merging persisted conditions must not mutate computed status")
+			live := &workloadsv1alpha2.RoleInstance{}
+			require.NoError(t, cli.Get(ctx, client.ObjectKeyFromObject(instance), live))
+			var guards []workloadsv1alpha2.RoleInstanceCondition
+			for _, cond := range live.Status.Conditions {
+				if cond.Type == workloadsv1alpha2.RoleInstanceRestarting {
+					guards = append(guards, cond)
+				}
+			}
+			if tc.want == "" {
+				require.Empty(t, guards)
+			} else {
+				require.Len(t, guards, 1)
+				require.Equal(t, tc.want, guards[0].Status)
+			}
+		})
+	}
+}
+
+func TestStatusWithInformerPredatingBudget(t *testing.T) {
+	for _, lag := range []string{"caller-only", "reader-then-refresh", "reader-stays-stale", "generation"} {
+		t.Run(lag, func(t *testing.T) {
+			ctx := context.Background()
+			stale := newReadinessTestInstance()
+			live := stale.DeepCopy()
+			live.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+				Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](1),
+			}
+			if lag == "generation" {
+				live.Generation++
+			}
+			live.Status.GroupRestartCount = 1
+			live.Status.GroupRestartRevision = "budget-revision"
+			live.Status.RestartBudgetExhausted = true
+			synccontrol.EnforceRestartBudgetConditions(live)
+			base := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(live).WithObjects(live).Build()
+			// Match a real informer snapshot's old resourceVersion so stale writes
+			// conflict instead of receiving the fake client's unconditional update.
+			fresh := &workloadsv1alpha2.RoleInstance{}
+			require.NoError(t, base.Get(ctx, client.ObjectKeyFromObject(live), fresh))
+			stale.ResourceVersion = fresh.ResourceVersion
+			fresh.Status.LabelSelector = "newer-status"
+			require.NoError(t, base.Status().Update(ctx, fresh))
+			reads := 0
+			cache := interceptor.NewClient(base, interceptor.Funcs{
+				Get: func(ctx context.Context, cli client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					reads++
+					if lag == "reader-stays-stale" || (lag == "reader-then-refresh" && reads == 1) {
+						stale.DeepCopyInto(obj.(*workloadsv1alpha2.RoleInstance))
+						return nil
+					}
+					return cli.Get(ctx, key, obj, opts...)
+				},
+			})
+			computed := stale.Status.DeepCopy()
+			computed.ObservedGeneration = stale.Generation
+			computed.Conditions = []workloadsv1alpha2.RoleInstanceCondition{{Type: workloadsv1alpha2.RoleInstanceReady, Status: v1.ConditionTrue}}
+			err := newStatusUpdater(cache, base).(*realStatusUpdater).updateStatus(ctx, stale, computed)
+			if lag == "reader-stays-stale" {
+				require.True(t, apierrors.IsConflict(err), "old cache revisions must never overwrite new live state")
+			} else {
+				require.NoError(t, err)
+			}
+			require.NoError(t, base.Get(ctx, client.ObjectKeyFromObject(live), fresh))
+			require.EqualValues(t, 1, fresh.Status.GroupRestartCount)
+			require.Equal(t, "budget-revision", fresh.Status.GroupRestartRevision)
+			require.True(t, fresh.Status.RestartBudgetExhausted)
+			require.True(t, slices.ContainsFunc(fresh.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+				return cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionFalse
+			}))
+		})
+	}
+}
+
+func TestStaleStatusPreservesLiveRestartBudget(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+		Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](2),
+	}
+	stale := instance.DeepCopy()
+	instance.Status.GroupRestartCount = 2
+	instance.Status.GroupRestartRevision = "template-hash"
+	instance.Status.RestartBudgetExhausted = true
+	instance.Status.Conditions = append(instance.Status.Conditions, workloadsv1alpha2.RoleInstanceCondition{Type: workloadsv1alpha2.RoleInstanceCustomReady, Status: v1.ConditionFalse, Reason: "LiveExternal"})
+	synccontrol.EnforceRestartBudgetConditions(instance)
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(instance).WithObjects(instance).Build()
+	updater := &realStatusUpdater{Client: c, apiReader: c}
+	status := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation, Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+		{Type: workloadsv1alpha2.RoleInstanceReady, Status: v1.ConditionTrue},
+		{Type: workloadsv1alpha2.RoleInstanceCustomReady, Status: v1.ConditionTrue, Reason: "StaleExternal"},
+	}}
+	require.NoError(t, updater.updateStatus(ctx, stale, status))
+	live := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.EqualValues(t, 2, live.Status.GroupRestartCount)
+	require.Equal(t, "template-hash", live.Status.GroupRestartRevision)
+	require.True(t, live.Status.RestartBudgetExhausted)
+	conditions := map[workloadsv1alpha2.RoleInstanceConditionType]workloadsv1alpha2.RoleInstanceCondition{}
+	for _, condition := range live.Status.Conditions {
+		require.NotContains(t, conditions, condition.Type)
+		conditions[condition.Type] = condition
+	}
+	require.Equal(t, v1.ConditionFalse, conditions[workloadsv1alpha2.RoleInstanceReady].Status)
+	require.Equal(t, synccontrol.GroupRestartBudgetExceeded, conditions[workloadsv1alpha2.RoleInstanceDegraded].Reason)
+	// CustomReady is projected into computed status by main's status model, so
+	// it follows that ownership rule; only budget state is merged from live here.
+	require.Equal(t, "StaleExternal", conditions[workloadsv1alpha2.RoleInstanceCustomReady].Reason)
+	// Nor can a stale exhausted snapshot resurrect state after explicit recovery.
+	stale = live.DeepCopy()
+	live.Status.RestartBudgetExhausted = false
+	live.Status.GroupRestartCount = 0
+	live.Status.Conditions = nil
+	require.NoError(t, c.Status().Update(ctx, live))
+	staleStatus := stale.Status.DeepCopy()
+	require.NoError(t, updater.updateStatus(ctx, stale, staleStatus))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.False(t, live.Status.RestartBudgetExhausted)
+	require.Zero(t, live.Status.GroupRestartCount)
+	for _, cond := range live.Status.Conditions {
+		require.NotEqual(t, workloadsv1alpha2.RoleInstanceDegraded, cond.Type)
+	}
+}
+
+type budgetStatusWriteCounter struct {
+	client.Client
+	writes int
+}
+type budgetCountingStatusWriter struct {
+	client.SubResourceWriter
+	owner *budgetStatusWriteCounter
+}
+
+func (c *budgetStatusWriteCounter) Status() client.SubResourceWriter {
+	return &budgetCountingStatusWriter{SubResourceWriter: c.Client.Status(), owner: c}
+}
+func (c *budgetCountingStatusWriter) Update(ctx context.Context, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+	c.owner.writes++
+	return c.SubResourceWriter.Update(ctx, obj, opts...)
+}
+
+func TestExhaustedRestartBudgetStatusConverges(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.ReadyPolicy = workloadsv1alpha2.RoleInstanceReadyPolicyTypeNone
+	instance.Status.RestartBudgetExhausted = true
+	instance.Status.GroupRestartRevision = "template"
+	synccontrol.EnforceRestartBudgetConditions(instance)
+	cli := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(instance).WithObjects(instance).Build()
+	counter := &budgetStatusWriteCounter{Client: cli}
+	updater := newStatusUpdater(counter, cli)
+	update := func() {
+		live := &workloadsv1alpha2.RoleInstance{}
+		require.NoError(t, cli.Get(ctx, client.ObjectKeyFromObject(instance), live))
+		status := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: live.Generation}
+		require.NoError(t, updater.UpdateInstanceStatus(ctx, live, status, nil))
+	}
+	update()
+	require.Positive(t, counter.writes, "initial component-status projection should be written")
+	writes := counter.writes
+	update()
+	require.Equal(t, writes, counter.writes, "unchanged exhausted conditions must not rewrite status every reconcile")
+}
+
+func TestStaleBudgetStatusDoesNotRollBackObservedGeneration(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+		Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](2),
+	}
+	stale := instance.DeepCopy()
+	instance.Status.ObservedGeneration = 5
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithStatusSubresource(instance).WithObjects(instance).Build()
+	updater := &realStatusUpdater{Client: c, apiReader: c}
+	require.NoError(t, updater.updateStatus(ctx, stale, &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1}))
+	live := &workloadsv1alpha2.RoleInstance{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.EqualValues(t, 5, live.Status.ObservedGeneration)
+	// Different RI UID at the same name must never receive the old object's status.
+	stale.UID = "old-uid"
+	require.NoError(t, updater.updateStatus(ctx, stale, &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 9, LastRestartTime: &metav1.Time{}}))
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
+	require.EqualValues(t, 5, live.Status.ObservedGeneration)
+}
