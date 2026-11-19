@@ -18,6 +18,7 @@ package roleinstance
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"slices"
 	"strings"
@@ -423,10 +424,19 @@ func TestSameNameForeignPodConflictIsNotABlocker(t *testing.T) {
 
 	computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
 	result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, nil)
-	require.ErrorContains(t, result.err, "is not controlled by RoleInstance")
-	require.False(t, slices.ContainsFunc(computed.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
-		return condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue
-	}), "a recreate race with garbage collection must not publish a blocker condition")
+	require.ErrorContains(t, result.err, "awaiting garbage collection")
+	var marker *workloadsv1alpha2.RoleInstanceCondition
+	for i := range computed.Conditions {
+		condition := &computed.Conditions[i]
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue {
+			marker = condition
+		}
+	}
+	// The race is not a blocker, but a durable marker is persisted: it
+	// deduplicates the identical Warning Events of repeated retries.
+	require.NotNil(t, marker)
+	require.Equal(t, workloadsv1alpha2.ReasonPodRecreateRace, marker.Reason)
+	require.Contains(t, marker.Message, "awaiting garbage collection")
 }
 
 func TestGenuinelyForeignPodConflictPublishesBlocker(t *testing.T) {
@@ -463,6 +473,39 @@ func TestGenuinelyForeignPodConflictPublishesBlocker(t *testing.T) {
 	}
 	require.NotNil(t, blocker, "a genuinely foreign Pod must stay a published blocker")
 	require.Equal(t, workloadsv1alpha2.ReasonPodOperationUnclassified, blocker.Reason)
+}
+
+func TestRecreateRaceMarkerDeduplicatesEvents(t *testing.T) {
+	race := &synccontrol.RecreatePodConflictError{Pod: "default/ri-a-0", Instance: "default/ri-a", UID: "uid"}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "ri-a", Namespace: "default", Generation: 2},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{{
+				Type: workloadsv1alpha2.RoleInstanceProgressing, Status: v1.ConditionTrue,
+				Reason:  workloadsv1alpha2.ReasonPodRecreateRace,
+				Message: race.Error(),
+			}},
+		},
+	}
+	recorder := record.NewFakeRecorder(1)
+	r := &reconciler{recorder: recorder}
+
+	// The persisted race marker carries the error message, so an identical
+	// retry emits no second Warning Event.
+	r.emitOperationFailureEvent(instance, workloadsv1alpha2.ReasonPodRecreateRace, race)
+	select {
+	case event := <-recorder.Events:
+		t.Fatalf("identical retry must be deduplicated, got event %q", event)
+	default:
+	}
+
+	// A different failure still emits.
+	r.emitOperationFailureEvent(instance, workloadsv1alpha2.ReasonPodOperationUnclassified, stderrors.New("different failure"))
+	select {
+	case <-recorder.Events:
+	default:
+		t.Fatal("a different failure must emit an event")
+	}
 }
 
 func TestMixedForeignConflictAndQuotaFailurePublishesBlocker(t *testing.T) {

@@ -692,6 +692,27 @@ func TestGangObservationReadErrorReportsIncomplete(t *testing.T) {
 			t.Fatal("an absent PodGroup must not be a waiting fact")
 		}
 	})
+
+	t.Run("gang strategy read failure is an observation error", func(t *testing.T) {
+		// The gang strategy resolves through CoordinatedPolicy; a read failure
+		// cannot determine whether gang scheduling applies at all and must not
+		// become a definite not-waiting fact while the reconcile later aborts.
+		c := fake.NewClientBuilder().WithScheme(scheme).
+			WithInterceptorFuncs(interceptor.Funcs{
+				Get: func(ctx context.Context, cc client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+					if _, ok := obj.(*workloadsv1alpha2.CoordinatedPolicy); ok {
+						return apierrors.NewForbidden(
+							schema.GroupResource{Group: "workloads.x-k8s.io", Resource: "coordinatedpolicies"},
+							key.Name, stderrors.New("coordinatedpolicies is forbidden"))
+					}
+					return cc.Get(ctx, key, obj, opts...)
+				},
+			}).Build()
+		r := &RoleBasedGroupReconciler{client: c, apiReader: c, scheme: scheme, workloadReconciler: map[string]reconciler.WorkloadReconciler{}}
+		if _, err := r.observeGangWaiting(ctx, rbg); err == nil {
+			t.Fatal("a CoordinatedPolicy read failure must be reported as an observation error")
+		}
+	})
 }
 
 func TestRetainRBGBlockerFamily(t *testing.T) {

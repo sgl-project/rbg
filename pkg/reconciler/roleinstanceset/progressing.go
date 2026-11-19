@@ -371,11 +371,16 @@ var setEstablishmentReasons = map[string]bool{
 // persistedProgressingReason returns the persisted True-condition Progressing
 // reason, or "" when absent. It is the durable record of the workflow that was
 // last reported and is used to keep update- and recovery-driven replacement
-// attributed to their workflow across intermediate observations.
+// attributed to their workflow across intermediate observations. Workflow
+// evidence must describe the current target: a True condition written for an
+// older generation can misattribute a pure scale-up to an update or recovery
+// workflow. Durable establishment is tracked separately and does not require
+// the current generation.
 func persistedProgressingReason(set *workloadsv1alpha2.RoleInstanceSet) string {
 	for _, condition := range set.Status.Conditions {
 		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
-			condition.Status == v1.ConditionTrue && condition.Reason != "" {
+			condition.Status == v1.ConditionTrue && condition.Reason != "" &&
+			condition.ObservedGeneration == set.Generation {
 			return condition.Reason
 		}
 	}

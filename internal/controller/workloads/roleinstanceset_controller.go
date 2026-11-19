@@ -164,6 +164,10 @@ func (r *RoleInstanceSetReconciler) validateCommittedMembership(ctx context.Cont
 	updated.Status.Conditions = conditions
 	if validationErr != nil {
 		r.recorder.Event(set, corev1.EventTypeWarning, invalidCommittedOrdinalsReason, validationErr.Error())
+		// The controller returns before the normal status path, so the overall
+		// observedGeneration must advance here: KEP-502 requires the preflight
+		// blocker to record that it describes the current generation.
+		updated.Status.ObservedGeneration = set.Generation
 		blocker := v1alpha2.RoleInstanceSetCondition{
 			Type: v1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
 			Reason: constants.ProgressingReasonInvalidSpec, Message: validationErr.Error(),

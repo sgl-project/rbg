@@ -384,9 +384,15 @@ func (r *RoleBasedGroupReconciler) observeGangWaiting(ctx context.Context, rbg *
 		return false, nil
 	}
 	strategy, err := gangcommon.GetGangStrategy(ctx, r.client, rbg)
-	if err != nil || strategy == nil {
-		// Gang scheduling is not enabled, or the strategy cannot be determined;
-		// neither is a waiting fact.
+	if err != nil {
+		// A CoordinatedPolicy read failure cannot determine whether gang
+		// scheduling applies at all. Reporting not-waiting would fabricate a
+		// cleared fact while the reconcile later aborts on the same error, so
+		// the observation is reported as incomplete instead.
+		return false, err
+	}
+	if strategy == nil {
+		// Gang scheduling is not enabled: a fact, not an error.
 		return false, nil
 	}
 	for _, gvk := range gangPodGroupGVKs {

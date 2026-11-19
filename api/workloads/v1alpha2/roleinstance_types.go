@@ -368,6 +368,13 @@ const (
 	// ReasonPodOperationUnclassified reports an operation failure whose family cannot be
 	// determined yet.
 	ReasonPodOperationUnclassified = "PodOperationUnclassified"
+
+	// ReasonPodRecreateRace reports that a Pod operation is waiting for a
+	// same-name Pod from a previous incarnation of this instance to be removed
+	// by garbage collection. It is not a current blocker: RIS and RBG do not map
+	// it to a blocker family, and the marker exists so the retry stays visible
+	// and identical Warning Events are deduplicated.
+	ReasonPodRecreateRace = "PodRecreateRace"
 )
 
 // RoleInstanceCondition describes the state of a RoleInstance at a certain point.

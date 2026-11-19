@@ -225,9 +225,10 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				set := newTestSet(3)
 				set.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(2))
 				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
-					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
-					Status: corev1.ConditionTrue,
-					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status:             corev1.ConditionTrue,
+					Reason:             workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					ObservedGeneration: set.Generation,
 				}}
 				return set
 			}(),
@@ -269,9 +270,10 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				set := newTestSet(3)
 				set.Spec.UpdateStrategy.Paused = true
 				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
-					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
-					Status: corev1.ConditionTrue,
-					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status:             corev1.ConditionTrue,
+					Reason:             workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					ObservedGeneration: set.Generation,
 				}}
 				return set
 			}(),
@@ -335,6 +337,31 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				{},
 				{Status: workloadsv1alpha2.RoleInstanceStatus{LastReadyGeneration: 2}},
 			},
+			wantReason: workloadconstants.ProgressingReasonScalingUp,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "stale persisted update reason from an older generation does not attribute a scale-up",
+			// Workflow evidence must describe the current target: a persisted
+			// RoleInstanceUpdated from the prior generation must not turn a pure
+			// scale-up gap into update work.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Replicas, set.Status.ReadyReplicas, set.Status.UpdatedReplicas = 2, 2, 2
+				set.Status.ExpectedUpdatedReplicas = 2
+				set.Status.CurrentRevision, set.Status.UpdateRevision = "rev", "rev"
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status:             corev1.ConditionTrue,
+					Reason:             workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					ObservedGeneration: set.Generation - 1,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 2,
+			},
+			instances:  bareInstances(2),
 			wantReason: workloadconstants.ProgressingReasonScalingUp,
 			wantStatus: corev1.ConditionTrue,
 		},
@@ -555,9 +582,10 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				set.Status.ExpectedUpdatedReplicas = 2
 				set.Status.CurrentRevision, set.Status.UpdateRevision = "new", "new"
 				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
-					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
-					Status: corev1.ConditionTrue,
-					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status:             corev1.ConditionTrue,
+					Reason:             workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					ObservedGeneration: set.Generation,
 				}}
 				return set
 			}(),
@@ -574,9 +602,10 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				set := newTestSet(2)
 				set.Status.CurrentRevision, set.Status.UpdateRevision = "new", "new"
 				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
-					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
-					Status: corev1.ConditionTrue,
-					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status:             corev1.ConditionTrue,
+					Reason:             workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					ObservedGeneration: set.Generation,
 				}}
 				return set
 			}(),

@@ -229,19 +229,19 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		// The event carries the classification of the error that actually happened;
 		// only the condition retains a previously confirmed blocker family.
 		r.emitOperationFailureEvent(instance, scaleReason, podsScaleErr)
-		// A Scale aggregate can mix a same-name foreign-Pod conflict with a
-		// sibling's real failure; the condition is skipped only when every
-		// constituent is the recreate race, so a mixed aggregate still publishes
-		// the classified blocker and event and status agree.
-		if !onlySameNameForeignPodConflicts(podsScaleErr) {
-			newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
-				Type:               workloadsv1alpha2.RoleInstanceProgressing,
-				Status:             v1.ConditionTrue,
-				LastTransitionTime: metav1.Now(),
-				Reason:             r.stableBlockerReason(instance, scaleReason),
-				Message:            podsScaleErr.Error(),
-			})
-		}
+		// A pure recreate race is not a blocker, but its marker is still
+		// persisted: it deduplicates the identical Warning Events of repeated
+		// retries, and a previously confirmed current-generation blocker family
+		// is retained rather than replaced by an activity condition while the
+		// retried operation keeps failing. A mixed aggregate classifies to the
+		// sibling's real family, so event and status agree.
+		newStatus.Conditions = append(newStatus.Conditions, workloadsv1alpha2.RoleInstanceCondition{
+			Type:               workloadsv1alpha2.RoleInstanceProgressing,
+			Status:             v1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             r.stableBlockerReason(instance, scaleReason),
+			Message:            podsScaleErr.Error(),
+		})
 	}
 	// Propagate the Restarting condition mutated during Scale: True while a
 	// recreation wave is in progress, and False (RestartCompleted) once every
@@ -471,6 +471,7 @@ func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newSta
 		podsPresent:           podsPresent,
 		readySatisfied:        readySatisfied,
 		previouslyEstablished: confirmedGeneration != 0,
+		newInstance:           instance.Status.ObservedGeneration == 0,
 	}
 }
 
@@ -573,11 +574,12 @@ func (r *reconciler) emitOperationFailureEvent(instance *workloadsv1alpha2.RoleI
 }
 
 // stableBlockerReason keeps a previously confirmed blocker family when a new error
-// cannot be classified: an unclassifiable error does not establish that the confirmed
-// blocker no longer holds, so the family is retained until a fresh observation clears
-// or replaces it.
+// cannot be classified, or when the retry failure is the recreate race: neither
+// establishes that the confirmed blocker no longer holds, so the family is
+// retained until a fresh observation clears or replaces it.
 func (r *reconciler) stableBlockerReason(instance *workloadsv1alpha2.RoleInstance, reason string) string {
-	if reason != workloadsv1alpha2.ReasonPodOperationUnclassified {
+	if reason != workloadsv1alpha2.ReasonPodOperationUnclassified &&
+		reason != workloadsv1alpha2.ReasonPodRecreateRace {
 		return reason
 	}
 	for _, condition := range instance.Status.Conditions {

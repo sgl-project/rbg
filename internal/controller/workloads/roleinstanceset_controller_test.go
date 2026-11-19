@@ -117,6 +117,11 @@ func TestValidateCommittedMembershipReplacesProgressing(t *testing.T) {
 			if progressing[0].ObservedGeneration != set.Generation {
 				t.Fatalf("observedGeneration = %d, want %d", progressing[0].ObservedGeneration, set.Generation)
 			}
+			// The preflight returns before the normal status path, so the
+			// overall observedGeneration must advance with the blocker.
+			if patched.Status.ObservedGeneration != set.Generation {
+				t.Fatalf("status observedGeneration = %d, want %d", patched.Status.ObservedGeneration, set.Generation)
+			}
 			if tc.wantLastTimeKept && !progressing[0].LastTransitionTime.Equal(&priorTime) {
 				t.Fatalf("lastTransitionTime must be preserved for a True→True transition, got %v", progressing[0].LastTransitionTime)
 			}

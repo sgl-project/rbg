@@ -50,6 +50,11 @@ type roleInstancePhaseFacts struct {
 	// matters when the persisted phase is absent, to initialize an upgraded object
 	// from confirmed workflow facts instead of defaulting to initial creation.
 	previouslyEstablished bool
+
+	// newInstance reports that the object has never written status: a genuinely
+	// new instance. Only such objects start at Creating; an existing object with
+	// an absent phase and incomplete observations keeps the phase absent.
+	newInstance bool
 }
 
 // instanceBlockerReasons are the RI Progressing reasons that report a confirmed
@@ -82,6 +87,9 @@ var instanceBlockerFamilyPriority = []string{
 	workloadsv1alpha2.ReasonPodUpdateQuotaExceeded,
 	workloadsv1alpha2.ReasonInstanceInsufficientResources,
 	workloadsv1alpha2.ReasonPodOperationUnclassified,
+	// The recreate race is deliberately last: in a mixed aggregate a real
+	// failure of any family — including unclassified — outranks it.
+	workloadsv1alpha2.ReasonPodRecreateRace,
 }
 
 func instanceBlockerPriority(reason string) int {
@@ -126,7 +134,14 @@ func nextRoleInstancePhase(current workloadsv1alpha2.RoleInstancePhase, facts ro
 		case facts.podsPresent && facts.readySatisfied:
 			return workloadsv1alpha2.RoleInstancePhaseRunning
 		default:
-			return workloadsv1alpha2.RoleInstancePhaseCreating
+			// Uncertainty on an existing object leaves the phase absent per
+			// KEP-502: an absent phase with incomplete observations and no
+			// confirmed workflow facts may be a legacy object that never latched
+			// readiness, not a genuinely new instance.
+			if facts.newInstance {
+				return workloadsv1alpha2.RoleInstancePhaseCreating
+			}
+			return ""
 		}
 	case workloadsv1alpha2.RoleInstancePhaseCreating:
 		// The current creation target must have taken effect before Creating exits:
@@ -198,6 +213,10 @@ func classifyPodOperationError(operation string, err error) string {
 func classifySinglePodOperationError(operation string, err error) string {
 	if err == nil {
 		return ""
+	}
+	var race *synccontrol.RecreatePodConflictError
+	if stderrors.As(err, &race) {
+		return workloadsv1alpha2.ReasonPodRecreateRace
 	}
 	switch {
 	case apierrors.IsForbidden(err):
@@ -274,39 +293,6 @@ func isQuotaExceededError(err error) bool {
 	return strings.Contains(err.Error(), "exceeded quota")
 }
 
-// isSameNameForeignPodConflict reports whether a Pod operation failed with a
-// collision that is provably the recreate flow racing garbage collection: the
-// same-name Pod is being deleted, or it belongs to a previous UID of the same
-// RoleInstance. A collision with a genuinely foreign Pod is not this race and
-// is still published as a current blocker. The error is still returned for the
-// retry; only the blocker condition is skipped.
-func isSameNameForeignPodConflict(err error) bool {
-	if err == nil {
-		return false
-	}
-	var race *synccontrol.RecreatePodConflictError
-	return stderrors.As(err, &race)
-}
-
-// onlySameNameForeignPodConflicts reports whether every constituent of a joined
-// or aggregated Pod operation error is a same-name foreign-Pod conflict. A
-// Scale aggregate can mix the conflict with a sibling's real failure: the
-// blocker condition must only be skipped when the whole failure is the recreate
-// race, otherwise the sibling's quota, permission, or admission blocker is
-// still classified and published.
-func onlySameNameForeignPodConflicts(err error) bool {
-	constituents := flattenPodOperationErrors(err)
-	if len(constituents) == 0 {
-		return false
-	}
-	for _, single := range constituents {
-		if !isSameNameForeignPodConflict(single) {
-			return false
-		}
-	}
-	return true
-}
-
 // instanceProgressingBlocker returns the highest-priority blocker Progressing
 // condition recorded by this reconcile, if any: scale and update operations can both
 // fail in one reconcile, and a lower-priority failure appended first must not hide a
@@ -366,6 +352,19 @@ func computeInstanceProgressingCondition(instance *workloadsv1alpha2.RoleInstanc
 			ObservedGeneration: instance.Generation,
 		}
 		return progressing
+	}
+
+	// The recreate-race marker is not a blocker, but it outranks phase-derived
+	// activity: the retry is actively waiting for garbage collection, and the
+	// persisted message deduplicates the Warning Events of identical retries.
+	for _, condition := range newInnerConditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing &&
+			condition.Status == v1.ConditionTrue &&
+			condition.Reason == workloadsv1alpha2.ReasonPodRecreateRace {
+			progressing := condition
+			progressing.ObservedGeneration = instance.Generation
+			return progressing
+		}
 	}
 
 	progressing := workloadsv1alpha2.RoleInstanceCondition{
