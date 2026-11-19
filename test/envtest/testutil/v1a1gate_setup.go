@@ -169,8 +169,15 @@ func EnableV1a2Gate() {
 			resource: "rolebasedgroupsets",
 		},
 	})
-	if err := K8sClient.Create(Ctx, config); err != nil && !apierrors.IsAlreadyExists(err) {
-		Expect(err).NotTo(HaveOccurred())
+	if err := K8sClient.Create(Ctx, config); err != nil {
+		if !apierrors.IsAlreadyExists(err) {
+			Expect(err).NotTo(HaveOccurred())
+		}
+		// A configuration left behind by a failed run can point at a stale
+		// webhook server (host, port, or CA bundle). Replace it wholesale
+		// instead of reusing it.
+		Expect(K8sClient.Delete(Ctx, config)).To(Succeed())
+		Expect(K8sClient.Create(Ctx, config)).To(Succeed())
 	}
 
 	// Wait for the gate to be active: a dry-run deprecated create through
@@ -271,7 +278,7 @@ func buildValidatingWebhookConfig(opts envtest.WebhookInstallOptions, specs []ga
 		})
 	}
 	return &admissionv1ValidatingConfig{
-		ObjectMeta: objectMeta("v1a1-gate-test-validating"),
+		ObjectMeta: objectMeta(v1a2GateConfigName),
 		Webhooks:   webhooks,
 	}
 }

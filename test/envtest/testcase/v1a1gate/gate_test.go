@@ -157,10 +157,11 @@ var _ = Describe("v1alpha1 grandfathering through conversion", Ordered, func() {
 	BeforeAll(func() {
 		// Seed an object whose role predates the gate: with the gate
 		// offline, create it through v1alpha1 with the deprecated
-		// apps/v1 StatefulSet type, then bring the gate back. The plain
-		// defer guarantees the gate is re-enabled even if the seed fails.
-		testutil.DisableV1a2Gate()
+		// apps/v1 StatefulSet type, then bring the gate back. Registering
+		// the restore defer before disabling guarantees the gate is
+		// re-enabled even if the seed fails.
 		defer testutil.EnableV1a2Gate()
+		testutil.DisableV1a2Gate()
 
 		rbg := buildV1a1RBG(seededName)
 		rbg.Spec.Roles[0].Workload = workloadsv1alpha1.WorkloadSpec{
