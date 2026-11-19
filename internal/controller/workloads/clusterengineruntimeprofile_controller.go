@@ -19,6 +19,7 @@ package workloads
 import (
 	"context"
 	"fmt"
+	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
@@ -33,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -48,8 +50,8 @@ const (
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=get;list;watch
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles/status,verbs=get;update;patch
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=get;list;watch
-// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=get;list;watch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroups,verbs=get;list;watch;update;patch
+// +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=rolebasedgroupsets,verbs=get;list;watch;update;patch
 // +kubebuilder:rbac:groups="",resources=events,verbs=create;patch
 
 // ClusterEngineRuntimeProfileReconciler maintains the KEP-531 reference
@@ -90,7 +92,11 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 	logger := log.FromContext(ctx).WithValues("clusterengineruntimeprofile", profile.Name)
 	ctx = ctrl.LoggerInto(ctx, logger)
 
-	refs, err := workloadsv1alpha2.ListEngineRuntimeProfileReferences(ctx, r.Client, profile.Name)
+	// The controller is the label's authority during convergence: it scans
+	// through the informer cache (no apiserver List cost) and uses the
+	// label-independent variant, so reference counting stays correct while
+	// pre-label objects are being backfilled.
+	refs, err := workloadsv1alpha2.ListAllEngineRuntimeProfileReferences(ctx, r.Client, profile.Name)
 	if err != nil {
 		return ctrl.Result{}, fmt.Errorf("listing engine runtime profile references: %w", err)
 	}
@@ -154,6 +160,14 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 		}
 	}
 
+	// Backfill after the status write: a failed label patch must not block
+	// status tracking, but it does return an error so the reconcile retries
+	// and the admission webhook keeps its unscoped fallback until the scan
+	// has completed cleanly.
+	if err := r.backfillHasEngineRuntimesLabels(ctx); err != nil {
+		return ctrl.Result{}, err
+	}
+
 	if mutatedWhileReferenced {
 		r.Recorder.Event(profile, corev1.EventTypeWarning, ReasonEngineRuntimeProfileMutatedWhileReferenced,
 			fmt.Sprintf(
@@ -162,6 +176,59 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 	}
 
 	return ctrl.Result{}, nil
+}
+
+// backfillHasEngineRuntimesLabels converges the has-engine-runtimes label
+// onto RoleBasedGroups and RoleBasedGroupSets whose writes predate the
+// label (the upgrade path), or bypassed the admission defaulters
+// (--enable-webhooks=none). The scan runs on the manager's informer cache;
+// only objects whose label state disagrees with their spec are patched, so
+// steady state costs one cached List and no writes. Label-only patches do
+// not change metadata.generation, so they do not re-trigger this
+// controller's watches.
+func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(ctx context.Context) error {
+	if workloadsv1alpha2.EngineRuntimeLabelConverged() {
+		// Every admitted write maintains the label, so a converged process
+		// only re-scans on restart. Objects written with webhooks disabled
+		// (--enable-webhooks=none) can drift; that is a debugging mode and
+		// the admission fallback is irrelevant without webhooks anyway.
+		return nil
+	}
+	rbgList := &workloadsv1alpha2.RoleBasedGroupList{}
+	if err := r.List(ctx, rbgList); err != nil {
+		return fmt.Errorf("listing rolebasedgroups for engine runtime label backfill: %w", err)
+	}
+	for i := range rbgList.Items {
+		rbg := &rbgList.Items[i]
+		desired := rbg.DeepCopy()
+		workloadsv1alpha2.SetHasEngineRuntimesLabel(desired)
+		if reflect.DeepEqual(rbg.Labels, desired.Labels) {
+			continue
+		}
+		if err := r.Patch(ctx, desired, client.MergeFrom(rbg)); err != nil {
+			return fmt.Errorf("backfilling engine runtime label on rolebasedgroup %s/%s: %w", rbg.Namespace, rbg.Name, err)
+		}
+	}
+
+	rbgsList := &workloadsv1alpha2.RoleBasedGroupSetList{}
+	if err := r.List(ctx, rbgsList); err != nil {
+		return fmt.Errorf("listing rolebasedgroupsets for engine runtime label backfill: %w", err)
+	}
+	for i := range rbgsList.Items {
+		rbgs := &rbgsList.Items[i]
+		desired := rbgs.DeepCopy()
+		workloadsv1alpha2.SetRoleBasedGroupSetHasEngineRuntimesLabel(desired)
+		if reflect.DeepEqual(rbgs.Labels, desired.Labels) {
+			continue
+		}
+		if err := r.Patch(ctx, desired, client.MergeFrom(rbgs)); err != nil {
+			return fmt.Errorf("backfilling engine runtime label on rolebasedgroupset %s/%s: %w", rbgs.Namespace, rbgs.Name, err)
+		}
+	}
+	// A clean full scan with no writes: the scoped admission lookup can
+	// take over from the unscoped fallback.
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
+	return nil
 }
 
 // SetupWithManager registers the controller. The CERP watch carries the
@@ -189,7 +256,31 @@ func profilesReferencedByRBG(_ context.Context, obj client.Object) []reconcile.R
 	if !ok {
 		return nil
 	}
+	flagLabelDrift(rbg.Labels, roleSpecHasEngineRuntimes(&rbg.Spec))
 	return profilesReferencedBy(&rbg.Spec)
+}
+
+// roleSpecHasEngineRuntimes reports whether any role of the spec references
+// an engine runtime profile.
+func roleSpecHasEngineRuntimes(spec *workloadsv1alpha2.RoleBasedGroupSpec) bool {
+	for i := range spec.Roles {
+		if len(spec.Roles[i].EngineRuntimes) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+// flagLabelDrift un-converges the label scan when a referencing object
+// arrives without the has-engine-runtimes label — a write that bypassed the
+// admission defaulters. The next profile reconcile then re-runs the
+// backfill, so a converged process does not stay blind to bypassed writes.
+func flagLabelDrift(labels map[string]string, references bool) {
+	if references {
+		if _, ok := labels[constants.HasEngineRuntimesLabelKey]; !ok {
+			workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+		}
+	}
 }
 
 // profilesReferencedByRBGSet maps a RoleBasedGroupSet to the profiles named
@@ -200,6 +291,7 @@ func profilesReferencedByRBGSet(_ context.Context, obj client.Object) []reconcil
 	if !ok {
 		return nil
 	}
+	flagLabelDrift(rbgs.Labels, roleSpecHasEngineRuntimes(&rbgs.Spec.GroupTemplate.Spec))
 	return profilesReferencedBy(&rbgs.Spec.GroupTemplate.Spec)
 }
 

@@ -26,6 +26,8 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // admissionHarness builds a validator over a fake reader seeded with the
@@ -46,17 +48,21 @@ func profileFor(name string) *ClusterEngineRuntimeProfile {
 }
 
 func rbgReferencing(name, namespace, profileName string) *RoleBasedGroup {
-	return &RoleBasedGroup{
+	rbg := &RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
 			Name:           "worker",
 			EngineRuntimes: []EngineRuntime{{ProfileName: profileName}},
 		}}},
 	}
+	// Every admitted write carries the label the webhook's scoped lookup
+	// selects on (see the defaulters and SetHasEngineRuntimesLabel).
+	SetHasEngineRuntimesLabel(rbg)
+	return rbg
 }
 
 func rbgsReferencing(name, namespace, profileName string, replicas int32) *RoleBasedGroupSet {
-	return &RoleBasedGroupSet{
+	rbgs := &RoleBasedGroupSet{
 		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
 		Spec: RoleBasedGroupSetSpec{
 			// zero replicas is the load-bearing case: a set's group
@@ -70,6 +76,8 @@ func rbgsReferencing(name, namespace, profileName string, replicas int32) *RoleB
 			}},
 		},
 	}
+	SetRoleBasedGroupSetHasEngineRuntimesLabel(rbgs)
+	return rbgs
 }
 
 // TestClusterEngineRuntimeProfileValidator pins the KEP-531 Profile
@@ -143,6 +151,26 @@ func TestClusterEngineRuntimeProfileValidator(t *testing.T) {
 		assert.Contains(t, err.Error(), "RoleBasedGroupSet ns-a/set")
 	})
 
+	t.Run("the unconverged fallback sees pre-label references", func(t *testing.T) {
+		// The upgrade window: a referencing object written before the label
+		// shipped is invisible to the scoped lookup, so admission falls
+		// back to the unscoped one until the controller reports
+		// convergence (#597).
+		unlabeled := rbgReferencing("grp-old", "ns-old", "ik")
+		delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+
+		v := admissionHarness(t, unlabeled)
+		_, err := v.ValidateDelete(ctx, profileFor("ik"))
+		require.Error(t, err, "the unconverged fallback must not miss a pre-label reference")
+
+		SetEngineRuntimeLabelConverged(true)
+		defer SetEngineRuntimeLabelConverged(false)
+		v = admissionHarness(t, unlabeled)
+		_, err = v.ValidateDelete(ctx, profileFor("ik"))
+		require.NoError(t, err,
+			"once converged, only labeled references are visible; the window is documented in KEP-531")
+	})
+
 	t.Run("a spec edit is admitted again once the last reference leaves", func(t *testing.T) {
 		v := admissionHarness(t)
 		old := profileFor("ik")
@@ -181,4 +209,31 @@ func TestListEngineRuntimeProfileReferences(t *testing.T) {
 		"RoleBasedGroup ns-b/grp-b",
 		"RoleBasedGroupSet ns-a/set-a",
 	}, strings)
+
+	t.Run("the unscoped variant also finds pre-label objects", func(t *testing.T) {
+		// The upgrade path: an object written before the label shipped (or
+		// past the admission defaulters) is invisible to the scoped lookup
+		// but remains a live reference for the controller's authority scan.
+		unlabeled := rbgReferencing("grp-old", "ns-old", "ik")
+		delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+		unscoped := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+			unlabeled,
+			rbgsReferencing("set-old", "ns-old", "ik", 0),
+		).Build()
+
+		scoped, err := ListEngineRuntimeProfileReferences(ctx, unscoped, "ik")
+		require.NoError(t, err)
+		assert.Len(t, scoped, 1, "only the labeled set is visible to the scoped lookup")
+
+		all, err := ListAllEngineRuntimeProfileReferences(ctx, unscoped, "ik")
+		require.NoError(t, err)
+		allStrings := make([]string, len(all))
+		for i := range all {
+			allStrings[i] = all[i].String()
+		}
+		assert.ElementsMatch(t, []string{
+			"RoleBasedGroup ns-old/grp-old",
+			"RoleBasedGroupSet ns-old/set-old",
+		}, allStrings)
+	})
 }
