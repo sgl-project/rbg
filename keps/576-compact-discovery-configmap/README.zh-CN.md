@@ -27,7 +27,6 @@
       - [组件编号](#组件编号)
       - [成员编码](#成员编码)
       - [写入与替换](#写入与替换)
-      - [存储上限](#存储上限)
     - [迁移](#迁移)
     - [测试计划](#测试计划)
       - [单元测试](#单元测试)
@@ -95,9 +94,9 @@
 
 ## 摘要
 
-本 KEP 把 `refine` 模式写入的 discovery ConfigMap 从逐实例全量枚举，改为按角色和组件描述的紧凑格式。
+本 KEP 把当前 discovery ConfigMap 从逐实例全量枚举，改为按角色和组件描述的紧凑格式。
 
-当前内容没有版本字段，本文称其为 **v1alpha1**。新内容显式写入：
+当前内容没有版本字段。本文将其命名为 **v1alpha1**。新内容显式写入：
 
 ```yaml
 apiVersion: v1
@@ -115,8 +114,8 @@ metadata:
 
 本 KEP 定义存储格式、替换语义和迁移步骤。消费者兼容层属于后续 KEP。
 
-本设计假设 legacy discovery 支持已被移除，只保留当前 `refine` 行为，因此
-不再需要 discovery mode 选择器。
+在本 KEP 实现前，必须移除 legacy discovery 支持。控制器只保留一个
+discovery 实现，不再需要 mode selector。
 
 ## 动机
 
@@ -124,7 +123,7 @@ metadata:
 
 #### 当前 v1alpha1 内容
 
-当前 `refine` 模式写入的 ConfigMap 内容如下：
+当前 discovery 实现写入的 ConfigMap 内容如下：
 
 ```yaml
 # ConfigMap: pd-inference
@@ -220,9 +219,9 @@ Service 兼容逻辑位于：
 5. v1 内容替换 v1alpha1 内容。
 6. 正确表达三种 RoleInstanceSet pattern 的 Pod DNS。
 7. 保留当前 `memberOrdinals` 的成员选择语义。
-8. 存储对象超过上限时可见失败。
-9. 去掉 legacy 支持、只保留现有 `refine` 行为，从而移除 discovery mode
-   选择器。
+8. 使用 API server 的 1 MiB ConfigMap 限制执行存储对象大小约束。
+9. 去掉 legacy 支持、只保留一个 discovery 实现，从而移除 discovery mode
+   selector。
 
 ### 非目标
 
@@ -230,13 +229,16 @@ Service 兼容逻辑位于：
 2. 运行时 readiness / liveness 由 DNS / EndpointSlice 承担。
 3. Deprecated Deployment / StatefulSet / LeaderWorkerSet workload 保持现状。
 4. 动态端口分配维持现有环境变量和注解机制。
-5. 支持 legacy discovery mode。
+5. 将 legacy RBG 迁移到单一 discovery 实现。
+6. 新增自定义存储对象 guardrail。API server 已强制 ConfigMap 的 1 MiB
+   限制。
 
 ## 方案
 
 ### 术语
 
-- **v1alpha1 内容**：当前 `refine` 模式写入的逐实例全量枚举，没有 `apiVersion` 字段。
+- **v1alpha1 内容**：当前 discovery 实现写入的逐实例全量枚举，没有
+  `apiVersion` 字段。
 - **v1 内容**：本 KEP 定义的紧凑格式，显式写入 `apiVersion: v1`。
 - **Discovery-config-version annotation**：
   `rbg.workloads.x-k8s.io/discovery-config-version` annotation，取值为
@@ -261,8 +263,6 @@ Service 兼容逻辑位于：
 - ConfigMap 名称是 `<rbg>`，数据 key 是 `config.yaml`。
 - v1 内容在同一个对象中替换 v1alpha1 内容。
 - 本 KEP 不定义 renderer init container。
-- 消费者迁移属于后续 KEP。
-
 ### 风险与缓解
 
 | 风险 | 缓解 |
@@ -270,13 +270,13 @@ Service 兼容逻辑位于：
 | v1 内容编码的地址集合与当前 builder 输出不同 | 单元测试展开 v1 内容，并与当前 builder 输出做结构化比较 |
 | workload / Service 名称触发 Kubernetes 名称截断 | 控制器计算完整地址模板，包含截断和兼容规则 |
 | controller 升级后意外改变内容版本 | discovery-config-version annotation 记录选择的版本，controller 重建 ConfigMap 时使用该 annotation |
-| 消费者只支持 v1alpha1 | 通过 discovery-config-version annotation 显式迁移；消费者兼容层属于后续 KEP |
+| 消费者只支持 v1alpha1 | 在消费者支持 v1 之前，将 annotation 保持为 `v1alpha1` |
 
 ## 设计细节
 
 ### Discovery Config Version Annotation
 
-这次 KEP 的修改发现 ConfigMap 内容修改带来兼容性问题，为避免后续继续出现此类问题，给 config 添加版本。
+ConfigMap 内容需要显式版本，消费者才能区分 v1alpha1、v1 和后续版本。
 
 RBG metadata 记录版本：
 
@@ -291,10 +291,10 @@ metadata:
 1. annotation key 是
    `rbg.workloads.x-k8s.io/discovery-config-version`。
 2. 支持的取值是 `v1alpha1` 和 `v1`。
-3. legacy discovery 支持被移除，只保留现有 `refine` 行为。
+3. legacy discovery 支持被移除，只保留一个 discovery 实现。
 4. 没有 annotation 的存量 RBG 按 `v1alpha1` 处理。
-5. 新 RBG 默认使用 `v1`；创建时显式设置 `v1alpha1` 是文档化的
-   opt-out。
+5. RBG 创建后的第一次 reconcile 中，控制器写入 `v1`。创建时显式设置
+   `v1alpha1` 是文档化的 opt-out。
 6. 控制器根据该 annotation 选择 ConfigMap 内容版本。
 7. ConfigMap 被删除后，控制器在下一次 reconcile 时按 annotation 版本
    重建内容。
@@ -477,20 +477,10 @@ excludedOrdinals: "1,3"
 3. 写入 `<rbg>/config.yaml`。
 4. 目标版本为 `v1` 时，替换 v1alpha1 内容。
 
-写入失败时，reconcile 返回错误并重试，保持当前 `refine` 行为。
+写入失败时，reconcile 返回错误并重试，保持当前 discovery 行为。
 
-#### 存储上限
-
-v1 内容序列化后的上限是 512 KiB。
-
-超限时，控制器保留当前合法内容，跳过本次替换，并在状态变化时发送 Warning Event。
-
-跳过区间以连续区间表示：
-
-- 连续跳过 5000 个成员只占几个字节。
-- 每个不连续空洞只占一个短区间。
-
-因此存储大小与副本数和序号跨度无关。
+存储对象大小由 API server 的 1 MiB ConfigMap 限制约束。写入被拒绝时，
+沿用现有 reconcile 错误和重试路径。
 
 ### 迁移
 
@@ -511,8 +501,6 @@ v1 内容序列化后的上限是 512 KiB。
 1. 将 annotation 改回 `v1alpha1`。
 2. 等待 reconcile 完成，确认 ConfigMap 恢复为 v1alpha1。
 
-消费者兼容层属于后续 KEP。
-
 ### 测试计划
 
 #### 单元测试
@@ -525,14 +513,14 @@ v1 内容序列化后的上限是 512 KiB。
 - LeaderWorkerPattern 的 leader / worker offset。
 - CustomComponentsPattern 的 Service 覆盖。
 - 成员选择和 `excludedOrdinals` 编码。
-- 存储上限行为。
-
 #### 集成测试
 
 - 同一个 `<rbg>` ConfigMap 被替换为 v1 内容。
 - ConfigMap 被删除后，按 discovery-config-version annotation 重建对应内容。
 - ConfigMap 数量保持为 1。
 - 写入失败时 reconcile 失败并重试。
+- ConfigMap 写入因 API server 的 1 MiB 限制被拒绝时，reconcile 失败并
+  重试。
 - 迁移后 ConfigMap 内容为 v1。
 
 #### 端到端测试
@@ -545,14 +533,15 @@ v1 内容序列化后的上限是 512 KiB。
 
 #### Alpha
 
-- 紧凑内容发布、格式和存储上限已实现。
+- 控制器已写入 v1 内容。
 - 上述单元、集成和端到端测试完成。
-- 2000 实例规模测试显示存储 ConfigMap 低于上限，且 reconcile 成功。
+- 2000 实例规模测试显示存储 ConfigMap 低于 API server 的 1 MiB 限制，
+  且 reconcile 成功。
 
 #### Beta
 
 - v1 直接消费文档完成。
-- 无未解决的紧凑内容差异报告。
+- 没有未解决的“v1 内容与 builder 输出不一致”报告。
 
 #### GA
 
@@ -617,7 +606,6 @@ ConfigMap 写入可能失败。reconcile 返回错误并重试。运行中的 wo
 
 - RBG controller reconcile 错误率。
 - ConfigMap 写入失败次数。
-- 存储上限 Warning Event。
 
 #### 是否测试了升级和回滚？
 
@@ -685,7 +673,7 @@ Pod 资源不变。
 
 #### 启用该功能是否可能导致资源耗尽？
 
-存储对象受 512 KiB 上限约束。
+不会。存储对象受 API server 的 1 MiB ConfigMap 限制约束。
 
 ### 故障排查
 
@@ -695,9 +683,9 @@ reconcile 失败并按现有 backoff 重试。运行中的 Pod 不受影响。
 
 #### 其他已知故障模式？
 
-- 存储内容超过上限：
-  - 检测：Warning Event。
-  - 缓解：保留当前合法内容，跳过本次替换。
+- ConfigMap 写入因超过 1 MiB 限制被 API server 拒绝：
+  - 检测：reconcile 错误。
+  - 缓解：缩减拓扑，或在 v1alpha1 仍可写入时保持该版本。
 - 内容版本不匹配：
   - 检测：比较 discovery-config-version annotation 和 ConfigMap
     `apiVersion`。
@@ -710,7 +698,8 @@ reconcile 失败并按现有 backoff 重试。运行中的 Pod 不受影响。
 ## 实施历史
 
 - 2026-11-13：提出初始 KEP。
-- 2026-11-17：改为紧凑内容设计，新增版本字段，修正 LeaderWorkerPattern 地址和 worker 偏移。
+- 2026-11-17：改为紧凑内容设计，新增版本 annotation，修正
+  LeaderWorkerPattern 地址和 worker 偏移。
 
 ## 缺点
 

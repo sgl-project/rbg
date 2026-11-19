@@ -26,7 +26,6 @@ English | [简体中文](README.zh-CN.md)
         - [Component Indexing](#component-indexing)
         - [Membership Encoding](#membership-encoding)
         - [Write and Replace](#write-and-replace)
-        - [Size Guardrail](#size-guardrail)
     - [Migration](#migration)
     - [Test Plan](#test-plan)
         - [Unit tests](#unit-tests)
@@ -95,10 +94,10 @@ release.
 
 ## Summary
 
-This KEP changes the `refine` discovery ConfigMap from a full per-instance
+This KEP changes the current discovery ConfigMap from a full per-instance
 enumeration into a compact format described by role and component.
 
-The current content has no version field; this KEP calls it **v1alpha1**. The
+The current content has no version field. This KEP names it **v1alpha1**. The
 new content explicitly writes:
 
 ```yaml
@@ -120,8 +119,8 @@ content and replaces the v1alpha1 content.
 This KEP defines the storage format, replacement semantics, and migration
 steps. Consumer compatibility is a follow-up KEP.
 
-This design assumes legacy discovery support is removed. Only the current
-`refine` behavior remains, so a discovery-mode selector is no longer needed.
+Legacy discovery support must be removed before this KEP is implemented. The
+controller then has one discovery implementation and no mode selector.
 
 ## Motivation
 
@@ -133,7 +132,7 @@ The reader is assumed to know Kubernetes ConfigMaps, RBG
 
 #### Current v1alpha1 Content
 
-The current `refine` mode writes this ConfigMap:
+The current discovery implementation writes this ConfigMap:
 
 ```yaml
 # ConfigMap: pd-inference
@@ -233,9 +232,10 @@ kubelet redistributes it to every node with a mounting Pod.
 5. Let v1 content replace v1alpha1 content.
 6. Represent Pod DNS correctly for the three RoleInstanceSet patterns.
 7. Preserve the current `memberOrdinals` selection semantics.
-8. Make a stored-object size breach visible.
-9. Remove the discovery-mode selector by dropping legacy support and keeping
-   the existing `refine` behavior.
+8. Use the API server's 1 MiB ConfigMap limit for stored-object size
+   enforcement.
+9. Remove the discovery-mode selector by dropping legacy support and
+   retaining one discovery implementation.
 
 ### Non-Goals
 
@@ -246,14 +246,16 @@ kubelet redistributes it to every node with a mounting Pod.
    unchanged.
 4. Dynamic port allocation remains on Pod environment variables and
    annotations.
-5. Supporting legacy discovery mode.
+5. Migrating legacy RBGs to the single discovery implementation.
+6. Adding a custom stored-object size guardrail. The API server enforces the
+   1 MiB ConfigMap limit.
 
 ## Proposal
 
 ### Terms
 
 - **v1alpha1 content**: the full per-instance enumeration currently written
-  by `refine`; it has no `apiVersion` field.
+  by the discovery implementation; it has no `apiVersion` field.
 - **v1 content**: the compact format defined by this KEP; it writes
   `apiVersion: v1`.
 - **Discovery-config-version annotation**: the
@@ -281,8 +283,6 @@ can upgrade consumers without changing the controller's storage format again.
 - The ConfigMap name is `<rbg>`, and its data key is `config.yaml`.
 - v1 content replaces v1alpha1 content in the same object.
 - This KEP does not define a renderer init container.
-- Consumer migration is a follow-up KEP.
-
 ### Risks and Mitigations
 
 | Risk | Mitigation |
@@ -290,15 +290,14 @@ can upgrade consumers without changing the controller's storage format again.
 | v1 content encodes a different address set from the current builder | Unit tests expand v1 content and compare it structurally with current builder output |
 | Workload or Service names trigger Kubernetes name truncation | The controller computes the full address template, including truncation and compatibility rules |
 | A controller upgrade unexpectedly changes the content version | The discovery-config-version annotation records the selected version, and the controller uses it when rebuilding the ConfigMap |
-| A consumer supports only v1alpha1 | Migration is explicit through the discovery-config-version annotation; consumer compatibility is a follow-up KEP |
+| A consumer supports only v1alpha1 | Keep the annotation at `v1alpha1` until the consumer supports v1 |
 
 ## Design Details
 
 ### Discovery Config Version Annotation
 
-This KEP adds content versioning because changing the ConfigMap format
-creates compatibility problems, and future changes should be identifiable by
-version.
+ConfigMap content needs an explicit version so consumers can distinguish
+v1alpha1 from v1 and future revisions.
 
 RBG metadata records the version:
 
@@ -313,10 +312,10 @@ Rules:
 1. The annotation key is
    `rbg.workloads.x-k8s.io/discovery-config-version`.
 2. The supported values are `v1alpha1` and `v1`.
-3. Legacy discovery support is removed; only the `refine` behavior remains.
+3. Legacy discovery support is removed; one discovery implementation remains.
 4. Existing RBGs without the annotation are treated as `v1alpha1`.
-5. New RBGs default to `v1`; setting `v1alpha1` at creation is the documented
-   opt-out.
+5. The controller writes `v1` on the first reconcile after an RBG is created.
+   Setting `v1alpha1` at creation is the documented opt-out.
 6. The controller uses the annotation to select the ConfigMap content version.
 7. If the ConfigMap is deleted, the controller rebuilds the content for the
    annotated version at the next reconcile.
@@ -504,21 +503,10 @@ The controller writes the ConfigMap before role reconciliation:
 4. when the target version is `v1`, replace v1alpha1 content
 
 If writing fails, reconcile returns an error and retries, matching current
-`refine` behavior.
+discovery behavior.
 
-#### Size Guardrail
-
-Serialized v1 content is limited to 512 KiB.
-
-On breach, the controller keeps the current valid content, skips the
-replacement, and emits a Warning Event when the state changes.
-
-Excluded ranges are represented as contiguous ranges:
-
-- skipping 5000 contiguous members costs only a few bytes
-- each disjoint hole costs one short range
-
-Stored size is therefore independent of replica count and ordinal span.
+Stored-object size is enforced by the API server's 1 MiB ConfigMap limit. A
+rejected write follows the existing reconcile error and retry path.
 
 ### Migration
 
@@ -539,8 +527,6 @@ Rollback:
 1. Change the annotation back to `v1alpha1`.
 2. Wait for reconcile and verify that ConfigMap content is v1alpha1.
 
-Consumer compatibility is a follow-up KEP.
-
 ### Test Plan
 
 #### Unit tests
@@ -553,8 +539,6 @@ Consumer compatibility is a follow-up KEP.
 - LeaderWorkerPattern leader and worker offsets.
 - CustomComponentsPattern Service overrides.
 - Membership selection and `excludedOrdinals` encoding.
-- Size guardrail behavior.
-
 #### Integration tests
 
 - The same `<rbg>` ConfigMap is replaced with v1 content.
@@ -562,6 +546,8 @@ Consumer compatibility is a follow-up KEP.
   the discovery-config-version annotation.
 - ConfigMap count remains 1.
 - A write failure fails reconcile and retries.
+- A ConfigMap write rejected by the API server's 1 MiB limit fails reconcile
+  and retries.
 - ConfigMap content is v1 after migration.
 
 #### e2e tests
@@ -574,15 +560,15 @@ Consumer compatibility is a follow-up KEP.
 
 #### Alpha
 
-- Compact content publication, format, and guardrail are implemented.
+- The controller writes v1 content.
 - The unit, integration, and e2e tests above are complete.
 - A 2000-instance scale test shows the stored ConfigMap stays below the
-  guardrail and reconciliation succeeds.
+  API server's 1 MiB limit and reconciliation succeeds.
 
 #### Beta
 
 - Documentation for direct v1 consumption is complete.
-- No compact-content divergence reports remain open.
+- No unresolved reports show v1 content differing from the builder output.
 
 #### GA
 
@@ -650,7 +636,6 @@ workloads are unaffected.
 
 - RBG controller reconcile error rate.
 - ConfigMap write failure count.
-- Size guardrail Warning Events.
 
 #### Were upgrade and rollback tested?
 
@@ -720,7 +705,7 @@ Pod resources remain unchanged.
 
 #### Can enabling this feature exhaust node resources?
 
-The stored object is bounded by the 512 KiB guardrail.
+No. The stored object is subject to the API server's 1 MiB ConfigMap limit.
 
 ### Troubleshooting
 
@@ -731,9 +716,10 @@ unaffected.
 
 #### What are the other known failure modes?
 
-- Stored content exceeds the guardrail:
-  - Detection: Warning Event.
-  - Mitigation: keep current valid content and skip the replacement.
+- The API server rejects a ConfigMap write because it exceeds the 1 MiB limit:
+  - Detection: reconcile error.
+  - Mitigation: reduce the topology or keep the RBG on v1alpha1 if that
+    format remains writable.
 - Content version mismatch:
   - Detection: compare the discovery-config-version annotation with ConfigMap
     `apiVersion`.
@@ -746,8 +732,8 @@ Inspect RBG Warning Events, controller logs, and the ConfigMap.
 ## Implementation History
 
 - 2026-11-13: Initial KEP.
-- 2026-11-17: Changed to compact content design, added version fields, and
-  corrected LeaderWorkerPattern addresses and worker offsets.
+- 2026-11-17: Changed to compact content design, added the version
+  annotation, and corrected LeaderWorkerPattern addresses and worker offsets.
 
 ## Drawbacks
 
