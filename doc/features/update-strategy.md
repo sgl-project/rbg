@@ -38,6 +38,12 @@ rolloutStrategy:
     maxUnavailable: 1
 ```
 
+Stateful RoleInstanceSet recreate rollouts and scale-down honor
+`spec.lifecycle.preDelete`. To hold deletion, the consumer must add a label
+matching `labelsHandler` or a finalizer listed in `finalizersHandler` to the
+RoleInstance before it enters `PreparingDelete`. The controller waits until
+the matching markers are removed before requesting deletion.
+
 ### InPlaceIfPossible Strategy
 
 Updates pods in-place when only certain fields change (image, resources). Faster updates with less disruption:

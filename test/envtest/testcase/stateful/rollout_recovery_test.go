@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statefulmode"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
 )
@@ -279,6 +280,54 @@ var _ = Describe("Stateful RoleInstanceSet rollout recovery", func() {
 		awaitRolloutSet(setKey, func(current *workloadsv1alpha2.RoleInstanceSet) bool {
 			return current.Status.RolloutReplacementState == nil && current.Status.ReadyReplicas == 2
 		})
+	})
+
+	It("restores the same ordinal when an in-progress scale-down is canceled", func() {
+		set := newRolloutRecoverySet("cancel-scale-down", testNs)
+		set.Spec.Replicas = ptr.To[int32](2)
+		set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
+		set.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceSetLifecycle{
+			PreDelete: &workloadsv1alpha2.RoleInstanceSetLifecycleHook{
+				LabelsHandler: map[string]string{"consumer.example/held": "true"},
+			},
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		setKey := client.ObjectKeyFromObject(set)
+		makeRolloutPodReady(awaitRolloutInstance(setKey, 0, "", "nginx:1.0"))
+		held := awaitRolloutInstance(setKey, 1, "", "nginx:1.0")
+		makeRolloutPodReady(held)
+		heldKey := client.ObjectKeyFromObject(held.RoleInstance)
+		Eventually(func() error {
+			current := &workloadsv1alpha2.RoleInstance{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, heldKey, current); err != nil {
+				return err
+			}
+			before := current.DeepCopy()
+			current.Labels["consumer.example/held"] = "true"
+			return testutil.K8sClient.Patch(testutil.Ctx, current, client.MergeFrom(before))
+		}, timeout, interval).Should(Succeed())
+
+		scale := func(replicas int32) {
+			updateRolloutSpec(setKey, func(current *workloadsv1alpha2.RoleInstanceSet) {
+				current.Spec.Replicas = ptr.To(replicas)
+			})
+		}
+		state := func() (constants.RoleInstanceLifecycleStateType, error) {
+			current := &workloadsv1alpha2.RoleInstance{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, heldKey, current); err != nil {
+				return "", err
+			}
+			if current.UID != held.UID || current.DeletionTimestamp != nil {
+				return "", fmt.Errorf("held ordinal was deleted or replaced")
+			}
+			return instancelifecycle.GetRoleInstanceLifecycleState(current), nil
+		}
+		scale(1)
+		Eventually(state, timeout, interval).Should(Equal(constants.RoleInstanceLifecycleStatePreparingDelete))
+		scale(2)
+		Eventually(state, timeout, interval).Should(Equal(constants.RoleInstanceLifecycleStateNormal))
+		scale(1)
+		Eventually(state, timeout, interval).Should(Equal(constants.RoleInstanceLifecycleStatePreparingDelete))
 	})
 })
 

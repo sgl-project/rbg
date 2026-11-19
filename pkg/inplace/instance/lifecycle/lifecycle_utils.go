@@ -99,7 +99,11 @@ func (c *realControl) executeRoleInstanceNotReadyPolicy(instance *workloadsv1alp
 	case constants.RoleInstanceLifecycleStatePreparingUpdate:
 		err = c.groupReadinessControl.AddNotReadyKey(instance, getReadinessMessage(preparingUpdateHookKey))
 	case constants.RoleInstanceLifecycleStateNormal:
-		err = c.groupReadinessControl.RemoveNotReadyKey(instance, getReadinessMessage(preparingUpdateHookKey))
+		key := preparingUpdateHookKey
+		if GetRoleInstanceLifecycleState(instance) == constants.RoleInstanceLifecycleStatePreparingDelete {
+			key = preparingDeleteHookKey
+		}
+		err = c.groupReadinessControl.RemoveNotReadyKey(instance, getReadinessMessage(key))
 	}
 
 	if err != nil {
