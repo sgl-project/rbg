@@ -70,20 +70,10 @@ func clientObjectKey(name string) client.ObjectKey { return client.ObjectKey{Nam
 // would carry the old paths forward as inert keys and silently install chart
 // defaults instead of the images under test.
 func runHelmUpgrade(f *framework.Framework) {
-	runHelmUpgradeWith(f)
-}
-
-// runHelmUpgradeWith upgrades the release in place with additional --set
-// overrides appended after the standard ones. The KEP-531 drills use it for
-// the chart's two-pass upgrade order: pass one adds crdUpgrade.enabled=false
-// so only the controller image moves; pass two passes no override and lets
-// the pre-upgrade hook apply the CRDs (KEP-531 Upgrade: controller first,
-// CRD second).
-func runHelmUpgradeWith(f *framework.Framework, extraSets ...string) {
 	before, err := managerPodNames(f)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not list the controller pods before upgrading")
 
-	args := make([]string, 0, 20+len(imagePullSecretSets())+len(extraSets))
+	args := make([]string, 0, 20+len(imagePullSecretSets()))
 	args = append(args,
 		"upgrade", helmRelease(), chartPath(),
 		"--namespace", controllerNamespace(),
@@ -100,7 +90,6 @@ func runHelmUpgradeWith(f *framework.Framework, extraSets ...string) {
 		"--set", "controller.features.portAllocator.enabled=true",
 	)
 	args = append(args, imagePullSecretSets()...)
-	args = append(args, extraSets...)
 	args = append(args, "--wait", "--timeout", helmTimeout())
 
 	ginkgo.By("running helm " + strings.Join(args, " "))
@@ -143,22 +132,12 @@ func runHelmUpgradeWith(f *framework.Framework, extraSets ...string) {
 //  5. Conversion actually round-trips. A caBundle that is present but wrong is a
 //     real failure mode that step 3 cannot see, because it only checks the field
 //     is non-empty.
-//
-// marker selects the new-CRD-bundle evidence for step 1. The release-tag suite
-// reads it from the from-release profile; the KEP-531 drill suite supplies its
-// own, so it is a parameter rather than a fromProfile() call in here.
 func waitForUpgradeReady(f *framework.Framework, conversionProbeName string) {
-	waitForUpgradeReadyFor(f, conversionProbeName, fromProfile().newBundleMarker)
-}
-
-func waitForUpgradeReadyFor(
-	f *framework.Framework, conversionProbeName string, marker bundleMarker,
-) {
 	ginkgo.By("waiting for the new CRD bundle to be applied")
-	waitCRDsUpgraded(f, marker)
+	waitCRDsUpgraded(f)
 
 	ginkgo.By("waiting for the controller to roll out onto the image under test")
-	waitControllerRolledOut(f, toTag())
+	waitControllerRolledOut(f)
 
 	ginkgo.By("waiting for the conversion webhook caBundle to be repopulated")
 	waitCRDConversionCABundle(f)
@@ -173,21 +152,18 @@ func waitForUpgradeReadyFor(
 	waitConversionActuallyWorks(f, conversionProbeName)
 }
 
-// waitCRDsUpgraded blocks until the marker for the new bundle appears. Callers
-// preflight-proved it was absent beforehand, so its appearance can only come
-// from this upgrade.
-func waitCRDsUpgraded(f *framework.Framework, marker bundleMarker) {
+// waitCRDsUpgraded uses the from-release profile's marker for the new bundle:
+// preflight proved it was absent beforehand, so its appearance can only come from
+// this upgrade.
+func waitCRDsUpgraded(f *framework.Framework) {
+	marker := fromProfile().newBundleMarker
 	gomega.Eventually(func() (bool, error) {
 		return marker.present(f)
 	}, gateTimeout, gateInterval).Should(gomega.BeTrue(),
 		"%s never appeared, so the crd-upgrade hook did not apply the new CRD bundle", marker.description)
 }
 
-// waitControllerRolledOut requires the Deployment to be fully rolled out AND to
-// run the image under test. tag selects that image: the release-tag suite waits
-// for toTag(); the KEP-531 drills additionally wait for a rolled-back image
-// during the admission-disabled window.
-func waitControllerRolledOut(f *framework.Framework, tag string) {
+func waitControllerRolledOut(f *framework.Framework) {
 	ns := controllerNamespace()
 	gomega.Eventually(func(g gomega.Gomega) {
 		deploy, err := f.Clientset.AppsV1().Deployments(ns).Get(f.Ctx, managerDeploymentName, metav1.GetOptions{})
@@ -195,7 +171,7 @@ func waitControllerRolledOut(f *framework.Framework, tag string) {
 
 		image, found := managerImage(deploy)
 		g.Expect(found).To(gomega.BeTrue(), "no controller container found in %s/%s", ns, managerDeploymentName)
-		g.Expect(image).To(gomega.HaveSuffix(":"+tag),
+		g.Expect(image).To(gomega.HaveSuffix(":"+toTag()),
 			"controller still runs %q; the upgrade did not replace the image", image)
 
 		g.Expect(deploy.Status.ObservedGeneration).To(gomega.BeNumerically(">=", deploy.Generation),
@@ -310,7 +286,7 @@ func restartController(f *framework.Framework, conversionProbeName string) {
 		}
 	}, gateTimeout, gateInterval).Should(gomega.Succeed())
 
-	waitControllerRolledOut(f, toTag())
+	waitControllerRolledOut(f)
 	// The new process mints its certificate and patches the webhook configs again
 	// on startup, and until it has, every RBG write is rejected.
 	waitValidatingWebhookCABundle(f)
