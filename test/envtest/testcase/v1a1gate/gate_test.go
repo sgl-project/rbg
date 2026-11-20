@@ -26,6 +26,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
@@ -305,4 +306,296 @@ var _ = Describe("v1alpha1 wire contract", Ordered, func() {
 	// v1alpha2 validator unit tests cover the analogous type-exact
 	// grandfathering and switch semantics; key-absent defaulting is specific
 	// to the v1alpha1 CRD schema.
+})
+
+var _ = Describe("v1alpha1 role shape validation through the CEL rule", Ordered, func() {
+	It("rejects a RoleInstanceSet role with no template, templateRef, components, or leaderWorkerSet", func() {
+		// The RoleInstanceSet exemption exists so customComponentsPattern
+		// roles (no template, but components) survive the round trip; a
+		// role with neither a template source nor a pattern must not be
+		// admitted, because it converts to a standalone role with no
+		// template source that can never reconcile.
+		rbg := buildV1a1RBG("gate-empty-ris")
+		rbg.Spec.Roles[0].TemplateSource = workloadsv1alpha1.TemplateSource{}
+		rbg.Spec.Roles[0].Workload = workloadsv1alpha1.WorkloadSpec{
+			APIVersion: "workloads.x-k8s.io/v1alpha2",
+			Kind:       "RoleInstanceSet",
+		}
+		err := testutil.K8sClient.Create(testutil.Ctx, rbg)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue())
+	})
+})
+
+var _ = Describe("v1alpha1 no-op round trip", Ordered, func() {
+	It("leaves a stored v1alpha2 RoleBasedGroup unchanged", func() {
+		// A customComponentsPattern role has neither template nor
+		// templateRef: without the RoleInstanceSet exemption in the
+		// v1alpha1 CEL rule, its round trip is rejected outright; with it,
+		// the write-back must leave the stored v1alpha2 object untouched.
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "roundtrip-components", Namespace: gateNamespace},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "engine",
+					Replicas: ptr.To(int32(1)),
+					Pattern: workloadsv1alpha2.Pattern{CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+						Components: []workloadsv1alpha2.InstanceComponent{{
+							Name: "main", Size: ptr.To(int32(1)),
+							Template: corev1.PodTemplateSpec{
+								Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "nginx:latest"}}},
+							},
+						}},
+					}},
+				}},
+			},
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+
+		stored := &workloadsv1alpha2.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), stored)).To(Succeed())
+		storedSpec := stored.Spec.DeepCopy()
+
+		v1 := &workloadsv1alpha1.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), v1)).To(Succeed())
+		Expect(v1.Spec.Roles[0].Components).To(HaveLen(1))
+		Expect(testutil.K8sClient.Update(testutil.Ctx, v1)).To(Succeed())
+
+		after := &workloadsv1alpha2.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), after)).To(Succeed())
+		Expect(after.Spec).To(Equal(*storedSpec),
+			"a no-op v1alpha1 read-and-write must not rewrite the stored v1alpha2 object")
+	})
+
+	It("preserves non-default restart settings through the write-back", func() {
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "roundtrip-restart", Namespace: gateNamespace},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "engine",
+					Replicas: ptr.To(int32(1)),
+					Pattern: workloadsv1alpha2.Pattern{LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+						Size: ptr.To(int32(2)),
+						RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
+							Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+							ActivateAfter:    workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+							BaseDelaySeconds: ptr.To(int32(10)),
+							MaxDelaySeconds:  ptr.To(int32(300)),
+						},
+						TemplateSource: workloadsv1alpha2.TemplateSource{Template: &corev1.PodTemplateSpec{
+							Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "nginx:latest"}}},
+						}},
+					}},
+				}},
+			},
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+
+		v1 := &workloadsv1alpha1.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), v1)).To(Succeed())
+		Expect(v1.Spec.Roles[0].RestartPolicy).To(Equal(workloadsv1alpha1.RecreateRoleInstanceOnPodRestart))
+		Expect(testutil.K8sClient.Update(testutil.Ctx, v1)).To(Succeed())
+
+		after := &workloadsv1alpha2.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(rbg), after)).To(Succeed())
+		config := after.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig
+		Expect(config).NotTo(BeNil())
+		Expect(config.ActivateAfter).To(Equal(workloadsv1alpha2.RestartPolicyActivateAfterCreated))
+		Expect(*config.BaseDelaySeconds).To(Equal(int32(10)))
+		Expect(*config.MaxDelaySeconds).To(Equal(int32(300)))
+	})
+
+	It("leaves an object stored by an earlier fresh v1alpha1 write unchanged when its manifest is written again", func() {
+		// `kubectl apply` and `kubectl replace -f` send the manifest's roles,
+		// which carry no round-trip marker. Such a write must convert exactly as
+		// v0.8.0 through v0.9.0 stored the object, or re-applying an unchanged
+		// manifest rewrites it and rolls its roles.
+		tmpl := func() *corev1.PodTemplateSpec {
+			return &corev1.PodTemplateSpec{
+				Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "nginx:latest"}}},
+			}
+		}
+		// The shape those releases stored for the manifest below.
+		stored := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "rewrite-manifest", Namespace: gateNamespace},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "engine",
+					Replicas: ptr.To(int32(1)),
+					Annotations: map[string]string{
+						constants.RoleWorkloadTypeAnnotationKey: constants.RoleInstanceSetWorkloadType,
+					},
+					Pattern: workloadsv1alpha2.Pattern{LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+						Size:                ptr.To(int32(2)),
+						RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{},
+						TemplateSource:      workloadsv1alpha2.TemplateSource{Template: tmpl()},
+					}},
+				}},
+			},
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, stored)).To(Succeed())
+		before := &workloadsv1alpha2.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(stored), before)).To(Succeed())
+
+		live := &workloadsv1alpha1.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(stored), live)).To(Succeed())
+		manifest := &workloadsv1alpha1.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: live.Name, Namespace: live.Namespace, ResourceVersion: live.ResourceVersion,
+			},
+			Spec: workloadsv1alpha1.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha1.RoleSpec{{
+					Name:     "engine",
+					Replicas: ptr.To(int32(1)),
+					Workload: workloadsv1alpha1.WorkloadSpec{
+						APIVersion: "workloads.x-k8s.io/v1alpha2",
+						Kind:       "RoleInstanceSet",
+					},
+					LeaderWorkerSet: &workloadsv1alpha1.LeaderWorkerTemplate{Size: ptr.To(int32(2))},
+					TemplateSource:  workloadsv1alpha1.TemplateSource{Template: tmpl()},
+				}},
+			},
+		}
+		Expect(testutil.K8sClient.Update(testutil.Ctx, manifest)).To(Succeed())
+
+		after := &workloadsv1alpha2.RoleBasedGroup{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(stored), after)).To(Succeed())
+		Expect(after.Spec).To(Equal(before.Spec),
+			"a fresh v1alpha1 write of an unchanged manifest must not rewrite the stored object")
+	})
+})
+
+var _ = Describe("v1alpha1 RoleBasedGroupSet round trip", Ordered, func() {
+	const setName = "gate-set-roundtrip"
+
+	buildStoredSet := func() *workloadsv1alpha2.RoleBasedGroupSet {
+		return &workloadsv1alpha2.RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: setName, Namespace: gateNamespace},
+			Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+				Replicas: ptr.To(int32(1)),
+				GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+					Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{{
+						Name:     "engine",
+						Replicas: ptr.To(int32(1)),
+						Pattern: workloadsv1alpha2.Pattern{CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+							Components: []workloadsv1alpha2.InstanceComponent{{
+								Name: "main", Size: ptr.To(int32(1)),
+								Template: corev1.PodTemplateSpec{
+									Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "nginx:latest"}}},
+								},
+							}},
+							RestartPolicyConfig: &workloadsv1alpha2.RestartPolicyConfig{
+								Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+								ActivateAfter:    workloadsv1alpha2.RestartPolicyActivateAfterCreated,
+								BaseDelaySeconds: ptr.To(int32(10)),
+								MaxDelaySeconds:  ptr.To(int32(300)),
+							},
+						}},
+					}}},
+				},
+			},
+		}
+	}
+
+	It("leaves a stored v1alpha2 RoleBasedGroupSet unchanged after a no-op v1alpha1 write-back", func() {
+		set := buildStoredSet()
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		before := set.Spec.DeepCopy()
+
+		v1 := &workloadsv1alpha1.RoleBasedGroupSet{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(set), v1)).To(Succeed())
+		Expect(v1.Spec.Template.Roles[0].Components).To(HaveLen(1))
+		Expect(testutil.K8sClient.Update(testutil.Ctx, v1)).To(Succeed())
+
+		after := &workloadsv1alpha2.RoleBasedGroupSet{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(set), after)).To(Succeed())
+		Expect(after.Spec).To(Equal(*before),
+			"a no-op v1alpha1 read-and-write must not rewrite the stored set")
+	})
+
+	It("keeps an object stored by an earlier fresh v1alpha1 write unchanged when its manifest is written again", func() {
+		set := buildStoredSet()
+		set.Name = setName + "-fresh"
+		// The shape a fresh v1alpha1 write stored on v0.8.0 through v0.9.0:
+		// the role carries the workload annotation and a type-only
+		// restartPolicyConfig whose delays the CRD defaulted (30/600). A
+		// fresh write cannot express activateAfter or non-default delays.
+		storedRole := &set.Spec.GroupTemplate.Spec.Roles[0]
+		storedRole.Annotations = map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: constants.RoleInstanceSetWorkloadType,
+		}
+		storedRole.CustomComponentsPattern.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{
+			Type:             workloadsv1alpha2.RecreateRoleInstanceOnPodRestart,
+			BaseDelaySeconds: ptr.To(int32(30)),
+			MaxDelaySeconds:  ptr.To(int32(600)),
+		}
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		before := set.Spec.DeepCopy()
+
+		live := &workloadsv1alpha1.RoleBasedGroupSet{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(set), live)).To(Succeed())
+		// The manifest's template roles carry no round-trip marker, exactly
+		// like a `kubectl apply` or `kubectl replace -f` write.
+		for i := range live.Spec.Template.Roles {
+			delete(live.Spec.Template.Roles[i].Annotations, constants.ConversionV2RestartPolicyConfigAnnotationKey)
+		}
+		Expect(testutil.K8sClient.Update(testutil.Ctx, live)).To(Succeed())
+
+		after := &workloadsv1alpha2.RoleBasedGroupSet{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx,
+			client.ObjectKeyFromObject(set), after)).To(Succeed())
+		Expect(after.Spec).To(Equal(*before),
+			"a fresh v1alpha1 write of an unchanged manifest must not rewrite the stored set")
+	})
+})
+
+var _ = Describe("v1alpha1 RoleInstanceSet exemption shape validation", Ordered, func() {
+	It("rejects an empty components list claiming the RoleInstanceSet exemption", func() {
+		// The typed client omits an empty components slice, and the CEL rule
+		// requires a non-empty list; an unstructured create carries the empty
+		// list explicitly and must be rejected the same way.
+		rbg := buildV1a1RBG("gate-empty-components")
+		rbg.Spec.Roles[0].TemplateSource = workloadsv1alpha1.TemplateSource{}
+		rbg.Spec.Roles[0].Workload = workloadsv1alpha1.WorkloadSpec{
+			APIVersion: "workloads.x-k8s.io/v1alpha2",
+			Kind:       "RoleInstanceSet",
+		}
+		err := testutil.K8sClient.Create(testutil.Ctx, rbg)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue())
+
+		u := &unstructured.Unstructured{Object: map[string]interface{}{
+			"apiVersion": "workloads.x-k8s.io/v1alpha1", "kind": "RoleBasedGroup",
+			"metadata": map[string]interface{}{"name": "gate-empty-components-u", "namespace": gateNamespace},
+			"spec": map[string]interface{}{"roles": []interface{}{map[string]interface{}{
+				"name": "worker", "replicas": int64(1),
+				"workload":   map[string]interface{}{"apiVersion": "workloads.x-k8s.io/v1alpha2", "kind": "RoleInstanceSet"},
+				"components": []interface{}{},
+			}}},
+		}}
+		u.SetGroupVersionKind(schema.GroupVersionKind{Group: "workloads.x-k8s.io", Version: "v1alpha1", Kind: "RoleBasedGroup"})
+		uerr := testutil.K8sClient.Create(testutil.Ctx, u)
+		Expect(uerr).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(uerr)).To(BeTrue())
+	})
+
+	It("rejects a leaderWorkerSet without a template claiming the exemption", func() {
+		rbg := buildV1a1RBG("gate-bare-lws")
+		rbg.Spec.Roles[0].TemplateSource = workloadsv1alpha1.TemplateSource{}
+		rbg.Spec.Roles[0].LeaderWorkerSet = &workloadsv1alpha1.LeaderWorkerTemplate{Size: ptr.To(int32(2))}
+		err := testutil.K8sClient.Create(testutil.Ctx, rbg)
+		Expect(err).To(HaveOccurred())
+		Expect(apierrors.IsInvalid(err)).To(BeTrue())
+	})
 })

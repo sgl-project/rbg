@@ -16807,9 +16807,11 @@ spec:
                         rule: '!has(self.templateRef) || !has(self.workload) || self.workload.kind
                           != ''LeaderWorkerSet'''
                       - message: template or templateRef must be set for non-InstanceSet
-                          workloads
+                          workloads without components
                         rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
-                          && self.workload.kind == 'InstanceSet')
+                          && (self.workload.kind == 'InstanceSet' || (self.workload.kind
+                          == 'RoleInstanceSet' && self.workload.apiVersion == 'workloads.x-k8s.io/v1alpha2'
+                          && has(self.components) && size(self.components) > 0)))
                       - message: template and templateRef are mutually exclusive
                         rule: '!(has(self.template) && has(self.templateRef))'
                     minItems: 1

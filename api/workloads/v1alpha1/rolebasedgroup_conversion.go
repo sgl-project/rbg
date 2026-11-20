@@ -36,6 +36,15 @@ const (
 
 	// annotationV1alpha1Coordination stores the serialized v1alpha1 CoordinationRequirements.
 	annotationV1alpha1Coordination = constants.ConversionV1alpha1CoordinationAnnotationKey
+
+	// annotationV2RestartPolicyConfig marks every role of a v1alpha1 wire
+	// object read from the hub and stores the role's serialized v1alpha2
+	// RestartPolicyConfig (empty when it sets none). v1alpha1 can express only
+	// the restart policy type: the delays and activateAfter are preserved
+	// through this annotation, and its presence makes a v1alpha1 write a round
+	// trip rather than a fresh write. It is consumed and stripped when the
+	// object converts back to the hub, and never persists on a stored object.
+	annotationV2RestartPolicyConfig = constants.ConversionV2RestartPolicyConfigAnnotationKey
 )
 
 // ConvertTo converts this RoleBasedGroup (v1alpha1) to the Hub version (v1alpha2).
@@ -135,16 +144,73 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	dst.ScalingAdapter = convertScalingAdapterV1alpha1ToV2(src.ScalingAdapter)
 	dst.EngineRuntimes = convertEngineRuntimesV1alpha1ToV2(src.EngineRuntimes)
 
+	// ConvertFrom marks every role it emits (see preserveV2RestartPolicyConfig),
+	// so the marker tells a read-and-write round trip from a fresh v1alpha1
+	// write: a manifest applied with `kubectl apply` or `kubectl replace -f`,
+	// or an object a client builds itself. A fresh write must keep the mapping
+	// that v0.8.0 and later stored, or the next apply of an unchanged manifest
+	// rewrites, and rolls, every object those releases stored. A round trip
+	// must restore what v1alpha1 cannot express, and nothing else (#580).
+	// The marker is consumed here and never persists on the hub object.
+	marker, roundTrip, err := restoreV2RestartPolicyConfig(dst.Annotations)
+	if err != nil {
+		return err
+	}
+	if roundTrip {
+		delete(dst.Annotations, annotationV2RestartPolicyConfig)
+	}
+
 	// Workload – preserved via role annotation instead of field in v1alpha2.
 	// This annotation is for conversion compatibility only; it is not propagated
 	// to downstream workloads (filtered out by GetCommonAnnotationsFromRole).
 	// New v1alpha2 RBGs should NOT set this annotation.
+	//
+	// The workload field is authoritative. The one exception keeps a round
+	// trip lossless: a role read without the annotation, whose workload still
+	// names the default that ConvertFrom filled in, stays without it.
 	if src.Workload.APIVersion != "" && src.Workload.Kind != "" {
-		if dst.Annotations == nil {
-			dst.Annotations = make(map[string]string)
-		}
 		workloadType := fmt.Sprintf("%s/%s", src.Workload.APIVersion, src.Workload.Kind)
-		dst.Annotations[constants.RoleWorkloadTypeAnnotationKey] = workloadType
+		unannotatedDefault := roundTrip &&
+			dst.Annotations[constants.RoleWorkloadTypeAnnotationKey] == "" &&
+			workloadType == constants.RoleInstanceSetWorkloadType
+		if !unannotatedDefault {
+			if dst.Annotations == nil {
+				dst.Annotations = make(map[string]string)
+			}
+			dst.Annotations[constants.RoleWorkloadTypeAnnotationKey] = workloadType
+		}
+	}
+	if len(dst.Annotations) == 0 {
+		// A role that carried only the marker must not round trip to an
+		// empty-but-present annotations map.
+		dst.Annotations = nil
+	}
+
+	// Restart policy. A fresh write keeps the mapping every release since
+	// #424 stored. A round trip distinguishes a deliberate type edit from an
+	// unchanged write by comparing the wire value with the type ConvertFrom
+	// emitted: an edit's wire type wins (keeping the preserved delays and
+	// activateAfter, dropping the deprecated string), an unchanged write
+	// restores both raw fields verbatim — config, delays, activateAfter, and
+	// the deprecated pattern-level string — so neither is folded or dropped
+	// (#580).
+	wireRestartPolicy := convertRestartPolicyV1alpha1ToV2(src.RestartPolicy)
+	var restartPolicyConfig *v2.RestartPolicyConfig
+	var legacyRestartPolicy v2.RestartPolicyType
+	switch {
+	case !roundTrip:
+		restartPolicyConfig = &v2.RestartPolicyConfig{Type: wireRestartPolicy}
+	case wireRestartPolicy != marker.EmittedType:
+		// A deliberate edit of the type, including clearing it.
+		restartPolicyConfig = marker.Config
+		if restartPolicyConfig == nil {
+			restartPolicyConfig = &v2.RestartPolicyConfig{}
+		}
+		restartPolicyConfig.Type = wireRestartPolicy
+	default:
+		// An unchanged round trip: restore the raw shape.
+		restartPolicyConfig = marker.Config
+		legacyRestartPolicy = marker.LegacyType
 	}
 
 	// RolloutStrategy
@@ -160,9 +226,8 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 			Size:                src.LeaderWorkerSet.Size,
 			LeaderTemplatePatch: src.LeaderWorkerSet.PatchLeaderTemplate,
 			WorkerTemplatePatch: src.LeaderWorkerSet.PatchWorkerTemplate,
-			RestartPolicyConfig: &v2.RestartPolicyConfig{
-				Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
-			},
+			RestartPolicy:       legacyRestartPolicy, //nolint:staticcheck // the deprecated string is preserved verbatim for round-trip losslessness
+			RestartPolicyConfig: restartPolicyConfig,
 		}
 		// Template source
 		if src.Template != nil || src.TemplateRef != nil {
@@ -190,9 +255,9 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 		dst.Pattern = v2.Pattern{
 			CustomComponentsPattern: &v2.CustomComponentsPattern{
 				Components: components,
-				RestartPolicyConfig: &v2.RestartPolicyConfig{
-					Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
-				},
+				//nolint:staticcheck // the deprecated string is preserved verbatim for round-trip losslessness
+				RestartPolicy:       legacyRestartPolicy,
+				RestartPolicyConfig: restartPolicyConfig,
 			},
 		}
 
@@ -386,9 +451,15 @@ func convertSpecV2ToV1alpha1(src *v2.RoleBasedGroupSpec, dst *RoleBasedGroupSpec
 func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 	dst.Name = src.Name
 	dst.Labels = src.Labels
-	dst.Annotations = src.Annotations
+	// Copy instead of aliasing: the v1alpha1 wire object below carries the
+	// conversion-only round-trip marker, and the hub object from the
+	// apiserver must never be mutated.
+	dst.Annotations = copyAnnotations(src.Annotations)
 	dst.Replicas = src.Replicas
 	dst.RestartPolicy = RestartPolicyType(src.GetRawRestartPolicyType())
+	if err := preserveV2RestartPolicyConfig(src, dst); err != nil {
+		return err
+	}
 	dst.Dependencies = src.Dependencies
 	dst.ServicePorts = src.ServicePorts
 	dst.MinReadySeconds = src.MinReadySeconds
@@ -686,11 +757,137 @@ func removeConversionAnnotations(annotations map[string]string) {
 	delete(annotations, constants.GroupExclusiveTopologyKey)
 }
 
-// copyAnnotations returns a shallow copy of the given annotation map, never nil.
+// copyAnnotations returns a shallow copy of the given annotation map. An
+// empty (or nil) source maps to nil so a no-op round trip stays lossless
+// in memory as well as on the wire.
 func copyAnnotations(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
 	dst := make(map[string]string, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}
 	return dst
+}
+
+// v2RestartPolicyMarker is the JSON the conversion annotation carries.
+type v2RestartPolicyMarker struct {
+	// Config is the role's raw v1alpha2 restart policy config, nil when the
+	// role sets none.
+	Config *v2.RestartPolicyConfig `json:"config,omitempty"`
+	// LegacyType is the deprecated pattern-level restartPolicy string the
+	// role carries alongside the config, empty when the role sets none.
+	LegacyType v2.RestartPolicyType `json:"legacyType,omitempty"`
+	// EmittedType is the wire RestartPolicy value ConvertFrom emitted for
+	// this role — the effective type folded from the config or the legacy
+	// string. ConvertTo compares the wire value against it to tell a
+	// deliberate type edit from an unchanged round trip.
+	EmittedType v2.RestartPolicyType `json:"emittedType,omitempty"`
+}
+
+// preserveV2RestartPolicyConfig marks the v1alpha1 wire role as read from the
+// hub, so that ConvertTo can tell a read-and-write round trip from a fresh
+// v1alpha1 write, and carries the role's restart policy provenance in the
+// marker: v1alpha1 can express only the policy type, so the config's delays and
+// activateAfter, and the deprecated pattern-level string, would otherwise be
+// dropped or folded by a round trip (#580). Every role is marked, so a stale
+// value copied from the hub's own annotations is always overwritten.
+func preserveV2RestartPolicyConfig(src *v2.RoleSpec, dst *RoleSpec) error {
+	marker := v2RestartPolicyMarker{
+		Config:      src.GetRawRestartPolicyConfig(),
+		EmittedType: src.GetRawRestartPolicyType(),
+	}
+	if lwp := src.LeaderWorkerPattern; lwp != nil {
+		marker.LegacyType = lwp.RestartPolicy //nolint:staticcheck // the deprecated string is part of the round-trip provenance
+	} else if ccp := src.CustomComponentsPattern; ccp != nil {
+		marker.LegacyType = ccp.RestartPolicy //nolint:staticcheck // the deprecated string is part of the round-trip provenance
+	}
+	value := ""
+	if marker != (v2RestartPolicyMarker{}) {
+		data, err := json.Marshal(marker)
+		if err != nil {
+			// The marker is plain scalars so this cannot fail in practice, but a
+			// dropped marker would corrupt the round trip; fail the conversion.
+			return fmt.Errorf("marshalling restart policy marker for role %q: %w", src.Name, err)
+		}
+		value = string(data)
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = make(map[string]string, 1)
+	}
+	dst.Annotations[annotationV2RestartPolicyConfig] = value
+	return nil
+}
+
+// restoreV2RestartPolicyConfig returns the restart policy configuration
+// preserved by preserveV2RestartPolicyConfig. found reports whether the marker
+// is present at all, which makes the write a round trip (an empty value means
+// the role set no config); err is non-nil when the marker is present but does
+// not unmarshal into the config.
+// restoreV2RestartPolicyConfig returns the restart policy provenance
+// preserved by preserveV2RestartPolicyConfig. found reports whether the marker
+// is present at all, which makes the write a round trip; err is non-nil when
+// the marker is present but does not unmarshal, or fails the semantic
+// validation the v1alpha2 CRD applies to a config written through v1alpha2.
+func restoreV2RestartPolicyConfig(annotations map[string]string) (v2RestartPolicyMarker, bool, error) {
+	var marker v2RestartPolicyMarker
+	raw, ok := annotations[annotationV2RestartPolicyConfig]
+	if !ok {
+		return marker, false, nil
+	}
+	if raw == "" {
+		return marker, true, nil
+	}
+	if err := json.Unmarshal([]byte(raw), &marker); err != nil {
+		return marker, true, fmt.Errorf("unmarshalling preserved restart policy marker: %w", err)
+	}
+	if err := validateV2RestartPolicyMarker(marker); err != nil {
+		return marker, true, err
+	}
+	return marker, true, nil
+}
+
+// validateV2RestartPolicyMarker validates a restored marker the way the
+// v1alpha2 schema validates a restart policy config: the type and
+// activateAfter enums, non-negative delays, and maxDelaySeconds >=
+// baseDelaySeconds. A hand-edited marker that would not validate through the
+// v1alpha2 API must not be stored through v1alpha1 either.
+func validateV2RestartPolicyMarker(marker v2RestartPolicyMarker) error {
+	for name, value := range map[string]v2.RestartPolicyType{
+		"legacyType":  marker.LegacyType,
+		"emittedType": marker.EmittedType,
+	} {
+		switch value {
+		case "", v2.RestartPolicyNone, v2.RecreateRoleInstanceOnPodRestart:
+		default:
+			return fmt.Errorf("restart policy marker %s %q is not a valid restart policy type", name, value)
+		}
+	}
+	if marker.Config == nil {
+		return nil
+	}
+	config := marker.Config
+	switch config.Type {
+	case "", v2.RestartPolicyNone, v2.RecreateRoleInstanceOnPodRestart:
+	default:
+		return fmt.Errorf("restart policy config type %q is not a valid restart policy type", config.Type)
+	}
+	switch config.ActivateAfter {
+	case "", v2.RestartPolicyActivateAfterReady, v2.RestartPolicyActivateAfterCreated:
+	default:
+		return fmt.Errorf("restart policy config activateAfter %q is not a valid activateAfter", config.ActivateAfter)
+	}
+	if config.BaseDelaySeconds != nil && *config.BaseDelaySeconds < 0 {
+		return fmt.Errorf("restart policy config baseDelaySeconds %d is negative", *config.BaseDelaySeconds)
+	}
+	if config.MaxDelaySeconds != nil && *config.MaxDelaySeconds < 0 {
+		return fmt.Errorf("restart policy config maxDelaySeconds %d is negative", *config.MaxDelaySeconds)
+	}
+	if config.BaseDelaySeconds != nil && config.MaxDelaySeconds != nil &&
+		*config.MaxDelaySeconds < *config.BaseDelaySeconds {
+		return fmt.Errorf("restart policy config maxDelaySeconds %d is less than baseDelaySeconds %d",
+			*config.MaxDelaySeconds, *config.BaseDelaySeconds)
+	}
+	return nil
 }
