@@ -70,6 +70,9 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 	if err := validateNoNewEngineRuntimeViolations(rbgs.Spec.GroupTemplate.Spec.Roles, nil); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	if err := validateNoNewUnsupportedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles, nil); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoNewDeprecatedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles, nil); err != nil {
 			allErrs = append(allErrs, err)
@@ -112,6 +115,13 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj, n
 		allErrs = append(allErrs, err)
 	}
 	if err := validateNoNewEngineRuntimeViolations(rbgs.Spec.GroupTemplate.Spec.Roles, oldRBGS.Spec.GroupTemplate.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := validateNoNewUnsupportedWorkloadTypes(
+		"spec.groupTemplate.spec.roles",
+		rbgs.Spec.GroupTemplate.Spec.Roles,
+		oldRBGS.Spec.GroupTemplate.Spec.Roles,
+	); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {
