@@ -168,6 +168,11 @@ const (
 	// ConversionV1alpha2RolloutStatusAnnotationKey stores v1alpha2-only rollout status on the
 	// v1alpha1 view during conversion.
 	ConversionV1alpha2RolloutStatusAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-rollout-status"
+
+	// ConversionV1alpha2DiscoveryConfigVersionAnnotationKey stores the KEP-576
+	// discovery-config-version on the v1alpha1 view of RoleBasedGroupSet, whose
+	// schema has no spec.groupTemplate.annotations field.
+	ConversionV1alpha2DiscoveryConfigVersionAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-discovery-config-version"
 )
 
 // Lifecycle management annotations

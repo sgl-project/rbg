@@ -41,12 +41,13 @@ var systemManagedAnnotationKeys = map[string]bool{
 	// The mode selector is retired, but children written by older controllers
 	// still carry it. Keep ignoring it so an upgrade does not classify those
 	// children as template drift and roll them.
-	constants.DiscoveryConfigModeAnnotationKey:               true,
-	constants.RolloutRequestAnnotationKey:                    true,
-	constants.ConversionV1alpha1CoordinationAnnotationKey:    true,
-	constants.ConversionV1alpha1PodGroupPolicyAnnotationKey:  true,
-	constants.ConversionV1alpha2RolloutStrategyAnnotationKey: true,
-	constants.ConversionV1alpha2RolloutStatusAnnotationKey:   true,
+	constants.DiscoveryConfigModeAnnotationKey:                      true,
+	constants.RolloutRequestAnnotationKey:                           true,
+	constants.ConversionV1alpha1CoordinationAnnotationKey:           true,
+	constants.ConversionV1alpha1PodGroupPolicyAnnotationKey:         true,
+	constants.ConversionV1alpha2RolloutStrategyAnnotationKey:        true,
+	constants.ConversionV1alpha2RolloutStatusAnnotationKey:          true,
+	constants.ConversionV1alpha2DiscoveryConfigVersionAnnotationKey: true,
 }
 
 // templateOwnedAnnotationKeys are excluded from revision identity but converge

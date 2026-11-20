@@ -65,10 +65,6 @@ const (
 
 	// SetRBGIndexLabelKey SetRBGIndex identifies the index of the rbg within the rbgset
 	SetRBGIndexLabelKey = RBGSetPrefix + "rbg-index"
-
-	// DiscoveryConfigVersionAnnotationKey selects the discovery ConfigMap
-	// content version. Supported values: v1alpha1, v1.
-	DiscoveryConfigVersionAnnotationKey = RBGPrefix + "discovery-config-version"
 )
 
 const ComponentLabelPrefix = "component." + RBGPrefix
