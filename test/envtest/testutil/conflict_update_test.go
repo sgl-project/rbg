@@ -166,6 +166,53 @@ func TestUpdatePodStatusOnConflictRefusesReplacement(t *testing.T) {
 	}
 }
 
+// TestUpdatePodOnConflictRetriesAndRereads pins the object-write variant
+// (K8sClient.Update, not the status subresource), which is load-bearing for
+// the Ignore-annotation fixture in the restart policy suite.
+func TestUpdatePodOnConflictRetriesAndRereads(t *testing.T) {
+	ctx := context.Background()
+	base := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default"},
+	}
+
+	var updates int32
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithObjects(base).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
+				n := atomic.AddInt32(&updates, 1)
+				if n == 1 {
+					return apierrors.NewConflict(
+						schema.GroupResource{Group: "", Resource: "pods"},
+						obj.GetName(), errors.New("the object has been modified"))
+				}
+				return c.Update(ctx, obj, opts...)
+			},
+		}).Build()
+	swapClient(t, c)
+
+	err := UpdatePodOnConflict(ctx, client.ObjectKeyFromObject(base), func(pod *corev1.Pod) {
+		if pod.Annotations == nil {
+			pod.Annotations = make(map[string]string, 1)
+		}
+		pod.Annotations["fixture/example"] = "set"
+	})
+	if err != nil {
+		t.Fatalf("expected the conflict to be retried, got %v", err)
+	}
+	if got := atomic.LoadInt32(&updates); got != 2 {
+		t.Fatalf("expected 2 updates (one 409, one success), got %d", got)
+	}
+
+	got := &corev1.Pod{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(base), got); err != nil {
+		t.Fatalf("get pod: %v", err)
+	}
+	if got.Annotations["fixture/example"] != "set" {
+		t.Fatalf("annotation = %q, want set", got.Annotations["fixture/example"])
+	}
+}
+
 // TestUpdateRoleInstanceStatusOnConflictRetries covers the RoleInstance
 // variant of the retry contract.
 func TestUpdateRoleInstanceStatusOnConflictRetries(t *testing.T) {

@@ -287,6 +287,13 @@ func SetPodCondition(pod *corev1.Pod, conditionType corev1.PodConditionType, sta
 			if pod.Status.Conditions[i].Status != status {
 				pod.Status.Conditions[i].Status = status
 				pod.Status.Conditions[i].LastTransitionTime = now
+				// A flipped status invalidates the previous status's reason
+				// and message: kubelet (and the controller's own condition
+				// writer) replaces the whole condition, so a True condition
+				// must not keep the stale ReadinessGatesNotReady reason the
+				// False one carried.
+				pod.Status.Conditions[i].Reason = ""
+				pod.Status.Conditions[i].Message = ""
 			}
 			pod.Status.Conditions[i].LastProbeTime = now
 			return

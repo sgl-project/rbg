@@ -97,8 +97,16 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 					// them on every poll until the status write exceeded
 					// etcd's request limit. The conflict-safe write rereads
 					// the Pod on every retry instead of reusing the snapshot.
+					// The guards are re-checked on the freshly read object: a
+					// Pod that started terminating or already failed after the
+					// List snapshot must not be marked Running/Ready.
 					if err := testutil.UpdatePodStatusOnConflict(ctx,
-						client.ObjectKeyFromObject(&snapshot), testutil.SetPodRunningAndReady); err != nil {
+						client.ObjectKeyFromObject(&snapshot), func(pod *v1.Pod) {
+							if pod.DeletionTimestamp != nil || pod.Status.Phase == v1.PodFailed {
+								return
+							}
+							testutil.SetPodRunningAndReady(pod)
+						}); err != nil {
 						return client.IgnoreNotFound(err)
 					}
 				}
