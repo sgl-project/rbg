@@ -25,7 +25,7 @@ Finishing one track does not imply that the other is complete. Check both before
 
 - Upgrade the RBG controller to `0.9.0` or later and confirm that the controller, conversion webhook, and admission webhook are healthy.
 - Confirm the roles being migrated are currently ready and have no unrelated rollout in progress. An `InstanceSet` role is an exception: it has not reconciled since v0.7.0, and its unsupported workload type prevents the whole RoleBasedGroup from passing preflight reconciliation.
-- Complete the discovery ConfigMap prerequisite for every stateful role before submitting its migration. RBGs upgraded from v0.6.0 or earlier and RoleBasedGroupSet children run in `legacy` discovery mode; see [Discovery ConfigMap prerequisite](#discovery-configmap-prerequisite).
+- Complete the discovery ConfigMap prerequisite for every stateful role before submitting its migration. RBGs upgraded from v0.6.0 or earlier run in `legacy` discovery mode, and so does a RoleBasedGroupSet child that carries an explicit `legacy`; see [Discovery ConfigMap prerequisite](#discovery-configmap-prerequisite).
 - Coordinate with autoscaling, traffic management, scheduling, and any business process that can change the role while it is being migrated.
 - Freeze external writes to the object during the change window.
 - Save the current object and record its revision before editing it.
@@ -81,7 +81,7 @@ Before migrating a stateful role, switch the discovery mode to `refine` accordin
 | --- | --- | --- |
 | Created by v0.7.0 or later, or a fresh v0.9.0 install | `refine` | None. |
 | Upgraded from v0.6.0 or earlier | Derived `legacy` | Set the RBG's discovery-mode annotation to `refine` and trigger a reconcile. |
-| RoleBasedGroupSet child, any origin | Effectively `legacy` | Set `rbg.workloads.x-k8s.io/discovery-config-mode: refine` in `spec.groupTemplate.annotations`. The set controller replaces child annotations with the template's, so an annotation written directly on a child does not survive. |
+| RoleBasedGroupSet child, any origin | `refine`, unless `legacy` was set explicitly | None for a child without the annotation, which is how v0.7.0 and v0.8.0 leave their children: at its first reconcile after the upgrade the controller pins it to `refine` and creates or updates its discovery ConfigMap. Workload specs, revisions and Pods do not change. A child that carries `legacy` keeps it. To move it, set `rbg.workloads.x-k8s.io/discovery-config-mode: refine` in `spec.groupTemplate.annotations`; the set controller applies template annotations to its children and otherwise keeps the mode a child has. The one exception is an orphan that a set adopts: unless the template declares a mode, the adoption sets the child to `refine`, whether it had no mode or a `legacy` it derived while it had no set. |
 
 For a plain RoleBasedGroup, set the annotation and then verify the ConfigMap exists before migrating:
 

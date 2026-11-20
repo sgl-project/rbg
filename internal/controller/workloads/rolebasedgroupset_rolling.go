@@ -163,10 +163,43 @@ func (r *RoleBasedGroupSetReconciler) adoptGroupSetOrphans(
 	return adopted, nil
 }
 
+// claimGroupSetOrphan makes the set the controller of an orphan in memory; the
+// caller writes it.
+//
+// The claim also decides the orphan's discovery config mode, so the ownership and
+// the mode land in one write and the RoleBasedGroup controller never sees a set
+// child without a mode:
+//
+//   - A mode the template declares is the user's choice and is stamped as it is.
+//     Left to the later metadata sync, a RoleBasedGroup reconcile in between would
+//     pin the child to refine and apply its discovery ConfigMap first.
+//   - Otherwise the child is pinned to refine, because a set child is never a
+//     legacy object (#603). That covers an orphan that derived legacy while it had
+//     no controller, which is how a child v0.7.0 or v0.8.0 left without the
+//     annotation ends up once it is orphaned, and an orphan adopted before that
+//     derivation, which a claim that only changed the owner reference would not
+//     enqueue.
+func (r *RoleBasedGroupSetReconciler) claimGroupSetOrphan(
+	set *workloadsv1alpha2.RoleBasedGroupSet, child *workloadsv1alpha2.RoleBasedGroup,
+) error {
+	if err := controllerutil.SetControllerReference(set, child, r.scheme); err != nil {
+		return err
+	}
+	mode, declared := set.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigModeAnnotationKey]
+	if !declared {
+		mode = string(constants.RefineDiscoveryConfigMode)
+	}
+	if child.Annotations == nil {
+		child.Annotations = map[string]string{}
+	}
+	child.Annotations[constants.DiscoveryConfigModeAnnotationKey] = mode
+	return nil
+}
+
 func (r *RoleBasedGroupSetReconciler) adoptGroupSetChild(
 	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, child *workloadsv1alpha2.RoleBasedGroup,
 ) error {
-	if err := controllerutil.SetControllerReference(set, child, r.scheme); err != nil {
+	if err := r.claimGroupSetOrphan(set, child); err != nil {
 		return err
 	}
 	// A child that vanished mid-reconcile is simply absent on the next listing.

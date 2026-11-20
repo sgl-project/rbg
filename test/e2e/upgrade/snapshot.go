@@ -141,6 +141,11 @@ type RBGSnapshot struct {
 	// ownerFacts.Spec: a generation bump on the root is reported with the diff.
 	Spec        map[string]any
 	ReadyByRole map[string]int32
+	// DiscoveryConfigMode is the value of the discovery-config-mode annotation on a
+	// RoleBasedGroup, empty when it has none. It lives in metadata, so neither the
+	// spec comparison nor the generation sees it change, and it decides whether the
+	// controller reconciles the group's discovery ConfigMap at all.
+	DiscoveryConfigMode string
 	// RBGReady is the RBG's Ready condition being True.
 	RBGReady bool
 }
@@ -224,6 +229,8 @@ func captureRBG(g gomega.Gomega, f *framework.Framework, rbg *workloadsv1alpha2.
 		Services:      listServicesForRBG(g, f, rbg),
 		RevisionNames: listRevisionsForRBG(g, f, rbg),
 		ReadyByRole:   make(map[string]int32, len(rbg.Spec.Roles)),
+
+		DiscoveryConfigMode: string(rbg.GetDiscoveryConfigMode()),
 	}
 
 	for _, role := range rbg.Spec.Roles {
@@ -566,6 +573,7 @@ func checkSnapshotDiff(fs *findings, f *framework.Framework, before, after map[s
 	checkServicesStable(fs, before, after, rec.leaderOnlyServices)
 	checkOwnersStable(fs, before, after, rec.specRewrites)
 	checkNoRevisionExplosion(fs, f, before, after, rec.revisionAdds)
+	checkDiscoveryModeStable(fs, before, after, rec.discoveryModePins)
 	checkStillReady(fs, before, after)
 }
 
@@ -911,6 +919,12 @@ type recordedRewrites struct {
 	// component-name=leader and nothing else, no endpoint may be added, and every
 	// endpoint that left must belong to a pod that is not a leader.
 	leaderOnlyServices map[string]bool
+
+	// discoveryModePins are the RoleBasedGroupSet children the upgrade pins to the
+	// refine discovery config mode. The entry asserts in both directions: the child
+	// must have no mode before, and refine afterwards. Every other RoleBasedGroup
+	// has to keep the mode it had, a missing one included.
+	discoveryModePins map[string]bool
 }
 
 // healStoredStrategyType is the rewrite the mutating webhook performs on a stored
@@ -1183,6 +1197,44 @@ func checkNoRevisionExplosion(fs *findings, f *framework.Framework, before, afte
 	// <rbg>-<hash>-<n>, the RoleInstanceSet layer names them <set>-<hash>. Both carry
 	// GroupNameLabelKey, so this list spans both and the added names say which moved.
 	fs.add("ControllerRevisions changed across the upgrade", problems)
+}
+
+// checkDiscoveryModeStable fails when the discovery config mode of a RoleBasedGroup
+// changed without being recorded, or when a recorded pin did not happen.
+//
+// The mode is an annotation, so a change to it moves no generation, no spec and no
+// revision, and none of the other detectors can see it. It still decides whether the
+// controller keeps the group's discovery ConfigMap current, which is why it is
+// compared on its own.
+//
+// A recorded child must have no mode beforehand. One that already has a mode is not
+// pinned by the upgrade: refine means the from-release keeps the annotation and the
+// recording is stale, and legacy is an explicit value the controller leaves alone.
+func checkDiscoveryModeStable(fs *findings, before, after map[string]RBGSnapshot, pins map[string]bool) {
+	refine := string(constants.RefineDiscoveryConfigMode)
+
+	var problems []string
+	for name, beforeSnap := range before {
+		afterSnap, ok := after[name]
+		if !ok || beforeSnap.Kind != kindRBG {
+			continue
+		}
+		was, is := beforeSnap.DiscoveryConfigMode, afterSnap.DiscoveryConfigMode
+		switch {
+		case !pins[name]:
+			if was != is {
+				problems = append(problems, fmt.Sprintf("%s: %q -> %q", name, was, is))
+			}
+		case was != "":
+			problems = append(problems, fmt.Sprintf(
+				"%s: already had mode %q before (now %q), so the recorded pin is stale", name, was, is))
+		case is != refine:
+			problems = append(problems, fmt.Sprintf(
+				"%s: %q -> %q, but the recorded pin to %q did not happen", name, was, is, refine))
+		}
+	}
+	sort.Strings(problems)
+	fs.add("the discovery config mode of RoleBasedGroups changed", problems)
 }
 
 // describeRevisionChange renders one RBG's revision change, including a content diff
