@@ -17,7 +17,7 @@ Workload-type content migration must use the `v1alpha2` representation and write
 There are two independent tracks:
 
 1. **API encoding (v1alpha1 to v1alpha2).** Objects created through `v1alpha1` and never updated may still be encoded as `v1alpha1` in etcd. The storage-version step rewrites them through the `v1alpha2` endpoint. It does not change object content.
-2. **Legacy workload selectors.** `Deployment`, `StatefulSet`, and `LeaderWorkerSet` roles are compatibility-gated and must move to `RoleInstanceSet`. A v1alpha1 `InstanceSet` selector is different: the v0.7.0-and-later controller has no InstanceSet reconciler, so such roles do not reconcile in either compatibility mode.
+2. **Legacy workload selectors.** `Deployment`, `StatefulSet`, and `LeaderWorkerSet` roles are compatibility-gated and must move to `RoleInstanceSet`. A v1alpha1 `InstanceSet` selector is different: the v0.7.0-and-later controller has no InstanceSet reconciler, so such roles do not reconcile in either compatibility mode. Admission still gates it like the other deprecated types, so a new InstanceSet use is rejected in either mode.
 
 Finishing one track does not imply that the other is complete. Check both before upgrading beyond `0.9.0`.
 
@@ -151,7 +151,9 @@ With the prerequisite above completed, migrate each `Deployment`, `StatefulSet`,
 
 v0.6.0 and earlier have no `RoleInstanceSet` (introduced in v0.7.0): clusters upgraded from those versions must upgrade to `0.9.0` first, then migrate.
 
-A v1alpha1 `InstanceSet` selector is not covered by the compatibility toggle. It has not been reconciled since v0.7.0, and an unsupported workload type makes the whole RoleBasedGroup fail preflight reconciliation rather than isolating the failure to one role.
+A v1alpha1 `InstanceSet` selector does not reconcile in either compatibility mode: it has had no reconciler since v0.7.0, and an unsupported workload type makes the whole RoleBasedGroup fail preflight reconciliation rather than isolating the failure to one role.
+
+The compatibility toggle still gates its admission like the other deprecated types. While the value is `true`, an existing InstanceSet role stays writable, but a new use is rejected, including restoring a saved InstanceSet selector into a role that has already been migrated; such a selector would not reconcile anyway, so do not plan recovery around it. While the value is `false`, every create or update whose roles still include an InstanceSet selector is rejected.
 
 Migrate the role to `RoleInstanceSet`. Orphan cleanup does not cover InstanceSet: after the replacement `RoleInstanceSet` is ready, the old InstanceSet and its Pods run alongside the replacement until the old object is explicitly deleted. Review the deletion with the workload owner and include it in the recovery plan.
 

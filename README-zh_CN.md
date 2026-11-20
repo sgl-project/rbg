@@ -99,7 +99,7 @@ helm upgrade --install rbgs https://github.com/sgl-project/rbg/releases/download
 
 - **全新安装**：使用 `false`。这是推荐的起点，只接受 `RoleInstanceSet`，且这一约束由控制器强制执行而非依赖约定。
 - **升级后迁移已完成的集群**：使用 `false`——已无弃用 role、reconcile 已完成，且旧的 RBG-owned workload 已删除。
-- **升级后仍有弃用 role 的集群**：保持 `true`，直到这些 role 迁移到 `RoleInstanceSet`、reconcile 完成且旧的 RBG-owned workload 已删除后再切换为 `false`。`true` 期间控制器保留弃用类型的 RBAC、watch 与孤儿清理，存量 role 保持可 reconcile。
+- **升级后仍有弃用 role 的集群**：保持 `true`，直到这些 role 迁移到 `RoleInstanceSet`、reconcile 完成且旧的 RBG-owned workload 已删除后再切换为 `false`。`true` 期间控制器保留 `Deployment`、`StatefulSet` 与 `LeaderWorkerSet` 的 RBAC、watch 与孤儿清理，这些存量 role 保持可 reconcile。
 
 请阅读[手工 v1alpha1 到 v1alpha2 迁移指南](doc/zh/migration-v1alpha1-to-v1alpha2.md)，其中包含 role 盘点、逐 role rollout、RoleBasedGroupSet 顺序、回滚、InstanceSet 清理和存储版本迁移。
 
