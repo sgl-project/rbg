@@ -404,6 +404,19 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
+	// Validate even for stateless-only RBGs: admission can be bypassed, and a
+	// future or invalid version must fail the reconcile instead of being
+	// silently interpreted as v1alpha1.
+	version := rbg.GetDiscoveryConfigVersion()
+	switch version {
+	case "", constants.DiscoveryConfigVersionV1Alpha1, constants.DiscoveryConfigVersionV1:
+	default:
+		return fmt.Errorf(
+			"unsupported %s value %q; supported values are v1alpha1 and v1",
+			constants.DiscoveryConfigVersionAnnotationKey, version,
+		)
+	}
+
 	if !rbg.HasStatefulRole() {
 		return nil
 	}
@@ -427,7 +440,6 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	// than v1alpha1 and v1 fails the reconcile instead of silently downgrading
 	// content, which also keeps an older controller from rewriting content
 	// written by a future version.
-	version := rbg.GetDiscoveryConfigVersion()
 	selectedVersion := constants.DiscoveryConfigVersionV1Alpha1
 	compact := false
 	switch version {
@@ -437,11 +449,6 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 			selectedVersion = version
 			compact = true
 		}
-	default:
-		return fmt.Errorf(
-			"unsupported %s value %q; supported values are v1alpha1 and v1",
-			constants.DiscoveryConfigVersionAnnotationKey, version,
-		)
 	}
 
 	var configData []byte

@@ -666,6 +666,43 @@ roles:
 			},
 			wantErr: true,
 		},
+		{
+			name: "custom components clamps non-positive sizes to zero",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "pd-inference"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name:     "prefill",
+						Replicas: &replicas1,
+						Pattern: workloadsv1alpha2.Pattern{
+							CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+								Components: []workloadsv1alpha2.InstanceComponent{
+									{Name: "leader", Size: ptr.To(int32(1))},
+									{Name: "worker", Size: ptr.To(int32(-1))},
+									{Name: "empty", Size: ptr.To(int32(0))},
+								},
+							},
+						},
+					}},
+				},
+			},
+			expected: `apiVersion: v1
+group: pd-inference
+roles:
+- components:
+  - base: pd-inference-prefill-{roleIndex}-leader-{componentIndex}.s-pd-inference-prefill
+    name: leader
+    size: 1
+  - base: pd-inference-prefill-{roleIndex}-worker-{componentIndex}.s-pd-inference-prefill
+    name: worker
+    size: 0
+  - base: pd-inference-prefill-{roleIndex}-empty-{componentIndex}.s-pd-inference-prefill
+    name: empty
+    size: 0
+  members: 1
+  name: prefill
+`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -861,6 +898,259 @@ func TestConfigBuilder_MemberSummaryMatchesMemberOrdinals(t *testing.T) {
 			require.Equal(t, ordinals.Record(members), excluded)
 		})
 	}
+}
+
+func TestConfigBuilder_MemberSummaryMatchesCommittedChild(t *testing.T) {
+	replicas := int32(5)
+	schema := runtime.NewScheme()
+	_ = corev1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
+
+	for _, record := range []string{"", "1,3", "1-3"} {
+		t.Run("record="+record, func(t *testing.T) {
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Name: "test-cluster", Namespace: "default", UID: "rbg-uid",
+				},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name:     "worker",
+						Replicas: &replicas,
+					}},
+				},
+			}
+			set := &workloadsv1alpha2.RoleInstanceSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+					Namespace: rbg.Namespace,
+					Labels:    map[string]string{constants.GroupNameLabelKey: rbg.Name},
+					Annotations: map[string]string{
+						constants.CommittedSkipOrdinalsAnnotationKey: record,
+					},
+					OwnerReferences: []metav1.OwnerReference{
+						*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
+					},
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To(int32(3))},
+			}
+			builder := NewConfigBuilder(
+				fake.NewClientBuilder().WithScheme(schema).WithObjects(set).Build(), rbg, nil)
+			role := &rbg.Spec.Roles[0]
+
+			members, err := builder.memberOrdinals(context.Background(), role)
+			require.NoError(t, err)
+			count, excluded, err := builder.memberSummary(context.Background(), role)
+			require.NoError(t, err)
+
+			require.Equal(t, len(members), count)
+			require.Equal(t, ordinals.Record(members), excluded)
+		})
+	}
+}
+
+func TestConfigBuilder_LegacySizeLowerBound(t *testing.T) {
+	replicas := int32(3)
+	schema := runtime.NewScheme()
+	_ = corev1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
+
+	for _, tt := range []struct {
+		name string
+		rbg  *workloadsv1alpha2.RoleBasedGroup
+	}{
+		{
+			name: "standalone role",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name: "worker", Replicas: &replicas,
+						ServicePorts: []corev1.ServicePort{{Name: "http", Port: 8080}},
+					}},
+				},
+			},
+		},
+		{
+			name: "leader worker role",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name: "worker", Replicas: &replicas,
+						Pattern: workloadsv1alpha2.Pattern{
+							LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{Size: ptr.To(int32(3))},
+						},
+					}},
+				},
+			},
+		},
+		{
+			name: "custom components with service override",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name: "worker", Replicas: &replicas,
+						Pattern: workloadsv1alpha2.Pattern{
+							CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+								Components: []workloadsv1alpha2.InstanceComponent{
+									{Name: "leader", Size: ptr.To(int32(1)), ServiceName: "leader-svc"},
+									{Name: "worker", Size: ptr.To(int32(2))},
+								},
+							},
+						},
+					}},
+				},
+			},
+		},
+		{
+			name: "non-positive component sizes emit no entries",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name: "worker", Replicas: &replicas,
+						Pattern: workloadsv1alpha2.Pattern{
+							CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+								Components: []workloadsv1alpha2.InstanceComponent{
+									{Name: "leader", Size: ptr.To(int32(0))},
+									{Name: "worker", Size: ptr.To(int32(-1))},
+								},
+							},
+						},
+					}},
+				},
+			},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), tt.rbg, nil)
+			lower, err := builder.LegacySizeLowerBound(context.Background())
+			require.NoError(t, err)
+
+			built, err := builder.Build(context.Background())
+			require.NoError(t, err)
+			require.LessOrEqual(t, lower, int64(len(built)),
+				"the estimator must stay a lower bound of the serialized content")
+		})
+	}
+
+	t.Run("huge component sizes reject before enumeration", func(t *testing.T) {
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "test"},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "worker",
+					Replicas: ptr.To(int32(1)),
+					Pattern: workloadsv1alpha2.Pattern{
+						CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+							Components: []workloadsv1alpha2.InstanceComponent{
+								{Name: "worker", Size: ptr.To(int32(2147483647))},
+							},
+						},
+					},
+				}},
+			},
+		}
+		builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+		lower, err := builder.LegacySizeLowerBound(context.Background())
+		require.NoError(t, err)
+		require.Greater(t, lower, int64(1<<20))
+	})
+
+	t.Run("huge replicas with zero-address role skip enumeration", func(t *testing.T) {
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "test"},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "worker",
+					Replicas: ptr.To(int32(2147483647)),
+					Pattern: workloadsv1alpha2.Pattern{
+						CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+							Components: []workloadsv1alpha2.InstanceComponent{
+								{Name: "worker", Size: ptr.To(int32(0))},
+							},
+						},
+					},
+				}},
+			},
+		}
+		builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+		built, err := builder.Build(context.Background())
+		require.NoError(t, err)
+		require.NotContains(t, string(built), "address:", "a zero-address role must not enumerate instances")
+	})
+}
+
+func TestConfigBuilder_BuildCompactMatchesLegacyAddresses(t *testing.T) {
+	replicas := int32(3)
+	schema := runtime.NewScheme()
+	_ = corev1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{
+					Name: "standalone", Replicas: &replicas,
+					Annotations:  map[string]string{constants.ExcludedOrdinalsAnnotationKey: "1"},
+					ServicePorts: []corev1.ServicePort{{Name: "http-api", Port: 8080}, {Port: 50000}},
+				},
+				{
+					Name: "leader-worker", Replicas: ptr.To(int32(1)),
+					Pattern: workloadsv1alpha2.Pattern{
+						LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{Size: ptr.To(int32(3))},
+					},
+				},
+				{
+					Name: "custom", Replicas: ptr.To(int32(2)),
+					Pattern: workloadsv1alpha2.Pattern{
+						CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+							Components: []workloadsv1alpha2.InstanceComponent{
+								{Name: "leader", Size: ptr.To(int32(1))},
+								{Name: "worker", Size: ptr.To(int32(2))},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+
+	legacyData, err := builder.Build(context.Background())
+	require.NoError(t, err)
+	compactData, err := builder.BuildCompact(context.Background())
+	require.NoError(t, err)
+
+	var legacy ClusterConfig
+	require.NoError(t, yaml.UnmarshalStrict(legacyData, &legacy))
+	var compact CompactConfig
+	require.NoError(t, yaml.UnmarshalStrict(compactData, &compact))
+
+	for _, role := range compact.Roles {
+		legacyInstances := legacy.Roles[role.Name].Instances
+		require.Len(t, legacyInstances, expandCompactRole(t, role))
+	}
+}
+
+func expandCompactRole(t *testing.T, role CompactRole) int {
+	members, err := decodeCompactMembers(role.Members, role.ExcludedOrdinals)
+	require.NoError(t, err)
+	var count int
+	for range members {
+		count += componentAddresses(role)
+	}
+	return count
+}
+
+func componentAddresses(role CompactRole) int {
+	count := 0
+	for _, component := range role.Components {
+		count += component.Size
+	}
+	return count
 }
 
 // TestConfigBuilder_getRoleNames tests the getRoleNames method of ConfigBuilder

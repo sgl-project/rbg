@@ -257,7 +257,9 @@ kubelet redistributes it to every node with a mounting Pod.
    annotations.
 5. Migrating legacy RBGs to the single discovery implementation.
 6. Adding a custom stored-object size guardrail. The API server enforces the
-   1 MiB ConfigMap limit.
+   1 MiB ConfigMap limit; the controller only rejects the serialized
+   `config.yaml` data before writing, so an oversized rollback retains compact
+   content instead of failing the API-server write repeatedly.
 7. Deprecating or removing v1alpha1. This KEP defines coexistence only.
 
 ## Proposal
@@ -337,11 +339,16 @@ Rules:
 2. The supported values are `v1alpha1` and `v1`.
 3. The mutating webhook defaults the annotation to `v1` only on `CREATE`.
    It never defaults a missing annotation on `UPDATE`; existing RBGs without
-   the annotation remain `v1alpha1`.
+   the annotation remain `v1alpha1`. An explicitly empty value is treated as
+   missing on `CREATE`. Objects whose deprecated stateful roles cannot
+   serialize compact content default to `v1alpha1`; `v1` remains rejected for
+   those roles.
 4. Setting `v1alpha1` at creation is the documented opt-out.
 5. For an RBGSet, the webhook defaults the annotation in
-   `spec.groupTemplate.annotations`. Child RBGs inherit that value. Direct
-   edits to a child annotation are overwritten by the RBGSet controller.
+   `spec.groupTemplate.annotations`. Child RBGs inherit that value, including
+   the historical `v1alpha1` default when a set predates the annotation.
+   Direct edits to a child annotation are overwritten, and removing the key
+   from the template returns the children to `v1alpha1`.
 6. Admission rejects values other than `v1alpha1` and `v1`.
 7. Admission rejects `v1` for RBGs containing deprecated stateful roles.
 8. `RBGPredicate` watches the annotation, so annotation-only changes enqueue

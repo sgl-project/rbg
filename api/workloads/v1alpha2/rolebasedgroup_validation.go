@@ -761,6 +761,13 @@ func hasDeprecatedStatefulRole(roles []RoleSpec) bool {
 	return false
 }
 
+// SupportsCompactDiscoveryContent reports whether the role set can serialize
+// the KEP-576 compact discovery content. Deprecated stateful backends must
+// keep the v1alpha1 enumeration.
+func SupportsCompactDiscoveryContent(roles []RoleSpec) bool {
+	return !hasDeprecatedStatefulRole(roles)
+}
+
 // ValidateDiscoveryConfigVersion validates the RBG discovery ConfigMap
 // content-version annotation.
 func ValidateDiscoveryConfigVersion(rbg *RoleBasedGroup) error {

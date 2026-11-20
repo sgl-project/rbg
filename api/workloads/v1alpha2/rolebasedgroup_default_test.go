@@ -251,6 +251,12 @@ func TestRoleBasedGroupSetDefaulterDiscoveryConfigVersion(t *testing.T) {
 		assert.Nil(t, rbgset.Spec.GroupTemplate.Annotations)
 	})
 
+	t.Run("a context without an admission request never defaults", func(t *testing.T) {
+		rbgset := &RoleBasedGroupSet{}
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(context.Background(), rbgset))
+		assert.Nil(t, rbgset.Spec.GroupTemplate.Annotations)
+	})
+
 	t.Run("CREATE defaults an explicitly empty template annotation", func(t *testing.T) {
 		rbgset := &RoleBasedGroupSet{}
 		rbgset.Spec.GroupTemplate.Annotations = map[string]string{

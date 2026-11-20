@@ -162,7 +162,7 @@ func (b *ConfigBuilder) SupportsCompactContent() bool {
 func (b *ConfigBuilder) buildCompactRole(ctx context.Context, role *workloadsv1alpha2.RoleSpec) (*CompactRole, error) {
 	serviceName, err := utils.GetCompatibleHeadlessServiceName(ctx, b.client, b.rbg, role)
 	if err != nil {
-		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
+		return nil, fmt.Errorf("role %s: resolve compatible headless service: %w", role.Name, err)
 	}
 
 	members, excludedOrdinals, err := b.memberSummary(ctx, role)
@@ -310,14 +310,19 @@ func (b *ConfigBuilder) buildRolesInfo(ctx context.Context) (RolesInfo, error) {
 func (b *ConfigBuilder) buildInstances(ctx context.Context, role *workloadsv1alpha2.RoleSpec) ([]Instance, error) {
 	serviceName, err := utils.GetCompatibleHeadlessServiceName(ctx, b.client, b.rbg, role)
 	if err != nil {
-		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
+		return nil, fmt.Errorf("role %s: resolve compatible headless service: %w", role.Name, err)
 	}
-
-	workloadName := b.rbg.GetWorkloadName(role)
 
 	portMap := make(map[string]int32, len(role.ServicePorts))
 	for _, port := range role.ServicePorts {
 		portMap[generatePortKey(port)] = port.Port
+	}
+
+	workloadName := b.rbg.GetWorkloadName(role)
+	// A pattern with no component addresses cannot emit instances; skip the
+	// ordinal expansion so huge replica counts never allocate a member list.
+	if addressesPerMember, _ := legacyAddressMetrics(workloadName, role, serviceName); addressesPerMember == 0 {
+		return nil, nil
 	}
 
 	members, err := b.memberOrdinals(ctx, role)
@@ -379,19 +384,21 @@ func memberAddresses(
 			}
 		}
 	case lwp != nil:
-		size := int32(1)
+		size := int64(1)
 		if lwp.Size != nil {
-			size = *lwp.Size
+			size = int64(*lwp.Size)
 		}
 		if role.GetWorkloadType() == constants.LeaderWorkerSetWorkloadType {
-			groupStart := i * size
+			// Use int64 so a high instance ordinal multiplied by a large group
+			// size cannot wrap before formatting.
+			groupStart := int64(i) * size
 			addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, groupStart, serviceName))
-			for j := int32(0); j < size-1; j++ {
+			for j := int64(0); j < size-1; j++ {
 				addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, groupStart+j+1, serviceName))
 			}
 		} else {
 			addresses = append(addresses, fmt.Sprintf("%s-%d-0.%s", workloadName, i, serviceName))
-			for j := int32(0); j < size-1; j++ {
+			for j := int64(0); j < size-1; j++ {
 				addresses = append(addresses, fmt.Sprintf("%s-%d-%d.%s", workloadName, i, j+1, serviceName))
 			}
 		}
@@ -402,11 +409,59 @@ func memberAddresses(
 	return addresses
 }
 
+// legacyAddressMetrics returns the number of v1alpha1 instance entries per
+// member and a representative serialized byte length for the shortest entry.
+// It never materializes addresses, so it is safe for huge component sizes.
+func legacyAddressMetrics(
+	workloadName string,
+	role *workloadsv1alpha2.RoleSpec,
+	serviceName string,
+) (int64, int64) {
+	ccp := role.GetCustomComponentsPattern()
+	lwp := role.GetLeaderWorkerPattern()
+
+	switch {
+	case ccp != nil:
+		var count, entryBytes int64
+		for _, comp := range ccp.Components {
+			svcName := comp.ServiceName
+			if svcName == "" {
+				svcName = serviceName
+			}
+			size := int64(ptr.Deref(comp.Size, 1))
+			if size < 0 {
+				size = 0
+			}
+			count += size
+			entryBytes += size * int64(len(workloadName)+len(comp.Name)+len(svcName)+
+				len("-0-")+len("-0.")+legacyInstanceLineOverhead)
+		}
+		return count, entryBytes
+	case lwp != nil:
+		size := int64(ptr.Deref(lwp.Size, 1))
+		if size < 1 {
+			size = 1
+		}
+		if role.GetWorkloadType() == constants.LeaderWorkerSetWorkloadType {
+			return size, size * int64(len(workloadName)+len(serviceName)+len("-0.")+legacyInstanceLineOverhead)
+		}
+		return size, size * int64(len(workloadName)+len(serviceName)+len("-0-0.")+legacyInstanceLineOverhead)
+	default:
+		return 1, int64(len(workloadName) + len(serviceName) + len("-0.") + legacyInstanceLineOverhead)
+	}
+}
+
+// legacyInstanceLineOverhead is the YAML cost of one list entry beyond the
+// address itself: the newline plus "    - address: ". Ports are deliberately
+// excluded, which keeps the estimate a lower bound.
+const legacyInstanceLineOverhead = 1 + len("    - address: ")
+
 // LegacySizeLowerBound estimates a lower bound for the serialized v1alpha1
-// content without enumerating instances. It lets the controller reject an
-// oversized rollback before allocating the full instance list.
-func (b *ConfigBuilder) LegacySizeLowerBound(ctx context.Context) (int, error) {
-	total := 0
+// content without enumerating instances or materializing addresses. It lets
+// the controller reject an oversized rollback before allocating the full
+// instance list.
+func (b *ConfigBuilder) LegacySizeLowerBound(ctx context.Context) (int64, error) {
+	var total int64
 	for i := range b.rbg.Spec.Roles {
 		role := &b.rbg.Spec.Roles[i]
 		if !workloadsv1alpha2.IsStatefulRole(role) {
@@ -414,21 +469,21 @@ func (b *ConfigBuilder) LegacySizeLowerBound(ctx context.Context) (int, error) {
 		}
 		members, _, err := b.memberSummary(ctx, role)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("role %s: summarize membership: %w", role.Name, err)
 		}
 		if members == 0 {
 			continue
 		}
 		serviceName, err := utils.GetCompatibleHeadlessServiceName(ctx, b.client, b.rbg, role)
 		if err != nil {
-			return 0, err
+			return 0, fmt.Errorf("role %s: resolve compatible headless service: %w", role.Name, err)
 		}
 		workloadName := b.rbg.GetWorkloadName(role)
-		// YAML emits each instance as a list entry; ports only add more bytes,
-		// so excluding them keeps this estimate a safe lower bound.
-		for _, address := range memberAddresses(workloadName, role, serviceName, 0) {
-			total += members * (len(address) + len("\n    - address: \n"))
+		count, entryBytes := legacyAddressMetrics(workloadName, role, serviceName)
+		if count == 0 {
+			continue
 		}
+		total += int64(members) * entryBytes
 	}
 	return total, nil
 }
@@ -547,10 +602,13 @@ func (b *ConfigBuilder) memberSummary(ctx context.Context, role *workloadsv1alph
 		}
 		excluded, err := ordinals.Parse(role.Annotations[constants.ExcludedOrdinalsAnnotationKey])
 		if err != nil {
-			return 0, "", err
+			return 0, "", fmt.Errorf("role %s: parse %s: %w", role.Name, constants.ExcludedOrdinalsAnnotationKey, err)
 		}
 		record, err := ordinals.Summarize(replicas, excluded)
-		return replicas, record, err
+		if err != nil {
+			return 0, "", fmt.Errorf("role %s: summarize membership: %w", role.Name, err)
+		}
+		return replicas, record, nil
 	}
 	if err != nil {
 		return 0, "", err
@@ -571,10 +629,13 @@ func (b *ConfigBuilder) memberSummary(ctx context.Context, role *workloadsv1alph
 		}
 		skips, err := ordinals.Parse(set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
 		if err != nil {
-			return 0, "", fmt.Errorf("invalid %s: %w", constants.CommittedSkipOrdinalsAnnotationKey, err)
+			return 0, "", fmt.Errorf("role %s: invalid %s: %w", role.Name, constants.CommittedSkipOrdinalsAnnotationKey, err)
 		}
 		record, err := ordinals.Summarize(committed, skips)
-		return committed, record, err
+		if err != nil {
+			return 0, "", fmt.Errorf("role %s: summarize committed membership: %w", role.Name, err)
+		}
+		return committed, record, nil
 	}
 	return dense()
 }
