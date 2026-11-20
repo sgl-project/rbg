@@ -696,7 +696,7 @@ func TestRoleBasedGroupSetReconciler_needsTemplateAnnotationUpdate(t *testing.T)
 			},
 			rbg: &workloadsv1alpha2.RoleBasedGroup{
 				ObjectMeta: metav1.ObjectMeta{
-					Annotations: map[string]string{constants.DiscoveryConfigModeAnnotationKey: "refine"},
+					Annotations: map[string]string{constants.DiscoveryConfigVersionAnnotationKey: "v1"},
 				},
 			},
 			expectedUpdate: false,
@@ -1177,8 +1177,8 @@ func TestSyncRBGMetadata(t *testing.T) {
 						constants.GroupSetIndexLabelKey: "0",
 					},
 					Annotations: map[string]string{
-						constants.DiscoveryConfigModeAnnotationKey: "refine",
-						"stale-annotation":                         "value",
+						constants.DiscoveryConfigVersionAnnotationKey: "v1",
+						"stale-annotation":                            "value",
 					},
 				},
 			},
@@ -1187,7 +1187,7 @@ func TestSyncRBGMetadata(t *testing.T) {
 				constants.GroupSetIndexLabelKey: "0",
 			},
 			expectedAnnotations: map[string]string{
-				constants.DiscoveryConfigModeAnnotationKey: "refine",
+				constants.DiscoveryConfigVersionAnnotationKey: "v1",
 				"app.io/env": "prod",
 			},
 		},
@@ -1205,14 +1205,14 @@ func TestSyncRBGMetadata(t *testing.T) {
 						constants.GroupSetNameLabelKey:  "test-rbgset",
 						constants.GroupSetIndexLabelKey: "0",
 					},
-					Annotations: map[string]string{constants.DiscoveryConfigModeAnnotationKey: "legacy"},
+					Annotations: map[string]string{constants.DiscoveryConfigVersionAnnotationKey: "v1alpha1"},
 				},
 			},
 			expectedLabels: map[string]string{
 				constants.GroupSetNameLabelKey:  "test-rbgset",
 				constants.GroupSetIndexLabelKey: "0",
 			},
-			expectedAnnotations: map[string]string{constants.DiscoveryConfigModeAnnotationKey: "legacy"},
+			expectedAnnotations: map[string]string{constants.DiscoveryConfigVersionAnnotationKey: "v1alpha1"},
 		},
 	}
 

@@ -19,6 +19,7 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/google/go-cmp/cmp"
@@ -78,6 +79,29 @@ type Instance struct {
 	Ports   map[string]int32 `json:"ports,omitempty"` // Key: port name, Value: port number
 }
 
+// CompactConfig is the KEP-576 v1 discovery ConfigMap content. It replaces
+// per-instance enumeration with membership, component, and address templates.
+type CompactConfig struct {
+	APIVersion string        `json:"apiVersion"`
+	Group      string        `json:"group"`
+	Roles      []CompactRole `json:"roles"`
+}
+
+type CompactRole struct {
+	Name             string             `json:"name"`
+	Members          int                `json:"members"`
+	ExcludedOrdinals string             `json:"excludedOrdinals,omitempty"`
+	Ports            map[string]int32   `json:"ports,omitempty"`
+	Components       []CompactComponent `json:"components"`
+}
+
+type CompactComponent struct {
+	Name   string `json:"name"`
+	Size   int    `json:"size"`
+	Offset int    `json:"offset,omitempty"`
+	Base   string `json:"base"`
+}
+
 func (b *ConfigBuilder) Build() ([]byte, error) {
 	roles, err := b.buildRolesInfo()
 	if err != nil {
@@ -93,6 +117,165 @@ func (b *ConfigBuilder) Build() ([]byte, error) {
 		Roles: roles,
 	}
 	return yaml.Marshal(config)
+}
+
+// BuildCompact serializes the KEP-576 v1 content. The controller must pass an
+// RBG whose roles are already filtered to stateful RoleInstanceSet roles.
+func (b *ConfigBuilder) BuildCompact() ([]byte, error) {
+	if !b.SupportsCompactContent() {
+		return nil, fmt.Errorf("compact discovery content requires stateful RoleInstanceSet roles")
+	}
+
+	roles := make([]CompactRole, 0, len(b.rbg.Spec.Roles))
+	for i := range b.rbg.Spec.Roles {
+		role := &b.rbg.Spec.Roles[i]
+		compact, err := b.buildCompactRole(role)
+		if err != nil {
+			return nil, err
+		}
+		roles = append(roles, *compact)
+	}
+
+	return yaml.Marshal(CompactConfig{
+		APIVersion: string(constants.DiscoveryConfigVersionV1),
+		Group:      b.rbg.Name,
+		Roles:      roles,
+	})
+}
+
+// SupportsCompactContent reports whether every role can be represented by the
+// compact format. Deprecated stateful backends keep the v1alpha1 enumeration,
+// even when admission is bypassed.
+func (b *ConfigBuilder) SupportsCompactContent() bool {
+	for i := range b.rbg.Spec.Roles {
+		role := &b.rbg.Spec.Roles[i]
+		if !workloadsv1alpha2.IsStatefulRole(role) {
+			continue
+		}
+		if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+			return false
+		}
+	}
+	return true
+}
+
+func (b *ConfigBuilder) buildCompactRole(role *workloadsv1alpha2.RoleSpec) (*CompactRole, error) {
+	serviceName, err := utils.GetCompatibleHeadlessServiceName(context.TODO(), b.client, b.rbg, role)
+	if err != nil {
+		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
+	}
+
+	members, err := b.memberOrdinals(role)
+	if err != nil {
+		return nil, err
+	}
+
+	ports := make(map[string]int32, len(role.ServicePorts))
+	for _, port := range role.ServicePorts {
+		ports[generatePortKey(port)] = port.Port
+	}
+
+	components, err := compactComponents(b.rbg.GetWorkloadName(role), role, serviceName)
+	if err != nil {
+		return nil, err
+	}
+	if err := validateCompactPlaceholders(role, components); err != nil {
+		return nil, fmt.Errorf("role %s: %w", role.Name, err)
+	}
+
+	return &CompactRole{
+		Name:             role.Name,
+		Members:          len(members),
+		ExcludedOrdinals: ordinals.Record(members),
+		Ports:            ports,
+		Components:       components,
+	}, nil
+}
+
+func compactComponents(
+	workloadName string,
+	role *workloadsv1alpha2.RoleSpec,
+	serviceName string,
+) ([]CompactComponent, error) {
+	ccp := role.GetCustomComponentsPattern()
+	lwp := role.GetLeaderWorkerPattern()
+
+	switch {
+	case ccp != nil:
+		components := make([]CompactComponent, 0, len(ccp.Components))
+		for _, comp := range ccp.Components {
+			// An explicit component ServiceName overrides the shared headless
+			// service as the pod subdomain.
+			svcName := comp.ServiceName
+			if svcName == "" {
+				svcName = serviceName
+			}
+			components = append(components, CompactComponent{
+				Name:   comp.Name,
+				Size:   int(ptr.Deref(comp.Size, 1)),
+				Offset: 0,
+				Base: fmt.Sprintf(
+					"%s-{roleIndex}-%s-{componentIndex}.%s",
+					workloadName, comp.Name, svcName,
+				),
+			})
+		}
+		return components, nil
+	case lwp != nil:
+		size := int(ptr.Deref(lwp.Size, 1))
+		base := fmt.Sprintf("%s-{roleIndex}-{componentIndex}.%s", workloadName, serviceName)
+		components := []CompactComponent{{
+			Name:   "leader",
+			Size:   1,
+			Offset: 0,
+			Base:   base,
+		}}
+		if size > 1 {
+			components = append(components, CompactComponent{
+				Name:   "worker",
+				Size:   size - 1,
+				Offset: 1,
+				Base:   base,
+			})
+		}
+		return components, nil
+	default:
+		return []CompactComponent{{
+			Name:   role.Name,
+			Size:   1,
+			Offset: 0,
+			Base:   fmt.Sprintf("%s-{roleIndex}.%s", workloadName, serviceName),
+		}}, nil
+	}
+}
+
+var compactPlaceholderPattern = regexp.MustCompile(`\{[^{}]+\}`)
+
+// validateCompactPlaceholders rejects templates that could not decode to the
+// addresses produced by the v1alpha1 builder. Unknown placeholders and a
+// pattern's missing placeholder are controller bugs.
+func validateCompactPlaceholders(role *workloadsv1alpha2.RoleSpec, components []CompactComponent) error {
+	required := map[string]bool{"{roleIndex}": true}
+	if role.GetCustomComponentsPattern() != nil || role.GetLeaderWorkerPattern() != nil {
+		required["{componentIndex}"] = true
+	}
+	for _, component := range components {
+		found := make(map[string]bool)
+		for _, placeholder := range compactPlaceholderPattern.FindAllString(component.Base, -1) {
+			found[placeholder] = true
+		}
+		for placeholder, needed := range required {
+			if needed && !found[placeholder] {
+				return fmt.Errorf("component %s base %q is missing placeholder %s", component.Name, component.Base, placeholder)
+			}
+		}
+		for placeholder := range found {
+			if !required[placeholder] {
+				return fmt.Errorf("component %s base %q contains unknown placeholder %s", component.Name, component.Base, placeholder)
+			}
+		}
+	}
+	return nil
 }
 
 func (b *ConfigBuilder) getRoleNames() []string {

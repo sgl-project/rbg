@@ -204,23 +204,6 @@ func (rbg *RoleBasedGroup) GetKey() string {
 	return fmt.Sprintf("%s/%s", rbg.Namespace, rbg.Name)
 }
 
-func (rbg *RoleBasedGroup) GetDiscoveryConfigMode() DiscoveryConfigMode {
-	if rbg == nil || rbg.Annotations == nil {
-		return ""
-	}
-	return DiscoveryConfigMode(rbg.Annotations[DiscoveryConfigModeAnnotationKey])
-}
-
-func (rbg *RoleBasedGroup) SetDiscoveryConfigMode(mode DiscoveryConfigMode) {
-	if rbg == nil {
-		return
-	}
-	if rbg.Annotations == nil {
-		rbg.Annotations = map[string]string{}
-	}
-	rbg.Annotations[DiscoveryConfigModeAnnotationKey] = string(mode)
-}
-
 func (rbg *RoleBasedGroup) HasStatefulRole() bool {
 	if rbg == nil {
 		return false

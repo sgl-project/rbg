@@ -721,6 +721,56 @@ func isDeprecatedWorkloadType(wt string) bool {
 	}
 }
 
+// validateDiscoveryConfigVersion checks the KEP-576 content-version
+// annotation. A missing value is the historical v1alpha1 content. The compact
+// v1 format supports the native RoleInstanceSet backend only; deprecated
+// stateful roles must stay on v1alpha1 until they are migrated.
+func validateDiscoveryConfigVersion(roles []RoleSpec, version constants.DiscoveryConfigVersion, fieldPath string) error {
+	switch version {
+	case "", constants.DiscoveryConfigVersionV1Alpha1:
+		return nil
+	case constants.DiscoveryConfigVersionV1:
+		for i := range roles {
+			role := &roles[i]
+			if role.GetWorkloadType() == constants.RoleInstanceSetWorkloadType {
+				continue
+			}
+			if IsStatefulRole(role) {
+				return fmt.Errorf(
+					"%s: v1 is not supported for deprecated stateful workload type %s; keep v1alpha1 or migrate role %s to RoleInstanceSet",
+					fieldPath, role.GetWorkloadType(), role.Name,
+				)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("%s: unsupported value %q; supported values are v1alpha1 and v1", fieldPath, version)
+	}
+}
+
+// hasDeprecatedStatefulRole reports whether any role uses a stateful workload
+// backend other than the native RoleInstanceSet. Such roles keep the
+// v1alpha1 discovery content.
+func hasDeprecatedStatefulRole(roles []RoleSpec) bool {
+	for i := range roles {
+		role := &roles[i]
+		if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType && IsStatefulRole(role) {
+			return true
+		}
+	}
+	return false
+}
+
+// ValidateDiscoveryConfigVersion validates the RBG discovery ConfigMap
+// content-version annotation.
+func ValidateDiscoveryConfigVersion(rbg *RoleBasedGroup) error {
+	return validateDiscoveryConfigVersion(
+		rbg.Spec.Roles,
+		rbg.GetDiscoveryConfigVersion(),
+		"metadata.annotations["+constants.DiscoveryConfigVersionAnnotationKey+"]",
+	)
+}
+
 // validateNoDeprecatedWorkloadTypes checks that no role uses a deprecated workload
 // type. This is the final cutoff mode: --enable-deprecated-workload-types=false is
 // set only after every role has migrated to RoleInstanceSet.

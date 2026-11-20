@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleBasedGroupSetValidator implements admission.CustomValidator for RoleBasedGroupSet.
@@ -79,6 +80,9 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 			allErrs = append(allErrs, err)
 		}
 	}
+	if err := validateRBGSetDiscoveryConfigVersion(rbgs); err != nil {
+		allErrs = append(allErrs, err)
+	}
 
 	return nil, utilerrors.NewAggregate(allErrs)
 }
@@ -129,6 +133,9 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj, n
 		); err != nil {
 			allErrs = append(allErrs, err)
 		}
+	}
+	if err := validateRBGSetDiscoveryConfigVersion(rbgs); err != nil {
+		allErrs = append(allErrs, err)
 	}
 
 	return nil, utilerrors.NewAggregate(allErrs)
@@ -184,6 +191,15 @@ func validateGroupSetRolloutStrategy(spec *RoleBasedGroupSetSpec) error {
 		allErrs = append(allErrs, err)
 	}
 	return utilerrors.NewAggregate(allErrs)
+}
+
+func validateRBGSetDiscoveryConfigVersion(rbgs *RoleBasedGroupSet) error {
+	version := constants.DiscoveryConfigVersion(rbgs.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey])
+	return validateDiscoveryConfigVersion(
+		rbgs.Spec.GroupTemplate.Spec.Roles,
+		version,
+		"spec.groupTemplate.annotations["+constants.DiscoveryConfigVersionAnnotationKey+"]",
+	)
 }
 
 func validateGroupSetRolloutPercentage(field string, value *intstr.IntOrString) error {

@@ -236,7 +236,7 @@ var _ = Describe("Stateful selective scale-down", func() {
 		Eventually(func(g Gomega) {
 			latest := &workloadsv1alpha2.RoleBasedGroup{}
 			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, latest)).To(Succeed())
-			g.Expect(latest.GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(latest.GetDiscoveryConfigVersion()).To(BeEmpty())
 			cm := &corev1.ConfigMap{}
 			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, cm)).To(Succeed())
 			owner := metav1.GetControllerOf(cm)
