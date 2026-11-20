@@ -163,6 +163,26 @@ roles:
           http: 8000
 ```
 
+RBG also supports a compact, versioned form. The controller records the
+selected version in the RBG annotation
+`rbg.workloads.x-k8s.io/discovery-config-version`. Existing RBGs without the
+annotation continue to use the v1alpha1 form above; new RBGs default to v1.
+
+```yaml
+# Compact v1 content
+apiVersion: v1
+group: pd-inference
+roles:
+  - name: prefill
+    members: 2
+    ports:
+      http: 8000
+    components:
+      - name: prefill
+        size: 1
+        base: "pd-inference-prefill-{roleIndex}.s-pd-inference-prefill"
+``+
+
 #### Address Formats by Pattern
 
 The example above uses `standalonePattern` (one address per replica). With multi-pod patterns, the Controller expands every Pod into its own `instances` entry, and `roles.<role>.size` becomes the number of address entries (not the role's replica count):
@@ -212,19 +232,82 @@ roles:
 Inference engines can directly read `/etc/rbg/config.yaml` to obtain the entire cluster's topology information:
 
 ```python
-# Inference engine code example: reading cluster topology
+# Inference engine code example: reading cluster topology in both versions
 import yaml
 
 with open("/etc/rbg/config.yaml") as f:
     config = yaml.safe_load(f)
 
+# Normalize the two supported versions
+api_version = config.get("apiVersion", "v1alpha1")
+if api_version == "v1alpha1":
+    roles = {role["name"]: role for role in config["roles"].values()}
+elif api_version == "v1":
+    roles = {role["name"]: role for role in config["roles"]}
+else:
+    raise ValueError(f"unsupported discovery apiVersion: {api_version}")
+
+def parse_ranges(value):
+    ranges = []
+    if not value:
+        return ranges
+    for entry in value.split(","):
+        if "-" in entry:
+            start, end = map(int, entry.split("-"))
+        else:
+            start = end = int(entry)
+        ranges.append((start, end))
+    return sorted(ranges)
+
+def selected_members(count, ranges):
+    members = []
+    ordinal = 0
+    while len(members) < count:
+        covering = None
+        for start, end in ranges:
+            if start <= ordinal <= end:
+                covering = (start, end)
+                break
+        if covering:
+            ordinal = covering[1] + 1
+        else:
+            members.append(ordinal)
+            ordinal += 1
+    return members
+
+def expand_v1_role(role):
+    instances = []
+    for member in selected_members(
+        role["members"], parse_ranges(role.get("excludedOrdinals", ""))
+    ):
+        for component in role["components"]:
+            base = component["base"]
+            offset = component.get("offset", 0)
+            for index in range(component["size"]):
+                address = base.replace(
+                    "{roleIndex}", str(member)
+                ).replace(
+                    "{componentIndex}", str(offset + index)
+                )
+                instances.append({"address": address, "ports": role["ports"]})
+    return instances
+
 # Get all Prefill instance addresses
-prefill_instances = config["roles"]["prefill"]["instances"]
+prefill = roles["prefill"]
+prefill_instances = (
+    prefill["instances"]
+    if api_version == "v1alpha1"
+    else expand_v1_role(prefill)
+)
 for inst in prefill_instances:
     print(f"Prefill: {inst['address']}:{inst['ports']['http']}")
 
-# Get all Decode instance addresses
-decode_instances = config["roles"]["decode"]["instances"]
+decode = roles["decode"]
+decode_instances = (
+    decode["instances"]
+    if api_version == "v1alpha1"
+    else expand_v1_role(decode)
+)
 for inst in decode_instances:
     print(f"Decode: {inst['address']}:{inst['ports']['http']}")
 ```
