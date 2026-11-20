@@ -281,6 +281,12 @@ func newRBGForSetRevision(set *workloadsv1alpha2.RoleBasedGroupSet, index int, r
 			child.Annotations[key] = value
 		}
 	}
+	// The discovery version is template-owned but revision-independent: carry
+	// the live template value (or the historical default) onto the recreated
+	// child, downgraded to v1alpha1 when the held revision's roles cannot
+	// serialize compact content.
+	child.Annotations = withChildDiscoveryConfigVersion(
+		child.Annotations, child.Spec.Roles, set.Spec.GroupTemplate.Annotations)
 	child.Labels[constants.GroupSetRevisionLabelKey] = revision.name
 	return child
 }

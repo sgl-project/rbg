@@ -67,6 +67,8 @@ func TestSummarize(t *testing.T) {
 		{ranges: "1-2,5", replicas: 4, want: "1-2,5"},
 		{ranges: "0-2147483645", replicas: 1, want: "0-2147483645"},
 		{ranges: "3-2147483647", replicas: 3, want: ""},
+		{ranges: "1,3", replicas: 0, want: ""},
+		{ranges: "0-2147483645", replicas: 2, want: "0-2147483645"},
 	} {
 		t.Run(tc.ranges+"/"+strconv.Itoa(tc.replicas), func(t *testing.T) {
 			excluded, err := Parse(tc.ranges)
@@ -89,6 +91,10 @@ func TestSummarize(t *testing.T) {
 	// 2147483647 allowed ordinals cannot exist when everything below is excluded.
 	if _, err := Summarize(2147483647, mustParse(t, "0-2147483647")); err == nil {
 		t.Fatal("Summarize accepted an impossible replica count")
+	}
+	// Only two allowed ordinals remain after the giant exclusion.
+	if _, err := Summarize(3, mustParse(t, "0-2147483645")); err == nil {
+		t.Fatal("Summarize accepted an exhausted ordinal domain")
 	}
 }
 

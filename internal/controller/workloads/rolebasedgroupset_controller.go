@@ -556,7 +556,9 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
 ) bool {
 	templateAnnotations := rbgset.Spec.GroupTemplate.Annotations
 	for k, v := range templateAnnotations {
-		if k == constants.RolloutRequestAnnotationKey {
+		// Template-owned keys use the dedicated comparison below, which
+		// applies the v1alpha1 default for an unset or empty template value.
+		if k == constants.RolloutRequestAnnotationKey || templateOwnedAnnotationKeys[k] {
 			continue
 		}
 		if value, exists := rbg.Annotations[k]; !exists || value != v {
@@ -565,13 +567,23 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
 	}
 	// Absence from the template must not erase child-side compatibility or controller state.
 	// Template-owned keys (such as the discovery-config-version) intentionally
-	// fall through: the template is authoritative for them, so removing the key
-	// from the template must also remove it from the child.
+	// fall through to the template-owned comparison below, which also handles
+	// a template that no longer sets the key.
 	for k := range rbg.Annotations {
-		if systemManagedAnnotationKeys[k] {
+		if systemManagedAnnotationKeys[k] || templateOwnedAnnotationKeys[k] {
 			continue
 		}
 		if _, exists := templateAnnotations[k]; !exists {
+			return true
+		}
+	}
+	for key := range templateOwnedAnnotationKeys {
+		_, templatePresent := templateAnnotations[key]
+		_, childPresent := rbg.Annotations[key]
+		if !templatePresent && !childPresent {
+			continue
+		}
+		if rbg.Annotations[key] != desiredDiscoveryConfigVersion(templateAnnotations, rbg.Spec.Roles) {
 			return true
 		}
 	}
@@ -643,10 +655,11 @@ func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	rbg.Labels = newLabels
 
 	// Sync annotations: keys the controllers own are carried over from the child, template
-	// annotations are applied over them, and anything else is removed. This makes
-	// template-owned keys like discovery-config-version converge in both
-	// directions: a template value overwrites a direct child edit, and removing
-	// the key from the template removes it from the child.
+	// annotations are applied over them, and anything else is removed.
+	// Template-owned keys converge separately below: a template value
+	// overwrites a direct child edit, and a template without the key returns
+	// the child to v1alpha1.
+	originalAnnotations := rbg.Annotations
 	newAnnotations := make(map[string]string, len(rbg.Annotations)+len(rbgset.Spec.GroupTemplate.Annotations))
 	for k, v := range rbg.Annotations {
 		if systemManagedAnnotationKeys[k] {
@@ -656,6 +669,15 @@ func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	for k, v := range rbgset.Spec.GroupTemplate.Annotations {
 		if k != constants.RolloutRequestAnnotationKey {
 			newAnnotations[k] = v
+		}
+	}
+	for key := range templateOwnedAnnotationKeys {
+		_, templatePresent := rbgset.Spec.GroupTemplate.Annotations[key]
+		_, childPresent := originalAnnotations[key]
+		// Keep the implicit v1alpha1 content implicit for legacy children;
+		// converge only when the template or the child already carries the key.
+		if templatePresent || childPresent {
+			newAnnotations[key] = desiredDiscoveryConfigVersion(rbgset.Spec.GroupTemplate.Annotations, rbg.Spec.Roles)
 		}
 	}
 	if len(newAnnotations) == 0 {
@@ -689,6 +711,10 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 
 	spec := rbgset.Spec.GroupTemplate.Spec.DeepCopy()
 	spec.Roles = normalizedGroupTemplateRoles(rbgset)
+	// Materialize the effective discovery version before Create so the child
+	// does not fall back to the webhook's v1 default when the set predates
+	// KEP-576 or explicitly opted out.
+	rbgAnnotations = withChildDiscoveryConfigVersion(rbgAnnotations, spec.Roles, rbgset.Spec.GroupTemplate.Annotations)
 	return &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   rbgset.Namespace,
@@ -699,6 +725,44 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 		},
 		Spec: *spec,
 	}
+}
+
+// withChildDiscoveryConfigVersion returns child annotations carrying the
+// template-owned discovery-config-version. The template value wins; a set
+// without the key keeps its children on the historical v1alpha1 content.
+// A v1 template never reaches a child whose roles cannot serialize compact
+// content, so the resulting object cannot be rejected by admission.
+func withChildDiscoveryConfigVersion(
+	annotations map[string]string,
+	roles []workloadsv1alpha2.RoleSpec,
+	templateAnnotations map[string]string,
+) map[string]string {
+	version := desiredDiscoveryConfigVersion(templateAnnotations, roles)
+	if annotations == nil {
+		annotations = make(map[string]string, 1)
+	}
+	annotations[constants.DiscoveryConfigVersionAnnotationKey] = version
+	return annotations
+}
+
+// desiredDiscoveryConfigVersion returns the child value for the
+// template-owned discovery-config-version key: the template value, or the
+// historical v1alpha1 default when the template does not set it. A v1 value
+// is downgraded when the child roles cannot serialize compact content, so a
+// held deprecated revision never receives an admission-invalid combination.
+func desiredDiscoveryConfigVersion(
+	templateAnnotations map[string]string,
+	roles []workloadsv1alpha2.RoleSpec,
+) string {
+	version := templateAnnotations[constants.DiscoveryConfigVersionAnnotationKey]
+	if version == "" {
+		version = string(constants.DiscoveryConfigVersionV1Alpha1)
+	}
+	if version == string(constants.DiscoveryConfigVersionV1) &&
+		!workloadsv1alpha2.SupportsCompactDiscoveryContent(roles) {
+		version = string(constants.DiscoveryConfigVersionV1Alpha1)
+	}
+	return version
 }
 
 func groupSetForOrphanRBG(_ context.Context, obj client.Object) []reconcile.Request {

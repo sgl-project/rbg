@@ -85,7 +85,7 @@ The serialized content is selected by the annotation `rbg.workloads.x-k8s.io/dis
 
 The mutating webhook defaults new RBGs to `v1`; existing RBGs without the annotation keep `v1alpha1`. To opt out on creation, set the annotation to `v1alpha1`. New RBGs and RoleBasedGroupSet templates that still contain deprecated stateful roles (StatefulSet, LeaderWorkerSet, or InstanceSet) default to `v1alpha1`, because the compact format supports RoleInstanceSet only; admission also rejects `v1` for such RBGs. If an object carrying `v1` and a deprecated stateful role was written while admission was bypassed, the controller keeps publishing v1alpha1 content.
 
-For a RoleBasedGroupSet, put the annotation in `spec.groupTemplate.annotations`: child RBGs inherit it, direct edits to a child annotation are overwritten, and removing the key from the template removes it from the children.
+For a RoleBasedGroupSet, put the annotation in `spec.groupTemplate.annotations`: child RBGs inherit it, direct edits to a child annotation are overwritten, and removing the key from the template returns the children to `v1alpha1`.
 
 Rolling the annotation back to `v1alpha1` is allowed only when the serialized enumeration still fits the API server's 1 MiB ConfigMap limit. The controller rejects an oversized rollback before writing, retains the current compact content, and retries the failed reconcile; reduce the topology or stay on `v1` if the enumeration no longer fits.
 

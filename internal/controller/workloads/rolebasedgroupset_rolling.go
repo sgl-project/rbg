@@ -298,7 +298,8 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 		return changed, err
 	}
 
-	// Unversioned annotations must converge even on settled or partition-held groups.
+	// Unversioned and template-owned annotations must converge even on settled
+	// or partition-held groups.
 	for i := range children.Items {
 		child := &children.Items[i]
 		if !child.DeletionTimestamp.IsZero() {
@@ -317,6 +318,9 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 				updated.Annotations = make(map[string]string)
 			}
 			updated.Annotations[key] = value
+			annotationChanged = true
+		}
+		if convergeTemplateOwnedAnnotations(set, updated) {
 			annotationChanged = true
 		}
 		if r.groupSetMatchesRevision(child, update) {
@@ -350,6 +354,39 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 
 	updated, err := r.rolloutGroupSetChildren(ctx, set, children, existing, outdated, ready, replicas, limits, update)
 	return changed || updated, err
+}
+
+// convergeTemplateOwnedAnnotations converges revision-independent,
+// template-owned annotations (currently discovery-config-version) on one
+// child: the live template value wins, and a template without the key keeps
+// the historical v1alpha1 content. A v1 template never overwrites a child
+// whose current roles cannot serialize compact content; that child keeps
+// v1alpha1 until its spec rolls forward.
+func convergeTemplateOwnedAnnotations(
+	set *workloadsv1alpha2.RoleBasedGroupSet,
+	child *workloadsv1alpha2.RoleBasedGroup,
+) bool {
+	changed := false
+	for key := range templateOwnedAnnotationKeys {
+		_, templatePresent := set.Spec.GroupTemplate.Annotations[key]
+		_, childPresent := child.Annotations[key]
+		// Legacy children without the annotation and a template without the
+		// key already agree on the implicit v1alpha1 content; do not stamp it.
+		if !templatePresent && !childPresent {
+			continue
+		}
+		desired := desiredDiscoveryConfigVersion(set.Spec.GroupTemplate.Annotations, child.Spec.Roles)
+		old, present := child.Annotations[key]
+		if present && old == desired {
+			continue
+		}
+		if child.Annotations == nil {
+			child.Annotations = make(map[string]string, 1)
+		}
+		child.Annotations[key] = desired
+		changed = true
+	}
+	return changed
 }
 
 // deleteOutOfRangeGroupSetChildren removes children with a broken ordinal label or an ordinal at

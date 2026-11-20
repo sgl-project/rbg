@@ -62,6 +62,7 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 	t.Run("rebuilds after ConfigMap deletion", testDiscoveryConfigRebuild)
 	t.Run("rejects an oversized v1alpha1 rollback", testDiscoveryConfigRejectsOversizedRollback)
 	t.Run("rejects an unsupported version annotation", testDiscoveryConfigRejectsUnknownVersion)
+	t.Run("rejects an unsupported version annotation on stateless-only RBGs", testDiscoveryConfigRejectsUnknownVersionStatelessOnly)
 	t.Run("rejects an oversized dense role before enumeration", testDiscoveryConfigRejectsOversizedDenseRole)
 	t.Run("skips stateless-only RBGs", testDiscoveryConfigSkipsStatelessOnly)
 }
@@ -206,6 +207,32 @@ func testDiscoveryConfigRejectsUnknownVersion(t *testing.T) {
 	err := r.reconcileDiscoveryConfigMap(context.Background(), rbg)
 	if err == nil {
 		t.Fatalf("unsupported discovery-config-version must fail the reconcile")
+	}
+	if !strings.Contains(err.Error(), "supported values are v1alpha1 and v1") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	getErr := c.Get(context.Background(), clientKey(rbg), &corev1.ConfigMap{})
+	if !apierrors.IsNotFound(getErr) {
+		t.Fatalf("invalid version must not write a configmap, err = %v", getErr)
+	}
+}
+
+func testDiscoveryConfigRejectsUnknownVersionStatelessOnly(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{{
+			Name:     "router",
+			Replicas: ptr.To(int32(1)),
+			Annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "apps/v1/Deployment",
+			},
+		}}).Obj()
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersion("v2"))
+	r, c := discoveryTestReconciler(t, rbg)
+
+	err := r.reconcileDiscoveryConfigMap(context.Background(), rbg)
+	if err == nil {
+		t.Fatalf("stateless-only RBGs must still reject an unsupported discovery-config-version")
 	}
 	if !strings.Contains(err.Error(), "supported values are v1alpha1 and v1") {
 		t.Fatalf("unexpected error: %v", err)
