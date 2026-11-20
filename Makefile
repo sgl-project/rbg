@@ -81,7 +81,7 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: manifests generate fmt vet ## Run tests.
-	go test $$(go list ./api/... ./cmd/... ./internal/... ./pkg/... ) -coverprofile cover.out
+	go test $$(go list ./api/... ./cmd/... ./internal/... ./pkg/... ./test/envtest/testutil/... ) -coverprofile cover.out
 	go tool cover -func=cover.out | awk '/^total:/ {print $$3}'
 
 .PHONY: test-envtest
