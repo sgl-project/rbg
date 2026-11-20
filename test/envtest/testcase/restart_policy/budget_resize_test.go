@@ -88,7 +88,7 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 							return err
 						}
 					}
-					if snapshot.DeletionTimestamp != nil || snapshot.Status.Phase == v1.PodFailed {
+					if testutil.ShouldSkipPodStatusUpdate(&snapshot) {
 						continue
 					}
 					// SetPodRunningAndReady upserts the kubelet conditions and
@@ -100,14 +100,17 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 					// The guards are re-checked on the freshly read object: a
 					// Pod that started terminating or already failed after the
 					// List snapshot must not be marked Running/Ready.
-					if err := testutil.UpdatePodStatusOnConflict(ctx,
-						client.ObjectKeyFromObject(&snapshot), func(pod *v1.Pod) {
-							if pod.DeletionTimestamp != nil || pod.Status.Phase == v1.PodFailed {
-								return
-							}
-							testutil.SetPodRunningAndReady(pod)
-						}); err != nil {
-						return client.IgnoreNotFound(err)
+					if err := testutil.UpdatePodStatusOnConflict(ctx, &snapshot, func(pod *v1.Pod) bool {
+						if testutil.ShouldSkipPodStatusUpdate(pod) {
+							return true
+						}
+						testutil.SetPodRunningAndReady(pod)
+						return false
+					}); err != nil {
+						if apierrors.IsNotFound(err) || testutil.IsRetryable(err) {
+							continue
+						}
+						return err
 					}
 				}
 				return nil

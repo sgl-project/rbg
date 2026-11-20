@@ -64,14 +64,18 @@ func swapClient(t *testing.T, c client.Client) {
 func TestUpdatePodStatusOnConflictRetriesAndRereads(t *testing.T) {
 	ctx := context.Background()
 	base := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default", UID: types.UID("original-uid")},
 	}
 
-	var statusWrites int32
+	var gets, statusWrites int32
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
 		WithObjects(base).
 		WithStatusSubresource(&corev1.Pod{}).
 		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				atomic.AddInt32(&gets, 1)
+				return c.Get(ctx, key, obj, opts...)
+			},
 			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 				if subResourceName != "status" {
 					return c.Status().Update(ctx, obj, opts...)
@@ -90,15 +94,19 @@ func TestUpdatePodStatusOnConflictRetriesAndRereads(t *testing.T) {
 	// The mutation counter proves the mutation is reapplied on the reread
 	// object, not carried over from the first attempt.
 	var mutations int32
-	err := UpdatePodStatusOnConflict(ctx, client.ObjectKeyFromObject(base), func(pod *corev1.Pod) {
+	err := UpdatePodStatusOnConflict(ctx, base, func(pod *corev1.Pod) bool {
 		atomic.AddInt32(&mutations, 1)
 		pod.Status.Phase = corev1.PodFailed
+		return false
 	})
 	if err != nil {
 		t.Fatalf("expected the conflict to be retried, got %v", err)
 	}
 	if got := atomic.LoadInt32(&statusWrites); got != 2 {
 		t.Fatalf("expected 2 status writes (one 409, one success), got %d", got)
+	}
+	if got := atomic.LoadInt32(&gets); got != 2 {
+		t.Fatalf("expected 2 reads (one per attempt), got %d", got)
 	}
 	if got := atomic.LoadInt32(&mutations); got != 2 {
 		t.Fatalf("expected the mutation to be reapplied on the retry, got %d applications", got)
@@ -147,13 +155,14 @@ func TestUpdatePodStatusOnConflictRefusesReplacement(t *testing.T) {
 		}).Build()
 	swapClient(t, c)
 
-	err := UpdatePodStatusOnConflict(ctx, client.ObjectKeyFromObject(base), func(pod *corev1.Pod) {
+	err := UpdatePodStatusOnConflict(ctx, base, func(pod *corev1.Pod) bool {
 		pod.Status.Phase = corev1.PodFailed
+		return false
 	})
 	if err == nil {
 		t.Fatal("expected an error when the object is replaced under the same name")
 	}
-	if !strings.Contains(err.Error(), "was replaced while updating") {
+	if !strings.Contains(err.Error(), "object replaced while updating") {
 		t.Fatalf("expected a replacement identity error, got %v", err)
 	}
 
@@ -166,19 +175,102 @@ func TestUpdatePodStatusOnConflictRefusesReplacement(t *testing.T) {
 	}
 }
 
+// TestUpdatePodStatusOnConflictRefusesReplacementBeforeFirstRead pins the
+// identity contract when the selected object is replaced before the helper's
+// first Get, not only between retry attempts.
+func TestUpdatePodStatusOnConflictRefusesReplacementBeforeFirstRead(t *testing.T) {
+	ctx := context.Background()
+	base := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default", UID: types.UID("original-uid")},
+	}
+	var gets, statusWrites int32
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithObjects(base).
+		WithStatusSubresource(&corev1.Pod{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if atomic.AddInt32(&gets, 1) == 1 {
+					replacement := base.DeepCopy()
+					replacement.UID = types.UID("replacement-uid")
+					replacement.ResourceVersion = ""
+					if err := c.Delete(ctx, base); err != nil {
+						return err
+					}
+					if err := c.Create(ctx, replacement); err != nil {
+						return err
+					}
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				atomic.AddInt32(&statusWrites, 1)
+				return c.Status().Update(ctx, obj, opts...)
+			},
+		}).Build()
+	swapClient(t, c)
+
+	err := UpdatePodStatusOnConflict(ctx, base, func(pod *corev1.Pod) bool {
+		pod.Status.Phase = corev1.PodFailed
+		return false
+	})
+	if !errors.Is(err, ErrObjectReplaced) {
+		t.Fatalf("expected ErrObjectReplaced, got %v", err)
+	}
+	if got := atomic.LoadInt32(&gets); got != 1 {
+		t.Fatalf("expected 1 read, got %d", got)
+	}
+	if got := atomic.LoadInt32(&statusWrites); got != 0 {
+		t.Fatalf("expected no status writes, got %d", got)
+	}
+}
+
+// TestUpdatePodStatusOnConflictSkipsWrite pins the skip contract: a mutation
+// that returns true leaves the freshly read object unwritten.
+func TestUpdatePodStatusOnConflictSkipsWrite(t *testing.T) {
+	ctx := context.Background()
+	base := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default", UID: types.UID("original-uid")},
+		Status:     corev1.PodStatus{Phase: corev1.PodFailed},
+	}
+	var statusWrites int32
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithObjects(base).
+		WithStatusSubresource(&corev1.Pod{}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				atomic.AddInt32(&statusWrites, 1)
+				return c.Status().Update(ctx, obj, opts...)
+			},
+		}).Build()
+	swapClient(t, c)
+
+	if err := UpdatePodStatusOnConflict(ctx, base, func(pod *corev1.Pod) bool {
+		return ShouldSkipPodStatusUpdate(pod)
+	}); err != nil {
+		t.Fatalf("expected a skipped write, got %v", err)
+	}
+	if got := atomic.LoadInt32(&statusWrites); got != 0 {
+		t.Fatalf("expected no status writes, got %d", got)
+	}
+}
+
 // TestUpdatePodOnConflictRetriesAndRereads pins the object-write variant
 // (K8sClient.Update, not the status subresource), which is load-bearing for
 // the Ignore-annotation fixture in the restart policy suite.
 func TestUpdatePodOnConflictRetriesAndRereads(t *testing.T) {
 	ctx := context.Background()
 	base := &corev1.Pod{
-		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default", UID: types.UID("original-uid")},
 	}
 
-	var updates int32
+	var gets, updates int32
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
 		WithObjects(base).
 		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				atomic.AddInt32(&gets, 1)
+				return c.Get(ctx, key, obj, opts...)
+			},
 			Update: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.UpdateOption) error {
 				n := atomic.AddInt32(&updates, 1)
 				if n == 1 {
@@ -191,17 +283,21 @@ func TestUpdatePodOnConflictRetriesAndRereads(t *testing.T) {
 		}).Build()
 	swapClient(t, c)
 
-	err := UpdatePodOnConflict(ctx, client.ObjectKeyFromObject(base), func(pod *corev1.Pod) {
+	err := UpdatePodOnConflict(ctx, base, func(pod *corev1.Pod) bool {
 		if pod.Annotations == nil {
 			pod.Annotations = make(map[string]string, 1)
 		}
 		pod.Annotations["fixture/example"] = "set"
+		return false
 	})
 	if err != nil {
 		t.Fatalf("expected the conflict to be retried, got %v", err)
 	}
 	if got := atomic.LoadInt32(&updates); got != 2 {
 		t.Fatalf("expected 2 updates (one 409, one success), got %d", got)
+	}
+	if got := atomic.LoadInt32(&gets); got != 2 {
+		t.Fatalf("expected 2 reads (one per attempt), got %d", got)
 	}
 
 	got := &corev1.Pod{}
@@ -218,13 +314,17 @@ func TestUpdatePodOnConflictRetriesAndRereads(t *testing.T) {
 func TestUpdateRoleInstanceStatusOnConflictRetries(t *testing.T) {
 	ctx := context.Background()
 	base := &workloadsv1alpha2.RoleInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: "ri-a", Namespace: "default"},
+		ObjectMeta: metav1.ObjectMeta{Name: "ri-a", Namespace: "default", UID: types.UID("original-uid")},
 	}
-	var statusWrites int32
+	var gets, statusWrites int32
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
 		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
 		WithObjects(base).
 		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				atomic.AddInt32(&gets, 1)
+				return c.Get(ctx, key, obj, opts...)
+			},
 			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
 				n := atomic.AddInt32(&statusWrites, 1)
 				if n == 1 {
@@ -237,14 +337,18 @@ func TestUpdateRoleInstanceStatusOnConflictRetries(t *testing.T) {
 		}).Build()
 	swapClient(t, c)
 
-	err := UpdateRoleInstanceStatusOnConflict(ctx, client.ObjectKeyFromObject(base), func(ri *workloadsv1alpha2.RoleInstance) {
+	err := UpdateRoleInstanceStatusOnConflict(ctx, base, func(ri *workloadsv1alpha2.RoleInstance) bool {
 		ri.Status.RestartCount = 7
+		return false
 	})
 	if err != nil {
 		t.Fatalf("expected the conflict to be retried, got %v", err)
 	}
 	if got := atomic.LoadInt32(&statusWrites); got != 2 {
 		t.Fatalf("expected 2 status writes, got %d", got)
+	}
+	if got := atomic.LoadInt32(&gets); got != 2 {
+		t.Fatalf("expected 2 reads, got %d", got)
 	}
 
 	got := &workloadsv1alpha2.RoleInstance{}
@@ -253,5 +357,53 @@ func TestUpdateRoleInstanceStatusOnConflictRetries(t *testing.T) {
 	}
 	if got.Status.RestartCount != 7 {
 		t.Fatalf("restartCount = %d, want 7", got.Status.RestartCount)
+	}
+}
+
+// TestUpdateRoleInstanceStatusOnConflictRefusesReplacementBeforeFirstRead
+// pins the same identity contract for the RoleInstance variant.
+func TestUpdateRoleInstanceStatusOnConflictRefusesReplacementBeforeFirstRead(t *testing.T) {
+	ctx := context.Background()
+	base := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "ri-a", Namespace: "default", UID: types.UID("original-uid")},
+	}
+	var gets, statusWrites int32
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(base).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if atomic.AddInt32(&gets, 1) == 1 {
+					replacement := base.DeepCopy()
+					replacement.UID = types.UID("replacement-uid")
+					replacement.ResourceVersion = ""
+					if err := c.Delete(ctx, base); err != nil {
+						return err
+					}
+					if err := c.Create(ctx, replacement); err != nil {
+						return err
+					}
+				}
+				return c.Get(ctx, key, obj, opts...)
+			},
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				atomic.AddInt32(&statusWrites, 1)
+				return c.Status().Update(ctx, obj, opts...)
+			},
+		}).Build()
+	swapClient(t, c)
+
+	err := UpdateRoleInstanceStatusOnConflict(ctx, base, func(ri *workloadsv1alpha2.RoleInstance) bool {
+		ri.Status.RestartCount = 7
+		return false
+	})
+	if !errors.Is(err, ErrObjectReplaced) {
+		t.Fatalf("expected ErrObjectReplaced, got %v", err)
+	}
+	if got := atomic.LoadInt32(&gets); got != 1 {
+		t.Fatalf("expected 1 read, got %d", got)
+	}
+	if got := atomic.LoadInt32(&statusWrites); got != 0 {
+		t.Fatalf("expected no status writes, got %d", got)
 	}
 }

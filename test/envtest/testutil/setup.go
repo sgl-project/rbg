@@ -241,14 +241,15 @@ func SetupInstanceSetController(mgr manager.Manager) error {
 // SetPodRunningAndReady emulates a kubelet that has observed every readiness
 // gate open: it sets PodReady=True unconditionally, even when the status
 // carries a preserved gate condition that is currently False. This is the
-// bootstrap contract, not an oversight. The RBG controller derives
-// controller-owned gates (InstancePodReady and friends) FROM the pods'
-// PodReady, and during restart and in-place-update phases it deliberately
-// holds them False; deriving PodReady from those gates in the fixture
-// deadlocks that loop (verified: five restart_policy specs hang). A fixture
-// that must model a genuinely closed gate — a readiness gate whose condition
-// the test itself owns — sets the gate with SetPodCondition and mirrors it
-// into PodReady explicitly; see the rank-rejoin fixture in
+// bootstrap contract, not an oversight. The RBG controller's runtime-ready
+// path (IsPodRuntimeReady) checks ContainersReady and InPlaceUpdateReady, while
+// PodReady feeds the RoleInstance-level availability path (IsRunningAndAvailable
+// and IsPodAvailable) and is recomputed from readiness gates by the in-place
+// update path. A fixture that derives PodReady from those gates can deadlock
+// the restart and in-place-update loops (verified: five restart_policy specs
+// hang). A fixture that must model a genuinely closed gate — a readiness gate
+// whose condition the test itself owns — sets the gate with SetPodCondition and
+// mirrors it into PodReady explicitly; see the rank-rejoin fixture in
 // restart_policy_test.go.
 func SetPodRunningAndReady(pod *corev1.Pod) {
 	pod.Status.Phase = corev1.PodRunning

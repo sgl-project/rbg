@@ -548,8 +548,13 @@ var _ = Describe("Stateful selective scale-down", func() {
 				// preserves lifecycle/update readiness gate conditions the
 				// controllers write; the conflict-safe write rereads the Pod
 				// on every retry instead of reusing the List's version.
-				if err := testutil.UpdatePodStatusOnConflict(testutil.Ctx,
-					client.ObjectKeyFromObject(pod), testutil.SetPodRunningAndReady); err != nil {
+				if err := testutil.UpdatePodStatusOnConflict(testutil.Ctx, pod, func(pod *corev1.Pod) bool {
+					if testutil.ShouldSkipPodStatusUpdate(pod) {
+						return true
+					}
+					testutil.SetPodRunningAndReady(pod)
+					return false
+				}); err != nil {
 					return err
 				}
 			}

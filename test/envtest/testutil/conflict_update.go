@@ -18,9 +18,11 @@ package testutil
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -28,14 +30,42 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
+var (
+	// ErrObjectReplaced is returned when the object under the selected key has
+	// a different UID than the caller's snapshot. The fixture must re-list and
+	// re-target a replacement rather than mutating it silently.
+	ErrObjectReplaced = errors.New("object replaced while updating")
+
+	// ErrConflictExhausted is returned when conflict retries are exhausted.
+	// Polling fixtures can treat it as transient and retry on the next poll.
+	ErrConflictExhausted = errors.New("conflict retries exhausted")
+)
+
+// IsRetryable reports whether err represents a transient condition that a
+// polling fixture can retry by re-listing and re-targeting objects.
+func IsRetryable(err error) bool {
+	return errors.Is(err, ErrObjectReplaced) || errors.Is(err, ErrConflictExhausted)
+}
+
+// ShouldSkipPodStatusUpdate reports whether a fixture should leave a Pod's
+// status untouched. It covers terminating Pods and both terminal phases.
+func ShouldSkipPodStatusUpdate(pod *corev1.Pod) bool {
+	return pod.DeletionTimestamp != nil ||
+		pod.Status.Phase == corev1.PodFailed ||
+		pod.Status.Phase == corev1.PodSucceeded
+}
+
 // UpdatePodStatusOnConflict updates a Pod's status through a read-modify-write
 // cycle that rereads the object and reapplies mutate on every conflict retry.
 // Both object and status writes advance resourceVersion, so a controller that
 // touches the Pod between the read and the write otherwise fails the fixture
 // with an optimistic-concurrency error. A retry must never reuse the stale
 // resourceVersion of the original read.
-func UpdatePodStatusOnConflict(ctx context.Context, key client.ObjectKey, mutate func(*corev1.Pod)) error {
-	return updateOnConflict(ctx, key, mutate, func(pod *corev1.Pod) error {
+// snapshot supplies the selected object's name, namespace, and UID; its other
+// fields are not used. mutate returns true when the freshly read object should
+// be left unwritten.
+func UpdatePodStatusOnConflict(ctx context.Context, snapshot *corev1.Pod, mutate func(*corev1.Pod) bool) error {
+	return updateOnConflict(ctx, snapshot, mutate, func(pod *corev1.Pod) error {
 		return K8sClient.Status().Update(ctx, pod)
 	})
 }
@@ -44,37 +74,47 @@ func UpdatePodStatusOnConflict(ctx context.Context, key client.ObjectKey, mutate
 // read-modify-write cycle with conflict retries. It is the fixture-side
 // counterpart of the controller write paths, which already use
 // retry.RetryOnConflict.
-func UpdatePodOnConflict(ctx context.Context, key client.ObjectKey, mutate func(*corev1.Pod)) error {
-	return updateOnConflict(ctx, key, mutate, func(pod *corev1.Pod) error {
+func UpdatePodOnConflict(ctx context.Context, snapshot *corev1.Pod, mutate func(*corev1.Pod) bool) error {
+	return updateOnConflict(ctx, snapshot, mutate, func(pod *corev1.Pod) error {
 		return K8sClient.Update(ctx, pod)
 	})
 }
 
-func updateOnConflict(ctx context.Context, key client.ObjectKey, mutate func(*corev1.Pod), write func(*corev1.Pod) error) error {
-	// Pin the object identity: a retry that rereads a replacement under the
-	// same name must not apply the fixture to it silently.
-	var uid types.UID
-	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+func updateOnConflict(ctx context.Context, snapshot *corev1.Pod, mutate func(*corev1.Pod) bool, write func(*corev1.Pod) error) error {
+	if snapshot.UID == "" {
+		return fmt.Errorf("%s: snapshot UID is empty", client.ObjectKeyFromObject(snapshot))
+	}
+	key := client.ObjectKeyFromObject(snapshot)
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		pod := &corev1.Pod{}
 		if err := K8sClient.Get(ctx, key, pod); err != nil {
 			return err
 		}
-		if err := checkUID(key, uid, pod.UID); err != nil {
+		if err := checkUID(key, snapshot.UID, pod.UID); err != nil {
 			return err
 		}
-		uid = pod.UID
-		mutate(pod)
+		if mutate(pod) {
+			return nil
+		}
 		return write(pod)
 	})
+	if err != nil {
+		if errors.Is(err, ErrObjectReplaced) {
+			return err
+		}
+		if apierrors.IsConflict(err) {
+			return fmt.Errorf("%w: %v", ErrConflictExhausted, err)
+		}
+	}
+	return err
 }
 
 // checkUID reports an error when the object under key was deleted and
-// recreated between attempts: the mutation then targets a different object
-// than the one the test selected, and the fixture must be re-targeted.
-func checkUID(key client.ObjectKey, want, got types.UID) error {
-	if want != "" && want != got {
-		return fmt.Errorf("%s %s was replaced while updating (original UID %s, current UID %s): refetch the object and re-target the fixture",
-			"object", key, want, got)
+// recreated after the caller selected it: the mutation then targets a
+// different object, and the fixture must be re-targeted.
+func checkUID(key client.ObjectKey, expected, got types.UID) error {
+	if expected != got {
+		return fmt.Errorf("%w: %s changed UID from %s to %s", ErrObjectReplaced, key, expected, got)
 	}
 	return nil
 }
@@ -82,18 +122,31 @@ func checkUID(key client.ObjectKey, want, got types.UID) error {
 // UpdateRoleInstanceStatusOnConflict updates a RoleInstance's status through a
 // read-modify-write cycle with conflict retries, rereading the object before
 // every attempt.
-func UpdateRoleInstanceStatusOnConflict(ctx context.Context, key client.ObjectKey, mutate func(*workloadsv1alpha2.RoleInstance)) error {
-	var uid types.UID
-	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+func UpdateRoleInstanceStatusOnConflict(ctx context.Context, snapshot *workloadsv1alpha2.RoleInstance, mutate func(*workloadsv1alpha2.RoleInstance) bool) error {
+	if snapshot.UID == "" {
+		return fmt.Errorf("%s: snapshot UID is empty", client.ObjectKeyFromObject(snapshot))
+	}
+	key := client.ObjectKeyFromObject(snapshot)
+	err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		ri := &workloadsv1alpha2.RoleInstance{}
 		if err := K8sClient.Get(ctx, key, ri); err != nil {
 			return err
 		}
-		if err := checkUID(key, uid, ri.UID); err != nil {
+		if err := checkUID(key, snapshot.UID, ri.UID); err != nil {
 			return err
 		}
-		uid = ri.UID
-		mutate(ri)
+		if mutate(ri) {
+			return nil
+		}
 		return K8sClient.Status().Update(ctx, ri)
 	})
+	if err != nil {
+		if errors.Is(err, ErrObjectReplaced) {
+			return err
+		}
+		if apierrors.IsConflict(err) {
+			return fmt.Errorf("%w: %v", ErrConflictExhausted, err)
+		}
+	}
+	return err
 }
