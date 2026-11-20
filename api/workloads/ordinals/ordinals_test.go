@@ -18,6 +18,7 @@ package ordinals
 
 import (
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -50,6 +51,91 @@ func TestParse(t *testing.T) {
 	if _, err := giant.Members(3); err == nil {
 		t.Fatal("expected ordinal exhaustion")
 	}
+}
+
+func TestSummarize(t *testing.T) {
+	for _, tc := range []struct {
+		ranges   string
+		replicas int
+		want     string
+	}{
+		{ranges: "", replicas: 0, want: ""},
+		{ranges: "", replicas: 5, want: ""},
+		{ranges: "1,3", replicas: 3, want: "1,3"},
+		{ranges: "1-3", replicas: 3, want: "1-3"},
+		{ranges: "0,2", replicas: 1, want: "0"},
+		{ranges: "1-2,5", replicas: 4, want: "1-2,5"},
+		{ranges: "0-2147483645", replicas: 1, want: "0-2147483645"},
+		{ranges: "3-2147483647", replicas: 3, want: ""},
+	} {
+		t.Run(tc.ranges+"/"+strconv.Itoa(tc.replicas), func(t *testing.T) {
+			excluded, err := Parse(tc.ranges)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := Summarize(tc.replicas, excluded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("Summarize(%d, %q) = %q, want %q", tc.replicas, tc.ranges, got, tc.want)
+			}
+		})
+	}
+
+	if _, err := Summarize(-1, Ranges{}); err == nil {
+		t.Fatal("Summarize accepted a negative replica count")
+	}
+	// 2147483647 allowed ordinals cannot exist when everything below is excluded.
+	if _, err := Summarize(2147483647, mustParse(t, "0-2147483647")); err == nil {
+		t.Fatal("Summarize accepted an impossible replica count")
+	}
+}
+
+// TestSummarizeMatchesMembersAndRecord cross-checks the range-only summary
+// against the expanded representation it replaces.
+func TestSummarizeMatchesMembersAndRecord(t *testing.T) {
+	for _, tc := range []struct {
+		ranges   string
+		replicas int
+	}{
+		{ranges: "", replicas: 0},
+		{ranges: "", replicas: 1},
+		{ranges: "", replicas: 9},
+		{ranges: "1", replicas: 5},
+		{ranges: "1,3", replicas: 3},
+		{ranges: "1-4", replicas: 2},
+		{ranges: "1-4,7-9", replicas: 6},
+		{ranges: "2,4,6", replicas: 4},
+	} {
+		t.Run(tc.ranges+"/"+strconv.Itoa(tc.replicas), func(t *testing.T) {
+			excluded, err := Parse(tc.ranges)
+			if err != nil {
+				t.Fatal(err)
+			}
+			members, err := excluded.Members(tc.replicas)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := Record(members)
+			got, err := Summarize(tc.replicas, excluded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Fatalf("Summarize(%d, %q) = %q, want Members+Record %q", tc.replicas, tc.ranges, got, want)
+			}
+		})
+	}
+}
+
+func mustParse(t *testing.T, value string) Ranges {
+	t.Helper()
+	ranges, err := Parse(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ranges
 }
 
 func TestMembership(t *testing.T) {

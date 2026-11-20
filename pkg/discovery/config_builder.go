@@ -102,8 +102,8 @@ type CompactComponent struct {
 	Base   string `json:"base"`
 }
 
-func (b *ConfigBuilder) Build() ([]byte, error) {
-	roles, err := b.buildRolesInfo()
+func (b *ConfigBuilder) Build(ctx context.Context) ([]byte, error) {
+	roles, err := b.buildRolesInfo(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func (b *ConfigBuilder) Build() ([]byte, error) {
 
 // BuildCompact serializes the KEP-576 v1 content. The controller must pass an
 // RBG whose roles are already filtered to stateful RoleInstanceSet roles.
-func (b *ConfigBuilder) BuildCompact() ([]byte, error) {
+func (b *ConfigBuilder) BuildCompact(ctx context.Context) ([]byte, error) {
 	if !b.SupportsCompactContent() {
 		return nil, fmt.Errorf("compact discovery content requires stateful RoleInstanceSet roles")
 	}
@@ -129,7 +129,7 @@ func (b *ConfigBuilder) BuildCompact() ([]byte, error) {
 	roles := make([]CompactRole, 0, len(b.rbg.Spec.Roles))
 	for i := range b.rbg.Spec.Roles {
 		role := &b.rbg.Spec.Roles[i]
-		compact, err := b.buildCompactRole(role)
+		compact, err := b.buildCompactRole(ctx, role)
 		if err != nil {
 			return nil, err
 		}
@@ -159,13 +159,13 @@ func (b *ConfigBuilder) SupportsCompactContent() bool {
 	return true
 }
 
-func (b *ConfigBuilder) buildCompactRole(role *workloadsv1alpha2.RoleSpec) (*CompactRole, error) {
-	serviceName, err := utils.GetCompatibleHeadlessServiceName(context.TODO(), b.client, b.rbg, role)
+func (b *ConfigBuilder) buildCompactRole(ctx context.Context, role *workloadsv1alpha2.RoleSpec) (*CompactRole, error) {
+	serviceName, err := utils.GetCompatibleHeadlessServiceName(ctx, b.client, b.rbg, role)
 	if err != nil {
 		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
 	}
 
-	members, err := b.memberOrdinals(role)
+	members, excludedOrdinals, err := b.memberSummary(ctx, role)
 	if err != nil {
 		return nil, err
 	}
@@ -185,8 +185,8 @@ func (b *ConfigBuilder) buildCompactRole(role *workloadsv1alpha2.RoleSpec) (*Com
 
 	return &CompactRole{
 		Name:             role.Name,
-		Members:          len(members),
-		ExcludedOrdinals: ordinals.Record(members),
+		Members:          members,
+		ExcludedOrdinals: excludedOrdinals,
 		Ports:            ports,
 		Components:       components,
 	}, nil
@@ -204,6 +204,12 @@ func compactComponents(
 	case ccp != nil:
 		components := make([]CompactComponent, 0, len(ccp.Components))
 		for _, comp := range ccp.Components {
+			// The legacy address loop emits no address for a non-positive
+			// size; normalize the compact field to the same zero-size meaning.
+			size := ptr.Deref(comp.Size, 1)
+			if size < 0 {
+				size = 0
+			}
 			// An explicit component ServiceName overrides the shared headless
 			// service as the pod subdomain.
 			svcName := comp.ServiceName
@@ -212,7 +218,7 @@ func compactComponents(
 			}
 			components = append(components, CompactComponent{
 				Name:   comp.Name,
-				Size:   int(ptr.Deref(comp.Size, 1)),
+				Size:   int(size),
 				Offset: 0,
 				Base: fmt.Sprintf(
 					"%s-{roleIndex}-%s-{componentIndex}.%s",
@@ -286,10 +292,10 @@ func (b *ConfigBuilder) getRoleNames() []string {
 	return names
 }
 
-func (b *ConfigBuilder) buildRolesInfo() (RolesInfo, error) {
+func (b *ConfigBuilder) buildRolesInfo(ctx context.Context) (RolesInfo, error) {
 	roles := make(RolesInfo)
 	for _, role := range b.rbg.Spec.Roles {
-		instances, err := b.buildInstances(&role)
+		instances, err := b.buildInstances(ctx, &role)
 		if err != nil {
 			return nil, err
 		}
@@ -301,14 +307,12 @@ func (b *ConfigBuilder) buildRolesInfo() (RolesInfo, error) {
 	return roles, nil
 }
 
-func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha2.RoleSpec) ([]Instance, error) {
-	serviceName, err := utils.GetCompatibleHeadlessServiceName(context.TODO(), b.client, b.rbg, role)
+func (b *ConfigBuilder) buildInstances(ctx context.Context, role *workloadsv1alpha2.RoleSpec) ([]Instance, error) {
+	serviceName, err := utils.GetCompatibleHeadlessServiceName(ctx, b.client, b.rbg, role)
 	if err != nil {
 		return nil, fmt.Errorf("GetCompatibleHeadlessServiceName error: %s", err.Error())
 	}
 
-	ccp := role.GetCustomComponentsPattern()
-	lwp := role.GetLeaderWorkerPattern()
 	workloadName := b.rbg.GetWorkloadName(role)
 
 	portMap := make(map[string]int32, len(role.ServicePorts))
@@ -316,49 +320,13 @@ func (b *ConfigBuilder) buildInstances(role *workloadsv1alpha2.RoleSpec) ([]Inst
 		portMap[generatePortKey(port)] = port.Port
 	}
 
-	members, err := b.memberOrdinals(role)
+	members, err := b.memberOrdinals(ctx, role)
 	if err != nil {
 		return nil, err
 	}
 	var instances []Instance
 	for _, i := range members {
-		var addresses []string
-
-		switch {
-		case ccp != nil:
-			for _, comp := range ccp.Components {
-				// an explicit component ServiceName overrides the shared headless service as the pod subdomain.
-				svcName := comp.ServiceName
-				if svcName == "" {
-					svcName = serviceName
-				}
-				for j := int32(0); j < ptr.Deref(comp.Size, 1); j++ {
-					addresses = append(addresses, fmt.Sprintf(
-						"%s-%d-%s-%d.%s",
-						workloadName, i, comp.Name, j, svcName,
-					))
-				}
-			}
-		case lwp != nil:
-			size := int32(1)
-			if lwp.Size != nil {
-				size = *lwp.Size
-			}
-			if role.GetWorkloadType() == constants.LeaderWorkerSetWorkloadType {
-				groupStart := int32(i) * size
-				addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, groupStart, serviceName))
-				for j := int32(0); j < size-1; j++ {
-					addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, groupStart+j+1, serviceName))
-				}
-			} else {
-				addresses = append(addresses, fmt.Sprintf("%s-%d-0.%s", workloadName, i, serviceName))
-				for j := int32(0); j < size-1; j++ {
-					addresses = append(addresses, fmt.Sprintf("%s-%d-%d.%s", workloadName, i, j+1, serviceName))
-				}
-			}
-		default:
-			addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, i, serviceName))
-		}
+		addresses := memberAddresses(workloadName, role, serviceName, i)
 
 		for _, addr := range addresses {
 			inst := Instance{Address: addr}
@@ -379,6 +347,90 @@ func generatePortKey(port corev1.ServicePort) string {
 		return strings.ToLower(strings.ReplaceAll(port.Name, "-", "_"))
 	}
 	return fmt.Sprintf("port%d", port.Port)
+}
+
+// memberAddresses returns the v1alpha1 instance addresses for one selected
+// member ordinal. It is shared by the enumeration and the size estimator so
+// their address sets cannot drift.
+func memberAddresses(
+	workloadName string,
+	role *workloadsv1alpha2.RoleSpec,
+	serviceName string,
+	ordinal int,
+) []string {
+	ccp := role.GetCustomComponentsPattern()
+	lwp := role.GetLeaderWorkerPattern()
+	i := int32(ordinal)
+	var addresses []string
+
+	switch {
+	case ccp != nil:
+		for _, comp := range ccp.Components {
+			// an explicit component ServiceName overrides the shared headless service as the pod subdomain.
+			svcName := comp.ServiceName
+			if svcName == "" {
+				svcName = serviceName
+			}
+			for j := int32(0); j < ptr.Deref(comp.Size, 1); j++ {
+				addresses = append(addresses, fmt.Sprintf(
+					"%s-%d-%s-%d.%s",
+					workloadName, i, comp.Name, j, svcName,
+				))
+			}
+		}
+	case lwp != nil:
+		size := int32(1)
+		if lwp.Size != nil {
+			size = *lwp.Size
+		}
+		if role.GetWorkloadType() == constants.LeaderWorkerSetWorkloadType {
+			groupStart := i * size
+			addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, groupStart, serviceName))
+			for j := int32(0); j < size-1; j++ {
+				addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, groupStart+j+1, serviceName))
+			}
+		} else {
+			addresses = append(addresses, fmt.Sprintf("%s-%d-0.%s", workloadName, i, serviceName))
+			for j := int32(0); j < size-1; j++ {
+				addresses = append(addresses, fmt.Sprintf("%s-%d-%d.%s", workloadName, i, j+1, serviceName))
+			}
+		}
+	default:
+		addresses = append(addresses, fmt.Sprintf("%s-%d.%s", workloadName, i, serviceName))
+	}
+
+	return addresses
+}
+
+// LegacySizeLowerBound estimates a lower bound for the serialized v1alpha1
+// content without enumerating instances. It lets the controller reject an
+// oversized rollback before allocating the full instance list.
+func (b *ConfigBuilder) LegacySizeLowerBound(ctx context.Context) (int, error) {
+	total := 0
+	for i := range b.rbg.Spec.Roles {
+		role := &b.rbg.Spec.Roles[i]
+		if !workloadsv1alpha2.IsStatefulRole(role) {
+			continue
+		}
+		members, _, err := b.memberSummary(ctx, role)
+		if err != nil {
+			return 0, err
+		}
+		if members == 0 {
+			continue
+		}
+		serviceName, err := utils.GetCompatibleHeadlessServiceName(ctx, b.client, b.rbg, role)
+		if err != nil {
+			return 0, err
+		}
+		workloadName := b.rbg.GetWorkloadName(role)
+		// YAML emits each instance as a list entry; ports only add more bytes,
+		// so excluding them keeps this estimate a safe lower bound.
+		for _, address := range memberAddresses(workloadName, role, serviceName, 0) {
+			total += members * (len(address) + len("\n    - address: \n"))
+		}
+	}
+	return total, nil
 }
 
 func semanticallyEqualConfigmap(old, new *corev1.ConfigMap) (bool, string) {
@@ -421,7 +473,7 @@ func semanticallyEqualConfigmap(old, new *corev1.ConfigMap) (bool, string) {
 
 // Discovery follows the committed child target, not live Pods or the exclusion
 // input. Before initial child creation it uses the same initial planner.
-func (b *ConfigBuilder) memberOrdinals(role *workloadsv1alpha2.RoleSpec) ([]int, error) {
+func (b *ConfigBuilder) memberOrdinals(ctx context.Context, role *workloadsv1alpha2.RoleSpec) ([]int, error) {
 	dense := func() ([]int, error) { return (ordinals.Ranges{}).Members(int(*role.Replicas)) }
 	invalidInput := workloadsv1alpha2.ValidateRoleExcludedOrdinals(b.rbg, role) != nil
 	if invalidInput && role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
@@ -431,7 +483,7 @@ func (b *ConfigBuilder) memberOrdinals(role *workloadsv1alpha2.RoleSpec) ([]int,
 		return dense()
 	}
 	set := &workloadsv1alpha2.RoleInstanceSet{}
-	err := b.client.Get(context.TODO(), client.ObjectKey{Namespace: b.rbg.Namespace, Name: b.rbg.GetWorkloadName(role)}, set)
+	err := b.client.Get(ctx, client.ObjectKey{Namespace: b.rbg.Namespace, Name: b.rbg.GetWorkloadName(role)}, set)
 	_, present := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]
 	if apierrors.IsNotFound(err) {
 		// Never plan new membership from invalid input. Existing roles below
@@ -463,6 +515,66 @@ func (b *ConfigBuilder) memberOrdinals(role *workloadsv1alpha2.RoleSpec) ([]int,
 			return nil, fmt.Errorf("discovery RIS %s has a different controller owner", set.Name)
 		}
 		return set.CommittedOrdinals()
+	}
+	return dense()
+}
+
+// memberSummary is the range-jumping counterpart of memberOrdinals: it returns
+// the selected member count and the canonical excluded-ordinal record without
+// materializing the member list. It intentionally mirrors the decisions in
+// memberOrdinals; tests cross-check the two representations stay equivalent.
+func (b *ConfigBuilder) memberSummary(ctx context.Context, role *workloadsv1alpha2.RoleSpec) (int, string, error) {
+	replicas := int(*role.Replicas)
+	dense := func() (int, string, error) { return replicas, "", nil }
+	invalidInput := workloadsv1alpha2.ValidateRoleExcludedOrdinals(b.rbg, role) != nil
+	if invalidInput && role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+		return 0, "", nil
+	}
+	if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType || !workloadsv1alpha2.IsStatefulRole(role) {
+		return dense()
+	}
+	set := &workloadsv1alpha2.RoleInstanceSet{}
+	err := b.client.Get(ctx, client.ObjectKey{Namespace: b.rbg.Namespace, Name: b.rbg.GetWorkloadName(role)}, set)
+	_, present := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]
+	if apierrors.IsNotFound(err) {
+		// Never plan new membership from invalid input. Existing roles below
+		// keep publishing their committed target until the input is repaired.
+		if invalidInput {
+			return 0, "", nil
+		}
+		if !present {
+			return dense()
+		}
+		excluded, err := ordinals.Parse(role.Annotations[constants.ExcludedOrdinalsAnnotationKey])
+		if err != nil {
+			return 0, "", err
+		}
+		record, err := ordinals.Summarize(replicas, excluded)
+		return replicas, record, err
+	}
+	if err != nil {
+		return 0, "", err
+	}
+	if invalidInput || present || set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] != "" {
+		owner := metav1.GetControllerOf(set)
+		// Mirror memberOrdinals: a dense orphan may be projected, but sparse
+		// membership must never be inherited from an ownerless child.
+		denseOrphan := owner == nil &&
+			set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey] == "" &&
+			set.Labels[constants.GroupNameLabelKey] == b.rbg.Name
+		if !denseOrphan && (owner == nil || owner.UID != b.rbg.UID) {
+			return 0, "", fmt.Errorf("discovery RIS %s has a different controller owner", set.Name)
+		}
+		committed := 0
+		if set.Spec.Replicas != nil {
+			committed = int(*set.Spec.Replicas)
+		}
+		skips, err := ordinals.Parse(set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey])
+		if err != nil {
+			return 0, "", fmt.Errorf("invalid %s: %w", constants.CommittedSkipOrdinalsAnnotationKey, err)
+		}
+		record, err := ordinals.Summarize(committed, skips)
+		return committed, record, err
 	}
 	return dense()
 }

@@ -38,12 +38,23 @@ import (
 
 // These keys do not affect revision identity; PodGroupPolicy is still snapshotted with its effective configuration.
 var systemManagedAnnotationKeys = map[string]bool{
-	constants.DiscoveryConfigVersionAnnotationKey:            true,
+	// The mode selector is retired, but children written by older controllers
+	// still carry it. Keep ignoring it so an upgrade does not classify those
+	// children as template drift and roll them.
+	constants.DiscoveryConfigModeAnnotationKey:               true,
 	constants.RolloutRequestAnnotationKey:                    true,
 	constants.ConversionV1alpha1CoordinationAnnotationKey:    true,
 	constants.ConversionV1alpha1PodGroupPolicyAnnotationKey:  true,
 	constants.ConversionV1alpha2RolloutStrategyAnnotationKey: true,
 	constants.ConversionV1alpha2RolloutStatusAnnotationKey:   true,
+}
+
+// templateOwnedAnnotationKeys are excluded from revision identity but converge
+// to the live template value on every child: added, updated, and removed. The
+// template is authoritative for these keys, unlike systemManagedAnnotationKeys
+// whose child-side state survives a template that no longer sets them.
+var templateOwnedAnnotationKeys = map[string]bool{
+	constants.DiscoveryConfigVersionAnnotationKey: true,
 }
 
 // liveTemplateAnnotation reports whether a key is copied from the live template to every child
@@ -70,6 +81,9 @@ func normalizedGroupSetTemplate(template *workloadsv1alpha2.RoleBasedGroupTempla
 	delete(result.Labels, constants.GroupSetIndexLabelKey)
 	delete(result.Labels, constants.GroupSetRevisionLabelKey)
 	for k := range systemManagedAnnotationKeys {
+		delete(result.Annotations, k)
+	}
+	for k := range templateOwnedAnnotationKeys {
 		delete(result.Annotations, k)
 	}
 	return result

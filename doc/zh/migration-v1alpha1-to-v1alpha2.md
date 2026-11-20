@@ -25,7 +25,7 @@ workload 类型内容迁移必须使用 `v1alpha2` 表达和写入路径。在 `
 
 - 将 RBG 控制器升级到 `0.9.0` 或更新版本，并确认控制器、conversion webhook 和 admission webhook 健康。
 - 确认待迁移 Role 当前 ready，且没有其他 rollout 正在进行。`InstanceSet` Role 是例外：它从 v0.7.0 起就不再 reconcile，且不支持的 workload 类型会让整个 RoleBasedGroup 无法通过 preflight reconcile。
-- 在提交任何有状态 Role 的迁移前，先完成 discovery ConfigMap 前置条件。从 v0.6.0 或更早版本升级上来的 RBG 以及 RoleBasedGroupSet 子对象都处于 `legacy` 发现模式；参见[discovery ConfigMap 前置条件](#discovery-configmap-前置条件)。
+- 在提交任何有状态 Role 的迁移前，先完成 discovery ConfigMap 前置条件。旧的发现模式选择器已随 KEP-576 移除；参见[discovery ConfigMap 前置条件](#discovery-configmap-前置条件)。
 - 与自动扩缩容、流量管理、调度以及可能在迁移期间修改 RBG 的业务流程协调。
 - 在变更窗口内冻结外部写入。
 - 修改前保存当前对象，并记录 revision。
@@ -82,7 +82,11 @@ discovery ConfigMap 是控制器创建的 Pod 发现信息（`config.yaml`），
 | 缺失或 `v1alpha1` | 历史的全量逐实例枚举 |
 | `v1` | KEP-576 的紧凑格式 |
 
-mutating webhook 会把新建 RBG 默认为 `v1`；没有该注解的存量 RBG 保持 `v1alpha1`。创建时如需退回旧行为，可将注解设为 `v1alpha1`。RoleBasedGroupSet 应把注解放在 `spec.groupTemplate.annotations`：子 RBG 会继承该值，直接改子对象注解会被 set controller 覆盖。
+mutating webhook 会把新建 RBG 默认为 `v1`；没有该注解的存量 RBG 保持 `v1alpha1`。创建时如需退回旧行为，可将注解设为 `v1alpha1`。仍含 deprecated stateful role（StatefulSet、LeaderWorkerSet 或 InstanceSet）的新 RBG 和 RoleBasedGroupSet 模板默认为 `v1alpha1`，因为紧凑格式只支持 RoleInstanceSet；admission 也会拒绝这类 RBG 使用 `v1`。如果在绕过 admission 的情况下写入了同时带 `v1` 和 deprecated stateful role 的对象，控制器会继续发布 v1alpha1 内容。
+
+RoleBasedGroupSet 应把注解放在 `spec.groupTemplate.annotations`：子 RBG 会继承该值，直接改子对象注解会被覆盖，从模板删除该键也会从子对象删除。
+
+把注解回滚为 `v1alpha1` 的前提是序列化后的枚举仍能放进 API server 的 1 MiB ConfigMap 限制。控制器会在写入前拒绝超限回滚，保留当前紧凑内容，并重试失败的 reconcile；如果枚举已放不下，请缩减拓扑或继续使用 `v1`。
 
 迁移 stateful role 前，确认 RBG 级 ConfigMap 已存在：
 
@@ -160,7 +164,7 @@ v1alpha1 `InstanceSet` 选择器不受兼容开关保护。它从 v0.7.0 起就�
 - 如果 set 控制器更新已迁移的子对象，恢复旧 Role 属于新的弃用使用，admission guard 会拒绝。
 - 如果 set 控制器按未迁移模板删除并重建子对象，重建的子对象会通过 set 子对象的创建时豁免继承旧类型，该 Role 必须再次迁移。
 
-先迁移 set 模板。每个子对象都会在同一轮 reconcile 中删除旧 workload，因此传播的变更会让所有子对象的该 Role 同时降为零 Pod。请把它规划为该 Role 在整个 set 内的完全中断，而不是灰度 rollout。迁移前先按 discovery ConfigMap 前置条件的说明，在模板上设置发现模式注解。如果确实需要逐子对象灰度，必须使用单独审查过的方案，协调或隔离子对象与 set reconcile 的关系。不要假设在父模板未更新时，某个子对象的迁移可以永久保持。
+先迁移 set 模板。每个子对象都会在同一轮 reconcile 中删除旧 workload，因此传播的变更会让所有子对象的该 Role 同时降为零 Pod。请把它规划为该 Role 在整个 set 内的完全中断，而不是灰度 rollout。迁移前先按 discovery ConfigMap 前置条件的说明，在模板上设置 discovery-config-version 注解。如果确实需要逐子对象灰度，必须使用单独审查过的方案，协调或隔离子对象与 set reconcile 的关系。不要假设在父模板未更新时，某个子对象的迁移可以永久保持。
 
 ## 3. 将对象重写为 v1alpha2 存储编码
 

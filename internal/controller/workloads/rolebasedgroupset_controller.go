@@ -559,6 +559,9 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
 		}
 	}
 	// Absence from the template must not erase child-side compatibility or controller state.
+	// Template-owned keys (such as the discovery-config-version) intentionally
+	// fall through: the template is authoritative for them, so removing the key
+	// from the template must also remove it from the child.
 	for k := range rbg.Annotations {
 		if systemManagedAnnotationKeys[k] {
 			continue
@@ -635,7 +638,10 @@ func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	rbg.Labels = newLabels
 
 	// Sync annotations: keys the controllers own are carried over from the child, template
-	// annotations are applied over them, and anything else is removed.
+	// annotations are applied over them, and anything else is removed. This makes
+	// template-owned keys like discovery-config-version converge in both
+	// directions: a template value overwrites a direct child edit, and removing
+	// the key from the template removes it from the child.
 	newAnnotations := make(map[string]string, len(rbg.Annotations)+len(rbgset.Spec.GroupTemplate.Annotations))
 	for k, v := range rbg.Annotations {
 		if systemManagedAnnotationKeys[k] {

@@ -117,7 +117,8 @@ const (
 
 // DiscoveryConfigVersion selects the serialized content of the RBG discovery
 // ConfigMap. A missing annotation means v1alpha1 for existing objects; the
-// mutating webhook defaults new objects to v1.
+// mutating webhook defaults new objects to v1, except objects whose deprecated
+// stateful roles cannot serialize the compact format and default to v1alpha1.
 type DiscoveryConfigVersion string
 
 const (

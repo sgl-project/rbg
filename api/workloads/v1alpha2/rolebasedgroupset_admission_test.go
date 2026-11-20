@@ -425,9 +425,6 @@ func TestRoleBasedGroupSetDefaulter_RolloutStrategy(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rbgs := &RoleBasedGroupSet{Spec: RoleBasedGroupSetSpec{RolloutStrategy: tt.strategy.DeepCopy()}}
-			// This test isolates rollout-strategy defaulting; an existing
-			// object also keeps KEP-576 CREATE-only discovery defaulting off.
-			rbgs.CreationTimestamp = metav1.Now()
 			want := rbgs.DeepCopy()
 			if want.Spec.RolloutStrategy != nil {
 				want.Spec.RolloutStrategy.Type = tt.wantType

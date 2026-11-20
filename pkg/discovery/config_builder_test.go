@@ -17,6 +17,7 @@ limitations under the License.
 package discovery
 
 import (
+	"context"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -524,7 +525,7 @@ roles:
 					rbg:    tt.rbg,
 					role:   tt.role,
 				}
-				got, err := b.Build()
+				got, err := b.Build(context.Background())
 				if (err != nil) != tt.wantErr {
 					t.Errorf("ConfigBuilder.Build() error = %v, wantErr %v", err, tt.wantErr)
 					return
@@ -674,7 +675,7 @@ roles:
 				tt.rbg,
 				nil,
 			)
-			got, err := builder.BuildCompact()
+			got, err := builder.BuildCompact(context.Background())
 			if tt.wantErr {
 				require.Error(t, err)
 				return
@@ -716,6 +717,150 @@ func decodeCompactMembers(count int, excluded string) ([]int, error) {
 		next = ordinal + 1
 	}
 	return result, nil
+}
+
+func TestConfigBuilder_BuildCompactHugeReplicas(t *testing.T) {
+	// A dense role at the ordinal limit must serialize without materializing
+	// two billion member ordinals.
+	schema := runtime.NewScheme()
+	_ = corev1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "huge"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{{
+				Name:     "prefill",
+				Replicas: ptr.To(int32(2147483647)),
+			}},
+		},
+	}
+	builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+
+	data, err := builder.BuildCompact(context.Background())
+	require.NoError(t, err)
+
+	var cfg CompactConfig
+	require.NoError(t, yaml.UnmarshalStrict(data, &cfg))
+	require.Equal(t, 2147483647, cfg.Roles[0].Members)
+	require.Empty(t, cfg.Roles[0].ExcludedOrdinals)
+	require.Less(t, len(data), 4096, "compact content must not scale with replica count")
+}
+
+func TestValidateCompactPlaceholders(t *testing.T) {
+	standalone := &workloadsv1alpha2.RoleSpec{Name: "prefill"}
+	leaderWorker := &workloadsv1alpha2.RoleSpec{
+		Name:    "prefill",
+		Pattern: workloadsv1alpha2.Pattern{LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{}},
+	}
+
+	tests := []struct {
+		name       string
+		role       *workloadsv1alpha2.RoleSpec
+		components []CompactComponent
+		wantErr    string
+	}{
+		{
+			name: "standalone requires roleIndex",
+			role: standalone,
+			components: []CompactComponent{{
+				Name: "prefill",
+				Base: "prefill.s-prefill",
+			}},
+			wantErr: "missing placeholder {roleIndex}",
+		},
+		{
+			name: "leader worker requires componentIndex",
+			role: leaderWorker,
+			components: []CompactComponent{{
+				Name: "leader",
+				Base: "prefill-{roleIndex}.s-prefill",
+			}},
+			wantErr: "missing placeholder {componentIndex}",
+		},
+		{
+			name: "unknown placeholders are rejected",
+			role: standalone,
+			components: []CompactComponent{{
+				Name: "prefill",
+				Base: "prefill-{roleIndex}-{memberIndex}.s-prefill",
+			}},
+			wantErr: "unknown placeholder {memberIndex}",
+		},
+		{
+			name: "valid templates pass",
+			role: leaderWorker,
+			components: []CompactComponent{{
+				Name: "leader",
+				Base: "prefill-{roleIndex}-{componentIndex}.s-prefill",
+			}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateCompactPlaceholders(tt.role, tt.components)
+			if tt.wantErr == "" {
+				require.NoError(t, err)
+			} else {
+				require.ErrorContains(t, err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestCompactContentVersionMarker(t *testing.T) {
+	// Consumer contract: missing apiVersion means v1alpha1, apiVersion: v1
+	// means compact, and any other value is rejected.
+	type marker struct {
+		APIVersion string `json:"apiVersion"`
+	}
+
+	var legacy marker
+	require.NoError(t, yaml.Unmarshal([]byte("group: demo\n"), &legacy))
+	require.Empty(t, legacy.APIVersion)
+
+	var compact marker
+	require.NoError(t, yaml.Unmarshal([]byte("apiVersion: v1\ngroup: demo\n"), &compact))
+	require.Equal(t, "v1", compact.APIVersion)
+
+	var unknown marker
+	require.NoError(t, yaml.Unmarshal([]byte("apiVersion: v2\ngroup: demo\n"), &unknown))
+	require.Equal(t, "v2", unknown.APIVersion)
+	require.NotEqual(t, "v1", unknown.APIVersion, "consumers must reject unknown versions")
+}
+
+func TestConfigBuilder_MemberSummaryMatchesMemberOrdinals(t *testing.T) {
+	replicas := int32(5)
+	for _, record := range []string{"", "1,3", "1-3", "0,2,4"} {
+		t.Run(record, func(t *testing.T) {
+			schema := runtime.NewScheme()
+			_ = corev1.AddToScheme(schema)
+			_ = workloadsv1alpha2.AddToScheme(schema)
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name:     "worker",
+						Replicas: &replicas,
+						Annotations: map[string]string{
+							constants.ExcludedOrdinalsAnnotationKey: record,
+						},
+					}},
+				},
+			}
+			builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+			role := &rbg.Spec.Roles[0]
+
+			members, err := builder.memberOrdinals(context.Background(), role)
+			require.NoError(t, err)
+			count, excluded, err := builder.memberSummary(context.Background(), role)
+			require.NoError(t, err)
+
+			require.Equal(t, len(members), count)
+			require.Equal(t, ordinals.Record(members), excluded)
+		})
+	}
 }
 
 // TestConfigBuilder_getRoleNames tests the getRoleNames method of ConfigBuilder
@@ -796,7 +941,7 @@ func TestConfigBuilder_buildRolesInfo(t *testing.T) {
 		rbg:    rbg,
 	}
 
-	rolesInfo, err := b.buildRolesInfo()
+	rolesInfo, err := b.buildRolesInfo(context.Background())
 	if err != nil {
 		t.Errorf("buildRolesInfo() error = %v", err)
 	}
@@ -994,7 +1139,7 @@ func TestConfigBuilder_buildInstances(t *testing.T) {
 		role:   role,
 	}
 
-	instances, err := b.buildInstances(role)
+	instances, err := b.buildInstances(context.Background(), role)
 	if err != nil {
 		t.Errorf("buildInstances() error = %v", err)
 	}
@@ -1098,7 +1243,7 @@ func TestConfigBuilderBuildCommittedSparseMembership(t *testing.T) {
 				builder.WithObjects(set)
 			}
 			// No Pods or RoleInstances are needed: discovery follows the persisted target.
-			data, err := NewConfigBuilder(builder.Build(), rbg, &rbg.Spec.Roles[0]).Build()
+			data, err := NewConfigBuilder(builder.Build(), rbg, &rbg.Spec.Roles[0]).Build(context.Background())
 			if tc.wantError != "" {
 				require.ErrorContains(t, err, tc.wantError)
 				require.Nil(t, data, "invalid membership must not produce a discovery payload")

@@ -394,9 +394,10 @@ func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv
 	return errors.Wrap(kerrors.NewAggregate(errs), "invalid role workload declarations")
 }
 
-// maxDiscoveryConfigMapBytes matches the Kubernetes API server's 1 MiB limit
-// for a ConfigMap object. Rejecting an oversized v1alpha1 rollback here keeps
-// the existing compact content in place instead of failing the API write.
+// maxDiscoveryConfigMapBytes is a conservative data-value limit below the
+// Kubernetes API server's 1 MiB ConfigMap object limit. Rejecting oversized
+// v1alpha1 content before the write keeps the existing compact content in
+// place instead of failing the API-server write.
 const maxDiscoveryConfigMapBytes = 1 << 20
 
 func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
@@ -422,14 +423,41 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 
 	// Select the content version. Existing objects without the annotation keep
 	// v1alpha1. Objects that requested v1 but still carry a deprecated stateful
-	// backend also keep v1alpha1 when admission was bypassed.
+	// backend also keep v1alpha1 when admission was bypassed. Any value other
+	// than v1alpha1 and v1 fails the reconcile instead of silently downgrading
+	// content, which also keeps an older controller from rewriting content
+	// written by a future version.
 	version := rbg.GetDiscoveryConfigVersion()
+	selectedVersion := constants.DiscoveryConfigVersionV1Alpha1
+	compact := false
+	switch version {
+	case "", constants.DiscoveryConfigVersionV1Alpha1:
+	case constants.DiscoveryConfigVersionV1:
+		if builder.SupportsCompactContent() {
+			selectedVersion = version
+			compact = true
+		}
+	default:
+		return fmt.Errorf(
+			"unsupported %s value %q; supported values are v1alpha1 and v1",
+			constants.DiscoveryConfigVersionAnnotationKey, version,
+		)
+	}
+
 	var configData []byte
 	var err error
-	if version == constants.DiscoveryConfigVersionV1 && builder.SupportsCompactContent() {
-		configData, err = builder.BuildCompact()
+	if compact {
+		configData, err = builder.BuildCompact(ctx)
 	} else {
-		configData, err = builder.Build()
+		if lowerBound, estimateErr := builder.LegacySizeLowerBound(ctx); estimateErr != nil {
+			return estimateErr
+		} else if lowerBound > maxDiscoveryConfigMapBytes {
+			return fmt.Errorf(
+				"estimated discovery ConfigMap content for version v1alpha1 is at least %d bytes, exceeding the %d-byte limit",
+				lowerBound, maxDiscoveryConfigMapBytes,
+			)
+		}
+		configData, err = builder.Build(ctx)
 	}
 	if err != nil {
 		return err
@@ -438,8 +466,8 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	// before the write, so the current content is retained.
 	if len(configData) > maxDiscoveryConfigMapBytes {
 		return fmt.Errorf(
-			"discovery ConfigMap content for version %s is %d bytes, exceeding the %d-byte ConfigMap limit",
-			version, len(configData), maxDiscoveryConfigMapBytes,
+			"discovery ConfigMap content for version %s is %d bytes, exceeding the %d-byte limit; requested version %s",
+			selectedVersion, len(configData), maxDiscoveryConfigMapBytes, version,
 		)
 	}
 
