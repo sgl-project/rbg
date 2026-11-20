@@ -238,8 +238,10 @@ func TestCreateRollingGroupSetChildAdoptsOrphan(t *testing.T) {
 
 // An orphan derives the legacy discovery config mode while it has no controller, and
 // the metadata sync keeps the mode a child carries, so the adoption is the one place
-// that can undo it (#603). Both paths adopt through claimGroupSetOrphan.
-func TestGroupSetAdoptionDropsDerivedLegacyDiscoveryMode(t *testing.T) {
+// that can undo it (#603). An orphan adopted before that derivation has no mode, and
+// an owner reference change alone does not enqueue the RoleBasedGroup, so the
+// adoption pins that one too. Both paths adopt through claimGroupSetOrphan.
+func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
 	modeKey := constants.DiscoveryConfigModeAnnotationKey
 	legacy := string(constants.LegacyDiscoveryConfigMode)
 	refine := string(constants.RefineDiscoveryConfigMode)
@@ -250,11 +252,17 @@ func TestGroupSetAdoptionDropsDerivedLegacyDiscoveryMode(t *testing.T) {
 		orphanMode   string
 		wantMode     string
 		wantPresent  bool
+		// staticOnly: the expectation needs the metadata sync, which the rolling
+		// subtest does not run.
+		staticOnly bool
 	}{
-		{name: "legacy is dropped when the template declares no mode", orphanMode: legacy},
+		{name: "legacy becomes refine when the template declares no mode", orphanMode: legacy, wantMode: refine, wantPresent: true},
 		{name: "legacy declared by the template is kept", templateMode: legacy, orphanMode: legacy, wantMode: legacy, wantPresent: true},
 		{name: "refine on the orphan is kept", orphanMode: refine, wantMode: refine, wantPresent: true},
-		{name: "an orphan without a mode stays without one"},
+		// The claim is the only write: nothing else would make the RoleBasedGroup
+		// controller look at an orphan that otherwise matches the template.
+		{name: "an orphan without a mode is pinned to refine", wantMode: refine, wantPresent: true},
+		{name: "an orphan without a mode is left to a template that declares legacy", templateMode: legacy, wantMode: legacy, wantPresent: true, staticOnly: true},
 	}
 
 	for _, tt := range tests {
@@ -296,6 +304,9 @@ func TestGroupSetAdoptionDropsDerivedLegacyDiscoveryMode(t *testing.T) {
 			assert.Equal(t, "a", adopted.Annotations["team"], "other annotations must survive the adoption")
 		})
 
+		if tt.staticOnly {
+			continue
+		}
 		t.Run("rolling/"+tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			template := revisionTestTemplate(nil)

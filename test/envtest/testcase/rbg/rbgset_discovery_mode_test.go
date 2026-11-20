@@ -28,6 +28,7 @@ import (
 	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/discovery"
@@ -178,17 +179,33 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 		// reconciled, without a controller and without the mode annotation.
 		set := &workloadsv1alpha2.RoleBasedGroupSet{}
 		Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, set)).To(Succeed())
-		Expect(testutil.K8sClient.Delete(testutil.Ctx, set)).To(Succeed())
-		Eventually(func(g Gomega) {
-			err := testutil.K8sClient.Get(testutil.Ctx, setKey, &workloadsv1alpha2.RoleBasedGroupSet{})
-			g.Expect(apierrors.IsNotFound(err)).To(BeTrue())
-		}, timeout, interval).Should(Succeed())
+		Expect(testutil.K8sClient.Delete(
+			testutil.Ctx, set, client.PropagationPolicy(metav1.DeletePropagationOrphan),
+		)).To(Succeed())
 
+		// envtest runs no garbage collector, so the spec does its part of an orphan
+		// deletion: it releases the child, and only then lets the set go.
 		child := getChild(Default)
 		old := child.DeepCopy()
 		child.OwnerReferences = nil
 		delete(child.Annotations, constants.DiscoveryConfigModeAnnotationKey)
 		Expect(testutil.K8sClient.Patch(testutil.Ctx, child, client.MergeFrom(old))).To(Succeed())
+		Eventually(func(g Gomega) {
+			g.Expect(getChild(g).OwnerReferences).To(BeEmpty())
+		}, timeout, interval).Should(Succeed())
+
+		Eventually(func() bool {
+			live := &workloadsv1alpha2.RoleBasedGroupSet{}
+			err := testutil.K8sClient.Get(testutil.Ctx, setKey, live)
+			if apierrors.IsNotFound(err) {
+				return true
+			}
+			if err == nil && controllerutil.RemoveFinalizer(live, metav1.FinalizerOrphanDependents) {
+				// A conflict is retried by the next poll.
+				_ = testutil.K8sClient.Update(testutil.Ctx, live)
+			}
+			return false
+		}, timeout, interval).Should(BeTrue(), "the set is still being deleted")
 
 		// Without a controller it is derived like any RoleBasedGroup that has status.
 		Eventually(func(g Gomega) {

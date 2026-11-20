@@ -166,22 +166,31 @@ func (r *RoleBasedGroupSetReconciler) adoptGroupSetOrphans(
 // claimGroupSetOrphan makes the set the controller of an orphan in memory; the
 // caller writes it.
 //
-// While it has no controller, a child that has status and no discovery config mode
-// is derived as legacy like any other RoleBasedGroup, which is how a child that
-// v0.7.0 or v0.8.0 left without the annotation ends up once it is orphaned. A set
-// child is never a legacy object (#603), so that value is dropped with the adoption
-// and the RoleBasedGroup controller pins the child to refine. A mode the template
-// declares is the user's choice and is left to the metadata sync.
+// A set child is never a legacy object (#603), so unless the template declares a
+// discovery config mode the claim also pins the orphan to refine:
+//
+//   - While it has no controller, an orphan that has status and no mode is derived
+//     as legacy like any other RoleBasedGroup. That is how a child v0.7.0 or v0.8.0
+//     left without the annotation ends up once it is orphaned.
+//   - An orphan that is adopted before that derivation still has no mode. A claim
+//     that only changed the owner reference would not enqueue the RoleBasedGroup,
+//     so the mode is written here and not left to its controller.
+//
+// A mode the template declares is the user's choice and is left to the metadata
+// sync.
 func (r *RoleBasedGroupSetReconciler) claimGroupSetOrphan(
 	set *workloadsv1alpha2.RoleBasedGroupSet, child *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	if err := controllerutil.SetControllerReference(set, child, r.scheme); err != nil {
 		return err
 	}
-	_, declared := set.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigModeAnnotationKey]
-	if !declared && child.GetDiscoveryConfigMode() == constants.LegacyDiscoveryConfigMode {
-		delete(child.Annotations, constants.DiscoveryConfigModeAnnotationKey)
+	if _, declared := set.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigModeAnnotationKey]; declared {
+		return nil
 	}
+	if child.Annotations == nil {
+		child.Annotations = map[string]string{}
+	}
+	child.Annotations[constants.DiscoveryConfigModeAnnotationKey] = string(constants.RefineDiscoveryConfigMode)
 	return nil
 }
 

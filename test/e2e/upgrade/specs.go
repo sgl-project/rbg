@@ -755,6 +755,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			checkNoPodChurn(fs, baseline, after)
 			checkNoRestarts(fs, baseline, after)
 			checkOwnersStable(fs, baseline, after, fromProfile().rewrites.specRewrites)
+			checkDiscoveryModeStable(fs, baseline, after, fromProfile().rewrites.discoveryModePins)
 			fs.report()
 		},
 	)
