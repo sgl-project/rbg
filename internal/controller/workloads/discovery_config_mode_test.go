@@ -20,6 +20,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -43,6 +45,47 @@ func roleBasedGroupSetControllerRef() metav1.OwnerReference {
 		UID:        "rbgset-test-uid",
 		Controller: ptr.To(true),
 	}
+}
+
+// A set can adopt an orphan between the RoleBasedGroup controller's read and its
+// write of the derived mode. Legacy written after the adoption would be kept by both
+// controllers as if it were explicit (#603), so the stale write has to fail and the
+// retry has to see a set child.
+func TestEnsureDiscoveryConfigMode_AdoptionBetweenReadAndWrite(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	orphan := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	orphan.Status.ObservedGeneration = 1
+	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(orphan).WithObjects(orphan).Build()
+	reconciler := &RoleBasedGroupReconciler{client: c, scheme: scheme}
+	key := types.NamespacedName{Name: orphan.Name, Namespace: orphan.Namespace}
+
+	// The reconcile reads the orphan: no controller, no mode, and status.
+	stale := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(ctx, key, stale))
+
+	// The set controller adopts it before the reconcile writes.
+	adopted := stale.DeepCopy()
+	adopted.OwnerReferences = []metav1.OwnerReference{roleBasedGroupSetControllerRef()}
+	require.NoError(t, c.Update(ctx, adopted))
+
+	_, err := reconciler.ensureDiscoveryConfigMode(ctx, stale)
+	require.Error(t, err, "the write derived from the stale read must not go through")
+	assert.True(t, apierrors.IsConflict(err), "want a conflict, got %v", err)
+
+	persisted := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(ctx, key, persisted))
+	assert.NotContains(t, persisted.Annotations, constants.DiscoveryConfigModeAnnotationKey,
+		"the adopted child must not carry the mode derived while it was an orphan")
+
+	// The retry reads the adopted child and pins it like any other set child.
+	_, err = reconciler.ensureDiscoveryConfigMode(ctx, persisted)
+	require.NoError(t, err)
+	require.NoError(t, c.Get(ctx, key, persisted))
+	assert.Equal(t, constants.RefineDiscoveryConfigMode, persisted.GetDiscoveryConfigMode())
 }
 
 func TestEnsureDiscoveryConfigMode(t *testing.T) {

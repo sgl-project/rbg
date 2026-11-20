@@ -439,7 +439,12 @@ func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
 
 	old := rbg.DeepCopy()
 	rbg.SetDiscoveryConfigMode(mode)
-	if err := r.client.Patch(ctx, rbg, client.MergeFrom(old)); err != nil {
+	// The mode was derived from the object as it was read, and whether it has a
+	// controller decides the outcome. A set can adopt an orphan between that read
+	// and this write, and a legacy value written afterwards would look explicit to
+	// both controllers and stay. The optimistic lock makes the stale write fail, so
+	// the retry classifies the child again.
+	if err := r.client.Patch(ctx, rbg, client.MergeFromWithOptions(old, client.MergeFromWithOptimisticLock{})); err != nil {
 		return true, err
 	}
 
