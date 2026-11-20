@@ -211,38 +211,12 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			// Marked before the snapshot, not after, so no removal event can slip
 			// into the untracked window between the two.
 			preUpgradeMark = metav1.Now()
-			before = captureAll(gomega.Default, f)
+			ginkgo.By(fmt.Sprintf("waiting for the old controller to settle for %s", settleDuration))
+			before = waitQuiesced(f)
 
 			gomega.Expect(before).ToNot(gomega.BeEmpty(), "no RoleBasedGroups were captured")
 
-			// Without this, "nothing churned" would also hold for a namespace whose
-			// pods never started, which is the way this suite could most easily pass
-			// while proving nothing.
-			var problems []string
-			for name, snap := range before {
-				// The never-ready fixture is exempt: its pod cannot be scheduled by
-				// construction. It stays in the snapshot, because a Pending pod is state
-				// the upgrade must leave alone too -- it just cannot be Running.
-				if name == fxPending {
-					continue
-				}
-				for role, pods := range snap.Roles {
-					running := 0
-					for _, facts := range pods {
-						if facts.Phase == corev1.PodRunning {
-							running++
-						}
-					}
-					if running == 0 {
-						problems = append(
-							problems, fmt.Sprintf(
-								"%s/%s has no Running pod (%d pods total)", name, role, len(pods),
-							),
-						)
-					}
-				}
-			}
-			reportProblems("some roles have nothing running, so there is nothing to observe", problems)
+			reportProblems("the pre-upgrade baseline is not ready", baselineProblems(before))
 
 			ginkgo.By(fmt.Sprintf("captured %d RoleBasedGroups before the upgrade", len(before)))
 			printSnapshots(before)
@@ -299,7 +273,13 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			).Should(gomega.Succeed())
 			midRollPodsAtPartition = listPodFactsForRole(gomega.Default, f, target, midRollRole)
 
-			runHelmUpgrade(f)
+			if job := runHelmUpgradeWith(f); job != nil {
+				logs := podLabelMigrationLogs(f, job.Name)
+				gomega.Expect(logs).To(gomega.ContainSubstring("candidates=0 patched=0 failed=0 dry-run=false check=true"))
+				gomega.Expect(logs).NotTo(gomega.ContainSubstring("WARNING: Pod label migration"))
+			} else {
+				gomega.Expect(listPodLabelMigrationJobs(f)).To(gomega.BeEmpty(), "the default upgrade must not run Pod label migration")
+			}
 
 			// Asserted rather than reported: the partition holds the fixture here for as
 			// long as it takes, so the upgrade cannot have missed the half-rolled state.
@@ -343,6 +323,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			fs := &findings{}
 			runDetectors(fs, f, before, after, preUpgradeMark, fromProfile().rewrites, mutated)
 			fs.report()
+			expectMigratedPodLabels(after)
 		},
 	)
 
@@ -591,6 +572,8 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			fs.report()
 		},
 	)
+
+	runPodCacheRollbackSpec(f)
 
 	// ---------------------------------------------------------------------------
 	// Phase 4: the upgraded controller is not merely quiet -- it still works.
@@ -1244,6 +1227,30 @@ func waitAllRBGsReady(f *framework.Framework, except ...string) {
 			}
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.Succeed())
+}
+
+func baselineProblems(snapshots map[string]RBGSnapshot) []string {
+	var problems []string
+	for name, snap := range snapshots {
+		if name == fxPending {
+			continue
+		}
+		if snap.Kind == kindRBG && !snap.RBGReady {
+			problems = append(problems, fmt.Sprintf("%s is not Ready", name))
+		}
+		for role, pods := range snap.Roles {
+			running := 0
+			for _, facts := range pods {
+				if facts.Phase == corev1.PodRunning {
+					running++
+				}
+			}
+			if running == 0 {
+				problems = append(problems, fmt.Sprintf("%s/%s has no Running pod (%d pods total)", name, role, len(pods)))
+			}
+		}
+	}
+	return problems
 }
 
 // waitAllPodsRunning waits until every role of every RoleBasedGroup in the namespace has

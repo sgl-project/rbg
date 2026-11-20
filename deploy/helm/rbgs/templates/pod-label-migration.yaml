@@ -1,0 +1,105 @@
+{{- if .Values.podLabelMigration.enabled }}
+{{- $name := printf "%s-pod-label-migration" .Release.Name | trunc 63 | trimSuffix "-" }}
+{{- $revision := .Release.Revision | toString }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $name }}
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-3"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-3"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: {{ $name }}-{{ .Release.Namespace }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-3"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: {{ $name }}-{{ .Release.Namespace }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $name }}
+    namespace: {{ .Release.Namespace }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-%s" ($name | trunc (sub 62 (len $revision) | int) | trimSuffix "-") $revision }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app.kubernetes.io/name: rbgs-pod-label-migration
+    app.kubernetes.io/instance: {{ .Release.Name | quote }}
+  annotations:
+    "helm.sh/hook": pre-upgrade
+    "helm.sh/hook-weight": "-2"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.podLabelMigration.activeDeadlineSeconds }}
+  ttlSecondsAfterFinished: {{ .Values.podLabelMigration.ttlSecondsAfterFinished }}
+  template:
+    spec:
+      serviceAccountName: {{ $name }}
+      restartPolicy: Never
+      {{- with .Values.controller.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.imagePullSecrets | default (.Values.global).imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.controller.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: migrate
+          image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.controller.image.pullPolicy | default "IfNotPresent" }}
+          {{- with .Values.controller.securityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              /kubectl-rbg migrate pod-labels -A --rate-limit="$MIGRATION_RATE_LIMIT" --timeout="$MIGRATION_TIMEOUT" || echo "WARNING: Pod label migration failed; see the output above and retry manually."
+              /kubectl-rbg migrate pod-labels check -A --rate-limit="$MIGRATION_RATE_LIMIT" --timeout="$MIGRATION_TIMEOUT" || echo "WARNING: Pod label migration check reported remaining work or failed."
+              exit 0
+          env:
+            - name: MIGRATION_RATE_LIMIT
+              value: {{ .Values.podLabelMigration.rateLimit | quote }}
+            - name: MIGRATION_TIMEOUT
+              value: {{ .Values.podLabelMigration.timeout | quote }}
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+            limits:
+              memory: 256Mi
+{{- end }}

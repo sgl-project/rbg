@@ -19,10 +19,26 @@ package utils
 import (
 	"testing"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+
 	"github.com/stretchr/testify/assert"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 )
+
+func TestFilterSystemLabelsPreservesManagedMarker(t *testing.T) {
+	input := map[string]string{constants.ManagedLabelKey: "true", constants.GroupNameLabelKey: "group"}
+	got := FilterSystemLabels(input)
+	if got[constants.ManagedLabelKey] != "true" {
+		t.Fatal("managed marker was not preserved")
+	}
+	if got[constants.GroupNameLabelKey] != "group" {
+		t.Fatal("group label was ignored")
+	}
+	if input[constants.ManagedLabelKey] != "true" {
+		t.Fatal("input labels mutated")
+	}
+}
 
 func TestContainsString(t *testing.T) {
 	tests := []struct {

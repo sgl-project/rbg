@@ -142,6 +142,7 @@ func (c *commonControl) NewUpdatePods(updateVersion string, componentName string
 		for key, value := range componentPodLabels {
 			pod.Labels[key] = value
 		}
+		pod.Labels[constants.ManagedLabelKey] = constants.ManagedLabelValue
 
 		// 4. init pod identity for service discovery
 		c.setComponentPodIdentity(component, pod)

@@ -18,6 +18,7 @@ package upgrade
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
 	"sort"
@@ -79,9 +80,14 @@ func runHelmUpgrade(f *framework.Framework) {
 // so only the controller image moves; pass two passes no override and lets
 // the pre-upgrade hook apply the CRDs (KEP-531 Upgrade: controller first,
 // CRD second).
-func runHelmUpgradeWith(f *framework.Framework, extraSets ...string) {
+func runHelmUpgradeWith(f *framework.Framework, extraSets ...string) *batchv1.Job {
 	before, err := managerPodNames(f)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not list the controller pods before upgrading")
+	migratePods := podLabelMigrationEnabled()
+	var beforeJobs map[string]bool
+	if migratePods {
+		beforeJobs = podLabelMigrationJobs(f)
+	}
 
 	args := make([]string, 0, 20+len(imagePullSecretSets())+len(extraSets))
 	args = append(args,
@@ -100,6 +106,15 @@ func runHelmUpgradeWith(f *framework.Framework, extraSets ...string) {
 		"--set", "controller.features.portAllocator.enabled=true",
 	)
 	args = append(args, imagePullSecretSets()...)
+	if scope := os.Getenv("RBGS_POD_CACHE_SCOPE"); scope != "" {
+		args = append(args, "--set", "controller.podCacheScope="+scope)
+	}
+	if stream := os.Getenv("RBGS_WATCH_LIST_CLIENT"); stream != "" {
+		args = append(args, "--set", "controller.watchListClient="+stream)
+	}
+	if migratePods {
+		args = append(args, "--set", "podLabelMigration.enabled=true")
+	}
 	args = append(args, extraSets...)
 	args = append(args, "--wait", "--timeout", helmTimeout())
 
@@ -116,9 +131,66 @@ func runHelmUpgradeWith(f *framework.Framework, extraSets ...string) {
 
 	after, err := managerPodNames(f)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not list the controller pods after upgrading")
+	var migrationJob *batchv1.Job
+	if migratePods {
+		migrationJob = verifyPodLabelMigrationHook(f, beforeJobs, before, after)
+	}
 	if !slices.Equal(before, after) {
 		ginkgo.By(fmt.Sprintf("the upgrade replaced the controller pods (%v -> %v)", before, after))
 	}
+	return migrationJob
+}
+
+func podLabelMigrationEnabled() bool { return os.Getenv("RBGS_POD_LABEL_MIGRATION") == "true" }
+
+func podLabelMigrationLogs(f *framework.Framework, jobName string) string {
+	podsClient := f.Clientset.CoreV1().Pods(controllerNamespace())
+	pods, err := podsClient.List(f.Ctx, metav1.ListOptions{LabelSelector: "job-name=" + jobName})
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	gomega.Expect(pods.Items).To(gomega.HaveLen(1))
+	logs, err := podsClient.GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{}).DoRaw(f.Ctx)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	return string(logs)
+}
+
+func listPodLabelMigrationJobs(f *framework.Framework) []batchv1.Job {
+	selector := "app.kubernetes.io/name=rbgs-pod-label-migration,app.kubernetes.io/instance=" + helmRelease()
+	jobs, err := f.Clientset.BatchV1().Jobs(controllerNamespace()).List(f.Ctx, metav1.ListOptions{LabelSelector: selector})
+	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not list migration hook Jobs")
+	return jobs.Items
+}
+
+func podLabelMigrationJobs(f *framework.Framework) map[string]bool {
+	jobs := listPodLabelMigrationJobs(f)
+	ids := make(map[string]bool, len(jobs))
+	for i := range jobs {
+		ids[string(jobs[i].UID)] = true
+	}
+	return ids
+}
+
+func verifyPodLabelMigrationHook(f *framework.Framework, beforeJobs map[string]bool, beforePods, afterPods []string) *batchv1.Job {
+	var created []batchv1.Job
+	for _, job := range listPodLabelMigrationJobs(f) {
+		if !beforeJobs[string(job.UID)] {
+			created = append(created, job)
+		}
+	}
+	gomega.Expect(created).To(gomega.HaveLen(1), "each upgrade must create one migration hook Job")
+	job := created[0]
+	gomega.Expect(job.Status.Succeeded).To(gomega.BeNumerically(">", 0), "migration hook Job did not complete")
+	gomega.Expect(job.Status.CompletionTime).NotTo(gomega.BeNil(), "migration hook completion time is missing")
+	for _, name := range afterPods {
+		if slices.Contains(beforePods, name) {
+			continue
+		}
+		pod, err := f.Clientset.CoreV1().Pods(controllerNamespace()).Get(f.Ctx, name, metav1.GetOptions{})
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+		gomega.Expect(pod.CreationTimestamp.Time.Before(job.Status.CompletionTime.Time)).To(gomega.BeFalse(),
+			"new controller Pod %s was created before the migration hook completed", name)
+	}
+	ginkgo.GinkgoWriter.Printf("migration hook %s completed before controller rollout\n", job.Name)
+	return &job
 }
 
 // waitForUpgradeReady blocks until the upgraded install can actually serve RBG
