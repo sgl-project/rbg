@@ -47,45 +47,72 @@ func roleBasedGroupSetControllerRef() metav1.OwnerReference {
 	}
 }
 
-// A set can adopt an orphan between the RoleBasedGroup controller's read and its
-// write of the derived mode. Legacy written after the adoption would be kept by both
-// controllers as if it were explicit (#603), so the stale write has to fail and the
-// retry has to see a set child.
+// A set adopts an orphan between the RoleBasedGroup controller's read and its
+// write. The mode derived from the stale read must not land, and the retry must
+// leave the mode the adoption stamped: refine, or the legacy a template declares.
+// Without the stamp the retry would pin a child of a legacy template to refine and
+// apply its discovery ConfigMap before the metadata sync restored legacy.
 func TestEnsureDiscoveryConfigMode_AdoptionBetweenReadAndWrite(t *testing.T) {
-	ctx := context.Background()
-	scheme := runtime.NewScheme()
-	_ = workloadsv1alpha2.AddToScheme(scheme)
-	_ = corev1.AddToScheme(scheme)
+	tests := []struct {
+		name         string
+		templateMode constants.DiscoveryConfigMode
+		wantMode     constants.DiscoveryConfigMode
+	}{
+		{name: "template declares no mode", wantMode: constants.RefineDiscoveryConfigMode},
+		{
+			name:         "template declares legacy",
+			templateMode: constants.LegacyDiscoveryConfigMode,
+			wantMode:     constants.LegacyDiscoveryConfigMode,
+		},
+	}
 
-	orphan := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-	orphan.Status.ObservedGeneration = 1
-	c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(orphan).WithObjects(orphan).Build()
-	reconciler := &RoleBasedGroupReconciler{client: c, scheme: scheme}
-	key := types.NamespacedName{Name: orphan.Name, Namespace: orphan.Namespace}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := runtime.NewScheme()
+			_ = workloadsv1alpha2.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
 
-	// The reconcile reads the orphan: no controller, no mode, and status.
-	stale := &workloadsv1alpha2.RoleBasedGroup{}
-	require.NoError(t, c.Get(ctx, key, stale))
+			orphan := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+			orphan.Status.ObservedGeneration = 1
+			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(orphan).WithObjects(orphan).Build()
+			reconciler := &RoleBasedGroupReconciler{client: c, scheme: scheme}
+			key := types.NamespacedName{Name: orphan.Name, Namespace: orphan.Namespace}
 
-	// The set controller adopts it before the reconcile writes.
-	adopted := stale.DeepCopy()
-	adopted.OwnerReferences = []metav1.OwnerReference{roleBasedGroupSetControllerRef()}
-	require.NoError(t, c.Update(ctx, adopted))
+			// The reconcile reads the orphan: no controller, no mode, and status.
+			stale := &workloadsv1alpha2.RoleBasedGroup{}
+			require.NoError(t, c.Get(ctx, key, stale))
 
-	_, err := reconciler.ensureDiscoveryConfigMode(ctx, stale)
-	require.Error(t, err, "the write derived from the stale read must not go through")
-	assert.True(t, apierrors.IsConflict(err), "want a conflict, got %v", err)
+			// The set controller adopts it before the reconcile writes.
+			set := &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-set", Namespace: orphan.Namespace, UID: "set-uid"},
+			}
+			if tt.templateMode != "" {
+				set.Spec.GroupTemplate.Annotations = map[string]string{
+					constants.DiscoveryConfigModeAnnotationKey: string(tt.templateMode),
+				}
+			}
+			adopted := stale.DeepCopy()
+			require.NoError(t, (&RoleBasedGroupSetReconciler{scheme: scheme}).claimGroupSetOrphan(set, adopted))
+			require.NoError(t, c.Update(ctx, adopted))
 
-	persisted := &workloadsv1alpha2.RoleBasedGroup{}
-	require.NoError(t, c.Get(ctx, key, persisted))
-	assert.NotContains(t, persisted.Annotations, constants.DiscoveryConfigModeAnnotationKey,
-		"the adopted child must not carry the mode derived while it was an orphan")
+			_, err := reconciler.ensureDiscoveryConfigMode(ctx, stale)
+			require.Error(t, err, "the write derived from the stale read must not go through")
+			assert.True(t, apierrors.IsConflict(err), "want a conflict, got %v", err)
 
-	// The retry reads the adopted child and pins it like any other set child.
-	_, err = reconciler.ensureDiscoveryConfigMode(ctx, persisted)
-	require.NoError(t, err)
-	require.NoError(t, c.Get(ctx, key, persisted))
-	assert.Equal(t, constants.RefineDiscoveryConfigMode, persisted.GetDiscoveryConfigMode())
+			persisted := &workloadsv1alpha2.RoleBasedGroup{}
+			require.NoError(t, c.Get(ctx, key, persisted))
+			require.True(t, metav1.IsControlledBy(persisted, set))
+			assert.Equal(t, tt.wantMode, persisted.GetDiscoveryConfigMode(),
+				"the adoption must stamp the mode in the write that changes the owner")
+
+			// The retry reads the adopted child and has nothing left to decide.
+			_, err = reconciler.ensureDiscoveryConfigMode(ctx, persisted)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, key, persisted))
+			assert.Equal(t, tt.wantMode, persisted.GetDiscoveryConfigMode())
+		})
+	}
 }
 
 func TestEnsureDiscoveryConfigMode(t *testing.T) {
