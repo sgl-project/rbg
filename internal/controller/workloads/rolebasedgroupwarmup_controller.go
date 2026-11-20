@@ -51,7 +51,8 @@ import (
 
 const (
 	// Label keys for warmup Pods
-	LabelWarmupName = "workloads.x-k8s.io/warmup-name"
+	LabelWarmupName = constants.WarmupNameLabelKey
+	LabelManagedKey = constants.ManagedLabelKey
 	LabelWarmupUID  = "workloads.x-k8s.io/warmup-uid"
 	LabelNodeName   = "workloads.x-k8s.io/node-name"
 
@@ -1215,6 +1216,7 @@ func (r *RoleBasedGroupWarmupReconciler) buildWarmupPod(warmup *workloadsv1alpha
 			GenerateName: fmt.Sprintf("%s-", warmup.Name),
 			Namespace:    warmup.Namespace,
 			Labels: map[string]string{
+				LabelManagedKey: constants.ManagedLabelValue,
 				LabelWarmupName: warmup.Name,
 				LabelWarmupUID:  string(warmup.UID),
 				LabelNodeName:   nodeName,

@@ -18,7 +18,11 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"testing"
+
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
+	clientfeatures "k8s.io/client-go/features"
 
 	"github.com/stretchr/testify/assert"
 	appsv1 "k8s.io/api/apps/v1"
@@ -31,6 +35,17 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 )
+
+func TestWatchListClientEffectiveGate(t *testing.T) {
+	old := clientfeatures.FeatureGates().Enabled(clientfeatures.WatchListClient)
+	t.Cleanup(func() {
+		assert.NoError(t, utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("WatchListClient=%t", old)))
+	})
+	for _, enabled := range []bool{true, false} {
+		assert.NoError(t, setWatchListClient(enabled))
+		assert.Equal(t, enabled, clientfeatures.FeatureGates().Enabled(clientfeatures.WatchListClient))
+	}
+}
 
 func TestInitFunction(t *testing.T) {
 	// Test that schemes registered in init function

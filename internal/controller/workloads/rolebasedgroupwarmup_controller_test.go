@@ -107,6 +107,9 @@ func TestBuildWarmupPod_ImagePreload(t *testing.T) {
 	}
 
 	pod, _ := r.buildWarmupPod(warmup, "node-1", actions)
+	if pod.Labels[constants.ManagedLabelKey] != "true" {
+		t.Fatal("created Warmup Pod is missing the managed marker")
+	}
 
 	// Verify containers
 	if len(pod.Spec.Containers) != 2 {

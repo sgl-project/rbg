@@ -548,8 +548,7 @@ func waitQuiesced(f *framework.Framework, skip ...string) map[string]RBGSnapshot
 		}, quiesceTimeout, time.Second,
 	).Should(
 		gomega.Succeed(),
-		"the controller was still changing things %s after the upgrade, so nothing can be attributed to "+
-			"the upgrade itself", quiesceTimeout,
+		"the controller was still changing things after %s, so a stable comparison is not possible", quiesceTimeout,
 	)
 	return latest
 }
@@ -720,7 +719,7 @@ func checkPodMetadataStable(fs *findings, before, after map[string]RBGSnapshot) 
 				}
 				where := fmt.Sprintf("%s/%s: pod %s", rbgName, role, podName)
 
-				for _, diff := range stringMapDiff(beforeFacts.Labels, afterFacts.Labels) {
+				for _, diff := range podLabelDiff(beforeFacts.Labels, afterFacts.Labels) {
 					labelProblems = append(labelProblems, where+" label "+diff)
 				}
 				for _, diff := range stringMapDiff(beforeFacts.Annotations, afterFacts.Annotations) {
@@ -739,6 +738,28 @@ func checkPodMetadataStable(fs *findings, before, after map[string]RBGSnapshot) 
 	// A gate appearing means the pod went through an in-place update, which is a
 	// rewrite of its template even though the pod itself survived.
 	fs.add("pod readiness gates were changed by the upgrade", gateProblems)
+}
+
+func podLabelDiff(before, after map[string]string) []string {
+	if _, existed := before[constants.ManagedLabelKey]; !existed && after[constants.ManagedLabelKey] == constants.ManagedLabelValue {
+		after = copyStringMap(after)
+		delete(after, constants.ManagedLabelKey)
+	}
+	return stringMapDiff(before, after)
+}
+
+func expectMigratedPodLabels(after map[string]RBGSnapshot) {
+	if !podLabelMigrationEnabled() {
+		return
+	}
+	for _, snap := range after {
+		for _, pods := range snap.Roles {
+			for name, pod := range pods {
+				gomega.Expect(pod.Labels[constants.ManagedLabelKey]).To(gomega.Equal(constants.ManagedLabelValue),
+					"Pod %s was not marked by migration or at creation", name)
+			}
+		}
+	}
 }
 
 // stringMapDiff describes how two maps differ, one line per key. Reporting per key is

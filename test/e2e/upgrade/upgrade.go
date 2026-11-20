@@ -18,6 +18,7 @@ package upgrade
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"slices"
 	"sort"
@@ -69,27 +70,41 @@ func clientObjectKey(name string) client.ObjectKey { return client.ObjectKey{Nam
 // between v0.7.0 and v0.8.0, and the chart has no values schema, so --reuse-values
 // would carry the old paths forward as inert keys and silently install chart
 // defaults instead of the images under test.
-func runHelmUpgrade(f *framework.Framework) {
+func runHelmUpgrade(f *framework.Framework, extraSets ...string) *batchv1.Job {
 	before, err := managerPodNames(f)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not list the controller pods before upgrading")
+	migratePods := podLabelMigrationEnabled()
+	var beforeJobs map[string]bool
+	if migratePods {
+		beforeJobs = podLabelMigrationJobs(f)
+	}
 
-	args := make([]string, 0, 20+len(imagePullSecretSets()))
-	args = append(args,
+	args := []string{
 		"upgrade", helmRelease(), chartPath(),
 		"--namespace", controllerNamespace(),
-		"--set", "controller.image.repository="+toRepo(),
-		"--set", "controller.image.tag="+toTag(),
+		"--set", "controller.image.repository=" + toRepo(),
+		"--set", "controller.image.tag=" + toTag(),
 		"--set", "controller.image.pullPolicy=IfNotPresent",
-		"--set", "crdUpgrade.image.repository="+crdUpgradeRepo(),
-		"--set", "crdUpgrade.image.tag="+crdUpgradeTag(),
+		"--set", "crdUpgrade.image.repository=" + crdUpgradeRepo(),
+		"--set", "crdUpgrade.image.tag=" + crdUpgradeTag(),
 		"--set", "crdUpgrade.image.pullPolicy=IfNotPresent",
 		// Not a chart default. It is set because the from-release install sets it, as
 		// the other e2e workflows do: omitting it here would make the hop turn a
 		// feature off, and every assertion in this suite reads what the interval
 		// changed as something the upgrade did.
 		"--set", "controller.features.portAllocator.enabled=true",
-	)
+	}
 	args = append(args, imagePullSecretSets()...)
+	if scope := os.Getenv("RBGS_POD_CACHE_SCOPE"); scope != "" {
+		args = append(args, "--set", "controller.podCacheScope="+scope)
+	}
+	if stream := os.Getenv("RBGS_WATCH_LIST_CLIENT"); stream != "" {
+		args = append(args, "--set", "controller.watchListClient="+stream)
+	}
+	if migratePods {
+		args = append(args, "--set", "podLabelMigration.enabled=true")
+	}
+	args = append(args, extraSets...)
 	args = append(args, "--wait", "--timeout", helmTimeout())
 
 	ginkgo.By("running helm " + strings.Join(args, " "))
@@ -105,9 +120,66 @@ func runHelmUpgrade(f *framework.Framework) {
 
 	after, err := managerPodNames(f)
 	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not list the controller pods after upgrading")
+	var migrationJob *batchv1.Job
+	if migratePods {
+		migrationJob = verifyPodLabelMigrationHook(f, beforeJobs, before, after)
+	}
 	if !slices.Equal(before, after) {
 		ginkgo.By(fmt.Sprintf("the upgrade replaced the controller pods (%v -> %v)", before, after))
 	}
+	return migrationJob
+}
+
+func podLabelMigrationEnabled() bool { return os.Getenv("RBGS_POD_LABEL_MIGRATION") == "true" }
+
+func podLabelMigrationLogs(f *framework.Framework, jobName string) string {
+	podsClient := f.Clientset.CoreV1().Pods(controllerNamespace())
+	pods, err := podsClient.List(f.Ctx, metav1.ListOptions{LabelSelector: "job-name=" + jobName})
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	gomega.Expect(pods.Items).To(gomega.HaveLen(1))
+	logs, err := podsClient.GetLogs(pods.Items[0].Name, &corev1.PodLogOptions{}).DoRaw(f.Ctx)
+	gomega.Expect(err).ToNot(gomega.HaveOccurred())
+	return string(logs)
+}
+
+func listPodLabelMigrationJobs(f *framework.Framework) []batchv1.Job {
+	selector := "app.kubernetes.io/name=rbgs-pod-label-migration,app.kubernetes.io/instance=" + helmRelease()
+	jobs, err := f.Clientset.BatchV1().Jobs(controllerNamespace()).List(f.Ctx, metav1.ListOptions{LabelSelector: selector})
+	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not list migration hook Jobs")
+	return jobs.Items
+}
+
+func podLabelMigrationJobs(f *framework.Framework) map[string]bool {
+	jobs := listPodLabelMigrationJobs(f)
+	ids := make(map[string]bool, len(jobs))
+	for i := range jobs {
+		ids[string(jobs[i].UID)] = true
+	}
+	return ids
+}
+
+func verifyPodLabelMigrationHook(f *framework.Framework, beforeJobs map[string]bool, beforePods, afterPods []string) *batchv1.Job {
+	var created []batchv1.Job
+	for _, job := range listPodLabelMigrationJobs(f) {
+		if !beforeJobs[string(job.UID)] {
+			created = append(created, job)
+		}
+	}
+	gomega.Expect(created).To(gomega.HaveLen(1), "each upgrade must create one migration hook Job")
+	job := created[0]
+	gomega.Expect(job.Status.Succeeded).To(gomega.BeNumerically(">", 0), "migration hook Job did not complete")
+	gomega.Expect(job.Status.CompletionTime).NotTo(gomega.BeNil(), "migration hook completion time is missing")
+	for _, name := range afterPods {
+		if slices.Contains(beforePods, name) {
+			continue
+		}
+		pod, err := f.Clientset.CoreV1().Pods(controllerNamespace()).Get(f.Ctx, name, metav1.GetOptions{})
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+		gomega.Expect(pod.CreationTimestamp.Time.Before(job.Status.CompletionTime.Time)).To(gomega.BeFalse(),
+			"new controller Pod %s was created before the migration hook completed", name)
+	}
+	ginkgo.GinkgoWriter.Printf("migration hook %s completed before controller rollout\n", job.Name)
+	return &job
 }
 
 // waitForUpgradeReady blocks until the upgraded install can actually serve RBG
@@ -137,7 +209,7 @@ func waitForUpgradeReady(f *framework.Framework, conversionProbeName string) {
 	waitCRDsUpgraded(f)
 
 	ginkgo.By("waiting for the controller to roll out onto the image under test")
-	waitControllerRolledOut(f)
+	waitControllerRolledOut(f, toTag())
 
 	ginkgo.By("waiting for the conversion webhook caBundle to be repopulated")
 	waitCRDConversionCABundle(f)
@@ -163,7 +235,7 @@ func waitCRDsUpgraded(f *framework.Framework) {
 		"%s never appeared, so the crd-upgrade hook did not apply the new CRD bundle", marker.description)
 }
 
-func waitControllerRolledOut(f *framework.Framework) {
+func waitControllerRolledOut(f *framework.Framework, tag string) {
 	ns := controllerNamespace()
 	gomega.Eventually(func(g gomega.Gomega) {
 		deploy, err := f.Clientset.AppsV1().Deployments(ns).Get(f.Ctx, managerDeploymentName, metav1.GetOptions{})
@@ -171,7 +243,7 @@ func waitControllerRolledOut(f *framework.Framework) {
 
 		image, found := managerImage(deploy)
 		g.Expect(found).To(gomega.BeTrue(), "no controller container found in %s/%s", ns, managerDeploymentName)
-		g.Expect(image).To(gomega.HaveSuffix(":"+toTag()),
+		g.Expect(image).To(gomega.HaveSuffix(":"+tag),
 			"controller still runs %q; the upgrade did not replace the image", image)
 
 		g.Expect(deploy.Status.ObservedGeneration).To(gomega.BeNumerically(">=", deploy.Generation),
@@ -286,7 +358,7 @@ func restartController(f *framework.Framework, conversionProbeName string) {
 		}
 	}, gateTimeout, gateInterval).Should(gomega.Succeed())
 
-	waitControllerRolledOut(f)
+	waitControllerRolledOut(f, toTag())
 	// The new process mints its certificate and patches the webhook configs again
 	// on startup, and until it has, every RBG write is rejected.
 	waitValidatingWebhookCABundle(f)

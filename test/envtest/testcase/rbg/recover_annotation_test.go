@@ -86,24 +86,15 @@ var _ = Describe("Recover annotation on a role", func() {
 		g.Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, set)).To(Succeed())
 		return set
 	}
-	instanceCount := func(g Gomega) int {
-		list := &workloadsv1alpha2.RoleInstanceList{}
-		g.Expect(testutil.K8sClient.List(testutil.Ctx, list, client.InNamespace(namespace),
-			client.MatchingLabels{constants.GroupNameLabelKey: groupKey.Name})).To(Succeed())
-		count := 0
-		for i := range list.Items {
-			if list.Items[i].DeletionTimestamp == nil {
-				count++
-			}
-		}
-		return count
-	}
-	revisionNames := func(g Gomega) []string {
+	listRevisions := func(g Gomega) []apps.ControllerRevision {
 		list := &apps.ControllerRevisionList{}
 		g.Expect(testutil.K8sClient.List(testutil.Ctx, list, client.InNamespace(namespace))).To(Succeed())
-		names := make([]string, 0, len(list.Items))
-		for i := range list.Items {
-			names = append(names, list.Items[i].Name)
+		return list.Items
+	}
+	revisionNames := func(revisions []apps.ControllerRevision) []string {
+		names := make([]string, 0, len(revisions))
+		for _, revision := range revisions {
+			names = append(names, revision.Name)
 		}
 		sort.Strings(names)
 		return names
@@ -118,19 +109,38 @@ var _ = Describe("Recover annotation on a role", func() {
 			return testutil.K8sClient.Update(testutil.Ctx, group)
 		})).To(Succeed())
 	}
-	// settledRevisions waits until the role is running and its revisions have stopped
-	// changing, and returns what must stay as it is from then on.
+	// A RoleInstance is visible before its controller has created its revision.
+	// Wait for each active instance's revision before capturing the baseline.
 	settledRevisions := func(instances int) (string, []string) {
-		Eventually(func(g Gomega) {
-			g.Expect(instanceCount(g)).To(Equal(instances))
-			g.Expect(getSet(g).Labels[hashKey]).NotTo(BeEmpty())
-		}, timeout, interval).Should(Succeed())
 		var names []string
 		Eventually(func(g Gomega) {
-			names = revisionNames(g)
-			g.Expect(names).NotTo(BeEmpty())
+			g.Expect(getSet(g).Labels[hashKey]).NotTo(BeEmpty())
+
+			list := &workloadsv1alpha2.RoleInstanceList{}
+			g.Expect(testutil.K8sClient.List(testutil.Ctx, list, client.InNamespace(namespace),
+				client.MatchingLabels{constants.GroupNameLabelKey: groupKey.Name})).To(Succeed())
+			revisions := listRevisions(g)
+			revisionOwners := sets.New[types.UID]()
+			for i := range revisions {
+				if owner := metav1.GetControllerOfNoCopy(&revisions[i]); owner != nil {
+					revisionOwners.Insert(owner.UID)
+				}
+			}
+
+			active := 0
+			for i := range list.Items {
+				instance := &list.Items[i]
+				if instance.DeletionTimestamp != nil {
+					continue
+				}
+				active++
+				g.Expect(revisionOwners.Has(instance.UID)).To(BeTrue(),
+					"RoleInstance %s does not have a ControllerRevision yet", instance.Name)
+			}
+			g.Expect(active).To(Equal(instances))
+			names = revisionNames(revisions)
 		}, timeout, interval).Should(Succeed())
-		Consistently(func(g Gomega) { g.Expect(revisionNames(g)).To(Equal(names)) },
+		Consistently(func(g Gomega) { g.Expect(revisionNames(listRevisions(g))).To(Equal(names)) },
 			2*time.Second, interval).Should(Succeed())
 		return getSet(Default).Labels[hashKey], names
 	}
@@ -163,7 +173,7 @@ var _ = Describe("Recover annotation on a role", func() {
 			g.Expect(set.Annotations).NotTo(HaveKey(constants.RoleInstanceRecoverAnnotationKey))
 			g.Expect(set.Annotations).To(HaveKeyWithValue(foreignKey, "someone-else"))
 			g.Expect(set.Labels[hashKey]).To(Equal(hash))
-			g.Expect(revisionNames(g)).To(Equal(revisions))
+			g.Expect(revisionNames(listRevisions(g))).To(Equal(revisions))
 		}, 3*time.Second, interval).Should(Succeed())
 	}
 

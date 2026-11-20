@@ -88,10 +88,7 @@ func chartDir(t *testing.T) string {
 	return dir
 }
 
-// renderChart runs `helm template` with the given extra args and returns the rendered
-// manifest stream. It skips the test if helm is not installed, so local runs without
-// helm do not fail; CI installs helm for the job that runs this package.
-func renderChart(t *testing.T, extraArgs ...string) string {
+func requireHelm(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		if os.Getenv("CI") != "" {
@@ -99,6 +96,12 @@ func renderChart(t *testing.T, extraArgs ...string) string {
 		}
 		t.Skip("helm not installed; skipping chart render test")
 	}
+}
+
+// renderChart runs `helm template` and returns the rendered manifest stream.
+func renderChart(t *testing.T, extraArgs ...string) string {
+	t.Helper()
+	requireHelm(t)
 	args := append([]string{"template", "rbgs", chartDir(t)}, extraArgs...)
 	cmd := exec.Command("helm", args...)
 	out, err := cmd.CombinedOutput()

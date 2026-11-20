@@ -34,11 +34,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/selection"
+	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/podcache"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
@@ -137,6 +139,8 @@ func main() {
 		// Controller runtime options
 		maxConcurrentReconciles int
 		cacheSyncTimeout        time.Duration
+		podCacheScope           string
+		watchListClient         bool
 		portAllocateStrategy    string
 		startPort               int
 		portRange               int
@@ -190,6 +194,8 @@ func main() {
 		"The number of worker threads used by the the RBGS controller.",
 	)
 	flag.DurationVar(&cacheSyncTimeout, "cache-sync-timeout", 120*time.Second, "Informer cache sync timeout.")
+	flag.StringVar(&podCacheScope, "pod-cache-scope", podcache.ScopeAll, "Pod cache retention: all or filtered (metadata stubs for unrelated Pods).")
+	flag.BoolVar(&watchListClient, "watch-list-client", false, "Enable client-go streaming lists for all informers when supported by the API server.")
 	flag.BoolVar(&enablePortAllocator, "enable-port-allocator", false, "Enable the port allocator.")
 	flag.StringVar(&portAllocateStrategy, "port-allocate-strategy", "random", "The strategy to allocate ports.")
 	flag.IntVar(&startPort, "start-port", 30000, "The start port to allocate.")
@@ -255,6 +261,14 @@ func main() {
 	}
 
 	ctrl.SetLogger(zap.New(zap.UseFlagOptions(&opts)))
+	if err := podcache.ValidateScope(podCacheScope); err != nil {
+		setupLog.Error(err, "invalid Pod cache scope")
+		os.Exit(1)
+	}
+	if err := setWatchListClient(watchListClient); err != nil {
+		setupLog.Error(err, "unable to configure WatchListClient")
+		os.Exit(1)
+	}
 
 	printVersion()
 
@@ -335,9 +349,9 @@ func main() {
 	restConfig.QPS = float32(kubeAPIQPS)
 	restConfig.Burst = kubeAPIBurst
 
-	mgr, err := ctrl.NewManager(
-		restConfig, newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection),
-	)
+	managerOptions := newManagerOptions(webhookMode, webhookServer, metricsServerOptions, probeAddr, enableLeaderElection)
+	managerOptions.NewCache = utilclient.NewCacheForScope(podCacheScope)
+	mgr, err := ctrl.NewManager(restConfig, managerOptions)
 	if err != nil {
 		setupLog.Error(err, "unable to start manager")
 		os.Exit(1)
@@ -502,6 +516,10 @@ func main() {
 		setupLog.Error(err, "problem running manager")
 		os.Exit(1)
 	}
+}
+
+func setWatchListClient(enabled bool) error {
+	return utilfeature.DefaultMutableFeatureGate.Set(fmt.Sprintf("WatchListClient=%t", enabled))
 }
 
 // webhookBootstrapResult holds the result of webhook cert bootstrap.
