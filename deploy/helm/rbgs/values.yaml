@@ -5,6 +5,9 @@ global:
   imagePullSecrets: []
 
 controller:
+  # Alpha retains the full Pod cache unless explicitly enabled.
+  podCacheScope: all
+  watchListClient: false
   replicaCount: 2
   # imagePullSecrets overrides global.imagePullSecrets for the controller when set.
   imagePullSecrets: []
@@ -82,6 +85,14 @@ controller:
   # With false, every remaining use is rejected and legacy RBAC/watches are off.
   deprecatedWorkloadTypes:
     enabled: true
+
+podLabelMigration:
+  # Opt in to migration on upgrades with a controller image that includes /kubectl-rbg.
+  enabled: false
+  rateLimit: 10
+  timeout: 2m
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 259200
 
 crdUpgrade:
   # Whether to enable CRD Upgrader Job (runs before install/upgrade)

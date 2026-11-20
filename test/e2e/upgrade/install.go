@@ -17,6 +17,7 @@ limitations under the License.
 package upgrade
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"os/exec"
@@ -51,8 +52,7 @@ const servingProbeName = "up-serving-probe"
 // fromRelease records what the suite created so teardown can remove exactly that and
 // nothing else.
 var fromRelease struct {
-	// worktree is the git worktree holding the old chart, empty until checked out.
-	worktree string
+	chartDir string
 	// installed is set once `helm install` has been attempted, including when it
 	// failed: a partial install still leaves a release and CRDs behind.
 	installed bool
@@ -73,12 +73,12 @@ var fromRelease struct {
 // Nothing here mutates the cluster. When the precondition fails the operator gets the
 // cleanup commands and decides whether to run them.
 func requireCleanCluster(f *framework.Framework) {
-	for _, bin := range []string{"helm", "git"} {
+	for _, bin := range []string{"helm", "git", "tar"} {
 		if _, err := exec.LookPath(bin); err != nil {
 			// In CI a missing binary is a broken job, not a reason to report success.
 			if os.Getenv("CI") != "" {
 				ginkgo.Fail(bin + " not found in PATH; this suite installs the old release with helm " +
-					"and takes its chart from a git worktree")
+					"and exports its chart from the release tag")
 			}
 			ginkgo.Skip(bin + " not found in PATH; skipping the upgrade suite")
 			return
@@ -129,7 +129,7 @@ func requireCleanCluster(f *framework.Framework) {
 // only safe because requireCleanCluster already proved there is nothing here to
 // overwrite.
 func installFromRelease(f *framework.Framework) {
-	chart := checkoutFromChart()
+	chart := exportFromChart()
 
 	// The values come from the profile, expressed on the from-release's own value
 	// paths, which are NOT necessarily the current ones: every top-level key moved
@@ -166,35 +166,36 @@ func installFromRelease(f *framework.Framework) {
 	ginkgo.GinkgoWriter.Printf("helm install output:\n%s\n", out)
 }
 
-// checkoutFromChart materializes the chart of the release being upgraded from.
+// exportFromChart materializes only the chart of the release being upgraded from.
 //
 // The chart has to come from git: rbgs publishes no Helm repository, so there is
 // nothing to `helm pull`, and the chart in the working tree is the one for the
 // version under test. Installing with that would not reproduce the old install at
 // all, since the values layout changed after v0.7.0.
-func checkoutFromChart() string {
+func exportFromChart() string {
 	base, err := os.MkdirTemp("", "rbg-upgrade-from-")
 	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "could not create a temp dir for the old chart")
+	fromRelease.chartDir = base
+	ginkgo.By(fmt.Sprintf("exporting the %s chart into %s", fromGitTag(), base))
+	gomega.Expect(exportReleaseChart(repoRoot(), fromGitTag(), base)).To(gomega.Succeed())
+	_, err = os.Stat(filepath.Join(base, "Chart.yaml"))
+	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "tag %s has no chart at %s", fromGitTag(), base)
+	return base
+}
 
-	// git worktree add requires a path that does not exist yet, so it gets a
-	// subdirectory of the temp dir rather than the temp dir itself.
-	tree := filepath.Join(base, "src")
-
-	ginkgo.By(fmt.Sprintf("checking out %s into %s", fromGitTag(), tree))
-	cmd := exec.Command("git", "worktree", "add", "--detach", tree, fromGitTag())
-	cmd.Dir = repoRoot()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		ginkgo.Fail(fmt.Sprintf(
-			"git worktree add %s %s failed: %v\n%s\nthe tag has to be present locally; a shallow "+
-				"clone needs `git fetch --tags --unshallow` first",
-			tree, fromGitTag(), err, out))
+func exportReleaseChart(root, tag, destination string) error {
+	cmd := exec.Command("git", "archive", "--format=tar", tag+":deploy/helm/rbgs")
+	cmd.Dir = root
+	archive, err := cmd.Output()
+	if err != nil {
+		return fmt.Errorf("export chart from local tag %s: %w", tag, err)
 	}
-	fromRelease.worktree = tree
-
-	chart := filepath.Join(tree, "deploy", "helm", "rbgs")
-	_, err = os.Stat(filepath.Join(chart, "Chart.yaml"))
-	gomega.Expect(err).ToNot(gomega.HaveOccurred(), "tag %s has no chart at %s", fromGitTag(), chart)
-	return chart
+	cmd = exec.Command("tar", "-xf", "-", "-C", destination)
+	cmd.Stdin = bytes.NewReader(archive)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("extract chart: %w: %s", err, out)
+	}
+	return nil
 }
 
 // verifyOnFromRelease checks the install actually landed the release the suite means
@@ -272,7 +273,7 @@ func waitFromReleaseServing(f *framework.Framework) {
 // that competes with the finding the run exists to surface -- and a leak is caught
 // anyway, with a much clearer message, by the next run's precondition check.
 func teardownFromRelease(f *framework.Framework) {
-	defer removeFromWorktree()
+	defer removeFromChart()
 
 	if !fromRelease.installed {
 		return
@@ -323,21 +324,14 @@ func teardownFromRelease(f *framework.Framework) {
 	}
 }
 
-func removeFromWorktree() {
-	if fromRelease.worktree == "" {
+func removeFromChart() {
+	if fromRelease.chartDir == "" {
 		return
 	}
-	tree := fromRelease.worktree
-	fromRelease.worktree = ""
-
-	cmd := exec.Command("git", "worktree", "remove", "--force", tree)
-	cmd.Dir = repoRoot()
-	if out, err := cmd.CombinedOutput(); err != nil {
-		ginkgo.GinkgoWriter.Printf("[teardown] could not remove git worktree %s: %v\n%s\n", tree, err, out)
-		return
-	}
-	if err := os.RemoveAll(filepath.Dir(tree)); err != nil {
-		ginkgo.GinkgoWriter.Printf("[teardown] could not remove %s: %v\n", filepath.Dir(tree), err)
+	dir := fromRelease.chartDir
+	fromRelease.chartDir = ""
+	if err := os.RemoveAll(dir); err != nil {
+		ginkgo.GinkgoWriter.Printf("[teardown] could not remove %s: %v\n", dir, err)
 	}
 }
 
@@ -401,7 +395,8 @@ To upgrade to a local build instead of what the chart ships:
 
 Overrides: RBGS_NAMESPACE, RBGS_RELEASE, RBGS_HELM_TIMEOUT, RBGS_FROM_GIT_TAG,
 RBGS_FROM_TAG, RBGS_FROM_REPO, RBGS_FROM_CRD_UPGRADE_REPO, RBGS_TO_REPO,
-RBGS_TO_TAG, RBGS_CRD_UPGRADE_REPO, RBGS_CRD_UPGRADE_TAG.`,
+RBGS_TO_TAG, RBGS_CRD_UPGRADE_REPO, RBGS_CRD_UPGRADE_TAG, RBGS_POD_CACHE_SCOPE,
+RBGS_WATCH_LIST_CLIENT, RBGS_POD_LABEL_MIGRATION.`,
 		reason, fromTag(), helmRelease(), controllerNamespace(),
 		strings.TrimPrefix(crdGroupSuffix, "."), fromRepo(), fromCRDUpgradeRepo(),
 		toRepo()+":"+toTag(), crdUpgradeRepo()+":"+crdUpgradeTag())

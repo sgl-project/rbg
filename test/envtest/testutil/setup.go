@@ -19,9 +19,13 @@ package testutil
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"sigs.k8s.io/rbgs/pkg/podcache"
+	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -187,8 +191,13 @@ func WaitForReconcile() {
 
 // SetupManager creates and starts a controller manager for testing
 func SetupManager(ctx context.Context) (manager.Manager, error) {
+	scope := os.Getenv("RBGS_POD_CACHE_SCOPE")
+	if scope == "" {
+		scope = podcache.ScopeAll
+	}
 	mgr, err := ctrl.NewManager(Cfg, ctrl.Options{
-		Scheme: scheme.Scheme,
+		NewCache: utilclient.NewCacheForScope(scope),
+		Scheme:   scheme.Scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: "0", // disable metrics server to avoid port conflicts in tests
 		},
