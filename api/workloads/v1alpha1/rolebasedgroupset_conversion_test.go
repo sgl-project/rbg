@@ -72,6 +72,45 @@ func TestRoleBasedGroupSet_ConvertTo(t *testing.T) {
 	assert.Equal(t, int32(2), dst.Status.ReadyReplicas)
 }
 
+func TestRoleBasedGroupSetConversionDiscoveryConfigVersion(t *testing.T) {
+	hub := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns", UID: "set-uid"},
+		Spec: v2.RoleBasedGroupSetSpec{
+			GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+				Annotations: map[string]string{
+					constants.DiscoveryConfigVersionAnnotationKey: string(constants.DiscoveryConfigVersionV1),
+				},
+				Spec: v2.RoleBasedGroupSpec{
+					Roles: []v2.RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}},
+				},
+			},
+		},
+	}
+
+	view := &RoleBasedGroupSet{}
+	require.NoError(t, view.ConvertFrom(hub))
+	assert.Equal(
+		t,
+		string(constants.DiscoveryConfigVersionV1),
+		view.Annotations[constants.ConversionV1alpha2DiscoveryConfigVersionAnnotationKey],
+		"a v1alpha1 write must not silently drop the selected discovery version",
+	)
+
+	updated := &v2.RoleBasedGroupSet{}
+	require.NoError(t, view.ConvertTo(updated))
+	assert.Equal(
+		t,
+		string(constants.DiscoveryConfigVersionV1),
+		updated.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey],
+	)
+	assert.NotContains(
+		t,
+		updated.Annotations,
+		constants.ConversionV1alpha2DiscoveryConfigVersionAnnotationKey,
+		"the conversion stash must not leak into hub storage",
+	)
+}
+
 func TestRoleBasedGroupSet_ConvertTo_PreservesLossyAnnotations(t *testing.T) {
 	timeout := int32(30)
 	src := &RoleBasedGroupSet{
