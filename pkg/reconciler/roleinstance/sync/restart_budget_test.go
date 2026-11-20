@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -38,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
 )
 
 func budgetFixture(t *testing.T, limit *int32) (*realControl, *workloadsv1alpha2.RoleInstance, []*v1.Pod) {
@@ -77,6 +79,13 @@ func budgetFixture(t *testing.T, limit *int32) (*realControl, *workloadsv1alpha2
 	return control, instance, pods
 }
 
+func budgetTemplateRevision(t *testing.T, instance *workloadsv1alpha2.RoleInstance) string {
+	t.Helper()
+	revision, err := revisioncontrol.NewRevisionControl().NewRevision(instance, 1, ptr.To[int32](0))
+	require.NoError(t, err)
+	return revision.Name
+}
+
 func liveBudgetInstance(t *testing.T, c *realControl, instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
 	t.Helper()
 	live := &workloadsv1alpha2.RoleInstance{}
@@ -89,7 +98,7 @@ func TestRestartBudgetUnsetAndHealthyZero(t *testing.T) {
 	t.Run("unset needs no reader and does not block scale", func(t *testing.T) {
 		c, instance, _ := budgetFixture(t, nil)
 		c.apiReader = nil
-		blocked, err := c.reconcileRestartBudget(ctx, instance)
+		blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 		require.NoError(t, err)
 		require.False(t, blocked)
 	})
@@ -97,7 +106,7 @@ func TestRestartBudgetUnsetAndHealthyZero(t *testing.T) {
 		c, instance, pods := budgetFixture(t, ptr.To[int32](0))
 		pods[0].Status.Phase = v1.PodRunning
 		require.NoError(t, c.Status().Update(ctx, pods[0]))
-		blocked, err := c.reconcileRestartBudget(ctx, instance)
+		blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 		require.NoError(t, err)
 		require.False(t, blocked)
 		live := liveBudgetInstance(t, c, instance)
@@ -113,9 +122,9 @@ func TestRestartBudgetGuardPersistsExhaustionBeforeTerminating(t *testing.T) {
 	// must still patch the marker; metadata writes cannot mask a bad baseline.
 	require.NoError(t, c.ensureBudgetOwner(ctx, instance, false))
 	before := instance.DeepCopy()
-	require.False(t, prepareGroupRestartBudget(instance))
+	require.False(t, prepareGroupRestartBudget(instance, budgetTemplateRevision(t, instance)))
 	require.Equal(t, before.Status, instance.Status, "denial must not mutate the status patch baseline")
-	_, accepted, err := c.acceptBudgetRestart(ctx, instance)
+	_, accepted, err := c.acceptBudgetRestart(ctx, instance, budgetTemplateRevision(t, instance))
 	require.NoError(t, err)
 	require.False(t, accepted)
 	live := liveBudgetInstance(t, c, instance)
@@ -144,7 +153,7 @@ func TestBudgetDrainPreservesRestartingWithStaleInformer(t *testing.T) {
 					pod.Finalizers = []string{"test.rbg.io/hold-drain"}
 					require.NoError(t, c.Client.Update(ctx, pod))
 				}
-				members, accepted, err := c.acceptBudgetRestart(ctx, instance)
+				members, accepted, err := c.acceptBudgetRestart(ctx, instance, budgetTemplateRevision(t, instance))
 				require.NoError(t, err)
 				require.True(t, accepted)
 				baseClient := c.Client
@@ -157,7 +166,7 @@ func TestBudgetDrainPreservesRestartingWithStaleInformer(t *testing.T) {
 				}
 				// The API has accepted the wave, but the informer still has no
 				// Restarting condition (or the previous completed condition).
-				handled, _, err := c.Scale(ctx, stale, nil, nil, nil, nil, nil)
+				handled, _, err := c.Scale(ctx, stale, nil, &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: budgetTemplateRevision(t, stale)}}, nil, nil, nil)
 				if drain == "delete-error" {
 					require.ErrorContains(t, err, "injected budget termination failure")
 				} else {
@@ -180,13 +189,387 @@ func TestBudgetDrainPreservesRestartingWithStaleInformer(t *testing.T) {
 					live.Finalizers = nil
 					require.NoError(t, c.Client.Update(ctx, live))
 				}
-				handled, _, err = c.Scale(ctx, stale, nil, nil, nil, nil, nil)
+				handled, _, err = c.Scale(ctx, stale, nil, &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: budgetTemplateRevision(t, stale)}}, nil, nil, nil)
 				require.NoError(t, err)
 				require.True(t, handled)
 				require.False(t, isInstanceRestarting(stale))
 				require.False(t, isInstanceRestarting(liveBudgetInstance(t, c, instance)))
 			})
 		}
+	}
+}
+
+func TestRestartBudgetOwnerOnlyNeededForExhaustion(t *testing.T) {
+	for _, limit := range []int32{0, 2} {
+		t.Run(fmt.Sprintf("limit=%d", limit), func(t *testing.T) {
+			ctx := context.Background()
+			c, instance, pods := budgetFixture(t, ptr.To(limit))
+			pods[0].Status.Phase = v1.PodRunning
+			require.NoError(t, c.Status().Update(ctx, pods[0]))
+			blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+			require.NoError(t, err)
+			require.False(t, blocked)
+			require.NotContains(t, liveBudgetInstance(t, c, instance).Finalizers, constants.GroupRestartBudgetCleanupFinalizer)
+			instance = liveBudgetInstance(t, c, instance)
+			instance.Spec.RestartPolicyConfig.MaxGroupRestarts = nil
+			require.NoError(t, c.Client.Update(ctx, instance))
+			require.False(t, HasRestartBudgetLifecycle(instance), "unsetting an unused budget leaves no cleanup obligation")
+			require.NoError(t, c.Delete(ctx, instance))
+			require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(instance), &workloadsv1alpha2.RoleInstance{})))
+		})
+	}
+}
+
+func TestRestartBudgetExhaustedReacquiresCleanupOwner(t *testing.T) {
+	for _, failOwner := range []bool{false, true} {
+		t.Run(fmt.Sprintf("failOwner=%t", failOwner), func(t *testing.T) {
+			ctx := context.Background()
+			c, instance, pods := budgetFixture(t, ptr.To[int32](0))
+			selected := budgetTemplateRevision(t, instance)
+			require.NoError(t, c.exhaustRestartBudget(ctx, instance, selected))
+			instance = liveBudgetInstance(t, c, instance)
+			instance.Finalizers = nil // simulate a manually removed cleanup owner
+			require.NoError(t, c.Client.Update(ctx, instance))
+			podWrites := 0
+			baseClient := c.Client.(client.WithWatch)
+			c.Client = interceptor.NewClient(baseClient, interceptor.Funcs{
+				Patch: func(ctx context.Context, cli client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if _, isRI := obj.(*workloadsv1alpha2.RoleInstance); isRI {
+						if failOwner {
+							return fmt.Errorf("injected cleanup owner patch failure")
+						}
+					} else {
+						podWrites++
+						owner := liveBudgetInstance(t, c, instance)
+						require.Contains(t, owner.Finalizers, constants.GroupRestartBudgetCleanupFinalizer,
+							"owner must exist before Pod finalizers are added")
+					}
+					return cli.Patch(ctx, obj, patch, opts...)
+				},
+			})
+			blocked, err := c.reconcileRestartBudget(ctx, instance, selected)
+			require.True(t, blocked)
+			live := liveBudgetInstance(t, c, instance)
+			require.True(t, live.Status.RestartBudgetExhausted)
+			if failOwner {
+				require.ErrorContains(t, err, "cleanup owner patch failure")
+				require.Zero(t, podWrites)
+			} else {
+				require.NoError(t, err)
+				require.Equal(t, len(pods), podWrites)
+				require.Contains(t, live.Finalizers, constants.GroupRestartBudgetCleanupFinalizer)
+			}
+		})
+	}
+}
+
+func TestRestartBudgetRecoveryWaitMessageConverges(t *testing.T) {
+	for _, action := range []string{"annotation", "revision"} {
+		t.Run(action, func(t *testing.T) {
+			ctx := context.Background()
+			c, instance, pods := budgetFixture(t, ptr.To[int32](0))
+			for _, pod := range pods {
+				pod.Finalizers = []string{"test/external-hold"}
+				require.NoError(t, c.Client.Update(ctx, pod))
+			}
+			selected := budgetTemplateRevision(t, instance)
+			require.NoError(t, c.exhaustRestartBudget(ctx, instance, selected))
+			instance = liveBudgetInstance(t, c, instance)
+			instance.Finalizers = nil
+			if action == "annotation" {
+				instance.Annotations = map[string]string{constants.RoleInstanceRecoverAnnotationKey: "true"}
+			} else {
+				instance.Spec.Components[0].Size = ptr.To[int32](3)
+			}
+			require.NoError(t, c.Client.Update(ctx, instance))
+			statusWrites := 0
+			c.Client = interceptor.NewClient(c.Client.(client.WithWatch), interceptor.Funcs{
+				SubResourcePatch: func(ctx context.Context, cli client.Client, sub string, obj client.Object, patch client.Patch, opts ...client.SubResourcePatchOption) error {
+					statusWrites++
+					return cli.SubResource(sub).Patch(ctx, obj, patch, opts...)
+				},
+			})
+			checkWaiting := func(count int) {
+				t.Helper()
+				live := liveBudgetInstance(t, c, instance)
+				require.True(t, live.Status.RestartBudgetExhausted)
+				require.Contains(t, live.Finalizers, constants.GroupRestartBudgetCleanupFinalizer)
+				EnforceRestartBudgetConditions(live) // generic enforcement must not erase progress
+				for _, cond := range live.Status.Conditions {
+					if cond.Type == workloadsv1alpha2.RoleInstanceDegraded {
+						require.Contains(t, cond.Message, fmt.Sprintf("waiting for %d old owned Pod", count))
+					}
+				}
+				if action == "annotation" {
+					require.Equal(t, "true", live.Annotations[constants.RoleInstanceRecoverAnnotationKey])
+				}
+			}
+			blocked, err := c.reconcileRestartBudget(ctx, instance, selected)
+			require.NoError(t, err)
+			require.True(t, blocked)
+			checkWaiting(2)
+			require.Equal(t, 1, statusWrites)
+			for pass := 0; pass < 3; pass++ {
+				instance = liveBudgetInstance(t, c, instance)
+				_, err = c.reconcileRestartBudget(ctx, instance, selected)
+				require.NoError(t, err)
+			}
+			require.Equal(t, 1, statusWrites, "unchanged counts must not create status churn")
+			pod := &v1.Pod{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pods[0]), pod))
+			pod.Finalizers = nil
+			require.NoError(t, c.Client.Update(ctx, pod))
+			instance = liveBudgetInstance(t, c, instance)
+			_, err = c.reconcileRestartBudget(ctx, instance, selected)
+			require.NoError(t, err)
+			checkWaiting(1)
+			require.Equal(t, 2, statusWrites)
+			pod = &v1.Pod{}
+			require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pods[1]), pod))
+			pod.Finalizers = nil
+			require.NoError(t, c.Client.Update(ctx, pod))
+			instance = liveBudgetInstance(t, c, instance)
+			_, err = c.reconcileRestartBudget(ctx, instance, selected)
+			require.NoError(t, err)
+			live := liveBudgetInstance(t, c, instance)
+			require.False(t, live.Status.RestartBudgetExhausted)
+			require.NotContains(t, live.Finalizers, constants.GroupRestartBudgetCleanupFinalizer)
+			require.Equal(t, 3, statusWrites)
+		})
+	}
+}
+
+func TestRestartBudgetOwnerReleasedAfterReset(t *testing.T) {
+	for _, action := range []string{"recovery", "revision", "reset-interrupted", "legacy-healthy"} {
+		t.Run(action, func(t *testing.T) {
+			ctx := context.Background()
+			c, instance, pods := budgetFixture(t, ptr.To[int32](0))
+			instance.Finalizers = []string{"test/external-ri"}
+			require.NoError(t, c.Client.Update(ctx, instance))
+			for _, pod := range pods {
+				pod.Finalizers = []string{"test/hold-pod"}
+				require.NoError(t, c.Client.Update(ctx, pod))
+			}
+			if action == "legacy-healthy" {
+				// Earlier versions acquired an RI owner before the first fault.
+				require.NoError(t, c.ensureBudgetOwner(ctx, instance, false))
+				instance.Spec.RestartPolicyConfig.MaxGroupRestarts = nil
+				require.NoError(t, c.Client.Update(ctx, instance))
+			} else {
+				blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+				require.NoError(t, err)
+				require.True(t, blocked)
+				instance = liveBudgetInstance(t, c, instance)
+				require.Contains(t, instance.Finalizers, constants.GroupRestartBudgetCleanupFinalizer)
+				if action == "revision" {
+					instance.Spec.Components[0].Template.Spec.Containers[0].Image = "fixed"
+				} else {
+					instance.Annotations = map[string]string{constants.RoleInstanceRecoverAnnotationKey: "true"}
+				}
+				require.NoError(t, c.Client.Update(ctx, instance))
+				blocked, err = c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+				require.NoError(t, err)
+				require.True(t, blocked)
+				require.Contains(t, liveBudgetInstance(t, c, instance).Finalizers, constants.GroupRestartBudgetCleanupFinalizer,
+					"keep the RI owner while old Pod objects still block recovery")
+				for _, pod := range pods {
+					live := &v1.Pod{}
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), live))
+					live.Finalizers = nil
+					require.NoError(t, c.Client.Update(ctx, live))
+				}
+				if action == "reset-interrupted" {
+					instance = liveBudgetInstance(t, c, instance)
+					instance.Status.RestartBudgetExhausted = false
+					instance.Status.GroupRestartCount = 0
+					require.NoError(t, c.Status().Update(ctx, instance))
+					// Also cover a crash after annotation consumption but before
+					// releasing the now-unneeded RI cleanup owner.
+					delete(instance.Annotations, constants.RoleInstanceRecoverAnnotationKey)
+					require.NoError(t, c.Client.Update(ctx, instance))
+				}
+			}
+			instance = liveBudgetInstance(t, c, instance)
+			blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+			require.NoError(t, err)
+			require.True(t, blocked)
+			instance = liveBudgetInstance(t, c, instance)
+			require.Equal(t, []string{"test/external-ri"}, instance.Finalizers)
+			require.NotContains(t, instance.Annotations, constants.RoleInstanceRecoverAnnotationKey)
+			require.False(t, instance.Status.RestartBudgetExhausted)
+			require.Zero(t, instance.Status.GroupRestartCount)
+		})
+	}
+}
+
+func TestRestartBudgetOwnerReleaseOrderingAndConflicts(t *testing.T) {
+	for _, change := range []string{"unrelated-patch", "new-exhaustion", "generation", "pod-release-error"} {
+		t.Run(change, func(t *testing.T) {
+			ctx := context.Background()
+			c, instance, pods := budgetFixture(t, ptr.To[int32](2))
+			instance.Finalizers = []string{constants.GroupRestartBudgetCleanupFinalizer, "test/external-ri"}
+			require.NoError(t, c.Client.Update(ctx, instance))
+			pods[0].Finalizers = []string{constants.GroupRestartBudgetCleanupFinalizer, "test/external-pod"}
+			require.NoError(t, c.Client.Update(ctx, pods[0]))
+			baseClient := c.Client.(client.WithWatch)
+			riPatches := 0
+			c.Client = interceptor.NewClient(baseClient, interceptor.Funcs{
+				Patch: func(ctx context.Context, cli client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+					if _, isPod := obj.(*v1.Pod); isPod {
+						if change == "pod-release-error" {
+							return fmt.Errorf("injected Pod finalizer release failure")
+						}
+						return cli.Patch(ctx, obj, patch, opts...)
+					}
+					riPatches++
+					pod := &v1.Pod{}
+					require.NoError(t, cli.Get(ctx, client.ObjectKeyFromObject(pods[0]), pod))
+					require.Equal(t, []string{"test/external-pod"}, pod.Finalizers, "release the Pod before removing its RI owner")
+					if riPatches == 1 {
+						live := liveBudgetInstance(t, c, instance)
+						switch change {
+						case "unrelated-patch":
+							live.Labels = map[string]string{"test": "preserved"}
+						case "new-exhaustion":
+							live.Status.RestartBudgetExhausted = true
+							require.NoError(t, cli.Status().Update(ctx, live))
+						case "generation":
+							live.Generation++
+						}
+						if change != "new-exhaustion" {
+							require.NoError(t, cli.Update(ctx, live))
+						}
+					}
+					return cli.Patch(ctx, obj, patch, opts...)
+				},
+			})
+			err := c.releaseBudgetOwner(ctx, instance)
+			live := liveBudgetInstance(t, c, instance)
+			if change == "pod-release-error" {
+				require.Error(t, err)
+				require.Zero(t, riPatches)
+			} else {
+				require.NoError(t, err)
+			}
+			if change == "unrelated-patch" {
+				require.Equal(t, 2, riPatches)
+				require.Equal(t, []string{"test/external-ri"}, live.Finalizers)
+				require.Equal(t, "preserved", live.Labels["test"])
+			} else {
+				require.Contains(t, live.Finalizers, constants.GroupRestartBudgetCleanupFinalizer)
+			}
+		})
+	}
+}
+
+func TestRestartBudgetRevisionChangePreservesActiveWave(t *testing.T) {
+	for _, change := range []string{"size", "template"} {
+		for _, cached := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/cached=%t", change, cached), func(t *testing.T) {
+				ctx := context.Background()
+				c, instance, pods := budgetFixture(t, ptr.To[int32](1))
+				for _, pod := range pods {
+					pod.CreationTimestamp = metav1.NewTime(time.Now().Add(-time.Hour))
+					pod.Finalizers = []string{"test/hold-wave"}
+					require.NoError(t, c.Client.Update(ctx, pod))
+				}
+				members, accepted, err := c.acceptBudgetRestart(ctx, instance, budgetTemplateRevision(t, instance))
+				require.NoError(t, err)
+				require.True(t, accepted)
+				_, err = c.deletePods(ctx, instance, members)
+				require.NoError(t, err)
+				instance = liveBudgetInstance(t, c, instance)
+				tracking := instance.Status.DeepCopy()
+				if change == "size" {
+					instance.Spec.Components[0].Size = ptr.To[int32](3)
+				} else {
+					instance.Spec.Components[0].Template.Spec.Containers[0].Image = "v2"
+				}
+				require.NoError(t, c.Client.Update(ctx, instance))
+				if !cached {
+					c.ClearRestarting(instance)
+				}
+				for pass := 0; pass < 3; pass++ {
+					instance = liveBudgetInstance(t, c, instance)
+					blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+					require.NoError(t, err)
+					require.True(t, blocked)
+					instance = liveBudgetInstance(t, c, instance)
+					require.Zero(t, instance.Status.GroupRestartCount, "the controller's old deletes cannot spend the new budget")
+					require.Equal(t, groupRestartRevision(instance, budgetTemplateRevision(t, instance)), instance.Status.GroupRestartRevision)
+					require.True(t, isInstanceRestarting(instance))
+					require.Equal(t, tracking.RestartCount, instance.Status.RestartCount)
+					require.Equal(t, tracking.LastRestartTime, instance.Status.LastRestartTime)
+					require.False(t, instance.Status.RestartBudgetExhausted)
+				}
+				for _, pod := range pods {
+					live := &v1.Pod{}
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), live))
+					live.Finalizers = nil
+					require.NoError(t, c.Client.Update(ctx, live))
+				}
+				instance = liveBudgetInstance(t, c, instance)
+				blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+				require.NoError(t, err)
+				require.True(t, blocked)
+				instance = liveBudgetInstance(t, c, instance)
+				require.False(t, isInstanceRestarting(instance))
+				require.Zero(t, instance.Status.GroupRestartCount)
+				require.Equal(t, tracking.RestartCount, instance.Status.RestartCount)
+				require.Equal(t, tracking.LastRestartTime, instance.Status.LastRestartTime)
+			})
+		}
+	}
+}
+
+func TestRestartBudgetLifecycleEvents(t *testing.T) {
+	for _, failure := range []string{"none", "status-conflict", "delete-error"} {
+		t.Run(failure, func(t *testing.T) {
+			ctx := context.Background()
+			c, instance, _ := budgetFixture(t, ptr.To[int32](0))
+			recorder := c.recorder.(*record.FakeRecorder)
+			base := c.Client
+			switch failure {
+			case "status-conflict":
+				c.Client = conflictingBudgetClient{base}
+			case "delete-error":
+				c.Client = &budgetFailingDeleteClient{Client: base, fail: true}
+			}
+			_, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+			if failure != "none" {
+				require.Error(t, err)
+			} else {
+				require.NoError(t, err)
+			}
+			if failure == "status-conflict" {
+				require.Empty(t, recorder.Events, "uncommitted exhaustion must not emit an event")
+				return
+			}
+			require.Len(t, recorder.Events, 1)
+			event := <-recorder.Events
+			require.Contains(t, event, "Warning GroupRestartBudgetExceeded")
+			require.Contains(t, event, "pod=budget-0-worker-0")
+			require.Contains(t, event, "reason=PodFailed")
+			require.Contains(t, event, "count=0, limit=0")
+			c.Client = base
+			for pass := 0; pass < 2; pass++ {
+				instance = liveBudgetInstance(t, c, instance)
+				_, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+				require.NoError(t, err)
+				require.Empty(t, recorder.Events, "exhaustion retries must not emit another transition event")
+			}
+			instance = liveBudgetInstance(t, c, instance)
+			instance.Annotations = map[string]string{constants.RoleInstanceRecoverAnnotationKey: "true"}
+			require.NoError(t, c.Client.Update(ctx, instance))
+			_, err = c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+			require.NoError(t, err)
+			require.Len(t, recorder.Events, 1)
+			require.Contains(t, <-recorder.Events, "Normal GroupRestartBudgetRecovered")
+			instance = liveBudgetInstance(t, c, instance)
+			_, err = c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
+			require.NoError(t, err)
+			require.Empty(t, recorder.Events, "completed recovery must not emit on every reconcile")
+		})
 	}
 }
 
@@ -200,17 +583,17 @@ func TestRestartBudgetExactCountAndNoQuietReset(t *testing.T) {
 		instance.Status.LastRestartTime = &old
 		instance.Status.RestartCount = 9
 		require.NoError(t, c.Status().Update(ctx, instance))
-		blocked, err := c.reconcileRestartBudget(ctx, instance)
+		blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 		require.NoError(t, err)
 		require.False(t, blocked)
-		pods, accepted, err := c.acceptBudgetRestart(ctx, instance)
+		pods, accepted, err := c.acceptBudgetRestart(ctx, instance, budgetTemplateRevision(t, instance))
 		require.NoError(t, err)
 		require.True(t, accepted)
 		require.Len(t, pods, 2)
 		live := liveBudgetInstance(t, c, instance)
 		require.Equal(t, round, live.Status.GroupRestartCount)
 		require.EqualValues(t, 1, live.Status.RestartCount, "quiet-period backoff reset must not reset durable count")
-		_, accepted, err = c.acceptBudgetRestart(ctx, instance)
+		_, accepted, err = c.acceptBudgetRestart(ctx, instance, budgetTemplateRevision(t, instance))
 		require.NoError(t, err)
 		require.False(t, accepted, "repeated events in accepted restart consume nothing")
 		require.Equal(t, round, liveBudgetInstance(t, c, instance).Status.GroupRestartCount)
@@ -220,7 +603,7 @@ func TestRestartBudgetExactCountAndNoQuietReset(t *testing.T) {
 	now := metav1.Now()
 	instance.Status.LastRestartTime = &now // would normally require backoff
 	require.NoError(t, c.Status().Update(ctx, instance))
-	blocked, err := c.reconcileRestartBudget(ctx, instance)
+	blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 	require.NoError(t, err)
 	require.True(t, blocked)
 	live := liveBudgetInstance(t, c, instance)
@@ -247,7 +630,7 @@ func TestRestartBudgetExhaustionRetainsCompleteGroupAndRecovery(t *testing.T) {
 	require.NoError(t, c.Create(ctx, foreign))
 	for i := 0; i < 3; i++ {
 		instance = liveBudgetInstance(t, c, instance)
-		blocked, err := c.reconcileRestartBudget(ctx, instance)
+		blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 		require.NoError(t, err)
 		require.True(t, blocked)
 	}
@@ -283,7 +666,7 @@ func TestRestartBudgetExhaustionRetainsCompleteGroupAndRecovery(t *testing.T) {
 		} else {
 			require.NoError(t, c.Client.Update(ctx, live))
 		}
-		blocked, err := c.reconcileRestartBudget(ctx, live)
+		blocked, err := c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 		require.NoError(t, err)
 		require.True(t, blocked, change)
 		require.True(t, liveBudgetInstance(t, c, instance).Status.RestartBudgetExhausted)
@@ -293,7 +676,7 @@ func TestRestartBudgetExhaustionRetainsCompleteGroupAndRecovery(t *testing.T) {
 	live = liveBudgetInstance(t, c, instance)
 	live.Annotations = map[string]string{constants.RoleInstanceRecoverAnnotationKey: "true"}
 	require.NoError(t, c.Client.Update(ctx, live))
-	blocked, err := c.reconcileRestartBudget(ctx, live)
+	blocked, err := c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 	require.NoError(t, err)
 	require.True(t, blocked, "cleanup takes a separate pass before creation")
 	live = liveBudgetInstance(t, c, instance)
@@ -305,7 +688,7 @@ func TestRestartBudgetExhaustionRetainsCompleteGroupAndRecovery(t *testing.T) {
 	for _, p := range pods {
 		require.True(t, apierrors.IsNotFound(c.Get(ctx, client.ObjectKeyFromObject(p), &v1.Pod{})))
 	}
-	blocked, err = c.reconcileRestartBudget(ctx, live)
+	blocked, err = c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 	require.NoError(t, err)
 	require.False(t, blocked)
 }
@@ -322,7 +705,7 @@ func TestRestartBudgetRecoveryWaitsForOldPodUIDs(t *testing.T) {
 					pod.Finalizers = []string{"test.rbg.io/hold-old-member"}
 					require.NoError(t, c.Client.Update(ctx, pod))
 				}
-				blocked, err := c.reconcileRestartBudget(ctx, instance)
+				blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 				require.NoError(t, err)
 				require.True(t, blocked)
 				live := liveBudgetInstance(t, c, instance)
@@ -340,7 +723,7 @@ func TestRestartBudgetRecoveryWaitsForOldPodUIDs(t *testing.T) {
 					live.Status.Conditions = []workloadsv1alpha2.RoleInstanceCondition{{Type: workloadsv1alpha2.RoleInstanceReady, Status: v1.ConditionTrue}}
 					require.NoError(t, c.Status().Update(ctx, live))
 					control := &realControl{Client: c.Client, apiReader: c.apiReader, recorder: record.NewFakeRecorder(20)}
-					blocked, err = control.reconcileRestartBudget(ctx, live)
+					blocked, err = control.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 					require.NoError(t, err)
 					require.True(t, blocked)
 					live = liveBudgetInstance(t, c, instance)
@@ -364,14 +747,14 @@ func TestRestartBudgetRecoveryWaitsForOldPodUIDs(t *testing.T) {
 					require.NoError(t, c.Client.Update(ctx, got))
 				}
 				live = liveBudgetInstance(t, c, instance)
-				blocked, err = c.reconcileRestartBudget(ctx, live)
+				blocked, err = c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 				require.NoError(t, err)
 				require.True(t, blocked, "a fresh pass creates the new group after reset")
 				live = liveBudgetInstance(t, c, instance)
 				require.False(t, live.Status.RestartBudgetExhausted)
 				require.Zero(t, live.Status.GroupRestartCount)
 				require.Empty(t, live.Annotations[constants.RoleInstanceRecoverAnnotationKey])
-				blocked, err = c.reconcileRestartBudget(ctx, live)
+				blocked, err = c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 				require.NoError(t, err)
 				require.False(t, blocked, "old Terminating members cannot re-exhaust the new budget")
 			})
@@ -397,13 +780,13 @@ func TestRestartBudgetRecoveryRetriesFailedTermination(t *testing.T) {
 	instance.Status.GroupRestartCount = 1
 	require.NoError(t, c.Status().Update(ctx, instance))
 	// Model a crash/error after the exhausted marker commits, before Delete.
-	require.NoError(t, c.exhaustRestartBudget(ctx, instance))
+	require.NoError(t, c.exhaustRestartBudget(ctx, instance, budgetTemplateRevision(t, instance)))
 	live := liveBudgetInstance(t, c, instance)
 	live.Annotations = map[string]string{constants.RoleInstanceRecoverAnnotationKey: "true"}
 	require.NoError(t, c.Client.Update(ctx, live))
 	deleting := &budgetFailingDeleteClient{Client: c.Client, fail: true}
 	c.Client = deleting
-	blocked, err := c.reconcileRestartBudget(ctx, live)
+	blocked, err := c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 	require.ErrorContains(t, err, "injected budget termination failure")
 	require.True(t, blocked)
 	live = liveBudgetInstance(t, c, instance)
@@ -416,7 +799,7 @@ func TestRestartBudgetRecoveryRetriesFailedTermination(t *testing.T) {
 		require.Nil(t, got.DeletionTimestamp)
 	}
 	deleting.fail = false
-	blocked, err = c.reconcileRestartBudget(ctx, live)
+	blocked, err = c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 	require.NoError(t, err)
 	require.True(t, blocked)
 	live = liveBudgetInstance(t, c, instance)
@@ -432,7 +815,7 @@ func TestRestartBudgetRecoveryAnnotationCleanupAfterReset(t *testing.T) {
 	c, instance, pods := budgetFixture(t, ptr.To[int32](0))
 	instance.Status.GroupRestartCount = 1
 	require.NoError(t, c.Status().Update(ctx, instance))
-	require.NoError(t, c.exhaustRestartBudget(ctx, instance))
+	require.NoError(t, c.exhaustRestartBudget(ctx, instance, budgetTemplateRevision(t, instance)))
 	live := liveBudgetInstance(t, c, instance)
 	live.Annotations = map[string]string{constants.RoleInstanceRecoverAnnotationKey: "true"}
 	require.NoError(t, c.Client.Update(ctx, live))
@@ -440,7 +823,7 @@ func TestRestartBudgetRecoveryAnnotationCleanupAfterReset(t *testing.T) {
 	failAnnotation := true
 	baseClient := c.Client
 	c.Client = &budgetFailingRecoveryPatchClient{Client: baseClient, fail: &failAnnotation}
-	blocked, err := c.reconcileRestartBudget(ctx, live)
+	blocked, err := c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 	require.ErrorContains(t, err, "injected recovery annotation cleanup failure")
 	require.True(t, blocked)
 	live = liveBudgetInstance(t, c, instance)
@@ -449,7 +832,7 @@ func TestRestartBudgetRecoveryAnnotationCleanupAfterReset(t *testing.T) {
 	require.Equal(t, "true", live.Annotations[constants.RoleInstanceRecoverAnnotationKey])
 
 	failAnnotation = false
-	blocked, err = c.reconcileRestartBudget(ctx, live)
+	blocked, err = c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 	require.NoError(t, err)
 	require.True(t, blocked)
 	live = liveBudgetInstance(t, c, instance)
@@ -479,7 +862,7 @@ func TestRestartBudgetRecoveryAnnotationCleanupRetries(t *testing.T) {
 			ctx := context.Background()
 			c, instance, _ := budgetFixture(t, ptr.To[int32](2))
 			// Model restart after status reset committed, before annotation cleanup.
-			instance.Status.GroupRestartRevision = groupRestartRevision(instance)
+			instance.Status.GroupRestartRevision = groupRestartRevision(instance, budgetTemplateRevision(t, instance))
 			instance.Status.GroupRestartCount = 1
 			require.NoError(t, c.Status().Update(ctx, instance))
 			instance.Annotations = map[string]string{constants.RoleInstanceRecoverAnnotationKey: "true"}
@@ -509,7 +892,7 @@ func TestRestartBudgetRecoveryAnnotationCleanupRetries(t *testing.T) {
 					return cli.Patch(ctx, obj, patch, opts...)
 				},
 			})
-			blocked, err := c.reconcileRestartBudget(ctx, instance)
+			blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 			require.NoError(t, err)
 			require.True(t, blocked)
 			live := liveBudgetInstance(t, c, instance)
@@ -567,7 +950,7 @@ func TestRestartBudgetRevisionAndDeletionCleanup(t *testing.T) {
 		t.Run(action, func(t *testing.T) {
 			ctx := context.Background()
 			c, instance, pods := budgetFixture(t, ptr.To[int32](0))
-			blocked, err := c.reconcileRestartBudget(ctx, instance)
+			blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 			require.NoError(t, err)
 			require.True(t, blocked)
 			live := liveBudgetInstance(t, c, instance)
@@ -576,7 +959,7 @@ func TestRestartBudgetRevisionAndDeletionCleanup(t *testing.T) {
 			if action == "revision" {
 				live.Spec.Components[0].Template.Spec.Containers[0].Image = "v2"
 				require.NoError(t, c.Client.Update(ctx, live))
-				blocked, err = c.reconcileRestartBudget(ctx, live)
+				blocked, err = c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 				require.NoError(t, err)
 				require.True(t, blocked)
 				live = liveBudgetInstance(t, c, live)
@@ -607,7 +990,7 @@ func TestRestartBudgetAlreadyTerminatingPodAndOwnerSafety(t *testing.T) {
 	pods[1].Finalizers = []string{"test/existing"}
 	require.NoError(t, c.Client.Update(ctx, pods[1]))
 	require.NoError(t, c.Delete(ctx, pods[1]))
-	blocked, err := c.reconcileRestartBudget(ctx, instance)
+	blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 	require.NoError(t, err)
 	require.True(t, blocked)
 	got := &v1.Pod{}
@@ -626,24 +1009,24 @@ func TestRestartBudgetSizeChangeStartsNewRevision(t *testing.T) {
 		t.Run(fmt.Sprintf("exhausted=%t", exhausted), func(t *testing.T) {
 			ctx := context.Background()
 			c, instance, pods := budgetFixture(t, ptr.To[int32](2))
-			instance.Status.GroupRestartRevision = groupRestartRevision(instance)
+			instance.Status.GroupRestartRevision = groupRestartRevision(instance, budgetTemplateRevision(t, instance))
 			instance.Status.GroupRestartCount = 1
 			oldRevision := instance.Status.GroupRestartRevision
 			require.NoError(t, c.Status().Update(ctx, instance))
 			if exhausted {
-				require.NoError(t, c.exhaustRestartBudget(ctx, instance))
+				require.NoError(t, c.exhaustRestartBudget(ctx, instance, budgetTemplateRevision(t, instance)))
 				require.NoError(t, c.terminateBudgetPods(ctx, instance))
 			}
 			live := liveBudgetInstance(t, c, instance)
 			live.Spec.Components[0].Size = ptr.To[int32](3)
 			require.NoError(t, c.Client.Update(ctx, live))
-			blocked, err := c.reconcileRestartBudget(ctx, live)
+			blocked, err := c.reconcileRestartBudget(ctx, live, budgetTemplateRevision(t, live))
 			require.NoError(t, err)
 			require.True(t, blocked, "new topology starts a fresh budget on a separate pass")
 			live = liveBudgetInstance(t, c, instance)
 			require.Zero(t, live.Status.GroupRestartCount)
 			require.NotEqual(t, oldRevision, live.Status.GroupRestartRevision)
-			require.Equal(t, groupRestartRevision(live), live.Status.GroupRestartRevision)
+			require.Equal(t, groupRestartRevision(live, budgetTemplateRevision(t, live)), live.Status.GroupRestartRevision)
 			require.False(t, live.Status.RestartBudgetExhausted)
 			if exhausted {
 				for _, pod := range pods {
@@ -654,30 +1037,96 @@ func TestRestartBudgetSizeChangeStartsNewRevision(t *testing.T) {
 	}
 }
 
+func TestRestartBudgetSelectedRevisionAndCanonicalSizes(t *testing.T) {
+	_, instance, _ := budgetFixture(t, ptr.To[int32](2))
+	selected := "instance-legacy-template"
+	instance.Spec.Components = append(instance.Spec.Components,
+		workloadsv1alpha2.RoleInstanceComponent{Name: "auxiliary", Size: ptr.To[int32](1)})
+	before := instance.DeepCopy()
+	key := groupRestartRevision(instance, selected)
+	require.Equal(t, before, instance)
+	instance.Spec.Components[0], instance.Spec.Components[1] = instance.Spec.Components[1], instance.Spec.Components[0]
+	require.Equal(t, key, groupRestartRevision(instance, selected), "component order does not change the size identity")
+	instance.Spec.Components[0].Template.CreationTimestamp = metav1.Now()
+	instance.Spec.Components[0].Template.Labels = map[string]string{"serializer": "different"}
+	instance.Status.UpdateRevision = "old-status-target"
+	require.Equal(t, key, groupRestartRevision(instance, selected), "templates and lagging status are not serialized into the budget key")
+	require.NotEqual(t, key, groupRestartRevision(instance, "new-template"), "a real selected-template revision starts a new budget")
+	instance.Spec.Components[0].Size = ptr.To[int32](3)
+	require.NotEqual(t, key, groupRestartRevision(instance, selected), "size must supplement the RI revision")
+}
+
+func TestRestartBudgetWithoutSelectedRevisionFailsClosed(t *testing.T) {
+	for _, exhausted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("exhausted=%t", exhausted), func(t *testing.T) {
+			ctx := context.Background()
+			c, instance, pods := budgetFixture(t, ptr.To[int32](0))
+			if exhausted {
+				require.NoError(t, c.exhaustRestartBudget(ctx, instance, budgetTemplateRevision(t, instance)))
+				instance = liveBudgetInstance(t, c, instance)
+			}
+			before := instance.Status.DeepCopy()
+			handled, delay, err := c.Scale(ctx, instance, nil, nil, nil, pods[1:], pods[:1])
+			require.ErrorContains(t, err, "requires a selected ControllerRevision")
+			require.True(t, handled)
+			require.Zero(t, delay)
+			_, err = c.Update(ctx, instance, &instance.Status, nil, nil, nil, pods)
+			require.ErrorContains(t, err, "requires a selected ControllerRevision")
+			live := liveBudgetInstance(t, c, instance)
+			require.Equal(t, before, &live.Status)
+			for _, pod := range pods {
+				got := &v1.Pod{}
+				require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), got))
+				require.Nil(t, got.DeletionTimestamp)
+			}
+		})
+	}
+}
+
+func TestRestartBudgetUsesSelectedRevisionBeforeStatusUpdate(t *testing.T) {
+	for _, staleStatus := range []string{"", "previous-template"} {
+		t.Run("status="+staleStatus, func(t *testing.T) {
+			ctx := context.Background()
+			c, instance, pods := budgetFixture(t, ptr.To[int32](0))
+			instance.Status.UpdateRevision = staleStatus
+			instance.Status.CurrentRevision = staleStatus
+			require.NoError(t, c.Status().Update(ctx, instance))
+			target := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "selected-current-template"}}
+			handled, _, err := c.Scale(ctx, instance, nil, target, nil, pods[1:], pods[:1])
+			require.NoError(t, err)
+			require.True(t, handled)
+			live := liveBudgetInstance(t, c, instance)
+			require.True(t, live.Status.RestartBudgetExhausted)
+			require.Equal(t, groupRestartRevision(live, target.Name), live.Status.GroupRestartRevision)
+			require.Equal(t, staleStatus, live.Status.UpdateRevision, "budget evaluation must not write the general revision fields")
+		})
+	}
+}
+
 func TestGroupRestartRevisionIncludesSizeAndPreservesSource(t *testing.T) {
 	_, instance, _ := budgetFixture(t, ptr.To[int32](2))
 	before := instance.DeepCopy()
-	revision := groupRestartRevision(instance)
+	revision := groupRestartRevision(instance, budgetTemplateRevision(t, instance))
 	require.Equal(t, before, instance, "hashing must not modify the source")
 	instance.Spec.Components[0].Size = ptr.To[int32](3)
-	require.NotEqual(t, revision, groupRestartRevision(instance), "group size is part of the topology revision, as in LWS")
+	require.NotEqual(t, revision, groupRestartRevision(instance, budgetTemplateRevision(t, instance)), "group size is part of the topology revision, as in LWS")
 	instance.Spec.Components[0].Size = ptr.To[int32](2)
 	instance.Spec.Components[0].Template.Labels = map[string]string{constants.ComponentSizeLabelKey: "3"}
-	require.NotEqual(t, revision, groupRestartRevision(instance), "derived topology labels are not excluded")
+	require.NotEqual(t, revision, groupRestartRevision(instance, budgetTemplateRevision(t, instance)), "derived topology labels select a new ControllerRevision")
 }
 
 func TestRestartBudgetCountSurvivesLimitAndPolicyEdits(t *testing.T) {
 	c, instance, _ := budgetFixture(t, ptr.To[int32](2))
-	instance.Status.GroupRestartRevision = groupRestartRevision(instance)
+	instance.Status.GroupRestartRevision = groupRestartRevision(instance, budgetTemplateRevision(t, instance))
 	instance.Status.GroupRestartCount = 1
 	revision := instance.Status.GroupRestartRevision
 	instance.Spec.RestartPolicyConfig.MaxGroupRestarts = nil
 	instance.Spec.RestartPolicyConfig.Type = workloadsv1alpha2.RestartPolicyNone
-	require.Equal(t, revision, groupRestartRevision(instance))
+	require.Equal(t, revision, groupRestartRevision(instance, budgetTemplateRevision(t, instance)))
 	require.EqualValues(t, 1, instance.Status.GroupRestartCount)
 	instance.Spec.RestartPolicyConfig.Type = workloadsv1alpha2.RecreateRoleInstanceOnPodRestart
 	instance.Spec.RestartPolicyConfig.ActivateAfter = workloadsv1alpha2.RestartPolicyActivateAfterCreated
-	require.True(t, prepareGroupRestartBudget(instance))
+	require.True(t, prepareGroupRestartBudget(instance, budgetTemplateRevision(t, instance)))
 	require.EqualValues(t, 2, instance.Status.GroupRestartCount, "unsetting a limit does not reset accumulated accepted attempts")
 	require.NoError(t, c.Status().Update(context.Background(), instance))
 }
@@ -700,13 +1149,171 @@ func (c *budgetIOCounter) Patch(ctx context.Context, obj client.Object, patch cl
 	return c.Client.Patch(ctx, obj, patch, opts...)
 }
 
+func TestRestartBudgetSharesReconcileReadsAndSkipsHealthyAtLimitList(t *testing.T) {
+	for _, atLimit := range []bool{false, true} {
+		t.Run(fmt.Sprintf("atLimit=%t", atLimit), func(t *testing.T) {
+			ctx := WithBudgetObservation(context.Background())
+			limit := int32(2)
+			if atLimit {
+				limit = 1
+			}
+			c, instance, pods := budgetFixture(t, ptr.To(limit))
+			for _, pod := range pods {
+				pod.Status.Phase = v1.PodRunning
+				require.NoError(t, c.Status().Update(context.Background(), pod))
+			}
+			if atLimit {
+				instance.Status.GroupRestartCount = limit
+				require.NoError(t, c.Status().Update(context.Background(), instance))
+			}
+			reader := &budgetIOCounter{Client: c.apiReader.(client.Client)}
+			c.apiReader = reader
+			target := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: budgetTemplateRevision(t, instance)}}
+			handled, _, err := c.Scale(ctx, instance, nil, target, nil, pods, nil)
+			require.NoError(t, err)
+			require.False(t, handled)
+			c.inplaceControl = &fakeInplaceControl{}
+			for _, pod := range pods {
+				pod.Labels[apps.ControllerRevisionHashLabelKey] = target.Name
+			}
+			_, err = c.Update(ctx, instance, &instance.Status, nil, target, nil, pods)
+			require.NoError(t, err)
+			require.Equal(t, 1, reader.gets, "Scale, restart tracking and Update share the fresh RI observation")
+			require.Zero(t, reader.lists, "healthy at-limit instances do not need an uncached Pod list")
+			_, err = c.Update(WithBudgetObservation(context.Background()), instance, &instance.Status, nil, target, nil, pods)
+			require.NoError(t, err)
+			require.Equal(t, 2, reader.gets, "a new reconcile must perform a new read")
+			if atLimit {
+				require.Equal(t, 1, reader.lists, "direct Update has no complete Pod snapshot and must still check live evidence")
+			}
+		})
+	}
+}
+
+func TestRestartBudgetAtLimitRevalidatesSuspectedFault(t *testing.T) {
+	for _, liveFault := range []bool{false, true} {
+		t.Run(fmt.Sprintf("liveFault=%t", liveFault), func(t *testing.T) {
+			ctx := WithBudgetObservation(context.Background())
+			c, instance, pods := budgetFixture(t, ptr.To[int32](0))
+			if !liveFault {
+				healthy := pods[0].DeepCopy()
+				healthy.Status.Phase = v1.PodRunning
+				require.NoError(t, c.Status().Update(ctx, healthy))
+			}
+			reader := &budgetIOCounter{Client: c.Client}
+			c.apiReader = reader
+			blocked, err := c.reconcileRestartBudgetOnce(ctx, instance, budgetTemplateRevision(t, instance), pods)
+			require.NoError(t, err)
+			require.Equal(t, liveFault, blocked)
+			require.Positive(t, reader.lists, "cached fault evidence must be confirmed through a live LIST")
+			live := liveBudgetInstance(t, c, instance)
+			require.Equal(t, liveFault, live.Status.RestartBudgetExhausted)
+			require.Zero(t, live.Status.GroupRestartCount)
+			if !liveFault {
+				require.Empty(t, live.Finalizers)
+				for _, pod := range pods {
+					got := &v1.Pod{}
+					require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), got))
+					require.Nil(t, got.DeletionTimestamp)
+				}
+			}
+		})
+	}
+}
+
+func TestRestartBudgetExhaustedSteadyStateHasNoPerPodReads(t *testing.T) {
+	ctx := context.Background()
+	c, instance, pods := budgetFixture(t, ptr.To[int32](0))
+	selected := budgetTemplateRevision(t, instance)
+	blocked, err := c.reconcileRestartBudget(ctx, instance, selected)
+	require.NoError(t, err)
+	require.True(t, blocked)
+	instance = liveBudgetInstance(t, c, instance)
+	counter := &budgetIOCounter{Client: c.Client}
+	c.Client, c.apiReader = counter, counter
+	for pass := 0; pass < 3; pass++ {
+		counter.gets, counter.lists, counter.patches = 0, 0, 0
+		blocked, err = c.reconcileRestartBudgetOnce(WithBudgetObservation(ctx), instance, selected, pods)
+		require.NoError(t, err)
+		require.True(t, blocked)
+		require.Equal(t, 1, counter.gets, "only the RI must be read; retained deleting Pods need no GET")
+		require.Equal(t, 1, counter.lists)
+		require.Zero(t, counter.patches)
+	}
+}
+
+func TestRestartBudgetSkippedPodReadsStillRetryMissingWork(t *testing.T) {
+	ctx := context.Background()
+	c, instance, pods := budgetFixture(t, ptr.To[int32](0))
+	selected := budgetTemplateRevision(t, instance)
+	require.NoError(t, c.exhaustRestartBudget(ctx, instance, selected))
+	reader := &budgetIOCounter{Client: c.Client}
+	c.apiReader = reader
+	deletes := 0
+	failDelete := true
+	c.Client = interceptor.NewClient(c.Client.(client.WithWatch), interceptor.Funcs{
+		Delete: func(ctx context.Context, cli client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+			deletes++
+			if failDelete {
+				return fmt.Errorf("injected retryable DELETE failure")
+			}
+			return cli.Delete(ctx, obj, opts...)
+		},
+	})
+	_, err := c.reconcileRestartBudgetOnce(WithBudgetObservation(ctx), instance, selected, pods)
+	require.ErrorContains(t, err, "retryable DELETE failure")
+	require.Equal(t, 1, deletes)
+	for _, pod := range pods {
+		actual := &v1.Pod{}
+		require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), actual))
+		require.Contains(t, actual.Finalizers, constants.GroupRestartBudgetCleanupFinalizer)
+		require.Nil(t, actual.DeletionTimestamp)
+	}
+	failDelete = false
+	reader.gets, reader.lists, reader.patches = 0, 0, 0
+	_, err = c.reconcileRestartBudgetOnce(WithBudgetObservation(ctx), instance, selected, pods)
+	require.NoError(t, err)
+	require.Equal(t, 3, reader.gets, "one RI read and two live deletion checks; no reads for existing finalizers")
+	require.Equal(t, 3, deletes)
+	reader.gets = 0
+	_, err = c.reconcileRestartBudgetOnce(WithBudgetObservation(ctx), instance, selected, pods)
+	require.NoError(t, err)
+	require.Equal(t, 1, reader.gets, "once both DELETEs are accepted only the RI read remains")
+	require.Equal(t, 3, deletes, "already deleting Pods do not need another DELETE")
+}
+
+func TestRestartBudgetObservationSeparatesIdentityAndRevision(t *testing.T) {
+	ctx := WithBudgetObservation(context.Background())
+	c, instance, pods := budgetFixture(t, ptr.To[int32](2))
+	reader := &budgetIOCounter{Client: c.Client}
+	c.apiReader = reader
+	selected := budgetTemplateRevision(t, instance)
+	_, err := c.reconcileRestartBudgetOnce(ctx, instance, selected, pods)
+	require.NoError(t, err)
+	require.Equal(t, 1, reader.gets)
+	other := instance.DeepCopy()
+	other.Generation++
+	blocked, err := c.reconcileRestartBudgetOnce(ctx, other, selected, pods)
+	require.NoError(t, err)
+	require.True(t, blocked)
+	require.Equal(t, 2, reader.gets, "a different generation cannot reuse the old observation")
+	_, err = c.reconcileRestartBudgetOnce(ctx, instance, selected+"-different", pods)
+	require.NoError(t, err)
+	require.Equal(t, 3, reader.gets, "a different selected revision cannot reuse the old observation")
+	other = instance.DeepCopy()
+	other.UID = "other-uid"
+	_, err = c.reconcileRestartBudgetOnce(ctx, other, selected, pods)
+	require.Error(t, err)
+	require.Equal(t, 4, reader.gets)
+}
+
 func TestRestartBudgetHotPathAndNoopMetadata(t *testing.T) {
 	ctx := context.Background()
 	c, instance, _ := budgetFixture(t, nil)
 	counter := &budgetIOCounter{Client: c.Client}
 	c.Client = counter
 	c.apiReader = counter
-	blocked, err := c.reconcileRestartBudget(ctx, instance)
+	blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 	require.NoError(t, err)
 	require.False(t, blocked)
 	require.NoError(t, c.CleanupRestartBudget(ctx, instance))
@@ -718,14 +1325,14 @@ func TestRestartBudgetHotPathAndNoopMetadata(t *testing.T) {
 	counter = &budgetIOCounter{Client: c.Client}
 	c.Client = counter
 	c.apiReader = counter
-	blocked, err = c.reconcileRestartBudget(ctx, instance)
+	blocked, err = c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 	require.NoError(t, err)
 	require.False(t, blocked)
-	require.Equal(t, 1, counter.patches)
-	blocked, err = c.reconcileRestartBudget(ctx, instance)
+	require.Zero(t, counter.patches)
+	blocked, err = c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 	require.NoError(t, err)
 	require.False(t, blocked)
-	require.Equal(t, 1, counter.patches, "must not patch a pre-existing owner finalizer on every loop")
+	require.Zero(t, counter.patches, "a healthy budget does not acquire a cleanup owner")
 	require.Zero(t, counter.lists, "remaining budget needs no uncached Pod list before a fault is accepted")
 }
 
@@ -742,11 +1349,11 @@ func (c conflictingBudgetStatus) Patch(context.Context, client.Object, client.Pa
 func TestRestartBudgetOptimisticStatusBeforeDelete(t *testing.T) {
 	ctx := context.Background()
 	c, instance, pods := budgetFixture(t, ptr.To[int32](1))
-	blocked, err := c.reconcileRestartBudget(ctx, instance)
+	blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 	require.NoError(t, err)
 	require.False(t, blocked)
 	c.Client = conflictingBudgetClient{c.Client}
-	_, accepted, err := c.acceptBudgetRestart(ctx, instance)
+	_, accepted, err := c.acceptBudgetRestart(ctx, instance, budgetTemplateRevision(t, instance))
 	require.True(t, apierrors.IsConflict(err))
 	require.False(t, accepted)
 	require.Zero(t, liveBudgetInstance(t, c, instance).Status.GroupRestartCount)
@@ -778,7 +1385,7 @@ func TestRestartBudgetAddedBeforeInformerRefresh(t *testing.T) {
 					return nil
 				},
 			})
-			handled, delay, err := c.Scale(ctx, stale, nil, nil, nil, pods[1:], pods[:1])
+			handled, delay, err := c.Scale(ctx, stale, nil, &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: budgetTemplateRevision(t, stale)}}, nil, pods[1:], pods[:1])
 			require.NoError(t, err)
 			require.Positive(t, delay, "wait for the budget generation instead of executing stale intent")
 			require.False(t, handled)
@@ -830,11 +1437,11 @@ func TestRestartBudgetGenerationLagAndErrorRequeue(t *testing.T) {
 
 func TestRestartBudgetCounterSaturates(t *testing.T) {
 	_, instance, _ := budgetFixture(t, nil)
-	instance.Status.GroupRestartRevision = groupRestartRevision(instance)
+	instance.Status.GroupRestartRevision = groupRestartRevision(instance, budgetTemplateRevision(t, instance))
 	instance.Status.GroupRestartCount = 1<<31 - 2
-	require.True(t, prepareGroupRestartBudget(instance))
+	require.True(t, prepareGroupRestartBudget(instance, budgetTemplateRevision(t, instance)))
 	require.EqualValues(t, 1<<31-1, instance.Status.GroupRestartCount)
-	require.True(t, prepareGroupRestartBudget(instance))
+	require.True(t, prepareGroupRestartBudget(instance, budgetTemplateRevision(t, instance)))
 	require.EqualValues(t, 1<<31-1, instance.Status.GroupRestartCount)
 }
 
@@ -843,11 +1450,11 @@ func TestRestartBudgetNonTrueAnnotationDoesNotRecover(t *testing.T) {
 		t.Run(fmt.Sprintf("value=%q", value), func(t *testing.T) {
 			ctx := context.Background()
 			c, instance, _ := budgetFixture(t, ptr.To[int32](0))
-			require.NoError(t, c.exhaustRestartBudget(ctx, instance))
+			require.NoError(t, c.exhaustRestartBudget(ctx, instance, budgetTemplateRevision(t, instance)))
 			instance = liveBudgetInstance(t, c, instance)
 			instance.Annotations = map[string]string{constants.RoleInstanceRecoverAnnotationKey: value}
 			require.NoError(t, c.Client.Update(ctx, instance))
-			blocked, err := c.reconcileRestartBudget(ctx, instance)
+			blocked, err := c.reconcileRestartBudget(ctx, instance, budgetTemplateRevision(t, instance))
 			require.NoError(t, err)
 			require.True(t, blocked)
 			actual := liveBudgetInstance(t, c, instance)
@@ -873,7 +1480,7 @@ func TestRestartBudgetRejectsStaleIdentityGenerationAndEvidence(t *testing.T) {
 				pods[0].Status.Phase = v1.PodRunning
 				require.NoError(t, c.Status().Update(context.Background(), pods[0]))
 			}
-			_, accepted, err := c.acceptBudgetRestart(context.Background(), instance)
+			_, accepted, err := c.acceptBudgetRestart(context.Background(), instance, budgetTemplateRevision(t, instance))
 			require.False(t, accepted)
 			if change == "uid" || change == "generation" {
 				require.Error(t, err)
@@ -901,7 +1508,7 @@ func TestBudgetRecreationEventUsesLiveAcceptedTrigger(t *testing.T) {
 				require.NoError(t, c.Delete(ctx, pod))
 			}
 			recorder := c.recorder.(*record.FakeRecorder)
-			_, accepted, err := c.acceptBudgetRestart(ctx, instance)
+			_, accepted, err := c.acceptBudgetRestart(ctx, instance, budgetTemplateRevision(t, instance))
 			require.NoError(t, err)
 			require.True(t, accepted)
 			select {
@@ -912,7 +1519,7 @@ func TestBudgetRecreationEventUsesLiveAcceptedTrigger(t *testing.T) {
 			default:
 				t.Fatal("accepted budget restart must emit its live trigger")
 			}
-			_, accepted, err = c.acceptBudgetRestart(ctx, instance)
+			_, accepted, err = c.acceptBudgetRestart(ctx, instance, budgetTemplateRevision(t, instance))
 			require.NoError(t, err)
 			require.False(t, accepted)
 			require.Empty(t, recorder.Events, "same accepted round must not emit again")
@@ -945,7 +1552,7 @@ func TestBudgetDeniedRestartDoesNotEmitRecreation(t *testing.T) {
 				require.NoError(t, err)
 				require.Positive(t, diff.requeueAfter)
 			} else {
-				_, accepted, err := c.acceptBudgetRestart(ctx, instance)
+				_, accepted, err := c.acceptBudgetRestart(ctx, instance, budgetTemplateRevision(t, instance))
 				if denial == "conflict" {
 					require.Error(t, err)
 				} else {

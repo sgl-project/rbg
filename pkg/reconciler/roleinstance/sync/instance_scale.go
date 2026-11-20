@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -92,7 +93,7 @@ func previousIncarnationPod(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstanc
 func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, time.Duration, error) {
 	// Budget lifecycle precedes backoff, ordinary scale and in-place updates.
-	if blocked, err := c.reconcileRestartBudget(ctx, updateInstance); blocked || err != nil {
+	if blocked, err := c.reconcileRestartBudgetOnce(ctx, updateInstance, selectedControllerRevision(updateRevision), append(slices.Clone(pods), inactivePods...)); blocked || err != nil {
 		if err != nil {
 			return true, 0, err
 		}
@@ -143,6 +144,19 @@ type expectationDiff struct {
 	waveStarted bool
 }
 
+func (c *realControl) restartTrackingObservation(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
+	var freshInstance *workloadsv1alpha2.RoleInstance
+	if observation := budgetObservationFrom(ctx); observation != nil && observation.checked &&
+		observation.uid == instance.UID && observation.generation == instance.Generation &&
+		observation.fresh != nil {
+		freshInstance = syncRestartTrackingFromFresh(instance, observation.fresh)
+	} else if instance.Spec.GetRestartPolicy() == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+		freshInstance = c.syncRestartTrackingFromAPI(ctx, instance)
+	}
+
+	return freshInstance
+}
+
 func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance,
 	currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (*expectationDiff, error) {
@@ -151,10 +165,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	// logic. The informer cache may be stale for RestartCount, LastRestartTime,
 	// and the Restarting condition. A single fresh read is shared between
 	// checkRestartBackoff and shouldRecreateInstance to avoid duplicate API calls.
-	var freshInstance *workloadsv1alpha2.RoleInstance
-	if updateInstance.Spec.GetRestartPolicy() == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
-		freshInstance = c.syncRestartTrackingFromAPI(ctx, updateInstance)
-	}
+	freshInstance := c.restartTrackingObservation(ctx, updateInstance)
 
 	// Check RestartPolicy: if RecreateInstanceOnPodRestart and any pod Failed,
 	// recreate all pods of the instance.
@@ -164,7 +175,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
 
-	restartDiff, err := c.calculateRestartDiff(ctx, updateInstance, allPods, pods, inactivePods, freshInstance)
+	restartDiff, err := c.calculateRestartDiff(ctx, updateInstance, allPods, pods, inactivePods, freshInstance, updateRevision)
 	if restartDiff != nil || err != nil {
 		return restartDiff, err
 	}
@@ -281,7 +292,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	}, nil
 }
 
-func (c *realControl) calculateRestartDiff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, allPods, activePods, inactivePods []*v1.Pod, fresh *workloadsv1alpha2.RoleInstance) (*expectationDiff, error) {
+func (c *realControl) calculateRestartDiff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, allPods, activePods, inactivePods []*v1.Pod, fresh *workloadsv1alpha2.RoleInstance, target *apps.ControllerRevision) (*expectationDiff, error) {
 	budgeted := HasRestartBudgetLifecycle(instance)
 	if fresh != nil && !budgeted && HasRestartBudgetLifecycle(fresh) {
 		budgeted = true
@@ -293,7 +304,7 @@ func (c *realControl) calculateRestartDiff(ctx context.Context, instance *worklo
 		if fresh.Generation != instance.Generation {
 			return &expectationDiff{requeueAfter: RestartBudgetRequeueAfter}, nil
 		}
-		if blocked, err := c.reconcileRestartBudget(ctx, fresh); blocked || err != nil {
+		if blocked, err := c.reconcileRestartBudgetOnce(ctx, fresh, selectedControllerRevision(target), allPods); blocked || err != nil {
 			copyRestartBudgetStatus(instance, fresh)
 			syncRestartingConditionFromFresh(instance, fresh)
 			return &expectationDiff{requeueAfter: RestartBudgetRequeueAfter}, err
@@ -306,7 +317,7 @@ func (c *realControl) calculateRestartDiff(ctx context.Context, instance *worklo
 	}
 	if c.shouldRecreateInstanceGuarded(ctx, instance, allPods, instance.Status.InPlaceUpdateContainerBaselines, fresh) {
 		if budgeted {
-			livePods, accepted, err := c.acceptBudgetRestart(ctx, instance)
+			livePods, accepted, err := c.acceptBudgetRestart(ctx, instance, selectedControllerRevision(target))
 			if errors.Is(err, errRestartBudgetGenerationChanged) {
 				return &expectationDiff{requeueAfter: RestartBudgetRequeueAfter}, nil
 			}
@@ -567,6 +578,10 @@ func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *
 	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
 		return nil
 	}
+	return syncRestartTrackingFromFresh(instance, fresh)
+}
+
+func syncRestartTrackingFromFresh(instance, fresh *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
 	// Adopt the versioned pair when the fresh timestamp is newer.
 	// This carries resets downward (e.g. 5→1) unlike a monotonic-up guard.
 	if fresh.Status.LastRestartTime != nil && (instance.Status.LastRestartTime == nil ||
