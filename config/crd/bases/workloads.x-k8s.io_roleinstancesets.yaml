@@ -37,6 +37,10 @@ spec:
       jsonPath: .status.replicas
       name: TOTAL
       type: integer
+    - description: Current progress or blocker reason
+      jsonPath: .status.conditions[?(@.type=='Progressing')].reason
+      name: PROGRESSING
+      type: string
     - description: CreationTimestamp is a timestamp representing the server time when
         this object was created. It is not guaranteed to be set in happens-before
         order across separate operations. Clients may not set this value. It is represented
@@ -300,6 +304,12 @@ spec:
                       description: A human-readable message indicating details about
                         the transition.
                       type: string
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration is the generation of this RoleInstanceSet to which the fact applies.
+                        Its absence does not confirm the current generation.
+                      format: int64
+                      type: integer
                     reason:
                       description: The reason for the condition's last transition.
                       type: string

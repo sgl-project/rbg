@@ -18,8 +18,10 @@ package roleinstance
 
 import (
 	"context"
+	stderrors "errors"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -377,7 +379,9 @@ func TestRestartBookkeepingWhenFirstDeleteFails(t *testing.T) {
 		}).Build()
 	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
 	t.Cleanup(func() { control.ClearRestarting(instance) })
-	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control}
+	// The KEP-502 operation-failure path emits an edge-triggered Warning Event;
+	// wire a recorder so the failed delete exercises the real code path.
+	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control, recorder: record.NewFakeRecorder(20)}
 	computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
 	result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, pods)
 	require.ErrorContains(t, result.err, "transient conflict")
@@ -396,6 +400,160 @@ func TestRestartBookkeepingWhenFirstDeleteFails(t *testing.T) {
 	require.True(t, slices.ContainsFunc(live.Status.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
 		return condition.Type == workloadsv1alpha2.RoleInstanceRestarting && condition.Status == v1.ConditionTrue
 	}))
+}
+
+func TestSameNameForeignPodConflictIsNotABlocker(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.Components = instance.Spec.Components[:1]
+	instance.Status.ObservedGeneration = instance.Generation
+	revisions := revisioncontrol.NewRevisionControl()
+	revision, err := revisions.NewRevision(instance, 1, new(int32))
+	require.NoError(t, err)
+	instance.Status.CurrentRevision = revision.Name
+	instance.Status.UpdateRevision = revision.Name
+
+	// A same-name Pod left behind by the previous instance UID while garbage
+	// collection is still pending: this is the recreate flow racing GC, and it
+	// must not flash a blocker condition at RI, RIS, or RBG.
+	foreign := newReadinessTestPod(instance, "router")
+	foreign.OwnerReferences[0].UID = "previous-instance-uid"
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(instance).WithObjects(instance, foreign).Build()
+	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+	t.Cleanup(func() { control.ClearRestarting(instance) })
+	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control, recorder: record.NewFakeRecorder(20)}
+
+	computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
+	result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, nil)
+	require.ErrorContains(t, result.err, "awaiting garbage collection")
+	var marker *workloadsv1alpha2.RoleInstanceCondition
+	for i := range computed.Conditions {
+		condition := &computed.Conditions[i]
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue {
+			marker = condition
+		}
+	}
+	// The race is not a blocker, but a durable marker is persisted: it
+	// deduplicates the identical Warning Events of repeated retries.
+	require.NotNil(t, marker)
+	require.Equal(t, workloadsv1alpha2.ReasonPodRecreateRace, marker.Reason)
+	require.Contains(t, marker.Message, "awaiting garbage collection")
+}
+
+func TestGenuinelyForeignPodConflictPublishesBlocker(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Spec.Components = instance.Spec.Components[:1]
+	instance.Status.ObservedGeneration = instance.Generation
+	revisions := revisioncontrol.NewRevisionControl()
+	revision, err := revisions.NewRevision(instance, 1, new(int32))
+	require.NoError(t, err)
+	instance.Status.CurrentRevision = revision.Name
+	instance.Status.UpdateRevision = revision.Name
+
+	// A plain Pod with the target name that is neither being deleted nor owned
+	// by a previous incarnation of the instance: a genuine foreign conflict, not
+	// the recreate race. It must stay visible as a current blocker.
+	foreign := newReadinessTestPod(instance, "router")
+	foreign.OwnerReferences = nil
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(instance).WithObjects(instance, foreign).Build()
+	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+	t.Cleanup(func() { control.ClearRestarting(instance) })
+	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control, recorder: record.NewFakeRecorder(20)}
+
+	computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
+	result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, nil)
+	require.ErrorContains(t, result.err, "is not controlled by RoleInstance")
+	var blocker *workloadsv1alpha2.RoleInstanceCondition
+	for i := range computed.Conditions {
+		condition := &computed.Conditions[i]
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue {
+			blocker = condition
+		}
+	}
+	require.NotNil(t, blocker, "a genuinely foreign Pod must stay a published blocker")
+	require.Equal(t, workloadsv1alpha2.ReasonPodOperationUnclassified, blocker.Reason)
+}
+
+func TestRecreateRaceMarkerDeduplicatesEvents(t *testing.T) {
+	race := &synccontrol.RecreatePodConflictError{Pod: "default/ri-a-0", Instance: "default/ri-a", UID: "uid"}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "ri-a", Namespace: "default", Generation: 2},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{{
+				Type: workloadsv1alpha2.RoleInstanceProgressing, Status: v1.ConditionTrue,
+				Reason:  workloadsv1alpha2.ReasonPodRecreateRace,
+				Message: race.Error(),
+			}},
+		},
+	}
+	recorder := record.NewFakeRecorder(1)
+	r := &reconciler{recorder: recorder}
+
+	// The persisted race marker carries the error message, so an identical
+	// retry emits no second Warning Event.
+	r.emitOperationFailureEvent(instance, workloadsv1alpha2.ReasonPodRecreateRace, race)
+	select {
+	case event := <-recorder.Events:
+		t.Fatalf("identical retry must be deduplicated, got event %q", event)
+	default:
+	}
+
+	// A different failure still emits.
+	r.emitOperationFailureEvent(instance, workloadsv1alpha2.ReasonPodOperationUnclassified, stderrors.New("different failure"))
+	select {
+	case <-recorder.Events:
+	default:
+		t.Fatal("a different failure must emit an event")
+	}
+}
+
+func TestMixedForeignConflictAndQuotaFailurePublishesBlocker(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = instance.Generation
+	revisions := revisioncontrol.NewRevisionControl()
+	revision, err := revisions.NewRevision(instance, 1, new(int32))
+	require.NoError(t, err)
+	instance.Status.CurrentRevision = revision.Name
+	instance.Status.UpdateRevision = revision.Name
+
+	// One component's target name is occupied by a Pod from the previous
+	// instance UID, and creating the sibling component's Pod is rejected by
+	// quota: the Scale aggregate mixes both. The quota blocker must still be
+	// published, matching the classified Warning Event.
+	foreign := newReadinessTestPod(instance, "router")
+	foreign.OwnerReferences[0].UID = "previous-instance-uid"
+	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(instance).WithObjects(instance, foreign).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Create: func(ctx context.Context, cc client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if pod, ok := obj.(*v1.Pod); ok && strings.Contains(pod.Name, "sidecar") {
+					return apierrors.NewForbidden(
+						v1.Resource("pods"), pod.Name, apierrors.NewBadRequest("pods is forbidden: exceeded quota"))
+				}
+				return cc.Create(ctx, obj, opts...)
+			},
+		}).Build()
+	control := synccontrol.New(c, c, record.NewFakeRecorder(20), nil)
+	t.Cleanup(func() { control.ClearRestarting(instance) })
+	r := &reconciler{Client: c, revisionControl: revisions, syncControl: control, recorder: record.NewFakeRecorder(20)}
+
+	computed := &workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: instance.Generation}
+	result := r.syncInstance(ctx, instance, computed, revision, revision, []*apps.ControllerRevision{revision}, nil, nil)
+	require.ErrorContains(t, result.err, "exceeded quota")
+
+	var blocker *workloadsv1alpha2.RoleInstanceCondition
+	for i := range computed.Conditions {
+		condition := &computed.Conditions[i]
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue {
+			blocker = condition
+		}
+	}
+	require.NotNil(t, blocker, "a mixed aggregate must publish the classified blocker")
+	require.Equal(t, workloadsv1alpha2.ReasonPodCreateQuotaExceeded, blocker.Reason)
 }
 
 func TestAuxiliaryOwnerReferencesDoNotBlockMemberRepair(t *testing.T) {
@@ -449,17 +607,17 @@ func TestReadinessLatchAcquiredAndCarriedAcrossStatusCalculations(t *testing.T) 
 	c := fake.NewClientBuilder().WithScheme(readinessTestScheme(t)).WithObjects(pods[0], pods[1]).Build()
 	updater := &realStatusUpdater{Client: c}
 	unselected := &workloadsv1alpha2.RoleInstanceStatus{}
-	updater.setInstanceConditions(instance, unselected, nil)
+	updater.setInstanceConditions(instance, unselected, nil, nil)
 	require.Zero(t, unselected.LastReadyGeneration, "no selected target revision means no stability latch")
 	ready := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "r1", UpdateRevision: "r1"}
-	updater.setInstanceConditions(instance, ready, nil)
+	updater.setInstanceConditions(instance, ready, nil, nil)
 	require.Equal(t, instance.Generation, ready.LastReadyGeneration)
 	instance.Status = *ready
 	require.NoError(t, c.Delete(context.Background(), pods[0]))
 	notReady := &workloadsv1alpha2.RoleInstanceStatus{
 		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: instance.Status.LastReadyGeneration,
 	}
-	updater.setInstanceConditions(instance, notReady, nil)
+	updater.setInstanceConditions(instance, notReady, nil, nil)
 	require.Equal(t, instance.Generation, notReady.LastReadyGeneration)
 	require.True(t, slices.ContainsFunc(notReady.Conditions, func(condition workloadsv1alpha2.RoleInstanceCondition) bool {
 		return condition.Type == workloadsv1alpha2.RoleInstanceReady && condition.Status == v1.ConditionFalse
@@ -468,10 +626,10 @@ func TestReadinessLatchAcquiredAndCarriedAcrossStatusCalculations(t *testing.T) 
 	changed := &workloadsv1alpha2.RoleInstanceStatus{
 		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: notReady.LastReadyGeneration,
 	}
-	updater.setInstanceConditions(instance, changed, nil)
+	updater.setInstanceConditions(instance, changed, nil, nil)
 	require.Less(t, changed.LastReadyGeneration, instance.Generation, "the old latch must not arm the new generation")
 	require.NoError(t, c.Create(context.Background(), newReadinessTestPod(instance, "router")))
-	updater.setInstanceConditions(instance, changed, nil)
+	updater.setInstanceConditions(instance, changed, nil, nil)
 	require.Equal(t, instance.Generation, changed.LastReadyGeneration, "advance only after the new spec is ready")
 }
 
@@ -547,7 +705,7 @@ func TestRestartingConditionLifecycleWithReadiness(t *testing.T) {
 	inProgress := &workloadsv1alpha2.RoleInstanceStatus{CurrentRevision: "r1", UpdateRevision: "r1"}
 	updater.setInstanceConditions(instance, inProgress, []workloadsv1alpha2.RoleInstanceCondition{
 		{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: v1.ConditionTrue, Reason: "RestartPolicyTriggered"},
-	})
+	}, pods)
 	require.True(t, hasRestarting(inProgress, v1.ConditionTrue),
 		"an in-progress wave must survive a Ready pod snapshot")
 	instance.Status = *inProgress
@@ -558,7 +716,7 @@ func TestRestartingConditionLifecycleWithReadiness(t *testing.T) {
 	}
 	updater.setInstanceConditions(instance, completed, []workloadsv1alpha2.RoleInstanceCondition{
 		{Type: workloadsv1alpha2.RoleInstanceRestarting, Status: v1.ConditionFalse, Reason: "RestartCompleted"},
-	})
+	}, pods)
 	require.False(t, hasRestarting(completed, v1.ConditionFalse),
 		"a completed wave must be dropped when the instance is Ready")
 
@@ -571,7 +729,7 @@ func TestRestartingConditionLifecycleWithReadiness(t *testing.T) {
 	notReady := &workloadsv1alpha2.RoleInstanceStatus{
 		CurrentRevision: "r1", UpdateRevision: "r1", LastReadyGeneration: instance.Status.LastReadyGeneration,
 	}
-	updater.setInstanceConditions(instance, notReady, nil)
+	updater.setInstanceConditions(instance, notReady, nil, pods)
 	require.True(t, hasRestarting(notReady, v1.ConditionFalse),
 		"a completed wave must persist while the instance is not Ready")
 }
@@ -718,7 +876,7 @@ func TestBudgetRestartCommitResponseLostKeepsGuard(t *testing.T) {
 				control := synccontrol.New(cli, base, record.NewFakeRecorder(20), nil)
 				control.ClearRestarting(instance)
 				t.Cleanup(func() { control.ClearRestarting(instance) })
-				r := &reconciler{revisionControl: revisions, syncControl: control}
+				r := &reconciler{revisionControl: revisions, syncControl: control, recorder: record.NewFakeRecorder(20)}
 				computed := instance.Status.DeepCopy()
 				result := r.syncInstance(ctx, instance, computed, revision, revision, nil, pods[1:], pods[:1])
 				require.Error(t, result.err)

@@ -890,13 +890,23 @@ var _ = Describe("RoleBasedGroup engine runtime targeting", func() {
 			// re-render rewrote nothing, so retries cannot skew it.
 			key := types.NamespacedName{Name: rbg.Name, Namespace: testNs}
 			touchRole := func() {
-				current := &workloadsv1alpha2.RoleBasedGroup{}
-				Expect(testutil.K8sClient.Get(testutil.Ctx, key, current)).To(Succeed())
-				if current.Spec.Roles[0].Annotations == nil {
-					current.Spec.Roles[0].Annotations = map[string]string{}
+				// The controller writes RBG status while this touch loop runs,
+				// so a read-modify-write can lose the race and conflict; retry
+				// against the fresh object instead of failing the spec.
+				var updateErr error
+				for attempt := 0; attempt < 5; attempt++ {
+					current := &workloadsv1alpha2.RoleBasedGroup{}
+					Expect(testutil.K8sClient.Get(testutil.Ctx, key, current)).To(Succeed())
+					if current.Spec.Roles[0].Annotations == nil {
+						current.Spec.Roles[0].Annotations = map[string]string{}
+					}
+					current.Spec.Roles[0].Annotations["test-targeting-touch"] = fmt.Sprintf("%d", time.Now().UnixNano())
+					updateErr = testutil.K8sClient.Update(testutil.Ctx, current)
+					if updateErr == nil || !apierrors.IsConflict(updateErr) {
+						break
+					}
 				}
-				current.Spec.Roles[0].Annotations["test-targeting-touch"] = fmt.Sprintf("%d", time.Now().UnixNano())
-				Expect(testutil.K8sClient.Update(testutil.Ctx, current)).To(Succeed())
+				Expect(updateErr).To(Succeed())
 			}
 
 			By("verifying the render-failed warning event fires for the dangling reference")

@@ -676,7 +676,7 @@ type RoleBasedGroupStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// Status of individual roles
-	RoleStatuses []RoleStatus `json:"roleStatuses"`
+	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`
 
 	// ObservedRolloutRequest is the rbg.workloads.x-k8s.io/rollout-request annotation value of the
 	// object for which every role workload was last verified as rolled out.
@@ -704,6 +704,7 @@ type RoleStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="PROGRESSING",type="string",JSONPath=".status.conditions[?(@.type=='Progressing')].reason",description="Current progress or blocker reason"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:shortName={rbg}
 

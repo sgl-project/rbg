@@ -20,16 +20,21 @@ import (
 	"context"
 	"fmt"
 	"regexp"
+	"slices"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -117,24 +122,62 @@ func (r *RoleInstanceSetReconciler) validateCommittedMembership(ctx context.Cont
 			_, validationErr = set.CommittedOrdinals()
 		}
 	}
-	updated := set.DeepCopy()
-	conditions := updated.Status.Conditions[:0]
-	for _, condition := range updated.Status.Conditions {
-		if condition.Type == v1alpha2.RoleInstanceSetConditionFailedScale && condition.Reason == invalidCommittedOrdinalsReason {
-			if validationErr != nil && condition.Reason == invalidCommittedOrdinalsReason && condition.Status == corev1.ConditionTrue && condition.Message == validationErr.Error() {
+	// KEP-502: the invalid committed-ordinals blocker is reported through the
+	// Progressing condition with a configuration-family reason; the legacy
+	// FailedScale marker is dropped on the first write after upgrade.
+	if validationErr != nil {
+		for _, condition := range set.Status.Conditions {
+			if condition.Type == v1alpha2.RoleInstanceSetProgressing && condition.Status == corev1.ConditionTrue &&
+				condition.Reason == constants.ProgressingReasonInvalidSpec &&
+				condition.Message == validationErr.Error() &&
+				condition.ObservedGeneration == set.Generation {
 				return validationErr
 			}
+		}
+	}
+	updated := set.DeepCopy()
+	conditions := updated.Status.Conditions[:0]
+	var priorProgressing *v1alpha2.RoleInstanceSetCondition
+	for _, condition := range updated.Status.Conditions {
+		// Drop the legacy FailedScale marker and clear this validation's Progressing
+		// blocker once the committed ordinals become valid again.
+		if condition.Type == v1alpha2.RoleInstanceSetConditionFailedScale && condition.Reason == invalidCommittedOrdinalsReason {
 			continue
+		}
+		if condition.Type == v1alpha2.RoleInstanceSetProgressing {
+			if validationErr != nil {
+				// The configuration-family blocker outranks every other Progressing
+				// fact. Replace the existing entry instead of appending a second one
+				// that would make readers pick a stale verdict.
+				if priorProgressing == nil {
+					prior := condition
+					priorProgressing = &prior
+				}
+				continue
+			}
+			if condition.Reason == constants.ProgressingReasonInvalidSpec {
+				continue
+			}
 		}
 		conditions = append(conditions, condition)
 	}
 	updated.Status.Conditions = conditions
 	if validationErr != nil {
 		r.recorder.Event(set, corev1.EventTypeWarning, invalidCommittedOrdinalsReason, validationErr.Error())
-		updated.Status.Conditions = append(updated.Status.Conditions, v1alpha2.RoleInstanceSetCondition{
-			Type: v1alpha2.RoleInstanceSetConditionFailedScale, Status: corev1.ConditionTrue,
-			Reason: invalidCommittedOrdinalsReason, Message: validationErr.Error(), LastTransitionTime: metav1.Now(),
-		})
+		// The controller returns before the normal status path, so the overall
+		// observedGeneration must advance here: KEP-502 requires the preflight
+		// blocker to record that it describes the current generation.
+		updated.Status.ObservedGeneration = set.Generation
+		blocker := v1alpha2.RoleInstanceSetCondition{
+			Type: v1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
+			Reason: constants.ProgressingReasonInvalidSpec, Message: validationErr.Error(),
+			ObservedGeneration: set.Generation, LastTransitionTime: metav1.Now(),
+		}
+		if priorProgressing != nil && priorProgressing.Status == corev1.ConditionTrue {
+			// lastTransitionTime changes only when the condition status changes.
+			blocker.LastTransitionTime = priorProgressing.LastTransitionTime
+		}
+		updated.Status.Conditions = append(updated.Status.Conditions, blocker)
 	}
 	if len(updated.Status.Conditions) != len(set.Status.Conditions) || validationErr != nil {
 		if err := r.client.Status().Patch(ctx, updated, client.MergeFromWithOptions(set, client.MergeFromWithOptimisticLock{})); err != nil {
@@ -213,8 +256,40 @@ func (r *RoleInstanceSetReconciler) CheckCrdExists() error {
 func (r *RoleInstanceSetReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
-		For(&v1alpha2.RoleInstanceSet{}).
+		For(&v1alpha2.RoleInstanceSet{}, builder.WithPredicates(roleInstanceSetOwnStatusPredicate())).
 		Owns(&v1alpha2.RoleInstance{}).
 		Watches(&v1alpha2.RoleInstance{}, statelessmode.NewRoleInstanceEventHandler(mgr.GetClient())).
 		Complete(r)
+}
+
+// roleInstanceSetOwnStatusPredicate ignores update events where only the set's
+// own status changed. The controller writes that status itself: without the
+// filter, every status write immediately re-enqueues the set, which turns each
+// blocked-operation retry into a hot loop that skips error backoff (a quota
+// failure whose message contains a freshly generated RoleInstance name changes
+// the message on every attempt). Spec, generation, metadata, and deletion
+// changes still enqueue.
+func roleInstanceSetOwnStatusPredicate() predicate.Funcs {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			oldSet, oldOK := e.ObjectOld.(*v1alpha2.RoleInstanceSet)
+			newSet, newOK := e.ObjectNew.(*v1alpha2.RoleInstanceSet)
+			if !oldOK || !newOK {
+				return true
+			}
+			return !onlyStatusChanged(oldSet, newSet)
+		},
+	}
+}
+
+// onlyStatusChanged reports whether an update left the spec, generation,
+// labels, annotations, finalizers, and deletion timestamp untouched: only the
+// controller-written status can have changed.
+func onlyStatusChanged(oldSet, newSet *v1alpha2.RoleInstanceSet) bool {
+	return oldSet.Generation == newSet.Generation &&
+		equality.Semantic.DeepEqual(oldSet.Spec, newSet.Spec) &&
+		equality.Semantic.DeepEqual(oldSet.Labels, newSet.Labels) &&
+		equality.Semantic.DeepEqual(oldSet.Annotations, newSet.Annotations) &&
+		slices.Equal(oldSet.Finalizers, newSet.Finalizers) &&
+		equality.Semantic.DeepEqual(oldSet.DeletionTimestamp, newSet.DeletionTimestamp)
 }

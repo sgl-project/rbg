@@ -26,6 +26,7 @@ import (
 // with apply.
 type RoleInstanceStatusApplyConfiguration struct {
 	ObservedGeneration              *int64                                                          `json:"observedGeneration,omitempty"`
+	Phase                           *workloadsv1alpha2.RoleInstancePhase                            `json:"phase,omitempty"`
 	Conditions                      []RoleInstanceConditionApplyConfiguration                       `json:"conditions,omitempty"`
 	ComponentStatuses               []RoleInstanceComponentStatusApplyConfiguration                 `json:"componentStatuses,omitempty"`
 	LabelSelector                   *string                                                         `json:"labelSelector,omitempty"`
@@ -39,6 +40,7 @@ type RoleInstanceStatusApplyConfiguration struct {
 	GroupRestartCount               *int32                                                          `json:"groupRestartCount,omitempty"`
 	GroupRestartRevision            *string                                                         `json:"groupRestartRevision,omitempty"`
 	RestartBudgetExhausted          *bool                                                           `json:"restartBudgetExhausted,omitempty"`
+	LastPhaseCompleteGeneration     *int64                                                          `json:"lastPhaseCompleteGeneration,omitempty"`
 }
 
 // RoleInstanceStatusApplyConfiguration constructs a declarative configuration of the RoleInstanceStatus type for use with
@@ -52,6 +54,14 @@ func RoleInstanceStatus() *RoleInstanceStatusApplyConfiguration {
 // If called multiple times, the ObservedGeneration field is set to the value of the last call.
 func (b *RoleInstanceStatusApplyConfiguration) WithObservedGeneration(value int64) *RoleInstanceStatusApplyConfiguration {
 	b.ObservedGeneration = &value
+	return b
+}
+
+// WithPhase sets the Phase field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Phase field is set to the value of the last call.
+func (b *RoleInstanceStatusApplyConfiguration) WithPhase(value workloadsv1alpha2.RoleInstancePhase) *RoleInstanceStatusApplyConfiguration {
+	b.Phase = &value
 	return b
 }
 
@@ -172,5 +182,13 @@ func (b *RoleInstanceStatusApplyConfiguration) WithGroupRestartRevision(value st
 // If called multiple times, the RestartBudgetExhausted field is set to the value of the last call.
 func (b *RoleInstanceStatusApplyConfiguration) WithRestartBudgetExhausted(value bool) *RoleInstanceStatusApplyConfiguration {
 	b.RestartBudgetExhausted = &value
+	return b
+}
+
+// WithLastPhaseCompleteGeneration sets the LastPhaseCompleteGeneration field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the LastPhaseCompleteGeneration field is set to the value of the last call.
+func (b *RoleInstanceStatusApplyConfiguration) WithLastPhaseCompleteGeneration(value int64) *RoleInstanceStatusApplyConfiguration {
+	b.LastPhaseCompleteGeneration = &value
 	return b
 }

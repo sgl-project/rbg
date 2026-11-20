@@ -25816,6 +25816,10 @@ spec:
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: READY
       type: string
+    - description: Current progress or blocker reason
+      jsonPath: .status.conditions[?(@.type=='Progressing')].reason
+      name: PROGRESSING
+      type: string
     - jsonPath: .metadata.creationTimestamp
       name: AGE
       type: date
@@ -50044,8 +50048,6 @@ spec:
                   - updatedReplicas
                   type: object
                 type: array
-            required:
-            - roleStatuses
             type: object
         type: object
     served: true
@@ -98885,6 +98887,10 @@ spec:
       jsonPath: .status.conditions[?(@.type=='RoleInstanceReady')].status
       name: READY
       type: string
+    - description: Instance-level lifecycle phase
+      jsonPath: .status.phase
+      name: PHASE
+      type: string
     - description: CreationTimestamp is a timestamp representing the server time when
         this object was created. It is not guaranteed to be set in happens-before
         order across separate operations. Clients may not set this value. It is represented
@@ -99119,6 +99125,12 @@ spec:
                       description: A human readable message indicating details about
                         the transition.
                       type: string
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration is the generation of this RoleInstance to which the fact applies.
+                        Its absence does not confirm the current generation.
+                      format: int64
+                      type: integer
                     reason:
                       description: The reason for the condition's last transition.
                       type: string
@@ -99179,6 +99191,12 @@ spec:
                 description: LabelSelector of a RoleInstance is a label query over
                   Pods that should match the RoleInstance.
                 type: string
+              lastPhaseCompleteGeneration:
+                description: |-
+                  LastPhaseCompleteGeneration is the metadata.generation whose target the
+                  phase machine last confirmed complete.
+                format: int64
+                type: integer
               lastReadyGeneration:
                 description: |-
                   LastReadyGeneration is the metadata.generation at which the instance was last
@@ -99197,6 +99215,14 @@ spec:
                   RoleInstance's generation, which is updated on mutation by the API Server.
                 format: int64
                 type: integer
+              phase:
+                description: Phase is the optional instance-level lifecycle phase.
+                enum:
+                - Creating
+                - Running
+                - Updating
+                - Recovering
+                type: string
               restartBudgetExhausted:
                 description: |-
                   RestartBudgetExhausted suppresses creation and updates until explicit recovery
@@ -99257,6 +99283,10 @@ spec:
       jsonPath: .status.replicas
       name: TOTAL
       type: integer
+    - description: Current progress or blocker reason
+      jsonPath: .status.conditions[?(@.type=='Progressing')].reason
+      name: PROGRESSING
+      type: string
     - description: CreationTimestamp is a timestamp representing the server time when
         this object was created. It is not guaranteed to be set in happens-before
         order across separate operations. Clients may not set this value. It is represented
@@ -99520,6 +99550,12 @@ spec:
                       description: A human-readable message indicating details about
                         the transition.
                       type: string
+                    observedGeneration:
+                      description: |-
+                        ObservedGeneration is the generation of this RoleInstanceSet to which the fact applies.
+                        Its absence does not confirm the current generation.
+                      format: int64
+                      type: integer
                     reason:
                       description: The reason for the condition's last transition.
                       type: string
