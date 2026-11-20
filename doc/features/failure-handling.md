@@ -314,6 +314,11 @@ kubectl annotate roleinstance <instance-name> -n <namespace> \
   rbg.workloads.x-k8s.io/recover=true --overwrite
 ```
 
+In `spec.roles[].annotations` the annotation does not request recovery, and the
+controller does not copy it from there to the role's workload. It is still part
+of the role like any other role annotation, so adding or removing it there
+creates a new RoleBasedGroup revision.
+
 Only the exact value `true` requests recovery. An annotation that predates
 exhaustion is removed when exhaustion is recorded: recovery must be requested
 afterward. Recovery first retries any unfinished termination, then releases only

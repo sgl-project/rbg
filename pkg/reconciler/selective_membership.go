@@ -35,8 +35,18 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
-func filteredRoleAnnotations(annotations map[string]string) map[string]string {
+// workloadRoleAnnotations returns the role annotations that every workload
+// builder copies onto the workload object. A recovery request is read from a
+// RoleInstance only, so a copy on a role is not passed on: on the workload it
+// would look like an accepted request that nothing acts on.
+func workloadRoleAnnotations(annotations map[string]string) map[string]string {
 	result := maps.Clone(annotations)
+	delete(result, constants.RoleInstanceRecoverAnnotationKey)
+	return result
+}
+
+func filteredRoleAnnotations(annotations map[string]string) map[string]string {
+	result := workloadRoleAnnotations(annotations)
 	delete(result, constants.ExcludedOrdinalsAnnotationKey)
 	delete(result, constants.CommittedSkipOrdinalsAnnotationKey)
 	return result

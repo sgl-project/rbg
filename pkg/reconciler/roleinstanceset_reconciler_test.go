@@ -1139,3 +1139,40 @@ func TestRoleInstanceSetReconciler_DerivesRoleInstanceGangAnnotation(t *testing.
 		})
 	}
 }
+
+// TestRoleInstanceSetReconciler_DropsRecoverAnnotationAtRoleBoundary covers a
+// recovery request written on a role instead of on a RoleInstance. Nothing reads
+// it from a RoleInstanceSet, so copying it there only makes an ignored request
+// look accepted.
+func TestRoleInstanceSetReconciler_DropsRecoverAnnotationAtRoleBoundary(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	role := wrappersv2.BuildStandaloneRole("worker").
+		WithWorkload("workloads.x-k8s.io/v1alpha2", "RoleInstanceSet").
+		WithAnnotations(map[string]string{
+			constants.RoleInstanceRecoverAnnotationKey: "true",
+			"team": "a",
+		}).
+		Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{role}).
+		Obj()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	ctx := context.Background()
+	err := NewRoleInstanceSetReconciler(scheme, fakeClient).
+		Reconciler(ctx, rbg, &role, nil, expectedRevisionHash)
+	assert.NoError(t, err)
+
+	ris := &workloadsv1alpha2.RoleInstanceSet{}
+	err = fakeClient.Get(
+		ctx,
+		types.NamespacedName{Name: rbg.GetWorkloadName(&role), Namespace: rbg.Namespace},
+		ris,
+	)
+	assert.NoError(t, err)
+	assert.NotContains(t, ris.Annotations, constants.RoleInstanceRecoverAnnotationKey)
+	assert.Equal(t, "a", ris.Annotations["team"], "user annotations on the role must still reach the RoleInstanceSet")
+}
