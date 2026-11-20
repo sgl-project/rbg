@@ -22,6 +22,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleBasedGroupDefaulter normalizes legacy update-strategy type values on
@@ -39,6 +40,17 @@ func (d *RoleBasedGroupDefaulter) Default(_ context.Context, obj runtime.Object)
 	rbg, ok := obj.(*RoleBasedGroup)
 	if !ok {
 		return fmt.Errorf("expected *RoleBasedGroup but got %T", obj)
+	}
+	// KEP-576: default only CREATE. Existing objects without the annotation
+	// keep the v1alpha1 content they were written with; a missing annotation on
+	// UPDATE must never be reinterpreted as v1. Deprecated stateful backends
+	// cannot serialize the compact format, so their default stays v1alpha1.
+	if rbg.CreationTimestamp.IsZero() && rbg.GetDiscoveryConfigVersion() == "" {
+		version := constants.DiscoveryConfigVersionV1
+		if hasDeprecatedStatefulRole(rbg.Spec.Roles) {
+			version = constants.DiscoveryConfigVersionV1Alpha1
+		}
+		rbg.SetDiscoveryConfigVersion(version)
 	}
 	for i := range rbg.Spec.Roles {
 		ru := rbg.Spec.Roles[i].RolloutStrategy

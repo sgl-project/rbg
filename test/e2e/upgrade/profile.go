@@ -118,7 +118,7 @@ func v070Profile() *releaseProfile {
 	// resolves the unset field to LeaderOnly, so its profile records nothing
 	// here.
 	rewrites.leaderOnlyServices = map[string]bool{sharedServiceName(fxLwp, lwpRole): true}
-	rewrites.discoveryModePins = setChildDiscoveryModePins()
+	rewrites.discoveryConfigChildren = setChildDiscoveryConfigChildren()
 
 	return &releaseProfile{
 		installValues: []string{
@@ -150,7 +150,7 @@ func v070Profile() *releaseProfile {
 // v080Profile is the v0.8.0 -> current hop.
 func v080Profile() *releaseProfile {
 	rewrites := strategyHealRewrites()
-	rewrites.discoveryModePins = setChildDiscoveryModePins()
+	rewrites.discoveryConfigChildren = setChildDiscoveryConfigChildren()
 
 	return &releaseProfile{
 		installValues: []string{
@@ -226,27 +226,11 @@ func strategyHealRewrites() recordedRewrites {
 	}
 }
 
-// setChildDiscoveryModePins records the one rewrite both supported hops make to every
-// RoleBasedGroupSet child: it gets the refine discovery config mode (#603).
-//
-// The RoleBasedGroup controller pins a new child to refine. In v0.7.0 and v0.8.0 the
-// set controller then removes that annotation as drift from its template. The
-// RoleBasedGroup controller writes legacy at the child's next reconcile, because the
-// child has status and no mode, and the set controller removes that too, so the
-// children of those releases are stored without the annotation and their discovery
-// ConfigMap is no longer reconciled. The upgraded controller pins each of them to
-// refine on its first reconcile, and its set controller keeps the annotation.
-//
-// The rewrite is the annotation alone. No entry is added to specRewrites or
-// revisionAdds for it, so the content, revision and pod detectors stay as strict for
-// these children as for every other object: the injector has mounted the ConfigMap
-// named after the group in either mode since v0.7.0, so no template moves. The
-// suite cannot say what the ConfigMap of a real cluster misses by then, only that
-// the upgrade resumes it, which phase 4 checks by scaling a set.
-//
-// A release that ships the fix stores refine and must not get this entry:
-// checkDiscoveryModeStable reports it as stale.
-func setChildDiscoveryModePins() map[string]bool {
+// setChildDiscoveryConfigChildren records the RoleBasedGroupSet children whose
+// discovery ConfigMap the upgrade must resume maintaining (#603). KEP-576 removed
+// the mode selector, so the observable contract is the ConfigMap itself rather than
+// an annotation rewrite.
+func setChildDiscoveryConfigChildren() map[string]bool {
 	return map[string]bool{
 		setChildName(fxSet):         true,
 		legacySetChildName():        true,

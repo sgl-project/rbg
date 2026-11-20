@@ -223,44 +223,33 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, err
 	}
 
-	// Step 2: Initialize discovery config mode.
-	// IMPORTANT: This must be done BEFORE constructAndUpdateRoleStatuses, because
-	// shouldUseLegacyDiscoveryConfig checks rbg.Status.RoleStatuses to determine if
-	// this is a new RBG. If roleStatuses is populated first, it will incorrectly
-	// use legacy mode for new RBGs.
-	if needRequeue, err := r.ensureDiscoveryConfigMode(ctx, rbg); err != nil {
-		return ctrl.Result{}, err
-	} else if needRequeue {
-		return ctrl.Result{RequeueAfter: time.Second}, nil
-	}
-
-	// Step 3: Reconcile refined discovery ConfigMap.
+	// Step 2: Reconcile the discovery ConfigMap.
 	// This must happen before reconcileRoles to ensure ConfigMap exists before workloads are created.
-	if err := r.reconcileRefinedDiscoveryConfigMap(ctx, rbg); err != nil {
+	if err := r.reconcileDiscoveryConfigMap(ctx, rbg); err != nil {
 		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfigMap, err.Error())
 		return ctrl.Result{}, err
 	}
 
-	// Step 4: Construct role statuses and the independent rollout completion barrier.
+	// Step 3: Construct role statuses and the independent rollout completion barrier.
 	roleStatuses, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expectedRolesRevisionHash, entryBlocker)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 5: Ensure CoordinatedPolicy for objects that originated from v1alpha1.
+	// Step 4: Ensure CoordinatedPolicy for objects that originated from v1alpha1.
 	// When v1alpha1 support is removed, delete this step and coordinatedpolicy_migration_controller.go.
 	if err := EnsureV1alpha1CoordinatedPolicy(ctx, r.client, rbg); err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 6: Calculate coordination strategies for scaling and rolling update
+	// Step 5: Calculate coordination strategies for scaling and rolling update
 	// Coordination configuration is now fetched from CoordinatedPolicy CR with the same name/namespace.
 	scalingTargets, rollingUpdateStrategies, err := r.handleCoordinationStrategies(ctx, rbg, roleStatuses)
 	if err != nil {
 		return ctrl.Result{}, err
 	}
 
-	// Step 7: Reconcile PodGroup for gang scheduling.
+	// Step 6: Reconcile PodGroup for gang scheduling.
 	// The strategy is resolved once here and carried on ctx so that the PodGroup
 	// spec and every role's pod template built in Step 8 agree on one value.
 	ctx, gangStrategy, gangErr := gangcommon.ResolveGangStrategy(ctx, r.client, rbg)
@@ -512,100 +501,15 @@ func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv
 	return errors.Wrap(kerrors.NewAggregate(errs), "invalid role workload declarations")
 }
 
-func (r *RoleBasedGroupReconciler) ensureDiscoveryConfigMode(
-	ctx context.Context,
-	rbg *workloadsv1alpha2.RoleBasedGroup,
-) (bool, error) {
-	// If Mode is already set, skip requeue and return
-	mode := rbg.GetDiscoveryConfigMode()
-	if mode == constants.LegacyDiscoveryConfigMode || mode == constants.RefineDiscoveryConfigMode {
-		return false, nil
-	}
+// maxDiscoveryConfigMapBytes matches the Kubernetes API server's 1 MiB limit
+// for a ConfigMap object. Rejecting an oversized v1alpha1 rollback here keeps
+// the existing compact content in place instead of failing the API write.
+const maxDiscoveryConfigMapBytes = 1 << 20
 
-	// determine mode, update annotation
-	if isRoleBasedGroupSetChild(rbg) {
-		// A RoleBasedGroupSet child is created by the set controller and is never a
-		// legacy object, so it must not go through the status check below. A child
-		// has status and no mode when it was created by v0.7.0 or v0.8.0, whose set
-		// controller removed the annotation as template drift (#603). Deriving legacy
-		// for it would stop its discovery ConfigMap from being reconciled, and the
-		// set controller now keeps whatever mode a child carries. An explicit mode,
-		// set on the child or through the set template, is left alone above.
-		mode = constants.RefineDiscoveryConfigMode
-	} else {
-		legacy, err := r.shouldUseLegacyDiscoveryConfig(ctx, rbg)
-		if err != nil {
-			return true, err
-		}
-		if legacy {
-			mode = constants.LegacyDiscoveryConfigMode
-		} else {
-			mode = constants.RefineDiscoveryConfigMode
-		}
-	}
-
-	old := rbg.DeepCopy()
-	rbg.SetDiscoveryConfigMode(mode)
-	// The mode was derived from the object as it was read, and whether it has a
-	// controller decides the outcome. A set can adopt an orphan between that read
-	// and this write, and a legacy value written afterwards would look explicit to
-	// both controllers and stay. The optimistic lock makes the stale write fail, so
-	// the retry classifies the child again.
-	if err := r.client.Patch(ctx, rbg, client.MergeFromWithOptions(old, client.MergeFromWithOptimisticLock{})); err != nil {
-		return true, err
-	}
-
-	log.FromContext(ctx).Info("Initialized discovery config mode", "mode", mode)
-	// Don't requeue here - continue to reconcile ConfigMap and workloads in the same loop
-	// to avoid race condition where workload is created before ConfigMap exists
-	return false, nil
-}
-
-// isRoleBasedGroupSetChild reports whether the RBG is controlled by a RoleBasedGroupSet.
-func isRoleBasedGroupSetChild(rbg *workloadsv1alpha2.RoleBasedGroup) bool {
-	ref := metav1.GetControllerOfNoCopy(rbg)
-	if ref == nil || ref.Kind != "RoleBasedGroupSet" {
-		return false
-	}
-	gv, err := schema.ParseGroupVersion(ref.APIVersion)
-	return err == nil && gv.Group == workloadsv1alpha2.GroupVersion.Group
-}
-
-func (r *RoleBasedGroupReconciler) shouldUseLegacyDiscoveryConfig(
-	ctx context.Context,
-	rbg *workloadsv1alpha2.RoleBasedGroup,
-) (bool, error) {
-	// Existing observed status indicates it is an old object already reconciled before.
-	if rbg.Status.ObservedGeneration > 0 || len(rbg.Status.RoleStatuses) > 0 {
-		return true, nil
-	}
-
-	for i := range rbg.Spec.Roles {
-		role := &rbg.Spec.Roles[i]
-		roleCm := &corev1.ConfigMap{}
-		err := r.client.Get(
-			ctx,
-			types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace},
-			roleCm,
-		)
-		if err == nil {
-			return true, nil
-		}
-		if !apierrors.IsNotFound(err) {
-			return false, err
-		}
-	}
-
-	return false, nil
-}
-
-func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
+func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) error {
-	if rbg.GetDiscoveryConfigMode() != constants.RefineDiscoveryConfigMode {
-		return nil
-	}
 	if !rbg.HasStatefulRole() {
 		return nil
 	}
@@ -622,9 +526,28 @@ func (r *RoleBasedGroupReconciler) reconcileRefinedDiscoveryConfigMap(
 	}
 
 	builder := discovery.NewConfigBuilder(r.client, statefulOnlyRBG, nil)
-	configData, err := builder.Build()
+
+	// Select the content version. Existing objects without the annotation keep
+	// v1alpha1. Objects that requested v1 but still carry a deprecated stateful
+	// backend also keep v1alpha1 when admission was bypassed.
+	version := rbg.GetDiscoveryConfigVersion()
+	var configData []byte
+	var err error
+	if version == constants.DiscoveryConfigVersionV1 && builder.SupportsCompactContent() {
+		configData, err = builder.BuildCompact()
+	} else {
+		configData, err = builder.Build()
+	}
 	if err != nil {
 		return err
+	}
+	// A rollback whose enumeration no longer fits in a ConfigMap is rejected
+	// before the write, so the current content is retained.
+	if len(configData) > maxDiscoveryConfigMapBytes {
+		return fmt.Errorf(
+			"discovery ConfigMap content for version %s is %d bytes, exceeding the %d-byte ConfigMap limit",
+			version, len(configData), maxDiscoveryConfigMapBytes,
+		)
 	}
 
 	cmApplyConfig := coreapplyv1.ConfigMap(rbg.Name, rbg.Namespace).

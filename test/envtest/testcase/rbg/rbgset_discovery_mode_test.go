@@ -37,9 +37,8 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// Regression tests for #603: the RoleBasedGroupSet controller of v0.7.0 and v0.8.0
-// removed the discovery config mode the RoleBasedGroup controller pins on a child,
-// the child was then derived as legacy, and its discovery ConfigMap went stale.
+// Regression tests for #603: the controller must keep a RoleBasedGroupSet child's
+// discovery ConfigMap current even when the child carries only pre-KEP-576 metadata.
 var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 	const (
 		timeout  = 30 * time.Second
@@ -83,15 +82,13 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 		g.Expect(yaml.UnmarshalStrict([]byte(cm.Data["config.yaml"]), &config)).To(Succeed())
 		return config.Roles["worker"].Size
 	}
-	// waitForReconciledChild waits until the child has status, which is what
-	// made the RoleBasedGroup controller classify it as a legacy object once
-	// its mode annotation was gone.
+	// waitForReconciledChild waits until the child has status and its ConfigMap.
 	waitForReconciledChild := func() {
 		Eventually(func(g Gomega) {
 			child := getChild(g)
 			g.Expect(child.Status.ObservedGeneration).To(BeNumerically(">", 0))
 			g.Expect(child.Annotations).To(HaveKeyWithValue("team", "a"))
-			g.Expect(child.GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(child.GetDiscoveryConfigVersion()).To(Equal(constants.DiscoveryConfigVersionV1Alpha1))
 			g.Expect(workerSize(g)).To(Equal(1))
 		}, timeout, interval).Should(Succeed())
 	}
@@ -113,7 +110,7 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 		return ris
 	}
 
-	It("keeps the child in refine mode and its ConfigMap current when the template changes", func() {
+	It("keeps the child's ConfigMap current when the template changes", func() {
 		waitForReconciledChild()
 		var before *workloadsv1alpha2.RoleInstanceSet
 		Eventually(func(g Gomega) { before = getRIS(g) }, timeout, interval).Should(Succeed())
@@ -123,12 +120,12 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 		Eventually(func(g Gomega) {
 			child := getChild(g)
 			g.Expect(child.Spec.Roles[0].Replicas).To(Equal(ptr.To[int32](2)))
-			g.Expect(child.GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(child.GetDiscoveryConfigVersion()).To(Equal(constants.DiscoveryConfigVersionV1Alpha1))
 			g.Expect(workerSize(g)).To(Equal(2))
 		}, timeout, interval).Should(Succeed())
 		Consistently(func(g Gomega) {
 			child := getChild(g)
-			g.Expect(child.GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(child.GetDiscoveryConfigVersion()).To(Equal(constants.DiscoveryConfigVersionV1Alpha1))
 			g.Expect(child.Annotations).To(HaveKeyWithValue("team", "a"))
 		}, 3*time.Second, interval).Should(Succeed())
 
@@ -141,7 +138,7 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
-	It("pins a child that has status and no mode to refine", func() {
+	It("keeps a child with pre-KEP metadata current", func() {
 		waitForReconciledChild()
 		var before *workloadsv1alpha2.RoleInstanceSet
 		Eventually(func(g Gomega) { before = getRIS(g) }, timeout, interval).Should(Succeed())
@@ -158,11 +155,11 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 		Eventually(func(g Gomega) {
 			child := getChild(g)
 			g.Expect(child.Spec.Roles[0].Replicas).To(Equal(ptr.To[int32](2)))
-			g.Expect(child.GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(child.GetDiscoveryConfigVersion()).To(Equal(constants.DiscoveryConfigVersionV1Alpha1))
 			g.Expect(workerSize(g)).To(Equal(2))
 		}, timeout, interval).Should(Succeed())
 		Consistently(func(g Gomega) {
-			g.Expect(getChild(g).GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(getChild(g).GetDiscoveryConfigVersion()).To(Equal(constants.DiscoveryConfigVersionV1Alpha1))
 		}, 3*time.Second, interval).Should(Succeed())
 
 		Eventually(func(g Gomega) {
@@ -172,7 +169,7 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
-	It("pins an orphan that derived legacy mode once a set adopts it", func() {
+	It("reconciles an orphan's ConfigMap once a set adopts it", func() {
 		waitForReconciledChild()
 
 		// A child of v0.7.0 or v0.8.0 whose set was deleted with cascade=orphan:
@@ -207,11 +204,11 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 			return false
 		}, timeout, interval).Should(BeTrue(), "the set is still being deleted")
 
-		// Without a controller it is derived like any RoleBasedGroup that has status.
+		// Without a controller the child keeps the historical content version.
 		Eventually(func(g Gomega) {
 			child := getChild(g)
 			g.Expect(child.OwnerReferences).To(BeEmpty())
-			g.Expect(child.GetDiscoveryConfigMode()).To(Equal(constants.LegacyDiscoveryConfigMode))
+			g.Expect(child.GetDiscoveryConfigVersion()).To(Equal(constants.DiscoveryConfigVersionV1Alpha1))
 		}, timeout, interval).Should(Succeed())
 
 		// A set of the same name adopts the orphan and scales its role.
@@ -226,11 +223,11 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 			g.Expect(metav1.IsControlledBy(child, adopter)).To(BeTrue())
 			g.Expect(child.UID).To(Equal(old.UID))
 			g.Expect(child.Spec.Roles[0].Replicas).To(Equal(ptr.To[int32](2)))
-			g.Expect(child.GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(child.GetDiscoveryConfigVersion()).To(Equal(constants.DiscoveryConfigVersionV1Alpha1))
 			g.Expect(workerSize(g)).To(Equal(2))
 		}, timeout, interval).Should(Succeed())
 		Consistently(func(g Gomega) {
-			g.Expect(getChild(g).GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(getChild(g).GetDiscoveryConfigVersion()).To(Equal(constants.DiscoveryConfigVersionV1Alpha1))
 		}, 3*time.Second, interval).Should(Succeed())
 	})
 })

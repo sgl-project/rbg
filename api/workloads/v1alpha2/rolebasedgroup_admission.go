@@ -142,6 +142,11 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 			allErrs = append(allErrs, err)
 		}
 	}
+	// Keep discovery-version rejection last so more specific workload and
+	// render errors surface first when both apply.
+	if err := ValidateDiscoveryConfigVersion(rbg); err != nil {
+		allErrs = append(allErrs, err)
+	}
 
 	// A single validation error is returned unwrapped so apierrors.IsInvalid and
 	// friends keep recognizing the rejection type.
@@ -346,6 +351,9 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		if err := validateNoDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
 		}
+	}
+	if err := ValidateDiscoveryConfigVersion(rbg); err != nil {
+		allErrs = append(allErrs, err)
 	}
 
 	// A single validation error is returned unwrapped so apierrors.IsInvalid and

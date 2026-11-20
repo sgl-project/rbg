@@ -20,6 +20,7 @@ import (
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
+	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -28,6 +29,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	"sigs.k8s.io/rbgs/api/workloads/ordinals"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/yaml"
 )
@@ -536,6 +538,184 @@ roles:
 			},
 		)
 	}
+}
+
+func TestConfigBuilder_BuildCompact(t *testing.T) {
+	replicas1 := int32(1)
+	schema := runtime.NewScheme()
+	_ = corev1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
+
+	tests := []struct {
+		name     string
+		rbg      *workloadsv1alpha2.RoleBasedGroup
+		expected string
+		wantErr  bool
+	}{
+		{
+			name: "standalone role with membership holes",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "pd-inference"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name:     "prefill",
+						Replicas: ptr.To(int32(3)),
+						Annotations: map[string]string{
+							constants.ExcludedOrdinalsAnnotationKey: "1,3",
+						},
+						ServicePorts: []corev1.ServicePort{
+							{Name: "http-api", Port: 8080},
+							{Port: 50000},
+						},
+					}},
+				},
+			},
+			expected: `apiVersion: v1
+group: pd-inference
+roles:
+- components:
+  - base: pd-inference-prefill-{roleIndex}.s-pd-inference-prefill
+    name: prefill
+    size: 1
+  excludedOrdinals: 1,3
+  members: 3
+  name: prefill
+  ports:
+    http_api: 8080
+    port50000: 50000
+`,
+		},
+		{
+			name: "leader worker role",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "pd-inference"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name:     "prefill",
+						Replicas: &replicas1,
+						Pattern: workloadsv1alpha2.Pattern{
+							LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+								Size: ptr.To(int32(5)),
+							},
+						},
+					}},
+				},
+			},
+			expected: `apiVersion: v1
+group: pd-inference
+roles:
+- components:
+  - base: pd-inference-prefill-{roleIndex}-{componentIndex}.s-pd-inference-prefill
+    name: leader
+    size: 1
+  - base: pd-inference-prefill-{roleIndex}-{componentIndex}.s-pd-inference-prefill
+    name: worker
+    offset: 1
+    size: 4
+  members: 1
+  name: prefill
+`,
+		},
+		{
+			name: "custom components with service override",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "pd-inference"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name:     "prefill",
+						Replicas: &replicas1,
+						Pattern: workloadsv1alpha2.Pattern{
+							CustomComponentsPattern: &workloadsv1alpha2.CustomComponentsPattern{
+								Components: []workloadsv1alpha2.InstanceComponent{
+									{Name: "leader", Size: ptr.To(int32(1))},
+									{Name: "worker", Size: ptr.To(int32(4)), ServiceName: "worker-svc"},
+								},
+							},
+						},
+					}},
+				},
+			},
+			expected: `apiVersion: v1
+group: pd-inference
+roles:
+- components:
+  - base: pd-inference-prefill-{roleIndex}-leader-{componentIndex}.s-pd-inference-prefill
+    name: leader
+    size: 1
+  - base: pd-inference-prefill-{roleIndex}-worker-{componentIndex}.worker-svc
+    name: worker
+    size: 4
+  members: 1
+  name: prefill
+`,
+		},
+		{
+			name: "rejects deprecated stateful workload types",
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "old-rbg"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+					Roles: []workloadsv1alpha2.RoleSpec{{
+						Name:     "prefill",
+						Replicas: &replicas1,
+						Annotations: map[string]string{
+							constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType,
+						},
+					}},
+				},
+			},
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			builder := NewConfigBuilder(
+				fake.NewClientBuilder().WithScheme(schema).Build(),
+				tt.rbg,
+				nil,
+			)
+			got, err := builder.BuildCompact()
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.expected, string(got))
+		})
+	}
+}
+
+func TestCompactMembershipDecoding(t *testing.T) {
+	// The reference decoder jumps ranges instead of expanding them. The KEP's
+	// extreme case must work without allocating billions of ordinals.
+	members, err := decodeCompactMembers(1, "0-2147483645")
+	require.NoError(t, err)
+	assert.Equal(t, []int{2147483646}, members)
+
+	members, err = decodeCompactMembers(3, "1,3")
+	require.NoError(t, err)
+	assert.Equal(t, []int{0, 2, 4}, members)
+
+	members, err = decodeCompactMembers(0, "1,3")
+	require.NoError(t, err)
+	assert.Empty(t, members)
+}
+
+func decodeCompactMembers(count int, excluded string) ([]int, error) {
+	ranges, err := ordinals.Parse(excluded)
+	if err != nil {
+		return nil, err
+	}
+	result := make([]int, 0, count)
+	for next := 0; len(result) < count; {
+		ordinal, err := ranges.Next(next)
+		if err != nil {
+			return nil, err
+		}
+		result = append(result, ordinal)
+		next = ordinal + 1
+	}
+	return result, nil
 }
 
 // TestConfigBuilder_getRoleNames tests the getRoleNames method of ConfigBuilder

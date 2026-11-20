@@ -22,6 +22,7 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleBasedGroupSetDefaulter normalizes legacy update-strategy type values in
@@ -42,6 +43,24 @@ func (d *RoleBasedGroupSetDefaulter) Default(_ context.Context, obj runtime.Obje
 	rbgset, ok := obj.(*RoleBasedGroupSet)
 	if !ok {
 		return fmt.Errorf("expected *RoleBasedGroupSet but got %T", obj)
+	}
+	// KEP-576: default only CREATE, and only inside the template that child
+	// RBGs inherit their annotations from. A missing template annotation on
+	// UPDATE keeps existing children on v1alpha1. A template with deprecated
+	// stateful roles cannot serialize compact content and defaults to
+	// v1alpha1 so the set controller can still recreate its children.
+	if rbgset.CreationTimestamp.IsZero() {
+		template := &rbgset.Spec.GroupTemplate
+		if template.Annotations == nil {
+			template.Annotations = make(map[string]string, 1)
+		}
+		if _, present := template.Annotations[constants.DiscoveryConfigVersionAnnotationKey]; !present {
+			version := constants.DiscoveryConfigVersionV1
+			if hasDeprecatedStatefulRole(rbgset.Spec.GroupTemplate.Spec.Roles) {
+				version = constants.DiscoveryConfigVersionV1Alpha1
+			}
+			template.Annotations[constants.DiscoveryConfigVersionAnnotationKey] = string(version)
+		}
 	}
 	if strategy := rbgset.Spec.RolloutStrategy; strategy != nil && strategy.Type == "" {
 		strategy.Type = InPlaceUpdateStrategyType

@@ -186,17 +186,21 @@ const (
 	AdapterPhaseBound    AdapterPhase = "Bound"
 )
 
-// ========== Discovery Config Mode ==========
+// ========== Discovery Config Version ==========
 
-// DiscoveryConfigMode defines the mode for discovery config
-type DiscoveryConfigMode string
+// DiscoveryConfigVersion selects the serialized content of the RBG discovery
+// ConfigMap. A missing annotation means v1alpha1 for existing objects; the
+// mutating webhook defaults new objects to v1.
+type DiscoveryConfigVersion string
 
 const (
-	// LegacyDiscoveryConfigMode uses legacy shared ConfigMap behavior
-	LegacyDiscoveryConfigMode DiscoveryConfigMode = "legacy"
+	// DiscoveryConfigVersionV1Alpha1 is the full per-instance enumeration. It
+	// has no apiVersion marker in the serialized content.
+	DiscoveryConfigVersionV1Alpha1 DiscoveryConfigVersion = "v1alpha1"
 
-	// RefineDiscoveryConfigMode enables refined shared ConfigMap behavior
-	RefineDiscoveryConfigMode DiscoveryConfigMode = "refine"
+	// DiscoveryConfigVersionV1 is the compact format defined by KEP-576. Its
+	// serialized content starts with apiVersion: v1.
+	DiscoveryConfigVersionV1 DiscoveryConfigVersion = "v1"
 )
 
 // IsStatefulRole checks if a role is stateful (uses InstanceSet/RoleInstanceSet or StatefulSet workload)

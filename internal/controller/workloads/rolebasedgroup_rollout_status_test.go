@@ -608,7 +608,7 @@ func TestRoleHashUpgradeConvergesWithoutChangingWorkloadTemplates(t *testing.T) 
 				ctx := context.Background()
 				rbg, objects := rolloutTestFixture(t, kind)
 				rbg.APIVersion, rbg.Kind = workloadsv1alpha2.GroupVersion.String(), "RoleBasedGroup"
-				rbg.Annotations = map[string]string{constants.DiscoveryConfigModeAnnotationKey: "refine", annotation: "true"}
+				rbg.Annotations = map[string]string{constants.DiscoveryConfigVersionAnnotationKey: "v1", annotation: "true"}
 				if annotation == constants.GroupExclusiveTopologyKey {
 					rbg.Annotations[annotation] = "kubernetes.io/hostname"
 				}

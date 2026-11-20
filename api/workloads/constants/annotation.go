@@ -139,8 +139,9 @@ const (
 	// Example: rbg.workloads.x-k8s.io/role-instance-gang-scheduling: "true"
 	RoleInstanceGangSchedulingAnnotationKey = RBGPrefix + "role-instance-gang-scheduling"
 
-	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
-	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
+	// DiscoveryConfigVersionAnnotationKey selects the serialized content version
+	// of the RBG discovery ConfigMap. Supported values are v1alpha1 and v1.
+	DiscoveryConfigVersionAnnotationKey = RBGPrefix + "discovery-config-version"
 
 	// RolloutRequestAnnotationKey carries an opaque token a managing controller changes with every
 	// write it needs acknowledged. The RoleBasedGroup controller copies it to

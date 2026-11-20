@@ -38,7 +38,7 @@ import (
 
 // These keys do not affect revision identity; PodGroupPolicy is still snapshotted with its effective configuration.
 var systemManagedAnnotationKeys = map[string]bool{
-	constants.DiscoveryConfigModeAnnotationKey:               true,
+	constants.DiscoveryConfigVersionAnnotationKey:            true,
 	constants.RolloutRequestAnnotationKey:                    true,
 	constants.ConversionV1alpha1CoordinationAnnotationKey:    true,
 	constants.ConversionV1alpha1PodGroupPolicyAnnotationKey:  true,

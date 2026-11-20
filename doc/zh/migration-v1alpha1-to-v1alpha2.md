@@ -74,26 +74,24 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
 
 ### discovery ConfigMap 前置条件
 
-discovery ConfigMap 是控制器创建的 Pod 发现信息（`config.yaml`），挂载到有状态 Role 的 Pod 上。v0.7.0 起，控制器把它从每个 Role 一份（各份内容相同）改为每个 RBG 一份，内容格式不变。每个 RBG 的模式记录在注解 `rbg.workloads.x-k8s.io/discovery-config-mode` 中（下文称发现模式），取值 `legacy` 或 `refine`；控制器只在 `refine` 模式下创建这个 ConfigMap。
+discovery ConfigMap 是控制器创建的 Pod 发现信息（`config.yaml`），挂载到有状态 Role 的 Pod 上。v0.7.0 起，控制器为每个 RBG 维护一份与 RBG 同名的 ConfigMap。KEP-576 移除了旧的 `discovery-config-mode` 选择器：控制器现在为每个含 stateful role 的 RBG 维护 `<rbg>`。原先固定在 `legacy` 的 RBG 会在下一次 reconcile 时开始接收 `<rbg>`；Pod 模板不变，因为 v0.7.0 及之后的版本已经挂载 `<rbg>`。
 
-迁移有状态 Role 前，按对象来源把发现模式切换为 `refine`：
+序列化内容由注解 `rbg.workloads.x-k8s.io/discovery-config-version` 选择：
 
-| 对象来源 | 发现模式 | 迁移前的动作 |
-| --- | --- | --- |
-| v0.7.0 及以后创建，或全新 v0.9.0 安装 | `refine` | 无需操作。 |
-| 从 v0.6.0 或更早版本升级上来 | 派生为 `legacy` | 把 RBG 的发现模式注解设为 `refine`，触发一次 reconcile。 |
-| RoleBasedGroupSet 子对象（任意来源） | `refine`（显式设置为 `legacy` 的除外） | 没有这个注解的子对象无需操作，v0.7.0 和 v0.8.0 留下的子对象就是这种状态：升级后第一次 reconcile 时，控制器会把它固定为 `refine`，并创建或更新它的 discovery ConfigMap。workload spec、revision 和 Pod 都不会变化。带有 `legacy` 的子对象会保持不变；要切换它，请在 `spec.groupTemplate.annotations` 中设置 `rbg.workloads.x-k8s.io/discovery-config-mode: refine`。set controller 会把模板注解应用到子对象上，除此之外保留子对象已有的模式。唯一的例外是被 set 接管的孤儿对象：除非模板声明了模式，接管时会把它设置为 `refine`，并丢弃它带有的任何 `legacy`。这不仅包括控制器在它没有 set 期间派生出的 `legacy`，也包括有人设置的 `legacy`，例如由之前拥有该子对象的 set 的模板写入的值；接管无法区分这两种情况。要让被接管的子对象保持 `legacy`，请在接管它的 set 的 `spec.groupTemplate.annotations` 中声明。 |
+| 注解值 | ConfigMap 内容 |
+| --- | --- |
+| 缺失或 `v1alpha1` | 历史的全量逐实例枚举 |
+| `v1` | KEP-576 的紧凑格式 |
 
-对普通 RoleBasedGroup，先设置注解，再确认与 RBG 同名的 ConfigMap 已创建：
+mutating webhook 会把新建 RBG 默认为 `v1`；没有该注解的存量 RBG 保持 `v1alpha1`。创建时如需退回旧行为，可将注解设为 `v1alpha1`。RoleBasedGroupSet 应把注解放在 `spec.groupTemplate.annotations`：子 RBG 会继承该值，直接改子对象注解会被 set controller 覆盖。
+
+迁移 stateful role 前，确认 RBG 级 ConfigMap 已存在：
 
 ```bash
-kubectl annotate rolebasedgroup RBG_NAME -n NAMESPACE \
-  rbg.workloads.x-k8s.io/discovery-config-mode=refine --overwrite
-# 确认 ConfigMap 存在后才开始迁移：
 kubectl get configmap RBG_NAME -n NAMESPACE
 ```
 
-只修改注解不会触发 reconcile：控制器只按 RoleBasedGroup 的 spec 变化入队，注解变化不入队。请重启控制器，或在注解变更的同时提交一次经过审批的 spec 变更，等待 ConfigMap 出现。若 Role 已按步骤 3 设为 `Stateless`，本节不适用：无状态 Role 不挂载 discovery ConfigMap。
+只修改注解也会触发 reconcile：RBG controller 会监听 discovery-config-version 注解。若 Role 已按步骤 3 设为 `Stateless`，本节不适用：无状态 Role 不挂载 discovery ConfigMap。
 
 ### 迁移操作
 

@@ -74,26 +74,24 @@ The inventory is an impact report, not a rollout decision. The operator decides 
 
 ### Discovery ConfigMap prerequisite
 
-The discovery ConfigMap is the Pod discovery information (`config.yaml`) the controller creates and mounts into the Pods of stateful roles. Since v0.7.0 the controller maintains one ConfigMap per RoleBasedGroup instead of one per role (identical copies); the content format is unchanged. Each RBG records its mode in the annotation `rbg.workloads.x-k8s.io/discovery-config-mode` (the discovery mode below), either `legacy` or `refine`; the controller creates the ConfigMap only in `refine` mode.
+The discovery ConfigMap is the Pod discovery information (`config.yaml`) the controller creates and mounts into the Pods of stateful roles. Since v0.7.0 the controller maintains one ConfigMap per RoleBasedGroup, named after the RBG. The legacy `discovery-config-mode` selector was removed with KEP-576: the controller now maintains `<rbg>` for every RBG with a stateful role. Existing RBGs previously pinned to `legacy` receive `<rbg>` at their next reconcile; Pod templates are unchanged because v0.7.0 and later already mount `<rbg>`.
 
-Before migrating a stateful role, switch the discovery mode to `refine` according to the object's origin:
+The serialized content is selected by the annotation `rbg.workloads.x-k8s.io/discovery-config-version`:
 
-| Object origin | Discovery mode | Action before migrating |
-| --- | --- | --- |
-| Created by v0.7.0 or later, or a fresh v0.9.0 install | `refine` | None. |
-| Upgraded from v0.6.0 or earlier | Derived `legacy` | Set the RBG's discovery-mode annotation to `refine` and trigger a reconcile. |
-| RoleBasedGroupSet child, any origin | `refine`, unless `legacy` was set explicitly | None for a child without the annotation, which is how v0.7.0 and v0.8.0 leave their children: at its first reconcile after the upgrade the controller pins it to `refine` and creates or updates its discovery ConfigMap. Workload specs, revisions and Pods do not change. A child that carries `legacy` keeps it. To move it, set `rbg.workloads.x-k8s.io/discovery-config-mode: refine` in `spec.groupTemplate.annotations`; the set controller applies template annotations to its children and otherwise keeps the mode a child has. The one exception is an orphan that a set adopts: unless the template declares a mode, the adoption sets the child to `refine` and discards any `legacy` it carries. That includes a `legacy` somebody set, for example through the template of the set that owned the child before, not only one the controller derived while the child had no set; the adoption cannot tell the two apart. To keep `legacy` on an adopted child, declare it in `spec.groupTemplate.annotations` of the adopting set. |
+| Annotation value | ConfigMap content |
+| --- | --- |
+| missing or `v1alpha1` | the historical full per-instance enumeration |
+| `v1` | the compact KEP-576 format |
 
-For a plain RoleBasedGroup, set the annotation and then verify the ConfigMap exists before migrating:
+The mutating webhook defaults new RBGs to `v1`; existing RBGs without the annotation keep `v1alpha1`. To opt out on creation, set the annotation to `v1alpha1`. For a RoleBasedGroupSet, put the annotation in `spec.groupTemplate.annotations`: child RBGs inherit it, and direct edits to a child annotation are overwritten by the set controller.
+
+Before migrating a stateful role, confirm the RBG-level ConfigMap exists:
 
 ```bash
-kubectl annotate rolebasedgroup RBG_NAME -n NAMESPACE \
-  rbg.workloads.x-k8s.io/discovery-config-mode=refine --overwrite
-# Confirm the ConfigMap exists before migrating:
 kubectl get configmap RBG_NAME -n NAMESPACE
 ```
 
-An annotation-only change does not enqueue a reconcile: the controller watches RoleBasedGroup spec changes, not annotation changes. Restart the controller, or submit an approved spec change alongside the annotation, and wait for the ConfigMap to appear before continuing. This prerequisite does not apply to a Deployment role switched to `Stateless` in step 3 below: stateless roles do not mount the ConfigMap.
+Annotation-only changes enqueue a reconcile: the RBG controller watches the discovery-config-version annotation. This prerequisite does not apply to a Deployment role switched to `Stateless` in step 3 below: stateless roles do not mount the ConfigMap.
 
 ### Migration steps
 
