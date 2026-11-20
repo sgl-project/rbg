@@ -27,6 +27,8 @@ import (
 	. "github.com/onsi/gomega"
 	apps "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/client-go/util/csaupgrade"
@@ -44,7 +46,8 @@ import (
 // onto its RoleInstanceSet leaves the key behind as rbg-owned metadata. These specs
 // seed that state and check that the next reconcile removes the key, and nothing
 // else, on both writers: server-side apply on the ordinary path and the merge
-// patch of the selective-membership path.
+// patch of the selective-membership path. The deprecated workload types get the
+// same check for server-side apply.
 var _ = Describe("Recover annotation on a role", func() {
 	const (
 		timeout    = 30 * time.Second
@@ -164,11 +167,11 @@ var _ = Describe("Recover annotation on a role", func() {
 		}, 3*time.Second, interval).Should(Succeed())
 	}
 
-	// appliedAnnotationKeys lists the annotations the rbg field manager owns on the
-	// set through server-side apply.
-	appliedAnnotationKeys := func(set *workloadsv1alpha2.RoleInstanceSet) []string {
+	// appliedAnnotationKeys lists the annotations the rbg field manager owns through
+	// server-side apply.
+	appliedAnnotationKeys := func(managedFields []metav1.ManagedFieldsEntry) []string {
 		var keys []string
-		for _, entry := range set.ManagedFields {
+		for _, entry := range managedFields {
 			if entry.Manager != utils.FieldManager || entry.Operation != metav1.ManagedFieldsOperationApply ||
 				entry.Subresource != "" || entry.FieldsV1 == nil {
 				continue
@@ -180,6 +183,17 @@ var _ = Describe("Recover annotation on a role", func() {
 			}
 		}
 		return keys
+	}
+
+	// podTemplate returns the stored pod template of a workload object in a
+	// comparable form.
+	podTemplate := func(g Gomega, obj client.Object) any {
+		content, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
+		g.Expect(err).NotTo(HaveOccurred())
+		template, found, err := unstructured.NestedMap(content, "spec", "template")
+		g.Expect(err).NotTo(HaveOccurred())
+		g.Expect(found).To(BeTrue())
+		return template
 	}
 
 	It("is removed from a RoleInstanceSet that carries it through server-side apply", func() {
@@ -206,7 +220,7 @@ var _ = Describe("Recover annotation on a role", func() {
 			}
 			return testutil.K8sClient.Patch(testutil.Ctx, set, client.RawPatch(types.JSONPatchType, patch))
 		})).To(Succeed())
-		Expect(appliedAnnotationKeys(getSet(Default))).To(ContainElement(constants.RoleInstanceRecoverAnnotationKey))
+		Expect(appliedAnnotationKeys(getSet(Default).ManagedFields)).To(ContainElement(constants.RoleInstanceRecoverAnnotationKey))
 
 		reconcileGroup()
 
@@ -247,4 +261,91 @@ var _ = Describe("Recover annotation on a role", func() {
 		Expect(err).NotTo(HaveOccurred())
 		Expect(members).To(Equal([]int{0, 2}))
 	})
+
+	// The deprecated workload types are written with server-side apply from their
+	// creation on, so an earlier build left the key in the Apply entry of the rbg
+	// field manager. They must lose it the same way, and only it.
+	DescribeTable("is removed from a deprecated workload that carries it", func(kind string, workload client.Object) {
+		role := wrappers.BuildStandaloneRole("legacy").WithReplicas(1).
+			WithWorkload("apps/v1", kind).
+			WithAnnotations(map[string]string{
+				constants.RoleInstanceRecoverAnnotationKey: "true",
+				"team": "a",
+			}).Obj()
+		group := wrappers.BuildBasicRoleBasedGroup("deprecated", namespace).
+			WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+		Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
+		workloadKey := client.ObjectKey{Namespace: namespace, Name: group.GetWorkloadName(&role)}
+		roleHashKey := fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, role.Name)
+		get := func(g Gomega) client.Object {
+			live := workload.DeepCopyObject().(client.Object)
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, workloadKey, live)).To(Succeed())
+			return live
+		}
+
+		Eventually(func(g Gomega) {
+			live := get(g)
+			g.Expect(live.GetLabels()[roleHashKey]).NotTo(BeEmpty())
+			g.Expect(live.GetAnnotations()).To(HaveKeyWithValue("team", "a"))
+			g.Expect(live.GetAnnotations()).NotTo(HaveKey(constants.RoleInstanceRecoverAnnotationKey))
+		}, timeout, interval).Should(Succeed())
+
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			live := get(Default)
+			old := live.DeepCopyObject().(client.Object)
+			annotations := live.GetAnnotations()
+			annotations[foreignKey] = "someone-else"
+			live.SetAnnotations(annotations)
+			return testutil.K8sClient.Patch(testutil.Ctx, live, client.MergeFrom(old), client.FieldOwner("someone-else"))
+		})).To(Succeed())
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			live := get(Default)
+			old := live.DeepCopyObject().(client.Object)
+			annotations := live.GetAnnotations()
+			annotations[constants.RoleInstanceRecoverAnnotationKey] = "true"
+			live.SetAnnotations(annotations)
+			if err := testutil.K8sClient.Patch(testutil.Ctx, live, client.MergeFrom(old),
+				client.FieldOwner(utils.FieldManager)); err != nil {
+				return err
+			}
+			patch, err := csaupgrade.UpgradeManagedFieldsPatch(live, sets.New(utils.FieldManager), utils.FieldManager)
+			if err != nil || patch == nil {
+				return err
+			}
+			return testutil.K8sClient.Patch(testutil.Ctx, live, client.RawPatch(types.JSONPatchType, patch))
+		})).To(Succeed())
+		seeded := get(Default)
+		Expect(appliedAnnotationKeys(seeded.GetManagedFields())).To(ContainElement(constants.RoleInstanceRecoverAnnotationKey))
+		hash, template := seeded.GetLabels()[roleHashKey], podTemplate(Default, seeded)
+
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			live := &workloadsv1alpha2.RoleBasedGroup{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(group), live); err != nil {
+				return err
+			}
+			if live.Annotations == nil {
+				live.Annotations = map[string]string{}
+			}
+			live.Annotations["example.com/touched"] = time.Now().Format(time.RFC3339Nano)
+			return testutil.K8sClient.Update(testutil.Ctx, live)
+		})).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			g.Expect(get(g).GetAnnotations()).NotTo(HaveKey(constants.RoleInstanceRecoverAnnotationKey))
+		}, timeout, interval).Should(Succeed())
+		Consistently(func(g Gomega) {
+			live := get(g)
+			g.Expect(live.GetAnnotations()).NotTo(HaveKey(constants.RoleInstanceRecoverAnnotationKey))
+			g.Expect(live.GetAnnotations()).To(HaveKeyWithValue(foreignKey, "someone-else"))
+			g.Expect(live.GetAnnotations()).To(HaveKeyWithValue("team", "a"))
+			g.Expect(live.GetLabels()[roleHashKey]).To(Equal(hash))
+			// The pod template is compared instead of the generation. The API server
+			// also moves a Deployment's generation when only its annotations change,
+			// and the StatefulSet reconciler manages the partition on its own.
+			g.Expect(podTemplate(g, live)).To(Equal(template))
+		}, 3*time.Second, interval).Should(Succeed())
+	},
+		Entry("Deployment", "Deployment", &apps.Deployment{}),
+		Entry("StatefulSet", "StatefulSet", &apps.StatefulSet{}),
+	)
 })
