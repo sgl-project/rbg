@@ -115,6 +115,7 @@ func getPatch(set *workloadsv1alpha2.RoleInstanceSet) ([]byte, error) {
 		return nil, fmt.Errorf("instanceTemplate field is not a map[string]interface{}")
 	}
 
+	delete(template, "lifecycle")
 	specCopy["roleInstanceTemplate"] = template
 	template["$patch"] = "replace"
 	objCopy["spec"] = specCopy
@@ -134,6 +135,9 @@ func ApplyRevision(set *workloadsv1alpha2.RoleInstanceSet, revision *apps.Contro
 	if err != nil {
 		return nil, err
 	}
+	// KEP-527 lifecycle snapshots are controller-propagated metadata, not rollout
+	// inputs. Revisions intentionally omit them, so restore the live snapshot.
+	restoredSet.Spec.RoleInstanceTemplate.Lifecycle = set.Spec.RoleInstanceTemplate.Lifecycle.DeepCopy()
 	return restoredSet, nil
 }
 

@@ -150,3 +150,23 @@ webhooks:
     resources:
     - rolebasedgroupsets
   sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: webhook-service
+      namespace: system
+      path: /validate-workloads-x-k8s-io-v1alpha2-roleinstanceset
+  failurePolicy: Fail
+  name: vroleinstanceset.kb.io
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - CREATE
+    - UPDATE
+    resources:
+    - roleinstancesets
+  sideEffects: None

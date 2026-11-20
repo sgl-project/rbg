@@ -44,6 +44,7 @@ import (
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceupdatepod "sigs.k8s.io/rbgs/pkg/inplace/pod"
+	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -63,6 +64,7 @@ func NewReconciler(mgr ctrl.Manager, bindings *synccontrol.NodeBindingStore) rec
 		statusUpdater:         newStatusUpdater(c, mgr.GetAPIReader()),
 		revisionControl:       revisioncontrol.NewRevisionControl(),
 		syncControl:           synccontrol.New(c, mgr.GetAPIReader(), recorder, bindings),
+		hookControl:           lifecycle.NewHookControl(c),
 		revisionEqualityCache: lru.New(pkgutils.MaxRevisionEqualityCacheEntries),
 	}
 }
@@ -75,6 +77,7 @@ type reconciler struct {
 	revisionControl   revisioncontrol.Interface
 	syncControl       synccontrol.Interface
 	recorder          record.EventRecorder
+	hookControl       *lifecycle.HookControl
 	// revisionEqualityCache caches semantic revision equality results to avoid
 	// expensive ApplyRevision + buildPatch reconstruction on every reconcile.
 	revisionEqualityCache *lru.Cache
@@ -104,6 +107,13 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	// caused by precondition failures when the object's UID becomes empty during foreground deletion.
 	if instance.DeletionTimestamp != nil {
 		r.syncControl.ClearRestarting(instance)
+		blocked, err := r.reconcileLifecycleDeletion(ctx, instance)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+		if blocked {
+			return reconcile.Result{RequeueAfter: lifecycleHookRequeue}, nil
+		}
 		return reconcile.Result{}, r.syncControl.CleanupRestartBudget(ctx, instance)
 	}
 
@@ -149,15 +159,28 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 	*newStatus.CollisionCount = collisionCount
 
-	res := r.syncInstance(ctx, instance, &newStatus, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
-
 	phaseFacts := r.phaseFacts(instance, &newStatus, filteredPods)
+	lifecycleResult, err := r.prepareLifecycleOperation(ctx, instance, &newStatus, phaseFacts, filteredPods)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	var res syncResult
+	if lifecycleResult.blocked {
+		res = syncResult{requeue: lifecycleHookRequeue}
+	} else {
+		res = r.syncInstance(ctx, instance, &newStatus, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
+		phaseFacts = r.phaseFacts(instance, &newStatus, filteredPods)
+	}
 	newStatus.Phase = nextRoleInstancePhase(instance.Status.Phase, phaseFacts)
 	if phaseCompletionSatisfied(phaseFacts, &newStatus) {
 		// Latch phase completion separately from serving readiness: external
 		// readiness gates must not keep spec-driven updates classified as
 		// active after the controller-observed work has converged.
 		newStatus.LastPhaseCompleteGeneration = instance.Generation
+	}
+	if err := r.finishLifecycleOperation(ctx, instance, &newStatus, phaseFacts, lifecycleResult.operation, filteredPods); err != nil {
+		return reconcile.Result{}, err
 	}
 
 	if err = r.statusUpdater.UpdateInstanceStatus(ctx, instance, &newStatus, filteredPods); err != nil {

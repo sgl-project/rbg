@@ -60,6 +60,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadscontroller "sigs.k8s.io/rbgs/internal/controller/workloads"
+	"sigs.k8s.io/rbgs/pkg/features"
 	instancesync "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	"sigs.k8s.io/rbgs/pkg/scheduler"
 	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
@@ -153,6 +154,8 @@ func main() {
 		pprofAddr   string
 		// Deprecated workload types: when false, Deployment/StatefulSet/LeaderWorkerSet support is off
 		enableDeprecatedWorkloadTypes bool
+		// KEP-527 RoleInstance lifecycle hooks
+		enableRoleInstanceLifecycleHooks bool
 	)
 	flag.StringVar(
 		&metricsAddr, "metrics-bind-address", "0", "The address the metrics endpoint binds to. "+
@@ -225,6 +228,10 @@ func main() {
 			"Enabled by default during migration. New uses are rejected in both modes; existing roles are accepted "+
 			"only while this flag is true. Set false after every role has migrated to RoleInstanceSet.",
 	)
+	flag.BoolVar(
+		&enableRoleInstanceLifecycleHooks, "feature-role-instance-lifecycle-hooks", false,
+		"Enable the KEP-527 RoleInstance lifecycle-hook protocol (preUpdate, preRecover, postReady, and preDelete).",
+	)
 
 	// Register logger flags before Parse so that zap flags (--zap-log-level etc.) are recognized.
 	opts := zap.Options{
@@ -247,6 +254,7 @@ func main() {
 	opts.BindFlags(flag.CommandLine)
 
 	flag.Parse()
+	features.SetRoleInstanceLifecycleHooks(enableRoleInstanceLifecycleHooks)
 
 	// Validate webhook mode to prevent typos silently disabling webhooks.
 	if err := validateWebhookMode(webhookMode); err != nil {

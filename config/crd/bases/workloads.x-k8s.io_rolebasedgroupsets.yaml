@@ -33980,6 +33980,72 @@ spec:
                               x-kubernetes-validations:
                               - message: template and templateRef are mutually exclusive
                                 rule: '!(has(self.template) && has(self.templateRef))'
+                            lifecycle:
+                              description: Lifecycle defines the KEP-527 RoleInstance
+                                lifecycle hooks for this role.
+                              properties:
+                                postReady:
+                                  description: |-
+                                    PostReady runs asynchronously after a controlled operation reaches
+                                    workload readiness.
+                                  properties:
+                                    signalLabels:
+                                      additionalProperties:
+                                        type: string
+                                      description: |-
+                                        SignalLabels defines the exact labels used to coordinate this hook.
+                                        It must contain at least one entry.
+                                      minProperties: 1
+                                      type: object
+                                  required:
+                                  - signalLabels
+                                  type: object
+                                preDelete:
+                                  description: PreDelete runs before final member-Pod
+                                    deletion.
+                                  properties:
+                                    signalLabels:
+                                      additionalProperties:
+                                        type: string
+                                      description: |-
+                                        SignalLabels defines the exact labels used to coordinate this hook.
+                                        It must contain at least one entry.
+                                      minProperties: 1
+                                      type: object
+                                  required:
+                                  - signalLabels
+                                  type: object
+                                preRecover:
+                                  description: PreRecover runs before restoring missing
+                                    or failed Pods.
+                                  properties:
+                                    signalLabels:
+                                      additionalProperties:
+                                        type: string
+                                      description: |-
+                                        SignalLabels defines the exact labels used to coordinate this hook.
+                                        It must contain at least one entry.
+                                      minProperties: 1
+                                      type: object
+                                  required:
+                                  - signalLabels
+                                  type: object
+                                preUpdate:
+                                  description: PreUpdate runs before the first Pod
+                                    change of an update.
+                                  properties:
+                                    signalLabels:
+                                      additionalProperties:
+                                        type: string
+                                      description: |-
+                                        SignalLabels defines the exact labels used to coordinate this hook.
+                                        It must contain at least one entry.
+                                      minProperties: 1
+                                      type: object
+                                  required:
+                                  - signalLabels
+                                  type: object
+                              type: object
                             minReadySeconds:
                               default: 0
                               description: MinReadySeconds is the minimum number of

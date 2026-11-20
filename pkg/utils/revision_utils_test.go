@@ -645,6 +645,31 @@ func TestGetRolesRevisionHash(t *testing.T) {
 			assert.Equal(t, result1, result2)
 		}
 	})
+
+	t.Run("LifecycleOnlyChangeDoesNotChangeRoleHash", func(t *testing.T) {
+		scheme := runtime.NewScheme()
+		_ = workloadsv1alpha2.AddToScheme(scheme)
+		_ = appsv1.AddToScheme(scheme)
+		ctx := context.Background()
+		client := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+		rbg := getRBG()
+		baseRevision, err := NewRevision(ctx, client, rbg, nil)
+		assert.NoError(t, err)
+		baseHash, err := GetRolesRevisionHash(baseRevision)
+		assert.NoError(t, err)
+
+		rbg.Spec.Roles[0].Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+			PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+				SignalLabels: map[string]string{"example.com/delete": "true"},
+			},
+		}
+		lifecycleRevision, err := NewRevision(ctx, client, rbg, nil)
+		assert.NoError(t, err)
+		lifecycleHash, err := GetRolesRevisionHash(lifecycleRevision)
+		assert.NoError(t, err)
+		assert.Equal(t, baseHash, lifecycleHash)
+	})
 }
 
 func TestAddGroupAnnotationsToRoleHashes(t *testing.T) {

@@ -39,6 +39,7 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
+            - --feature-role-instance-lifecycle-hooks=false
           env:
             - name: POD_NAMESPACE
               valueFrom:

@@ -49,6 +49,44 @@ type RoleInstanceSpec struct {
 
 	// ReadinessGates is an optional list of PodReadinessGates for the whole RoleInstance.
 	ReadinessGates []RoleInstanceReadinessGate `json:"readinessGates,omitempty"`
+
+	// Lifecycle is the effective KEP-527 RoleInstance lifecycle-hook snapshot.
+	// The owning RoleInstanceSet copies the desired configuration here; users
+	// must not edit it directly.
+	// +optional
+	Lifecycle *RoleInstanceLifecycle `json:"lifecycle,omitempty"`
+}
+
+// RoleInstanceLifecycle defines instance-level hooks coordinated by the
+// RoleInstance controller. Every hook contains only signalLabels and no hook
+// changes RoleInstance readiness.
+type RoleInstanceLifecycle struct {
+	// PreUpdate runs before the first Pod change of an update.
+	// +optional
+	PreUpdate *RoleInstanceLifecycleHook `json:"preUpdate,omitempty"`
+
+	// PreRecover runs before restoring missing or failed Pods.
+	// +optional
+	PreRecover *RoleInstanceLifecycleHook `json:"preRecover,omitempty"`
+
+	// PostReady runs asynchronously after a controlled operation reaches
+	// workload readiness.
+	// +optional
+	PostReady *RoleInstanceLifecycleHook `json:"postReady,omitempty"`
+
+	// PreDelete runs before final member-Pod deletion.
+	// +optional
+	PreDelete *RoleInstanceLifecycleHook `json:"preDelete,omitempty"`
+}
+
+// RoleInstanceLifecycleHook is one KEP-527 lifecycle hook. The controller
+// writes signalLabels when the hook is triggered and an executor removes them
+// after success or cancellation.
+type RoleInstanceLifecycleHook struct {
+	// SignalLabels defines the exact labels used to coordinate this hook.
+	// It must contain at least one entry.
+	// +kubebuilder:validation:MinProperties=1
+	SignalLabels map[string]string `json:"signalLabels"`
 }
 
 // RoleInstanceReadinessGate contains the reference to a RoleInstance condition
@@ -304,10 +342,8 @@ const (
 	RoleInstanceProgressing RoleInstanceConditionType = "Progressing"
 )
 
-// RoleInstancePhase is the instance-level lifecycle phase of a RoleInstance. Deletion is
-// not a phase: it is indicated by metadata.deletionTimestamp, and the controller stops
-// writing status once it is set.
-// +kubebuilder:validation:Enum={Creating,Running,Updating,Recovering}
+// RoleInstancePhase is the instance-level lifecycle phase of a RoleInstance.
+// +kubebuilder:validation:Enum={Creating,Running,Updating,Recovering,Terminating}
 type RoleInstancePhase string
 
 const (
@@ -327,6 +363,10 @@ const (
 	// RoleInstancePhaseRecovering means independent recreation or replacement of required
 	// Pods is in progress outside an update.
 	RoleInstancePhaseRecovering RoleInstancePhase = "Recovering"
+
+	// RoleInstancePhaseTerminating means preDelete coordination and final member-Pod
+	// cleanup are in progress.
+	RoleInstancePhaseTerminating RoleInstancePhase = "Terminating"
 )
 
 // RoleInstance Progressing reasons. Reason strings are scoped to the object that owns

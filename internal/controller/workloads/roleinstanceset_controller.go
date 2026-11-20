@@ -38,6 +38,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/features"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statefulmode"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -95,6 +96,9 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 	} else if requeue {
 		return reconcile.Result{RequeueAfter: time.Second}, nil
 	}
+	if err := r.syncRoleInstanceLifecycleSnapshots(ctx, set); err != nil {
+		return reconcile.Result{}, err
+	}
 
 	// Dispatch based on the role instance pattern annotation
 	pattern := constants.InstancePatternType(set.Annotations[constants.RoleInstancePatternKey])
@@ -109,6 +113,52 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		r.recorder.Event(set, corev1.EventTypeWarning, "UnknownRoleInstancePattern", err.Error())
 		return reconcile.Result{}, err
 	}
+}
+
+// syncRoleInstanceLifecycleSnapshots propagates the desired KEP-527 lifecycle
+// configuration to existing RoleInstances without changing the workload
+// revision. A lifecycle-only generation is latched as phase-complete when the
+// instance is already Running, so it does not enter preUpdate or roll Pods.
+func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx context.Context, set *v1alpha2.RoleInstanceSet) error {
+	if set.DeletionTimestamp != nil || !features.RoleInstanceLifecycleHooksEnabled() {
+		return nil
+	}
+	desired := set.Spec.RoleInstanceTemplate.Lifecycle
+	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
+	if err != nil {
+		return err
+	}
+	instanceList := &v1alpha2.RoleInstanceList{}
+	if err := r.client.List(ctx, instanceList,
+		client.InNamespace(set.Namespace),
+		client.MatchingLabelsSelector{Selector: selector},
+	); err != nil {
+		return err
+	}
+	for i := range instanceList.Items {
+		instance := &instanceList.Items[i]
+		if !metav1.IsControlledBy(instance, set) {
+			continue
+		}
+		if equality.Semantic.DeepEqual(instance.Spec.Lifecycle, desired) {
+			continue
+		}
+		base := instance.DeepCopy()
+		instance.Spec.Lifecycle = desired.DeepCopy()
+		if err := r.client.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
+			return err
+		}
+		if instance.Status.Phase != v1alpha2.RoleInstancePhaseRunning ||
+			instance.Status.LastPhaseCompleteGeneration >= instance.Generation {
+			continue
+		}
+		statusBase := instance.DeepCopy()
+		instance.Status.LastPhaseCompleteGeneration = instance.Generation
+		if err := r.client.Status().Patch(ctx, instance, client.MergeFrom(statusBase)); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 const invalidCommittedOrdinalsReason = "InvalidCommittedOrdinals"
