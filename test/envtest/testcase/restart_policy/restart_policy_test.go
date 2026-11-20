@@ -1004,7 +1004,8 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 
 			// Before the fix, the Restarting guard stayed armed until Ready, so this
 			// pre-Ready failure could never start a second recreation (#563).
-			secondGeneration := getPodUIDs(listRolePods(rbgName, roleName))
+			rebuiltPods := listRolePods(rbgName, roleName)
+			secondGeneration := getPodUIDs(rebuiltPods)
 
 			// The completed wave's own cascade must not silently re-trigger:
 			// no further recreation happens until the next fault is injected.
@@ -1016,7 +1017,7 @@ var _ = Describe("RestartPolicy Controller Integration", func() {
 			}, 2*time.Second, interval).Should(Succeed(),
 				"the completed wave must not re-trigger itself")
 
-			updatePodStatus(&podList.Items[0], func(pod *corev1.Pod) bool {
+			updatePodStatus(&rebuiltPods.Items[0], func(pod *corev1.Pod) bool {
 				if len(pod.Status.ContainerStatuses) == 0 {
 					pod.Status.ContainerStatuses = []corev1.ContainerStatus{{Name: "main"}}
 				}
