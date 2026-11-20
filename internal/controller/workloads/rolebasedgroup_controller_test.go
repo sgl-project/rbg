@@ -3066,7 +3066,7 @@ func TestUpdateRBGStatusPreservesMissingChildEvidence(t *testing.T) {
 		},
 	}).Build()
 	r := &RoleBasedGroupReconciler{client: c}
-	if err := r.updateRBGStatus(ctx, rbg, observed, nil, nil); err != nil {
+	if err := r.updateRBGStatus(ctx, rbg, observed, false, nil, nil); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {

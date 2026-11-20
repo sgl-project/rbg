@@ -311,26 +311,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// A conflict in one role must not classify the whole joined error either:
 	// apierrors.IsConflict reports a match as soon as one constituent carries
 	// it, which would hide a quota or permission failure from another role.
-	roleFailures := withoutConflicts(roleErr)
-	if len(roleFailures) > 0 {
-		roleFailure := stderrors.Join(roleFailures...)
-		reason := setprogressing.ClassifySetOperationError(roleFailure)
-		if stderrors.Is(roleErr, errInvalidRoleSpec) {
-			reason = constants.ProgressingReasonInvalidSpec
-		}
-		if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, entryBlocker, reason, roleFailure.Error()); reportErr != nil {
-			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for role reconcile failure")
-		}
-	} else if entryBlocker != nil && roleErr == nil {
-		// The previously blocked role operation succeeded: finalize the condition
-		// from a fresh observation without the carried entry blocker, so the
-		// confirmed family is cleared by the successful retry instead of persisting.
-		// A conflict-only failure is not success: the optimistic-lock retry has
-		// not observed the operation outcome, so the entry blocker is retained.
-		if err := r.finalizeRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash); err != nil {
-			log.FromContext(ctx).Error(err, "Failed to finalize Progressing condition after successful role reconcile")
-		}
-	}
+	r.reportRoleReconcileOutcome(ctx, rbg, roleErr, roleStatuses, expectedRolesRevisionHash, entryBlocker)
 	// Step 9: Cleanup orphaned resources.
 	if err := stderrors.Join(roleErr, r.cleanup(ctx, rbg)); err != nil {
 		return ctrl.Result{}, err
@@ -347,6 +328,40 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{RequeueAfter: 2 * time.Second}, nil
 	}
 	return ctrl.Result{}, nil
+}
+
+func (r *RoleBasedGroupReconciler) reportRoleReconcileOutcome(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	roleErr error,
+	roleStatuses []workloadsv1alpha2.RoleStatus,
+	expectedRolesRevisionHash map[string]string,
+	entryBlocker *metav1.Condition,
+) {
+	roleFailures := withoutConflicts(roleErr)
+	if len(roleFailures) == 0 {
+		if entryBlocker == nil || roleErr != nil {
+			return
+		}
+		// The previously blocked role operation succeeded: finalize the condition
+		// from a fresh observation without the carried entry blocker, so the
+		// confirmed family is cleared by the successful retry instead of persisting.
+		// A conflict-only failure is not success: the optimistic-lock retry has
+		// not observed the operation outcome, so the entry blocker is retained.
+		if err := r.finalizeRBGProgressingCondition(ctx, rbg, roleStatuses, expectedRolesRevisionHash); err != nil {
+			log.FromContext(ctx).Error(err, "Failed to finalize Progressing condition after successful role reconcile")
+		}
+		return
+	}
+
+	roleFailure := stderrors.Join(roleFailures...)
+	reason := setprogressing.ClassifySetOperationError(roleFailure)
+	if stderrors.Is(roleErr, errInvalidRoleSpec) {
+		reason = constants.ProgressingReasonInvalidSpec
+	}
+	if reportErr := r.reportRBGProgressingBlocker(ctx, rbg, entryBlocker, reason, roleFailure.Error()); reportErr != nil {
+		log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for role reconcile failure")
+	}
 }
 
 // withoutConflicts flattens a joined or aggregated role-reconcile error and

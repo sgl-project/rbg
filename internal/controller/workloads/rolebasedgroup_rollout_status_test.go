@@ -515,7 +515,7 @@ func TestConstructRoleStatusesPublishesRolloutBarrier(t *testing.T) {
 			reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
 			r := &RoleBasedGroupReconciler{client: c, apiReader: reader, scheme: scheme, recorder: record.NewFakeRecorder(10),
 				workloadReconciler: make(map[string]reconciler.WorkloadReconciler)}
-			_, err := r.constructAndUpdateRoleStatuses(ctx, rbg, map[string]string{"role": "target"})
+			_, err := r.constructAndUpdateRoleStatuses(ctx, rbg, map[string]string{"role": "target"}, nil)
 			require.NoError(t, err)
 			assert.Equal(t, 1, patches)
 			got := &workloadsv1alpha2.RoleBasedGroup{}
@@ -571,7 +571,7 @@ func TestPostApplicationRolloutCompletion(t *testing.T) {
 			r := &RoleBasedGroupReconciler{client: c, apiReader: c, scheme: scheme, recorder: record.NewFakeRecorder(10),
 				workloadReconciler: make(map[string]reconciler.WorkloadReconciler)}
 			expected := map[string]string{"role": "target"}
-			_, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expected)
+			_, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expected, nil)
 			require.NoError(t, err)
 			require.True(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
 			require.NoError(t, r.finalizeRolloutStatus(ctx, rbg, expected))
@@ -662,7 +662,7 @@ func TestRoleHashUpgradeConvergesWithoutChangingWorkloadTemplates(t *testing.T) 
 				expected, err := r.handleRevisions(ctx, rbg)
 				require.NoError(t, err)
 				require.NotEqual(t, legacyHashes[role.Name], expected[role.Name], "the old fixture must exercise the changed hash recipe")
-				_, err = r.constructAndUpdateRoleStatuses(ctx, rbg, expected)
+				_, err = r.constructAndUpdateRoleStatuses(ctx, rbg, expected, nil)
 				require.NoError(t, err)
 				require.True(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
 				require.NoError(t, rec.Reconciler(ctx, rbg, role.DeepCopy(), nil, expected[role.Name]))
@@ -778,7 +778,7 @@ func TestConstructRoleStatusesWaitsForEveryRole(t *testing.T) {
 	r := &RoleBasedGroupReconciler{client: c, apiReader: c, scheme: scheme, recorder: record.NewFakeRecorder(10),
 		workloadReconciler: make(map[string]reconciler.WorkloadReconciler)}
 	expected := map[string]string{"role": "target", "other": "other-target"}
-	_, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expected)
+	_, err := r.constructAndUpdateRoleStatuses(ctx, rbg, expected, nil)
 	require.NoError(t, err)
 	assert.True(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupReady)))
 	assert.True(t, apimeta.IsStatusConditionTrue(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
@@ -788,7 +788,7 @@ func TestConstructRoleStatusesWaitsForEveryRole(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(first), current))
 	current.Labels[fmt.Sprintf(constants.RoleRevisionLabelKeyFmt, "role")] = "target"
 	require.NoError(t, c.Update(ctx, current))
-	_, err = r.constructAndUpdateRoleStatuses(ctx, rbg, expected)
+	_, err = r.constructAndUpdateRoleStatuses(ctx, rbg, expected, nil)
 	require.NoError(t, err)
 	assert.True(t, apimeta.IsStatusConditionFalse(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
 }
@@ -806,18 +806,18 @@ func TestUpdateRBGStatusUpdatedReplicasOnly(t *testing.T) {
 		}).Build()
 	r := &RoleBasedGroupReconciler{client: c, apiReader: c}
 	statuses := []workloadsv1alpha2.RoleStatus{{Name: "role", Replicas: 1, ReadyReplicas: 1}}
-	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, false))
+	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, false, nil, nil))
 	statuses[0].UpdatedReplicas = 1
-	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, false))
+	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, false, nil, nil))
 	assert.Equal(t, 2, patches)
 	got := &workloadsv1alpha2.RoleBasedGroup{}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(rbg), got))
 	assert.Equal(t, int32(1), got.Status.RoleStatuses[0].UpdatedReplicas)
-	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, false))
+	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, false, nil, nil))
 	assert.Equal(t, 2, patches, "unchanged status should not be patched")
 	// Same condition status, new generation must still publish a fresh barrier.
 	rbg.Generation++
-	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, false))
+	require.NoError(t, r.updateRBGStatus(ctx, rbg, statuses, false, nil, nil))
 	assert.Equal(t, 3, patches)
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(rbg), got))
 	condition := apimeta.FindStatusCondition(got.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress))
