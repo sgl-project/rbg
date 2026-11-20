@@ -134,6 +134,61 @@ func (r Ranges) Members(replicas int) ([]int, error) {
 	return result, nil
 }
 
+// Summarize returns the canonical hole record for the first replicas allowed
+// ordinals without materializing them. The member count is replicas; an empty
+// record means dense membership. It is the range-jumping counterpart of Members
+// followed by Record and must stay equivalent to them.
+func Summarize(replicas int, excluded Ranges) (string, error) {
+	if replicas < 0 {
+		return "", fmt.Errorf("negative replica count %d", replicas)
+	}
+	if replicas == 0 {
+		return "", nil
+	}
+
+	// Find the last selected ordinal: the replicas-th allowed ordinal.
+	last := int64(replicas) - 1
+	excludedBefore := int64(0)
+	found := false
+	for _, interval := range excluded.intervals {
+		allowedBefore := int64(interval.first) - excludedBefore
+		if int64(replicas) <= allowedBefore {
+			last += excludedBefore
+			found = true
+			break
+		}
+		excludedBefore += int64(interval.last) - int64(interval.first) + 1
+	}
+	if !found {
+		last += excludedBefore
+	}
+	if last < 0 || last > MaxOrdinal {
+		return "", fmt.Errorf("no available ordinal for replica %d", replicas)
+	}
+
+	// Holes are the excluded ordinals at or below the last selected ordinal.
+	var entries []string
+	for _, interval := range excluded.intervals {
+		if int64(interval.first) > last {
+			break
+		}
+		lo := int64(interval.first)
+		hi := int64(interval.last)
+		if hi > last {
+			hi = last
+		}
+		if lo > hi {
+			continue
+		}
+		entry := strconv.Itoa(int(lo))
+		if hi > lo {
+			entry += "-" + strconv.Itoa(int(hi))
+		}
+		entries = append(entries, entry)
+	}
+	return strings.Join(entries, ","), nil
+}
+
 // Select keeps membership at fixed count, prefers excluded members on scale-in,
 // and allocates the lowest unused nonexcluded ordinals on scale-out.
 func Select(current []int, replicas int, excluded Ranges) ([]int, error) {

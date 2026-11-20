@@ -143,6 +143,12 @@ const (
 	// of the RBG discovery ConfigMap. Supported values are v1alpha1 and v1.
 	DiscoveryConfigVersionAnnotationKey = RBGPrefix + "discovery-config-version"
 
+	// DiscoveryConfigModeAnnotationKey is the retired v0.7 discovery mode
+	// selector. The controller no longer reads or writes it. The key remains
+	// defined so RBGSet revision matching can keep ignoring the value already
+	// stored on children written by older controllers.
+	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
+
 	// RolloutRequestAnnotationKey carries an opaque token a managing controller changes with every
 	// write it needs acknowledged. The RoleBasedGroup controller copies it to
 	// status.observedRolloutRequest only once every role workload has rolled out for that object,

@@ -39,22 +39,23 @@ type RoleBasedGroupSetDefaulter struct{}
 var _ admission.CustomDefaulter = &RoleBasedGroupSetDefaulter{}
 
 // Default implements admission.CustomDefaulter.
-func (d *RoleBasedGroupSetDefaulter) Default(_ context.Context, obj runtime.Object) error {
+func (d *RoleBasedGroupSetDefaulter) Default(ctx context.Context, obj runtime.Object) error {
 	rbgset, ok := obj.(*RoleBasedGroupSet)
 	if !ok {
 		return fmt.Errorf("expected *RoleBasedGroupSet but got %T", obj)
 	}
-	// KEP-576: default only CREATE, and only inside the template that child
-	// RBGs inherit their annotations from. A missing template annotation on
-	// UPDATE keeps existing children on v1alpha1. A template with deprecated
-	// stateful roles cannot serialize compact content and defaults to
-	// v1alpha1 so the set controller can still recreate its children.
-	if rbgset.CreationTimestamp.IsZero() {
+	// KEP-576: default only CREATE (decided from the admission operation), and
+	// only inside the template that child RBGs inherit their annotations from.
+	// A missing or empty template annotation on UPDATE keeps existing children
+	// on v1alpha1. A template with deprecated stateful roles cannot serialize
+	// compact content and defaults to v1alpha1 so the set controller can still
+	// recreate its children.
+	if isCreateAdmission(ctx) {
 		template := &rbgset.Spec.GroupTemplate
 		if template.Annotations == nil {
 			template.Annotations = make(map[string]string, 1)
 		}
-		if _, present := template.Annotations[constants.DiscoveryConfigVersionAnnotationKey]; !present {
+		if template.Annotations[constants.DiscoveryConfigVersionAnnotationKey] == "" {
 			version := constants.DiscoveryConfigVersionV1
 			if hasDeprecatedStatefulRole(rbgset.Spec.GroupTemplate.Spec.Roles) {
 				version = constants.DiscoveryConfigVersionV1Alpha1

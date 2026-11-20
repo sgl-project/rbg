@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 
+	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -36,16 +37,17 @@ type RoleBasedGroupDefaulter struct{}
 var _ admission.CustomDefaulter = &RoleBasedGroupDefaulter{}
 
 // Default implements admission.CustomDefaulter.
-func (d *RoleBasedGroupDefaulter) Default(_ context.Context, obj runtime.Object) error {
+func (d *RoleBasedGroupDefaulter) Default(ctx context.Context, obj runtime.Object) error {
 	rbg, ok := obj.(*RoleBasedGroup)
 	if !ok {
 		return fmt.Errorf("expected *RoleBasedGroup but got %T", obj)
 	}
-	// KEP-576: default only CREATE. Existing objects without the annotation
-	// keep the v1alpha1 content they were written with; a missing annotation on
-	// UPDATE must never be reinterpreted as v1. Deprecated stateful backends
-	// cannot serialize the compact format, so their default stays v1alpha1.
-	if rbg.CreationTimestamp.IsZero() && rbg.GetDiscoveryConfigVersion() == "" {
+	// KEP-576: default only CREATE, decided from the admission operation so a
+	// decoded UPDATE object can never be mistaken for a create. A missing
+	// annotation on UPDATE must never be reinterpreted as v1. Deprecated
+	// stateful backends cannot serialize the compact format, so their default
+	// stays v1alpha1.
+	if isCreateAdmission(ctx) && rbg.GetDiscoveryConfigVersion() == "" {
 		version := constants.DiscoveryConfigVersionV1
 		if hasDeprecatedStatefulRole(rbg.Spec.Roles) {
 			version = constants.DiscoveryConfigVersionV1Alpha1
@@ -60,4 +62,11 @@ func (d *RoleBasedGroupDefaulter) Default(_ context.Context, obj runtime.Object)
 		ru.RollingUpdate.Type = NormalizeUpdateStrategyType(ru.RollingUpdate.Type)
 	}
 	return nil
+}
+
+// isCreateAdmission reports whether the defaulter runs for an admission CREATE.
+// A context without an admission request never triggers CREATE-only defaulting.
+func isCreateAdmission(ctx context.Context) bool {
+	request, err := admission.RequestFromContext(ctx)
+	return err == nil && request.Operation == admissionv1.Create
 }
