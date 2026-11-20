@@ -83,14 +83,15 @@ For detailed instructions, see [Installation Guide](doc/install.md).
 
 #### Deprecated workload types
 
-The `v1alpha1` API and the `Deployment` / `StatefulSet` / `LeaderWorkerSet` / v1alpha1 `InstanceSet`
-workload types are on their way out, superseded by `v1alpha2` and `RoleInstanceSet`. The chart value
+The `v1alpha1` API and the `Deployment` / `StatefulSet` / `LeaderWorkerSet` workload types are on
+their way out, superseded by `v1alpha2` and `RoleInstanceSet`. The v1alpha1 `InstanceSet` selector is
+deprecated too, but it has had no reconciler since v0.7.0. The chart value
 `controller.deprecatedWorkloadTypes.enabled` (controller flag
 `--enable-deprecated-workload-types`) selects which of the two worlds the controller serves:
 
 | Value | Behaviour |
 |:------|:----------|
-| `true` (chart default) | Compatibility mode: both `v1alpha1` and `v1alpha2` control logic stay active. Roles that already use a deprecated workload type keep reconciling — except the v1alpha1 `InstanceSet`, which has had no reconciler since v0.7.0 — while **new** uses are rejected (including switching between deprecated types) — migrate those roles to `RoleInstanceSet`. |
+| `true` (chart default) | Compatibility mode: both `v1alpha1` and `v1alpha2` control logic stay active. Roles that already use a deprecated workload type keep reconciling (except the v1alpha1 `InstanceSet`), while **new** uses are rejected (including switching between deprecated types) — migrate those roles to `RoleInstanceSet`. |
 | `false` | Strict mode: the controller refuses the deprecated workload types outright — no RBAC is granted for them, none of them are watched, and the validating webhook rejects every create and update whose roles use one. |
 
 Every `v1alpha1` request returns a deprecation warning; `v1alpha1` will be removed in `0.10.0`.
@@ -99,7 +100,7 @@ Choose by whether the cluster still has deprecated roles:
 
 - **New installation**: use `false`. This is the recommended starting point; only `RoleInstanceSet` is accepted, with the constraint enforced by the controller rather than by convention.
 - **Upgraded cluster with migration complete**: use `false` — no deprecated roles remain, reconciliation has finished, and old RBG-owned workloads are deleted.
-- **Upgraded cluster with deprecated roles**: keep `true` until those roles are migrated to `RoleInstanceSet`, reconciliation completes, and the old RBG-owned workloads are deleted; then switch to `false`. While `true`, the controller keeps RBAC, watches, and orphan cleanup for the deprecated types so the remaining roles stay reconcilable.
+- **Upgraded cluster with deprecated roles**: keep `true` until those roles are migrated to `RoleInstanceSet`, reconciliation completes, and the old RBG-owned workloads are deleted; then switch to `false`. While `true`, the controller keeps RBAC, watches, and orphan cleanup for `Deployment`, `StatefulSet`, and `LeaderWorkerSet` so those remaining roles stay reconcilable.
 
 See the [manual v1alpha1-to-v1alpha2 migration guide](doc/migration-v1alpha1-to-v1alpha2.md) for role inventory, per-role rollout, RoleBasedGroupSet ordering, rollback, InstanceSet cleanup, and storage-version migration.
 

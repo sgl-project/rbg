@@ -17,7 +17,7 @@ workload 类型内容迁移必须使用 `v1alpha2` 表达和写入路径。在 `
 迁移包含两条独立轨道：
 
 1. **API 编码（v1alpha1 到 v1alpha2）。** 通过 `v1alpha1` 创建且从未更新过的对象，在 etcd 中可能仍按 `v1alpha1` 编码存储。存储版本重写会通过 `v1alpha2` 端点重写这些对象，内容保持不变。
-2. **旧 workload 选择器。** `Deployment`、`StatefulSet` 和 `LeaderWorkerSet` Role 受兼容开关保护，必须迁移到 `RoleInstanceSet`。v1alpha1 `InstanceSet` 选择器不同：v0.7.0 及之后的控制器没有 InstanceSet reconciler，因此无论兼容开关如何，这类 Role 都无法 reconcile。
+2. **旧 workload 选择器。** `Deployment`、`StatefulSet` 和 `LeaderWorkerSet` Role 受兼容开关保护，必须迁移到 `RoleInstanceSet`。v1alpha1 `InstanceSet` 选择器不同：v0.7.0 及之后的控制器没有 InstanceSet reconciler，因此无论兼容开关如何，这类 Role 都无法 reconcile。不过 admission 仍会像对待其他弃用类型一样校验它：无论开关取值，新的 InstanceSet 使用都会被拒绝。
 
 完成其中一条轨道并不代表另一条轨道也已完成。升级超过 `0.9.0` 前，必须分别检查两条轨道。
 
@@ -151,7 +151,9 @@ kubectl get configmap RBG_NAME -n NAMESPACE
 
 v0.6.0 及更早版本没有 `RoleInstanceSet`（v0.7.0 引入）：从这些版本升级的集群，先升级到 `0.9.0`，再迁移。
 
-v1alpha1 `InstanceSet` 选择器不受兼容开关保护。它从 v0.7.0 起就不再 reconcile，且不支持的 workload 类型会让整个 RoleBasedGroup preflight 失败，而不是把失败隔离在单个 Role 内。
+无论兼容开关取值如何，v1alpha1 `InstanceSet` 选择器都不会 reconcile：它从 v0.7.0 起就没有 reconciler，且不支持的 workload 类型会让整个 RoleBasedGroup preflight 失败，而不是把失败隔离在单个 Role 内。
+
+兼容开关仍会像对待其他弃用类型一样，在 admission 阶段校验它。取值为 `true` 时，已有的 InstanceSet Role 仍可写，但新使用会被拒绝，包括把保存的 InstanceSet 选择器恢复到已迁移的 Role 上；这样的选择器本来也不会 reconcile，因此不要把恢复方案建立在它之上。取值为 `false` 时，只要还有 Role 使用 InstanceSet 选择器，创建和更新请求都会被拒绝。
 
 迁移时把 Role 迁移到 `RoleInstanceSet`。孤儿清理不覆盖 InstanceSet：替代 `RoleInstanceSet` ready 后，旧 InstanceSet 及其 Pod 会与替代对象并存，需要显式删除。请与工作负载负责人审查该删除操作，并将其纳入恢复方案。
 
