@@ -74,6 +74,10 @@ controller:
       startPort: 30000
       # The size of the allocatable port range.
       portRange: 5000
+    # roleInstanceLifecycleHooks enables the KEP-527 instance-level lifecycle
+    # protocol (preUpdate, preRecover, postReady, and preDelete).
+    roleInstanceLifecycleHooks:
+      enabled: false
   # deprecatedWorkloadTypes controls compatibility for existing deprecated
   # workload types (Deployment, StatefulSet, LeaderWorkerSet), superseded by
   # RoleInstanceSet.

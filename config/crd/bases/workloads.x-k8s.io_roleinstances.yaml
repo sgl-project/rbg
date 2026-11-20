@@ -100,6 +100,73 @@ spec:
                 x-kubernetes-list-map-keys:
                 - name
                 x-kubernetes-list-type: map
+              lifecycle:
+                description: |-
+                  Lifecycle is the effective KEP-527 RoleInstance lifecycle-hook snapshot.
+                  The owning RoleInstanceSet copies the desired configuration here; users
+                  must not edit it directly.
+                properties:
+                  postReady:
+                    description: |-
+                      PostReady runs asynchronously after a controlled operation reaches
+                      workload readiness.
+                    properties:
+                      signalLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          SignalLabels defines the exact labels used to coordinate this hook.
+                          It must contain at least one entry.
+                        minProperties: 1
+                        type: object
+                    required:
+                    - signalLabels
+                    type: object
+                  preDelete:
+                    description: PreDelete runs before final member-Pod deletion.
+                    properties:
+                      signalLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          SignalLabels defines the exact labels used to coordinate this hook.
+                          It must contain at least one entry.
+                        minProperties: 1
+                        type: object
+                    required:
+                    - signalLabels
+                    type: object
+                  preRecover:
+                    description: PreRecover runs before restoring missing or failed
+                      Pods.
+                    properties:
+                      signalLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          SignalLabels defines the exact labels used to coordinate this hook.
+                          It must contain at least one entry.
+                        minProperties: 1
+                        type: object
+                    required:
+                    - signalLabels
+                    type: object
+                  preUpdate:
+                    description: PreUpdate runs before the first Pod change of an
+                      update.
+                    properties:
+                      signalLabels:
+                        additionalProperties:
+                          type: string
+                        description: |-
+                          SignalLabels defines the exact labels used to coordinate this hook.
+                          It must contain at least one entry.
+                        minProperties: 1
+                        type: object
+                    required:
+                    - signalLabels
+                    type: object
+                type: object
               readinessGates:
                 description: ReadinessGates is an optional list of PodReadinessGates
                   for the whole RoleInstance.
@@ -356,6 +423,7 @@ spec:
                 - Running
                 - Updating
                 - Recovering
+                - Terminating
                 type: string
               restartBudgetExhausted:
                 description: |-

@@ -29,6 +29,7 @@ type RoleInstanceSpecApplyConfiguration struct {
 	RestartPolicy       *workloadsv1alpha2.RestartPolicyType           `json:"restartPolicy,omitempty"`
 	RestartPolicyConfig *RestartPolicyConfigApplyConfiguration         `json:"restartPolicyConfig,omitempty"`
 	ReadinessGates      []RoleInstanceReadinessGateApplyConfiguration  `json:"readinessGates,omitempty"`
+	Lifecycle           *RoleInstanceLifecycleApplyConfiguration       `json:"lifecycle,omitempty"`
 }
 
 // RoleInstanceSpecApplyConfiguration constructs a declarative configuration of the RoleInstanceSpec type for use with
@@ -84,5 +85,13 @@ func (b *RoleInstanceSpecApplyConfiguration) WithReadinessGates(values ...*RoleI
 		}
 		b.ReadinessGates = append(b.ReadinessGates, *values[i])
 	}
+	return b
+}
+
+// WithLifecycle sets the Lifecycle field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Lifecycle field is set to the value of the last call.
+func (b *RoleInstanceSpecApplyConfiguration) WithLifecycle(value *RoleInstanceLifecycleApplyConfiguration) *RoleInstanceSpecApplyConfiguration {
+	b.Lifecycle = value
 	return b
 }

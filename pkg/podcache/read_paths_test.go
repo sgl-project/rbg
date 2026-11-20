@@ -39,6 +39,7 @@ func TestProductionPodListInventory(t *testing.T) {
 		"pkg/reconciler/sts_reconciler.go:getReplicaStates":                                             1,
 		"pkg/reconciler/roleinstance/sync/restart_budget.go:listBudgetPods":                             1,
 		"pkg/reconciler/roleinstance/utils/instance_utils.go:GetActiveAndInactivePods":                  1,
+		"pkg/reconciler/roleinstanceset/statefulmode/stateful_instance_set_control.go:lifecyclePods":    1,
 	}
 	got := map[string]int{}
 	var ownedPodCallers []string

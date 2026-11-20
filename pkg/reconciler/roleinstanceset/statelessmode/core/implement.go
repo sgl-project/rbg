@@ -62,6 +62,7 @@ func (c *commonControl) Selector() labels.Selector {
 }
 
 func (c *commonControl) SetRevisionTemplate(revisionSpec map[string]interface{}, template map[string]interface{}) {
+	delete(template, "lifecycle")
 	revisionSpec["roleInstanceTemplate"] = template
 	template["$patch"] = "replace"
 }
@@ -71,6 +72,7 @@ func (c *commonControl) ApplyRevisionPatch(patched []byte) (*workloadsv1alpha2.R
 	if err := json.Unmarshal(patched, restoredSet); err != nil {
 		return nil, err
 	}
+	restoredSet.Spec.RoleInstanceTemplate.Lifecycle = c.Spec.RoleInstanceTemplate.Lifecycle.DeepCopy()
 	return restoredSet, nil
 }
 
