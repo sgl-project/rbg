@@ -94,11 +94,9 @@ var (
 // the listers this controller needs (for example when the cache is configured
 // with cache.Options.DefaultNamespaces).
 func NewReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
-	r, err := newReconciler(mgr)
-	if err != nil {
-		return nil, fmt.Errorf("create stateful-mode RoleInstanceSet reconciler: %w", err)
-	}
-	return r, nil
+	// newReconciler's errors already carry their own context; the caller
+	// (internal/controller/workloads) adds the constructor layer once.
+	return newReconciler(mgr)
 }
 
 // sharedIndexInformerForKind returns the SharedIndexInformer backing the
@@ -114,6 +112,13 @@ func NewReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 // selector alone does not opt out. The entry must also set Namespaces to an
 // empty (non-nil) map, which caches all namespaces for that type and lets the
 // field selector do the scoping.
+//
+// That remedy still issues a cluster-scope LIST/WATCH per kind, so it needs
+// cluster-wide list/watch on RoleInstanceSet and RoleInstance. It fits a local
+// controller confined to one namespace of a shared cluster; it does not fit an
+// install whose ServiceAccount only has namespace-scoped RBAC, which would
+// trade this startup error for cache-sync 403s. A namespace-only-RBAC mode
+// needs a multi-namespace lister implementation instead.
 func sharedIndexInformerForKind(cacher ctrlcache.Cache, gvk schema.GroupVersionKind) (toolscache.SharedIndexInformer, error) {
 	informer, err := cacher.GetInformerForKind(context.Background(), gvk)
 	if err != nil {
