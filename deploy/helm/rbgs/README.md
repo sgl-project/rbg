@@ -180,13 +180,6 @@ the inventory before upgrading: if it is empty and the old RBG-owned workloads a
 the listed roles using the [migration guide](../../../doc/migration-v1alpha1-to-v1alpha2.md), and switch
 to `false` only after reconciliation has completed and the legacy workloads have been deleted.
 
-Repeat your normal release values (`-f` / `--set`) on every upgrade. An upgrade that passes any
-value flag resets every value you do not state back to the chart default. An upgrade that passes
-none copies the previous revision's user-supplied values onto the new chart verbatim — a key the
-new chart no longer reads (for example a pre-v0.8.0 flat key) lingers as an inert override, and
-changed chart defaults apply where the old values do not cover them. Either way, the values in
-effect after the upgrade are the ones you restate, not the ones you expect to persist.
-
 Controller rollouts drain admission traffic: each old manager Pod sleeps 5s in a preStop hook
 before SIGTERM (`terminationGracePeriodSeconds: 35`). An upgrade that picks this up rolls only the
 controller Pods, which take about 5s longer to terminate; RBG workloads are not affected. On large
@@ -195,23 +188,14 @@ patch; keep the grace period at least the sleep plus 30s.
 
 ### Engine runtime profiles (KEP-531) in chart v0.9.0
 
-Upgrade with a single `helm upgrade` as usual. The CRD upgrader runs ahead of the controller, so
-until the upgrade has completed the cluster accepts
+The CRD upgrader runs ahead of the controller: until the upgrade has completed, the cluster accepts
 `engineRuntimes[].component`, `engineRuntimes[].targetContainers` and
-`ClusterEngineRuntimeProfile.spec.containerPatches`, but the previous controller doesn't know them:
+`ClusterEngineRuntimeProfile.spec.containerPatches`, but the previous controller doesn't know them —
 it renders a new reference across the pattern's default components, and its own updates to a
 RoleBasedGroup can drop them. Write those fields only once the upgrade has completed. A
 ClusterEngineRuntimeProfile update or delete can be rejected while the upgrade itself is in
 progress — the new webhook entry is served only by the new controller — so retry it once the
 upgrade has completed.
-
-**Rolling back.** `helm rollback` restores the previous controller and webhook configuration but
-keeps the new CRDs: the CRD upgrader runs only on install and upgrade. The previous controller
-ignores the new fields, so a scoped reference silently becomes unscoped and the patches stop
-firing. Before rolling back past this release, remove `component` and `targetContainers` from
-RoleBasedGroup and RoleBasedGroupSet specs and `containerPatches` from the profiles, as in the
-KEP's [Downgrade procedure](../../../keps/531-engine-runtime-profile-injection/README.md). A
-cluster whose references set only `profileName` can roll back safely.
 
 ### Breaking change: values regrouped in chart v0.8.0
 
