@@ -110,19 +110,31 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	if err := validateNoNewEngineRuntimeViolations(rbg.Spec.Roles, nil); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	// A RoleBasedGroupSet controller replaces deleted children by re-creating
+	// them from its own template. Those children are not new user-facing uses:
+	// a deprecated or unsupported workload type already exists in the set's
+	// template, so the replacement inherits it. Look up the verified parent
+	// template and use it as the pre-existing role set, without exempting
+	// unrelated creates. In strict mode a deprecated type is rejected whatever
+	// the template says, so only unsupported types are worth the lookup.
+	exemptible := isUnsupportedWorkloadType
 	if v.EnableDeprecatedWorkloadTypes {
-		// A RoleBasedGroupSet controller replaces deleted children by re-creating
-		// them from its own template. Those children are not new user-facing uses:
-		// the deprecated workload type already exists in the set's template, so the
-		// replacement inherits it. Look up the verified parent template and use it
-		// as the pre-existing role set, without exempting unrelated creates.
-		oldRoles, err := v.legacySetTemplateRoles(ctx, rbg)
-		if err != nil {
-			allErrs = append(allErrs, err)
-		} else if err := validateNoNewDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRoles); err != nil {
+		exemptible = func(wt string) bool { return isDeprecatedWorkloadType(wt) || isUnsupportedWorkloadType(wt) }
+	}
+	oldRoles, err := v.legacySetTemplateRoles(ctx, rbg, exemptible)
+	if err != nil {
+		allErrs = append(allErrs, err)
+	} else {
+		if err := validateNoNewUnsupportedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRoles); err != nil {
 			allErrs = append(allErrs, err)
 		}
-	} else {
+		if v.EnableDeprecatedWorkloadTypes {
+			if err := validateNoNewDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRoles); err != nil {
+				allErrs = append(allErrs, err)
+			}
+		}
+	}
+	if !v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
 		}
@@ -138,13 +150,14 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 
 // legacySetTemplateRoles returns the role list from the owning
 // RoleBasedGroupSet's group template when the object being created carries a
-// deprecated workload type and is controlled by that set. It returns nil for
-// every other create, so unrelated deprecated uses stay rejected.
+// workload type that exemptible accepts (a deprecated one, or one no reconciler
+// supports) and is controlled by that set. It returns nil for every other
+// create, so unrelated uses of those types stay rejected.
 //
 // The exemption is owner-reference aware but does not trust the owner reference
 // alone: the parent is fetched by name through the uncached API reader, its UID
 // must match the reference, and only template roles whose name and workload
-// type match a deprecated role in the new child are returned. A reference with
+// type match an exemptible role in the new child are returned. A reference with
 // an unknown UID, or a stale cached copy of a parent that has since been
 // migrated or replaced, grants nothing.
 //
@@ -157,9 +170,9 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 // the parent — but it is a known boundary of the exemption, not a proof of
 // controller identity.
 func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
-	ctx context.Context, rbg *RoleBasedGroup,
+	ctx context.Context, rbg *RoleBasedGroup, exemptible func(workloadType string) bool,
 ) ([]RoleSpec, error) {
-	if !containsDeprecatedWorkloadType(rbg.Spec.Roles) {
+	if !containsWorkloadType(rbg.Spec.Roles, exemptible) {
 		return nil, nil
 	}
 	// Prefer the uncached API reader for the security decision; fall back to the
@@ -197,7 +210,7 @@ func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 	for i := range rbg.Spec.Roles {
 		role := &rbg.Spec.Roles[i]
 		wt := role.GetWorkloadType()
-		if isDeprecatedWorkloadType(wt) {
+		if exemptible(wt) {
 			wanted[role.Name] = wt
 		}
 	}
@@ -215,12 +228,12 @@ func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 	return exempt, nil
 }
 
-// containsDeprecatedWorkloadType reports whether any role in the slice uses one
-// of the deprecated workload types. It gates the parent lookup so ordinary
-// creates never pay for an extra read.
-func containsDeprecatedWorkloadType(roles []RoleSpec) bool {
+// containsWorkloadType reports whether any role in the slice has a workload type
+// that match accepts. It gates the parent lookup so ordinary creates never pay
+// for an extra read.
+func containsWorkloadType(roles []RoleSpec, match func(workloadType string) bool) bool {
 	for i := range roles {
-		if isDeprecatedWorkloadType(roles[i].GetWorkloadType()) {
+		if match(roles[i].GetWorkloadType()) {
 			return true
 		}
 	}
@@ -261,6 +274,9 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		allErrs = append(allErrs, err)
 	}
 	if err := validateNoNewEngineRuntimeViolations(rbg.Spec.Roles, oldRBG.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := validateNoNewUnsupportedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRBG.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {

@@ -65,7 +65,7 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
 | `apps/v1/StatefulSet` | Role 仍依赖 StatefulSet。 | 迁移到 `RoleInstanceSet`。 |
 | `leaderworkerset.x-k8s.io/v1/LeaderWorkerSet` | Role 仍依赖 LeaderWorkerSet。 | 迁移到 `RoleInstanceSet`。 |
 | `workloads.x-k8s.io/v1alpha1/InstanceSet` | 该选择器从 v0.7.0 起不再 reconcile，并阻塞整个 RBG。 | 迁移到 `RoleInstanceSet`；之后手工删除旧 InstanceSet。 |
-| 其他值 | 未知兼容值。 | 停止并与对象负责人审查，不要猜测。 |
+| 其他值 | 没有 reconciler 支持该值，因此会阻塞整个 RBG。新增 Role 或修改 Role 的取值时，admission 会拒绝它；已经存储该值的 Role 仍可写入。 | 停止并与对象负责人审查，不要猜测。 |
 
 盘点结果是影响面报告，不是 rollout 决策。操作者决定先迁移哪个 Role，以及何时暂停。
 

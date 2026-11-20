@@ -26,6 +26,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -511,5 +512,40 @@ func TestWorkloadReconcilerInterface(t *testing.T) {
 		if r.reconciler == nil {
 			t.Errorf("Failed to create %s", r.name)
 		}
+	}
+}
+
+// Admission rejects a role whose workload type the controller cannot reconcile
+// (#624). Its list has to match the types this factory builds a reconciler for.
+func TestNewWorkloadReconcilerMatchesAdmission(t *testing.T) {
+	scheme := runtime.NewScheme()
+	client := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	for _, wt := range []string{
+		constants.RoleInstanceSetWorkloadType,
+		constants.DeploymentWorkloadType,
+		constants.StatefulSetWorkloadType,
+		constants.LeaderWorkerSetWorkloadType,
+		constants.InstanceSetWorkloadType,
+		constants.InstanceWorkloadType,
+		"workloads.x-k8s.io/v1alpha2/InstanceSet",
+		"apps/v1/DaemonSet",
+		"apps/v1/Statefulset",
+	} {
+		t.Run(wt, func(t *testing.T) {
+			role := workloadsv1alpha2.RoleSpec{
+				Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: wt},
+			}
+			_, err := NewWorkloadReconciler(role.GetWorkloadSpec(), scheme, client)
+			if workloadsv1alpha2.IsReconcilableWorkloadType(wt) {
+				if err != nil {
+					t.Fatalf("admission accepts %q but no reconciler supports it: %v", wt, err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("a reconciler supports %q but admission rejects it", wt)
+			}
+		})
 	}
 }

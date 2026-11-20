@@ -721,6 +721,72 @@ func isDeprecatedWorkloadType(wt string) bool {
 	}
 }
 
+// reconcilableWorkloadTypes are the workload types the controller can build a
+// reconciler for (pkg/reconciler.NewWorkloadReconciler). A role with any other type
+// fails the controller's pre-check, which stops the whole RoleBasedGroup.
+var reconcilableWorkloadTypes = []string{
+	constants.RoleInstanceSetWorkloadType,
+	constants.DeploymentWorkloadType,
+	constants.StatefulSetWorkloadType,
+	constants.LeaderWorkerSetWorkloadType,
+}
+
+// IsReconcilableWorkloadType reports whether the controller has a reconciler for wt.
+func IsReconcilableWorkloadType(wt string) bool {
+	for _, supported := range reconcilableWorkloadTypes {
+		if wt == supported {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnsupportedWorkloadType reports whether wt is a workload type no reconciler
+// supports and the deprecated-type checks do not already answer for. The v1alpha1
+// InstanceSet is deprecated and not reconcilable; it keeps its own rejection and
+// migration hint.
+func isUnsupportedWorkloadType(wt string) bool {
+	return !IsReconcilableWorkloadType(wt) && !isDeprecatedWorkloadType(wt)
+}
+
+// validateNoNewUnsupportedWorkloadTypes checks that a write does not give a role a
+// workload type the controller cannot reconcile, such as "apps/v1/DaemonSet", a
+// misspelled "apps/v1/Statefulset", or a value that is not apiVersion/kind at all.
+// It applies whatever --enable-deprecated-workload-types is set to.
+//
+// The check is ratcheted like validateNoNewDeprecatedWorkloadTypes: a role that
+// already stores the same unsupported type under the same name is left alone, so
+// an object admitted before this check can still be updated, for example to fix
+// the role. fieldPath is the JSON path of the role slice.
+func validateNoNewUnsupportedWorkloadTypes(fieldPath string, roles, oldRoles []RoleSpec) error {
+	oldWorkloadTypes := make(map[string]string, len(oldRoles))
+	for i := range oldRoles {
+		oldWorkloadTypes[oldRoles[i].Name] = oldRoles[i].GetWorkloadType()
+	}
+
+	var allErrs []error
+	for i := range roles {
+		role := &roles[i]
+		wt := role.GetWorkloadType()
+		if !isUnsupportedWorkloadType(wt) {
+			continue
+		}
+		if oldType, existed := oldWorkloadTypes[role.Name]; !existed || oldType != wt {
+			allErrs = append(allErrs, fmt.Errorf(
+				"%s[%d] (role %q): workload type %q is not supported",
+				fieldPath, i, role.Name, wt,
+			))
+		}
+	}
+	if len(allErrs) == 0 {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w; the %s role annotation must be %q, or be left unset for the same default",
+		utilerrors.NewAggregate(allErrs), constants.RoleWorkloadTypeAnnotationKey, constants.RoleInstanceSetWorkloadType,
+	)
+}
+
 // validateNoDeprecatedWorkloadTypes checks that no role uses a deprecated workload
 // type. This is the final cutoff mode: --enable-deprecated-workload-types=false is
 // set only after every role has migrated to RoleInstanceSet.
