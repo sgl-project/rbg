@@ -75,7 +75,13 @@ func TestSetPodRunningAndReadyPreservesControllerConditions(t *testing.T) {
 func TestSetPodConditionUpsert(t *testing.T) {
 	oldTransition := metav1.NewTime(time.Now().Add(-time.Hour))
 	pod := &corev1.Pod{Status: corev1.PodStatus{Conditions: []corev1.PodCondition{
-		{Type: corev1.PodReady, Status: corev1.ConditionFalse, LastTransitionTime: oldTransition},
+		{
+			Type:               corev1.PodReady,
+			Status:             corev1.ConditionFalse,
+			Reason:             "ReadinessGatesNotReady",
+			Message:            "the status of pod readiness gate ...",
+			LastTransitionTime: oldTransition,
+		},
 	}}}
 
 	SetPodCondition(pod, corev1.PodReady, corev1.ConditionTrue)
@@ -89,6 +95,9 @@ func TestSetPodConditionUpsert(t *testing.T) {
 	}
 	if cond.LastTransitionTime.Equal(&oldTransition) {
 		t.Error("LastTransitionTime must move when the status flips")
+	}
+	if cond.Reason != "" || cond.Message != "" {
+		t.Errorf("stale Reason/Message must be cleared on a status flip, got reason=%q message=%q", cond.Reason, cond.Message)
 	}
 
 	// Same-status write is idempotent: no duplicate, transition time pinned.
