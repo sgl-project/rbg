@@ -186,6 +186,17 @@ controller Pods, which take about 5s longer to terminate; RBG workloads are not 
 clusters where endpoint propagation takes longer, raise both with a post-renderer or kustomize
 patch; keep the grace period at least the sleep plus 30s.
 
+### Engine runtime profiles (KEP-531) in chart v0.9.0
+
+The CRD upgrader runs ahead of the controller: until the upgrade has completed, the cluster accepts
+`engineRuntimes[].component`, `engineRuntimes[].targetContainers` and
+`ClusterEngineRuntimeProfile.spec.containerPatches`, but the previous controller doesn't know them —
+it renders a new reference across the pattern's default components, and its own updates to a
+RoleBasedGroup can drop them. Write those fields only once the upgrade has completed. A
+ClusterEngineRuntimeProfile update or delete can be rejected while the upgrade itself is in
+progress — the new webhook entry is served only by the new controller — so retry it once the
+upgrade has completed.
+
 ### Breaking change: values regrouped in chart v0.8.0
 
 **Upgrade path**: from chart **v0.8.0-alpha.2 or earlier** (all previous releases, e.g. `v0.7.0`
