@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 	"sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	"sigs.k8s.io/controller-runtime/pkg/webhook"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
@@ -119,6 +120,20 @@ func SetupV1alpha1GateTestEnv() {
 		Fail("unable to create RoleInstanceSet admission webhook: " + err.Error())
 	}
 
+	// The same validators with --enable-deprecated-workload-types=false, served on
+	// their own paths so a spec can switch the gate to the strict mode with
+	// EnableV1a2StrictGate instead of starting a second manager.
+	TestMgr.GetWebhookServer().Register(strictRBGValidatePath, admission.WithCustomValidator(
+		scheme.Scheme, &workloadsv1alpha2.RoleBasedGroup{}, &workloadsv1alpha2.RoleBasedGroupValidator{
+			Client:                        TestMgr.GetClient(),
+			APIReader:                     TestMgr.GetAPIReader(),
+			EnableDeprecatedWorkloadTypes: false,
+		}))
+	TestMgr.GetWebhookServer().Register(strictRBGSetValidatePath, admission.WithCustomValidator(
+		scheme.Scheme, &workloadsv1alpha2.RoleBasedGroupSet{}, &workloadsv1alpha2.RoleBasedGroupSetValidator{
+			EnableDeprecatedWorkloadTypes: false,
+		}))
+
 	go func() {
 		defer GinkgoRecover()
 		err := TestMgr.Start(Ctx)
@@ -151,22 +166,48 @@ func SetupV1alpha1GateTestEnv() {
 // objects that predate the gate.
 const v1a2GateConfigName = "v1a1-gate-test-validating"
 
+// Paths of the strict-mode validators registered next to the production ones.
+const (
+	strictRBGValidatePath    = "/validate-strict-workloads-x-k8s-io-v1alpha2-rolebasedgroup"
+	strictRBGSetValidatePath = "/validate-strict-workloads-x-k8s-io-v1alpha2-rolebasedgroupset"
+)
+
 // EnableV1a2Gate (re)installs the v1alpha2 validating webhook configuration
 // pointing at the test webhook server, then waits for the gate to be active.
 // matchPolicy is left unset (Equivalent, the default) so v1alpha1 writes are
 // routed through conversion to the v1alpha2 gate — the production
 // composition. It is idempotent: an existing configuration is replaced
 // wholesale so a stale one (wrong host, port, or CA bundle) cannot linger.
+// The gate runs in compatibility mode, the production default.
 func EnableV1a2Gate() {
+	installV1a2Gate(
+		"/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroup",
+		"/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset",
+		"new uses are not accepted",
+	)
+}
+
+// EnableV1a2StrictGate is EnableV1a2Gate with the validators that run with
+// --enable-deprecated-workload-types=false. Call EnableV1a2Gate afterwards to
+// return the suite to compatibility mode.
+func EnableV1a2StrictGate() {
+	installV1a2Gate(strictRBGValidatePath, strictRBGSetValidatePath, "is deprecated and not enabled on this cluster")
+}
+
+// installV1a2Gate replaces the suite's validating webhook configuration with one
+// that routes RoleBasedGroup and RoleBasedGroupSet writes to the given paths, and
+// waits until a dry-run deprecated create is rejected with activeMessage, which
+// tells the two modes apart.
+func installV1a2Gate(rbgPath, rbgSetPath, activeMessage string) {
 	config := buildValidatingWebhookConfig(TestEnv.WebhookInstallOptions, []gateWebhookSpec{
 		{
 			name:     "vrolebasedgroup.kb.io",
-			path:     "/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroup",
+			path:     rbgPath,
 			resource: "rolebasedgroups",
 		},
 		{
 			name:     "vrolebasedgroupset.kb.io",
-			path:     "/validate-workloads-x-k8s-io-v1alpha2-rolebasedgroupset",
+			path:     rbgSetPath,
 			resource: "rolebasedgroupsets",
 		},
 	})
@@ -182,10 +223,10 @@ func EnableV1a2Gate() {
 	}
 
 	// Wait for the gate to be active: a dry-run deprecated create through
-	// the v1alpha2 API must be rejected.
+	// the v1alpha2 API must be rejected by the requested mode.
 	Eventually(func() bool {
-		return deprecatedCreateRejected()
-	}, 10*time.Second, 250*time.Millisecond).Should(BeTrue(), "the v1alpha2 gate did not become active")
+		return deprecatedCreateRejected(activeMessage)
+	}, 10*time.Second, 250*time.Millisecond).Should(BeTrue(), "the v1alpha2 gate did not become active: %s", rbgPath)
 }
 
 // DisableV1a2Gate deletes the suite's validating webhook configuration and
@@ -212,10 +253,10 @@ func DisableV1a2Gate() {
 }
 
 // deprecatedCreateRejected reports whether a dry-run deprecated v1alpha2
-// create is rejected by the gate.
-func deprecatedCreateRejected() bool {
+// create is rejected by the gate with message.
+func deprecatedCreateRejected(message string) bool {
 	err := K8sClient.Create(Ctx, gateReadinessProbe(), &client.CreateOptions{DryRun: []string{"All"}})
-	return err != nil && containsStr(err.Error(), "new uses are not accepted")
+	return err != nil && containsStr(err.Error(), message)
 }
 
 func gateReadinessProbe() *workloadsv1alpha2.RoleBasedGroup {
