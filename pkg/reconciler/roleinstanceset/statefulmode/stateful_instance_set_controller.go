@@ -29,11 +29,13 @@ import (
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	toolscache "k8s.io/client-go/tools/cache"
 	"k8s.io/klog/v2"
 	kubecontroller "k8s.io/kubernetes/pkg/controller"
+	ctrlcache "sigs.k8s.io/controller-runtime/pkg/cache"
 	sigsclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -87,33 +89,73 @@ var (
 	instanceUnhealthySince sync.Map // map[types.NamespacedName]*instanceHealthState
 )
 
-// NewReconciler creates a new reconcile.Reconciler for external usage
-func NewReconciler(mgr manager.Manager) reconcile.Reconciler {
+// NewReconciler creates a new reconcile.Reconciler for external usage.
+// It returns an error instead of panicking when the manager cache cannot back
+// the listers this controller needs (for example when the cache is configured
+// with cache.Options.DefaultNamespaces).
+func NewReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+	// newReconciler's errors already carry their own context; the caller
+	// (internal/controller/workloads) adds the constructor layer once.
 	return newReconciler(mgr)
 }
 
-// newReconciler returns a new reconcile.Reconciler
-func newReconciler(mgr manager.Manager) reconcile.Reconciler {
-	cacher := mgr.GetCache()
-	instanceSetInformer, err := cacher.GetInformerForKind(context.TODO(), controllerKind)
+// sharedIndexInformerForKind returns the SharedIndexInformer backing the
+// manager cache for the given kind. The stateful-mode listers are built on a
+// single informer indexer, so a cache.Informer that does not expose one is a
+// setup error. This happens when these kinds are cached per namespace, through
+// cache.Options.DefaultNamespaces or cache.Options.ByObject[...].Namespaces:
+// controller-runtime then returns a multiNamespaceInformer, which aggregates one
+// informer per namespace and has no single indexer.
+//
+// The remedy requires care: a cache.Options.ByObject entry with a nil
+// Namespaces inherits cache.Options.DefaultNamespaces, so a per-type field
+// selector alone does not opt out. The entry must also set Namespaces to an
+// empty (non-nil) map, which caches all namespaces for that type and lets the
+// field selector do the scoping.
+//
+// That remedy still issues a cluster-scope LIST/WATCH per kind, so it needs
+// cluster-wide list/watch on RoleInstanceSet and RoleInstance. It fits a local
+// controller confined to one namespace of a shared cluster; it does not fit an
+// install whose ServiceAccount only has namespace-scoped RBAC, which would
+// trade this startup error for cache-sync 403s. A namespace-only-RBAC mode
+// needs a multi-namespace lister implementation instead.
+func sharedIndexInformerForKind(cacher ctrlcache.Cache, gvk schema.GroupVersionKind) (toolscache.SharedIndexInformer, error) {
+	informer, err := cacher.GetInformerForKind(context.Background(), gvk)
 	if err != nil {
-		klog.ErrorS(err, "Failed to get informer for InstanceSet")
-		return nil
+		return nil, fmt.Errorf("get informer for %s: %w", gvk, err)
+	}
+	sharedInformer, ok := informer.(toolscache.SharedIndexInformer)
+	if !ok {
+		return nil, fmt.Errorf("informer for %s is a %T, which does not expose a single SharedIndexInformer; "+
+			"the stateful-mode controller cannot cache RoleInstanceSet or RoleInstance per namespace "+
+			"(cache.Options.DefaultNamespaces or cache.Options.ByObject[...].Namespaces). "+
+			"To scope both kinds to one namespace, give each a cache.Options.ByObject entry with "+
+			"Field: fields.OneTermEqualSelector(\"metadata.namespace\", ns) and, when DefaultNamespaces is set, "+
+			"Namespaces: map[string]cache.Config{} so the entry does not inherit DefaultNamespaces", gvk, informer)
+	}
+	return sharedInformer, nil
+}
+
+// newReconciler returns a new reconcile.Reconciler, or an error if the manager
+// cache cannot provide the shared-index informers for its listers.
+func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
+	cacher := mgr.GetCache()
+	instanceSetInformer, err := sharedIndexInformerForKind(cacher, controllerKind)
+	if err != nil {
+		return nil, err
 	}
 	if _, err := instanceSetInformer.AddEventHandler(toolscache.ResourceEventHandlerFuncs{
 		DeleteFunc: forgetRolloutStatusExpectation,
 	}); err != nil {
-		klog.ErrorS(err, "Failed to register InstanceSet expectation cleanup")
-		return nil
+		return nil, fmt.Errorf("register RoleInstanceSet expectation cleanup: %w", err)
 	}
-	instanceInformer, err := cacher.GetInformerForKind(context.TODO(), workloadsv1alpha2.GroupVersion.WithKind("RoleInstance"))
+	instanceInformer, err := sharedIndexInformerForKind(cacher, workloadsv1alpha2.GroupVersion.WithKind("RoleInstance"))
 	if err != nil {
-		klog.ErrorS(err, "Failed to get informer for Instance")
-		return nil
+		return nil, err
 	}
 
-	roleInstanceSetLister := instancelisters.NewRoleInstanceSetLister(instanceSetInformer.(toolscache.SharedIndexInformer).GetIndexer())
-	roleInstanceLister := instancelisters.NewRoleInstanceLister(instanceInformer.(toolscache.SharedIndexInformer).GetIndexer())
+	roleInstanceSetLister := instancelisters.NewRoleInstanceSetLister(instanceSetInformer.GetIndexer())
+	roleInstanceLister := instancelisters.NewRoleInstanceLister(instanceInformer.GetIndexer())
 
 	// Use manager's event recorder
 	recorder := mgr.GetEventRecorderFor("stateful-instanceset-controller")
@@ -136,7 +178,7 @@ func newReconciler(mgr manager.Manager) reconcile.Reconciler {
 		instanceControl:       &realInstanceControl{sigsruntimeClient, recorder},
 		roleInstanceLister:    roleInstanceLister,
 		roleInstanceSetLister: roleInstanceSetLister,
-	}
+	}, nil
 }
 
 var _ reconcile.Reconciler = &ReconcileStatefulInstanceSet{}
