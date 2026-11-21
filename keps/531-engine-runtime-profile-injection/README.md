@@ -1408,8 +1408,9 @@ grants, and their mitigations:
   applying the new CRDs ahead of the controller, pre-existing
   references rendering identically to main throughout; a `helm rollback`
   after the upgrade landing in the old-controller/new-CRD row, safe after the
-  documented cleanup. The drills still run the two-pass order until the code
-  follow-up switches them.
+  documented cleanup. The drills ran that two-pass order as the documented
+  exception and were retired with the 0.9.0-alpha.5 release (Implementation
+  History).
 - A strict write against the pre-upgrade CRD schema rejected as an unknown
   field; a non-strict write pruned to an unscoped reference resolving to the
   default component set, including the pruning shape that surfaces: the pruned
@@ -1507,9 +1508,7 @@ renderer). Every scenario below is a combination of their versions.
 as a `pre-upgrade` hook (`deploy/helm/rbgs/templates/crd-upgrade/crd-upgrade.yaml`),
 so a single `helm upgrade` applies the CRDs ahead of the controller: the order
 every release upgrades in, and the one the upgrade-compatibility suite
-(`test/e2e/upgrade`) exercises — the KEP-531 drill suite (`test/e2e/drills`)
-is the documented exception, still running the two-pass order until the code
-follow-up switches it. When the upgrade begins no object carries the new fields: the
+(`test/e2e/upgrade`) exercises. When the upgrade begins no object carries the new fields: the
 previous schemas declare none of them and preserve no unknown fields, so every
 earlier write pruned them. Every pre-existing reference therefore renders as
 on main across the upgrade (Compatibility Guarantees #1). The one rule: write
@@ -1719,3 +1718,11 @@ the CRD was retained; after a CRD rollback the pruned specs must be rewritten.
   Model).
 - 2026-11-19: KEP text amended for the webhook placement of the presence rule,
   and the documented upgrade changed to a single `helm upgrade` (#601).
+- 2026-11-20: The drill suite is retired with the 0.9.0-alpha.5 release — the
+  first release shipping KEP-531 — per the retirement note the `e2e-drills`
+  workflow carried since #571: the pre-KEP → KEP hop the drills rehearsed is
+  now a released upgrade path. Removed: `test/e2e/drills`, the `e2e-drills`
+  CI job, `make test-e2e-drills`, and the drill-only parameterization in
+  `test/e2e/upgrade` (the `harness.go` aliases, `runHelmUpgradeWith`,
+  `waitForUpgradeReadyFor`); the image-pull-secret fixes that rode the same
+  change stay.
