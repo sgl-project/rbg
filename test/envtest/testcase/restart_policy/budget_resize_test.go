@@ -88,26 +88,28 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 							return err
 						}
 					}
-					if snapshot.DeletionTimestamp != nil || snapshot.Status.Phase == v1.PodFailed {
+					if testutil.ShouldSkipPodStatusUpdate(&snapshot) {
 						continue
 					}
-					if err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
-						pod := &v1.Pod{}
-						if err := cli.Get(ctx, client.ObjectKeyFromObject(&snapshot), pod); err != nil {
-							return client.IgnoreNotFound(err)
+					// SetPodRunningAndReady upserts the kubelet conditions and
+					// already preserves the controller-written gate conditions
+					// (see testutil); the former manual re-append duplicated
+					// them on every poll until the status write exceeded
+					// etcd's request limit. The conflict-safe write rereads
+					// the Pod on every retry instead of reusing the snapshot.
+					// The guards are re-checked on the freshly read object: a
+					// Pod that started terminating or already failed after the
+					// List snapshot must not be marked Running/Ready.
+					if err := testutil.UpdatePodStatusOnConflict(ctx, &snapshot, func(pod *v1.Pod) bool {
+						if testutil.ShouldSkipPodStatusUpdate(pod) {
+							return true
 						}
-						if pod.DeletionTimestamp != nil {
-							return nil
-						}
-						conditions := pod.Status.Conditions
 						testutil.SetPodRunningAndReady(pod)
-						for _, condition := range conditions {
-							if condition.Type != v1.PodReady && condition.Type != v1.ContainersReady {
-								pod.Status.Conditions = append(pod.Status.Conditions, condition)
-							}
-						}
-						return cli.Status().Update(ctx, pod)
+						return false
 					}); err != nil {
+						if apierrors.IsNotFound(err) || testutil.IsRetryable(err) {
+							continue
+						}
 						return err
 					}
 				}
