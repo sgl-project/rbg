@@ -19,6 +19,7 @@ package restart_policy
 import (
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -63,6 +64,7 @@ var _ = Describe("Restart budget lifecycle", func() {
 			return live.Status.ObservedGeneration == live.Generation && live.Status.CurrentRevision == live.Status.UpdateRevision
 		}, timeout, interval).Should(BeTrue())
 		Expect(getInstance().Status.RestartBudgetExhausted).To(BeFalse(), "max zero must not freeze healthy creation")
+		Expect(getInstance().Finalizers).NotTo(ContainElement(constants.GroupRestartBudgetCleanupFinalizer), "healthy instances need no budget cleanup owner")
 		originalUIDs := map[types.UID]bool{}
 		for _, p := range listPods() {
 			originalUIDs[p.UID] = true
@@ -114,6 +116,7 @@ var _ = Describe("Restart budget lifecycle", func() {
 		}, timeout, interval).Should(BeTrue())
 		live := getInstance()
 		Expect(live.Status.GroupRestartCount).To(BeZero())
+		Expect(live.Finalizers).To(ContainElement(constants.GroupRestartBudgetCleanupFinalizer), "retain the cleanup owner while exhausted")
 		Expect(live.Annotations).NotTo(HaveKey(constants.RoleInstanceRecoverAnnotationKey))
 		Expect(live.Status.Conditions).To(ContainElement(And(HaveField("Type", workloadsv1alpha2.RoleInstanceDegraded), HaveField("Status", v1.ConditionTrue), HaveField("Reason", "GroupRestartBudgetExceeded"))))
 		Expect(live.Status.Conditions).To(ContainElement(And(HaveField("Type", workloadsv1alpha2.RoleInstanceReady), HaveField("Status", v1.ConditionFalse))))
@@ -150,6 +153,16 @@ var _ = Describe("Restart budget lifecycle", func() {
 			return pod.DeletionTimestamp != nil && slices.Contains(pod.Finalizers, recoveryHold) &&
 				!slices.Contains(pod.Finalizers, constants.GroupRestartBudgetCleanupFinalizer)
 		}, timeout, interval).Should(BeTrue(), "recovery releases only the budget finalizer")
+		Eventually(func() bool {
+			live := getInstance()
+			for _, condition := range live.Status.Conditions {
+				if condition.Type == workloadsv1alpha2.RoleInstanceDegraded {
+					return condition.Status == v1.ConditionTrue && condition.Reason == "GroupRestartBudgetExceeded" &&
+						strings.Contains(condition.Message, "waiting for 1 old owned Pod")
+				}
+			}
+			return false
+		}, timeout, interval).Should(BeTrue(), "persist remaining old Pod count while an external finalizer blocks recovery")
 		Consistently(func() bool {
 			live := getInstance()
 			if !live.Status.RestartBudgetExhausted || live.Annotations[constants.RoleInstanceRecoverAnnotationKey] != "true" {
@@ -185,6 +198,11 @@ var _ = Describe("Restart budget lifecycle", func() {
 			}
 			return true
 		}, timeout, interval).Should(BeTrue())
+		Eventually(func() bool {
+			live := getInstance()
+			return !slices.Contains(live.Finalizers, constants.GroupRestartBudgetCleanupFinalizer) &&
+				live.Annotations[constants.RoleInstanceRecoverAnnotationKey] == ""
+		}, timeout, interval).Should(BeTrue(), "completed recovery releases the RI cleanup owner and consumes intent")
 		Eventually(func() bool {
 			live := getInstance()
 			return live.Generation == live.Status.ObservedGeneration && live.Status.CurrentRevision == live.Status.UpdateRevision
@@ -274,6 +292,67 @@ var _ = Describe("Restart budget lifecycle", func() {
 			return live.Status.RestartBudgetExhausted && live.Status.GroupRestartCount == 0 && len(list.Items) == 0
 		}, 3*time.Second, interval).Should(BeTrue())
 	})
+
+	DescribeTable("[restart-budget-backend] enforces native backends only when a budget is set via CEL",
+		func(groupSet, customComponents bool) {
+			namespace := fmt.Sprintf("budget-backend-%d", time.Now().UnixNano())
+			testutil.CreateNamespace(namespace)
+			DeferCleanup(func() { testutil.DeleteNamespace(namespace) })
+			// SetupTestEnv installs no webhooks: even system-managed role annotations
+			// reach CRD validation directly. Dry runs keep the controller out of the test.
+			backends := []map[string]string{
+				nil,
+				{"test.io/unrelated": "value"},
+				{constants.RoleWorkloadTypeAnnotationKey: ""},
+				{constants.RoleWorkloadTypeAnnotationKey: constants.RoleInstanceSetWorkloadType},
+				{constants.RoleWorkloadTypeAnnotationKey: constants.DeploymentWorkloadType},
+				{constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType},
+				{constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType},
+				{constants.RoleWorkloadTypeAnnotationKey: "example.io/v1/Unsupported"},
+			}
+			configs := []*workloadsv1alpha2.RestartPolicyConfig{
+				nil,
+				{Type: workloadsv1alpha2.RestartPolicyNone},
+				{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart},
+				{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](0)},
+				{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](1)},
+			}
+			template := v1.PodTemplateSpec{Spec: v1.PodSpec{Containers: []v1.Container{{Name: "main", Image: "nginx:latest"}}}}
+			for _, annotations := range backends {
+				for _, config := range configs {
+					role := workloadsv1alpha2.RoleSpec{Name: "worker", Replicas: ptr.To[int32](1), Annotations: annotations}
+					if customComponents {
+						role.CustomComponentsPattern = &workloadsv1alpha2.CustomComponentsPattern{
+							Components: []workloadsv1alpha2.InstanceComponent{{Name: "worker", Size: ptr.To[int32](2), Template: template}}, RestartPolicyConfig: config,
+						}
+					} else {
+						role.LeaderWorkerPattern = &workloadsv1alpha2.LeaderWorkerPattern{
+							Size: ptr.To[int32](2), TemplateSource: workloadsv1alpha2.TemplateSource{Template: &template}, RestartPolicyConfig: config,
+						}
+					}
+					spec := workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{role}}
+					meta := metav1.ObjectMeta{GenerateName: "backend-", Namespace: namespace}
+					var object client.Object = &workloadsv1alpha2.RoleBasedGroup{ObjectMeta: meta, Spec: spec}
+					if groupSet {
+						object = &workloadsv1alpha2.RoleBasedGroupSet{ObjectMeta: meta, Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+							GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{Spec: spec},
+						}}
+					}
+					err := testutil.K8sClient.Create(testutil.Ctx, object, client.DryRunAll)
+					if config != nil && config.MaxGroupRestarts != nil && role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+						Expect(apierrors.IsInvalid(err)).To(BeTrue(), "backend %q, config %+v: %v", role.GetWorkloadType(), config, err)
+						Expect(err).To(MatchError(ContainSubstring("maxGroupRestarts is only supported for RoleInstanceSet")))
+					} else {
+						Expect(err).NotTo(HaveOccurred(), "backend %q, config %+v", role.GetWorkloadType(), config)
+					}
+				}
+			}
+		},
+		Entry("RBG leaderWorkerPattern", false, false),
+		Entry("RBG customComponentsPattern", false, true),
+		Entry("RBGSet leaderWorkerPattern", true, false),
+		Entry("RBGSet customComponentsPattern", true, true),
+	)
 
 	It("[restart-budget] rejects negative limits and budgets without a recreate policy via CEL", func() {
 		namespace := fmt.Sprintf("budget-schema-%d", time.Now().UnixNano())

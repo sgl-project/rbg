@@ -214,10 +214,11 @@ With the above configuration: first crash is immediate, second crash delayed 10s
 ## Bounded Group Recovery
 
 Upgrade the CRDs, controller, and admission webhook together before configuring a
-budget. The existing v1alpha2 admission webhook is the only admission layer that
-enforces the native RoleInstanceSet backend constraint; CRD CEL validates the
-explicit policy type and non-negative limit. An older or disabled webhook can
-admit a budget on an unsupported backend, which then ignores the budget.
+budget. CRD CEL on `RoleSpec` and the existing v1alpha2 admission webhooks enforce
+the native RoleInstanceSet backend constraint for newly configured budgets on
+both `leaderWorkerPattern` and `customComponentsPattern`, in RoleBasedGroup and
+RoleBasedGroupSet. CRD CEL also validates the explicit policy type and
+non-negative limit; backend validation does not rely on the webhook alone.
 
 `maxGroupRestarts` is supported only by v1alpha2, like `activateAfter` and the
 backoff delays. Configure the budget through v1alpha2. A GET through v1alpha1
@@ -251,13 +252,36 @@ if another member triggers it.
 ### Durable accounting and exhaustion
 
 The budget is per RoleInstance UID and component topology/Pod-template revision. The RI status carries
-`groupRestartCount`, `groupRestartRevision`, and `restartBudgetExhausted`. Accepted
-rebuilds are recorded under an optimistic status lock **before** any Pod deletion;
-repeated or suppressed attempts do not consume budget. The durable count is separate
+`groupRestartCount`, `groupRestartRevision`, and `restartBudgetExhausted`. The
+budget revision combines the ControllerRevision name selected by the existing
+RI revision reconciler with a component-name-sorted size digest. It does not hash
+this binary's serialization of Pod templates again: semantic revision matching
+keeps the selected name stable across serialization-only upgrades, while real
+template changes select a new name and size changes alter the size digest.
+The selected revision is passed directly into budget processing, not inferred
+from potentially lagging `status.updateRevision`.
+
+Accepted rebuilds consume one durable attempt only when the optimistic status
+compare-and-swap (CAS) commits, **before** any Pod deletion. Conflicted or
+otherwise uncommitted attempts, retries and suppressed triggers do not consume
+budget. A lost API response does not undo a committed increment: retries use the
+persisted count. The durable count is separate
 from the quiet-period-resetting `restartCount` used for backoff. Ready transitions,
 quiet periods, policy edits, and limit edits/removal do not reset it within the
 same revision. When no budget remains, exhaustion takes precedence over restart
 backoff.
+
+### API reads during budget reconciliation
+
+A normal Scale-to-Update pass shares one fresh budget observation, scoped to
+that reconcile and the RI UID, generation and selected revision. Direct Update
+calls still run their own budget checks. Healthy at-limit groups use the already
+listed active and inactive Pods only to decide whether a fault needs an uncached
+member-list recheck; accounting and exhaustion still require live confirmation.
+Already-retained or deleting Pods do not incur a per-Pod finalizer-check GET on
+steady exhausted polls. The final status-write read, restart-acceptance checks,
+and the authoritative empty-list recovery barrier are not removed. There is no
+cross-reconcile budget cache or change to the 30-second safety backstop.
 
 ### Configuration updates use the existing rollout path
 
@@ -287,13 +311,17 @@ Changing the number of groups (`replicas`) is different: surviving instances kee
 their UID, revision and consumed budget, while newly created groups start at zero.
 A size/configuration rollout itself is not charged as a failure-recovery attempt.
 
-On exhaustion, the RI reports `Degraded=True`, reason
+On exhaustion, the controller first acquires the internal
+`rbg.workloads.x-k8s.io/group-restart-budget-cleanup` finalizer on the RI,
+**before** persisting exhaustion or retaining/deleting Pods. A healthy budgeted
+RI does not acquire this cleanup finalizer. The RI reports `Degraded=True`, reason
 `GroupRestartBudgetExceeded`, and `RoleInstanceReady=False`. The controller stops
-replacement creation and in-place updates, adds the internal
-`rbg.workloads.x-k8s.io/group-restart-budget-cleanup` finalizer to **all owned Pods
-that can still receive it**, then requests deletion of the complete group. Pods
+replacement creation and in-place updates, adds the same finalizer to **all owned
+Pods that can still receive it**, then requests deletion of the complete group. Pods
 already deleting cannot acquire a new finalizer. Suppression is persisted in RI
 status and survives controller restarts, even if all retained Pods disappear.
+Already-exhausted reconciliation ensures the RI cleanup owner is present before
+retrying Pod retention/deletion, without clearing post-exhaustion recovery intent.
 Changing or removing the limit or tuning backoff on the same RI does **not**
 unfreeze it. Configuration changes through a RoleInstanceSet follow its normal
 rollout rules and may replace the RI, as noted above.
@@ -319,26 +347,47 @@ controller does not copy it from there to the role's workload. It is still part
 of the role like any other role annotation, so adding or removing it there
 creates a new RoleBasedGroup revision.
 
-Only the exact value `true` requests recovery. An annotation that predates
-exhaustion is removed when exhaustion is recorded: recovery must be requested
-afterward. Recovery first retries any unfinished termination, then releases only
-the group's budget finalizers. Suppression, counters and the recovery annotation
-remain in place until an authoritative API read finds no old owned Pod objects.
+Only the exact value `true` requests recovery. On a non-exhausted budget-managed
+RI, it is removed on the next reconcile; stale intent is also defensively removed
+before recording exhaustion, so recovery must be requested afterward. Recovery
+first retries any unfinished termination, then releases only the group's Pod
+budget finalizers. Suppression, counters and the recovery annotation remain in
+place until an authoritative API read finds no old owned Pod objects.
 A successful Delete request or an elapsed grace period alone is not completion.
 Other finalizers can hold recovery indefinitely and are never removed by RBG.
-Only after that barrier does the controller clear suppression and the durable
-count, consume the annotation, and allow a fresh group. If the status reset is
-committed but annotation cleanup fails or the controller crashes, the next
-reconcile removes the now-stale `recover=true` annotation without resetting the
-budget again. This prevents the old group's Terminating members from immediately
+
+While explicit recovery or an exhausted topology-revision change waits at this
+barrier, `Degraded=True` keeps reason `GroupRestartBudgetExceeded` and its message
+reports how many old owned Pod objects remain, using the authoritative remaining
+Pod list after deletion/finalizer-release attempts. The waiting message changes
+only when that count changes, not as time passes. Generic status recomputation
+preserves it across reads and writes. `RoleInstanceReady` remains False with
+reason `GroupRestartBudgetExceeded`; waiting does not redefine Ready or add an
+API field.
+
+Only after that barrier does the controller commit the status reset, clearing
+suppression, the durable count and backoff tracking, then remove the RI budget
+finalizer and consume the annotation to allow a fresh group. Failures or crashes
+are retried through the leftover RI finalizer and/or recovery annotation. If the
+status reset already committed, cleanup resumes without resetting the budget
+again. This prevents the old group's Terminating members from immediately
 charging or exhausting the new budget. Recovery is independent of Ready; an
 exhausted group need not and cannot be required to become Ready before recovery
 is allowed.
 
 A new topology/Pod-template revision (including a size change) has the same
-old-group exit barrier when updating an exhausted RI directly. RoleInstanceSet
-rollout replacement instead follows teardown cleanup below. Limit or policy
-edits alone do not change the budget revision.
+old-group exit barrier and status-reset-before-finalizer-release ordering when
+updating an exhausted RI directly. Leftover cleanup intent remains retryable.
+RoleInstanceSet rollout replacement instead follows teardown cleanup below.
+Limit or policy edits alone do not change the budget revision.
+
+For a non-exhausted RI, a topology revision change immediately resets only
+`groupRestartRevision`, `groupRestartCount` (to zero), `restartBudgetExhausted`
+(to false), and `Degraded`. It preserves `Restarting`, `restartCount`,
+`lastRestartTime`, and any in-memory recreation wave. The budget reset does not
+wait for that wave to complete: the existing [#573](https://github.com/sgl-project/rbg/pull/573)
+guard still absorbs the old wave's own Terminating triggers until its original
+Pod UIDs disappear.
 
 Deleting an RI, selecting it for rollout replacement, or scaling it down is
 **teardown**, not recovery. An RI cleanup finalizer keeps cleanup retryable until
@@ -346,7 +395,11 @@ all of its owned Pods have had budget finalizers removed. Teardown never charges
 another restart, clears the counter as a recovery side effect, or creates a new
 group. Other RI replicas remain independent and continue normal reconciliation.
 
-Finalizer acquisition is limited to Pods still controlled by the original RI and
+Healthy RIs that retain a cleanup owner from an earlier implementation release
+owned Pod budget finalizers before removing the RI budget finalizer. Cleanup
+preserves all external RI and Pod finalizers.
+
+Pod finalizer acquisition is limited to Pods still controlled by the original RI and
 matching its current member selector. If an operator changes Pod labels or removes
 its owner reference, RBG no longer manages that Pod; external cleanup is the
 operator's responsibility. The budget finalizer never grants authority over a
@@ -357,16 +410,25 @@ Pod and live-validated reason, only after the accounting status transaction
 succeeds. Deferred, rejected and duplicate budget attempts do not emit another
 accepted-rebuild event. Unbudgeted event behavior is unchanged.
 
+After a successful exhausted status CAS, the controller emits Warning
+`GroupRestartBudgetExceeded` with the live triggering Pod, reason, count and
+limit. After a successful exhausted-to-false status reset, it emits Normal
+`GroupRestartBudgetRecovered` for explicit recovery or a new topology revision.
+Retry polls do not repeat these transition events. Events are best effort, not
+exactly-once across crashes or lost API responses.
+
 ### Controller downgrade prerequisites
 
 Do not roll back to a controller that lacks restart-budget support while any
 RoleInstance or Pod still carries
 `rbg.workloads.x-k8s.io/group-restart-budget-cleanup`. The older controller cannot
-release this finalizer, so deletion and scale-down can remain stuck. Healthy,
-recovered, and previously budgeted RIs may still carry the RI finalizer;
-unsetting `maxGroupRestarts` or requesting recovery does not remove it.
+release this finalizer, so deletion and scale-down can remain stuck. Only RIs
+and Pods **still carrying it** require pre-downgrade cleanup/teardown; healthy
+never-exhausted and fully recovered RIs do not require forced teardown. Let the
+current controller release any legacy healthy cleanup owners as described above.
+Unsetting `maxGroupRestarts` is not a substitute for verifying cleanup.
 
-Before downgrading:
+For workloads with outstanding cleanup finalizers, before downgrading:
 
 1. Keep the budget-aware controller and current CRDs running.
 2. Scale the affected parent workloads to zero or remove them so they cannot
@@ -379,9 +441,9 @@ Before downgrading:
    replicas under the older controller, then downgrade only after cleanup has
    completed.
 
-This procedure tears down the affected workloads and is not a workload-preserving
-downgrade. Do not blindly remove all finalizers; unrelated finalizers remain
-under their respective owners' control.
+This procedure tears down workloads that still require teardown; it is not a
+workload-preserving downgrade for them. Do not blindly remove all finalizers;
+unrelated finalizers remain under their respective owners' control.
 
 ### Remaining recovery limitations
 

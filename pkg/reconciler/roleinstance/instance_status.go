@@ -539,7 +539,7 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// rolling them back via the precomputed newStatus.
 		liveCustomConditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0)
 		for _, c := range clone.Status.Conditions {
-			if !ownedTypes.Has(c.Type) {
+			if !ownedTypes.Has(c.Type) && c.Type != workloadsv1alpha2.RoleInstanceDegraded {
 				liveCustomConditions = append(liveCustomConditions, c)
 			}
 		}
@@ -562,10 +562,20 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		clone.Status = *newStatus
 		if budgetManaged {
 			clone.Status = *newStatus.DeepCopy()
-			// Only the budget lifecycle owns Degraded and the durable budget state.
+			// Degraded is owned by the budget lifecycle. Preserve its live message
+			// while exhausted (including drain progress), but discard stale copies
+			// after recovery has committed.
 			clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
 				return cond.Type == workloadsv1alpha2.RoleInstanceDegraded
 			})
+			if liveBudget.RestartBudgetExhausted {
+				for _, cond := range liveBudget.Conditions {
+					if cond.Type == workloadsv1alpha2.RoleInstanceDegraded && cond.Status == v1.ConditionTrue && cond.Reason == synccontrol.GroupRestartBudgetExceeded {
+						clone.Status.Conditions = append(clone.Status.Conditions, cond)
+						break
+					}
+				}
+			}
 			if liveBudget.GroupRestartRevision != "" {
 				// Budget acceptance and completion persist Restarting in their own
 				// status transaction. Even if its response was lost, computed status
