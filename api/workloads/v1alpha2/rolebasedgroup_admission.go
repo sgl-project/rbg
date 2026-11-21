@@ -18,9 +18,11 @@ package v1alpha2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -114,8 +116,9 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	// them from its own template. Those children are not new user-facing uses:
 	// a deprecated or unsupported workload type already exists in the set's
 	// template, so the replacement inherits it. Look up the verified parent
-	// template and use it as the pre-existing role set, without exempting
-	// unrelated creates. In strict mode a deprecated type is rejected whatever
+	// template, and the held revision a child below a rollout partition is
+	// re-created from, and use them as the pre-existing role set, without
+	// exempting unrelated creates. In strict mode a deprecated type is rejected whatever
 	// the template says, so only unsupported types are worth the lookup.
 	exemptible := isUnsupportedWorkloadType
 	if v.EnableDeprecatedWorkloadTypes {
@@ -161,6 +164,13 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 // an unknown UID, or a stale cached copy of a parent that has since been
 // migrated or replaced, grants nothing.
 //
+// The live template is not the only one the set creates children from. During a
+// partitioned rollout a missing child below the partition is re-created from the
+// held ControllerRevision its groupset-revision label names, and that revision can
+// still carry a type the live template has since moved off. Roles the live
+// template does not account for are therefore also looked up in that revision,
+// which must be controlled by the same verified parent.
+//
 // The check does not authenticate the writer. A user who can read the parent
 // set (its name and UID are ordinary readable metadata) and create
 // RoleBasedGroups in its namespace can mint a controller-shaped reference and
@@ -201,11 +211,6 @@ func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 		return nil, nil
 	}
 
-	templateRoles := parent.Spec.GroupTemplate.Spec.Roles
-	if len(templateRoles) == 0 {
-		return nil, nil
-	}
-
 	wanted := make(map[string]string, len(rbg.Spec.Roles))
 	for i := range rbg.Spec.Roles {
 		role := &rbg.Spec.Roles[i]
@@ -215,17 +220,63 @@ func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 		}
 	}
 
-	exempt := make([]RoleSpec, 0, len(templateRoles))
-	for i := range templateRoles {
-		role := &templateRoles[i]
-		if wt, ok := wanted[role.Name]; ok && wt == role.GetWorkloadType() {
-			exempt = append(exempt, *role.DeepCopy())
+	exempt := takeMatchingRoles(parent.Spec.GroupTemplate.Spec.Roles, wanted)
+	if len(wanted) > 0 {
+		heldRoles, err := heldRevisionRoles(ctx, reader, rbg, parent)
+		if err != nil {
+			return nil, err
 		}
+		exempt = append(exempt, takeMatchingRoles(heldRoles, wanted)...)
 	}
 	if len(exempt) == 0 {
 		return nil, nil
 	}
 	return exempt, nil
+}
+
+// takeMatchingRoles returns copies of the template roles whose name and workload
+// type match an entry in wanted, and removes the matched entries from wanted.
+func takeMatchingRoles(templateRoles []RoleSpec, wanted map[string]string) []RoleSpec {
+	var matched []RoleSpec
+	for i := range templateRoles {
+		role := &templateRoles[i]
+		if wt, ok := wanted[role.Name]; ok && wt == role.GetWorkloadType() {
+			matched = append(matched, *role.DeepCopy())
+			delete(wanted, role.Name)
+		}
+	}
+	return matched
+}
+
+// heldRevisionRoles returns the template roles of the ControllerRevision that the
+// child's groupset-revision label names, or nil when the child names none, the
+// revision does not exist, or it is not controlled by parent. parent has already
+// been verified against the child's owner reference, so a revision of another set,
+// or one left behind by a deleted set of the same name, grants nothing.
+func heldRevisionRoles(
+	ctx context.Context, reader client.Reader, rbg *RoleBasedGroup, parent *RoleBasedGroupSet,
+) ([]RoleSpec, error) {
+	name := rbg.Labels[constants.GroupSetRevisionLabelKey]
+	if name == "" {
+		return nil, nil
+	}
+	revision := &appsv1.ControllerRevision{}
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: rbg.Namespace, Name: name}, revision); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("unable to verify ControllerRevision %s/%s of RoleBasedGroupSet %s: %w",
+			rbg.Namespace, name, parent.Name, err)
+	}
+	if !metav1.IsControlledBy(revision, parent) {
+		return nil, nil
+	}
+	template := &RoleBasedGroupTemplateSpec{}
+	if err := json.Unmarshal(revision.Data.Raw, template); err != nil {
+		return nil, fmt.Errorf("unable to read ControllerRevision %s/%s of RoleBasedGroupSet %s: %w",
+			rbg.Namespace, name, parent.Name, err)
+	}
+	return template.Spec.Roles, nil
 }
 
 // containsWorkloadType reports whether any role in the slice has a workload type

@@ -548,4 +548,25 @@ func TestNewWorkloadReconcilerMatchesAdmission(t *testing.T) {
 			}
 		})
 	}
+
+	// A value that is not apiVersion/kind is not a canonical selector, so admission
+	// rejects it, but the role does not stop the group: GetWorkloadSpec falls back
+	// to RoleInstanceSet whatever the value names.
+	for _, wt := range []string{"RoleInstanceSet", "StatefulSet", "/RoleInstanceSet"} {
+		t.Run("not apiVersion/kind "+wt, func(t *testing.T) {
+			role := workloadsv1alpha2.RoleSpec{
+				Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: wt},
+			}
+			if workloadsv1alpha2.IsReconcilableWorkloadType(wt) {
+				t.Fatalf("admission accepts the non-canonical value %q", wt)
+			}
+			spec := role.GetWorkloadSpec()
+			if got := spec.APIVersion + "/" + spec.Kind; got != constants.RoleInstanceSetWorkloadType {
+				t.Fatalf("%q resolves to %q, want the RoleInstanceSet fallback", wt, got)
+			}
+			if _, err := NewWorkloadReconciler(spec, scheme, client); err != nil {
+				t.Fatalf("the RoleInstanceSet fallback for %q has no reconciler: %v", wt, err)
+			}
+		})
+	}
 }
