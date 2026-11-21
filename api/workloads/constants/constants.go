@@ -71,6 +71,43 @@ const (
 // RoleInstanceLifecycleStateType defines the lifecycle state of a RoleInstance
 type RoleInstanceLifecycleStateType string
 
+// RoleInstanceLifecycleHookStateType is the runtime state of the KEP-527
+// RoleInstance lifecycle-hook protocol.
+type RoleInstanceLifecycleHookStateType string
+
+const (
+	// RoleInstanceLifecycleHookStateKey records the active KEP-527
+	// RoleInstance lifecycle-hook phase. It is distinct from the legacy
+	// RoleInstanceSet lifecycle-state key.
+	RoleInstanceLifecycleHookStateKey = RBGPrefix + "role-instance-hook-state"
+
+	// RoleInstanceLifecycleHookSignalLabelKeys records the comma-separated
+	// signal-label keys that may still have runtime labels or Pod mirrors
+	// written by the KEP-527 protocol.
+	RoleInstanceLifecycleHookSignalLabelKeys = RBGPrefix + "role-instance-hook-signal-label-keys"
+
+	// RoleInstancePreDeleteFinalizer holds a RoleInstance while its preDelete
+	// hook and final Pod cleanup are in progress.
+	RoleInstancePreDeleteFinalizer = RBGPrefix + "role-instance-pre-delete"
+)
+
+const (
+	// RoleInstanceHookStatePreUpdate blocks the first workload change of an update.
+	RoleInstanceHookStatePreUpdate RoleInstanceLifecycleHookStateType = "PreUpdate"
+	// RoleInstanceHookStateUpdating records that preUpdate was released.
+	RoleInstanceHookStateUpdating RoleInstanceLifecycleHookStateType = "Updating"
+	// RoleInstanceHookStatePreRecover blocks workload recovery.
+	RoleInstanceHookStatePreRecover RoleInstanceLifecycleHookStateType = "PreRecover"
+	// RoleInstanceHookStateRecovering records that preRecover was released.
+	RoleInstanceHookStateRecovering RoleInstanceLifecycleHookStateType = "Recovering"
+	// RoleInstanceHookStatePostReady runs asynchronously after workload readiness.
+	RoleInstanceHookStatePostReady RoleInstanceLifecycleHookStateType = "PostReady"
+	// RoleInstanceHookStatePreDelete blocks final member Pod deletion.
+	RoleInstanceHookStatePreDelete RoleInstanceLifecycleHookStateType = "PreDelete"
+	// RoleInstanceHookStateTerminating records that preDelete was released.
+	RoleInstanceHookStateTerminating RoleInstanceLifecycleHookStateType = "Terminating"
+)
+
 // Progressing reason constants shared by RoleInstanceSet and RoleBasedGroup (KEP-502).
 // RIS maps RoleInstance reason families to these canonical reasons; RBG uses the same
 // family names plus its own aggregates.

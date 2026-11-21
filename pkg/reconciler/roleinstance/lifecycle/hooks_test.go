@@ -1,0 +1,151 @@
+/*
+Copyright 2026 The RBG Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package lifecycle
+
+import (
+	"context"
+	"testing"
+
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+)
+
+func TestHookControlEnterAndCleanup(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: "default"},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
+				instance, workloadsv1alpha2.GroupVersion.WithKind("RoleInstance"))},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance, pod).Build()
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(pod), pod); err != nil {
+		t.Fatal(err)
+	}
+	control := NewHookControl(c)
+	hook := &workloadsv1alpha2.RoleInstanceLifecycleHook{
+		SignalLabels: map[string]string{"example.com/update": "true"},
+	}
+	lifecycle := &workloadsv1alpha2.RoleInstanceLifecycle{PreUpdate: hook}
+
+	if err := control.EnterHook(ctx, instance, constants.RoleInstanceHookStatePreUpdate, hook, []*corev1.Pod{pod}); err != nil {
+		t.Fatalf("EnterHook() error = %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
+		t.Fatal(err)
+	}
+
+	if got := instance.Labels[constants.RoleInstanceLifecycleHookStateKey]; got != string(constants.RoleInstanceHookStatePreUpdate) {
+		t.Fatalf("hook state = %q, want %q", got, constants.RoleInstanceHookStatePreUpdate)
+	}
+	if got := instance.Labels["example.com/update"]; got != "true" {
+		t.Fatalf("RoleInstance signal label = %q, want true", got)
+	}
+	if got := instance.Annotations[constants.RoleInstanceLifecycleHookSignalLabelKeys]; got != "example.com/update" {
+		t.Fatalf("signal key record = %q, want example.com/update", got)
+	}
+	storedPod := &corev1.Pod{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(pod), storedPod); err != nil {
+		t.Fatal(err)
+	}
+	if got := storedPod.Labels["example.com/update"]; got != "true" {
+		t.Fatalf("Pod mirror = %q, want true", got)
+	}
+
+	storedInstance := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), storedInstance); err != nil {
+		t.Fatal(err)
+	}
+	delete(storedInstance.Labels, "example.com/update")
+	if err := c.Update(ctx, storedInstance); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.SyncRuntimeLabels(ctx, storedInstance, lifecycle, []*corev1.Pod{storedPod}); err != nil {
+		t.Fatalf("SyncRuntimeLabels() error = %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(storedPod), storedPod); err != nil {
+		t.Fatal(err)
+	}
+	if value, exists := storedPod.Labels["example.com/update"]; exists {
+		t.Fatalf("Pod mirror = %q, want absent", value)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(storedInstance), storedInstance); err != nil {
+		t.Fatal(err)
+	}
+	if value, exists := storedInstance.Annotations[constants.RoleInstanceLifecycleHookSignalLabelKeys]; exists {
+		t.Fatalf("signal key record = %q, want absent", value)
+	}
+}
+
+func TestHookControlPreDeleteFinalizer(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: "default"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
+	control := NewHookControl(c)
+
+	added, err := control.EnsurePreDeleteFinalizer(ctx, instance)
+	if err != nil {
+		t.Fatalf("EnsurePreDeleteFinalizer() error = %v", err)
+	}
+	if !added || !contains(instance, constants.RoleInstancePreDeleteFinalizer) {
+		t.Fatalf("EnsurePreDeleteFinalizer() added = %v, finalizers = %v", added, instance.Finalizers)
+	}
+	removed, err := control.RemovePreDeleteFinalizer(ctx, instance)
+	if err != nil {
+		t.Fatalf("RemovePreDeleteFinalizer() error = %v", err)
+	}
+	if !removed || contains(instance, constants.RoleInstancePreDeleteFinalizer) {
+		t.Fatalf("RemovePreDeleteFinalizer() removed = %v, finalizers = %v", removed, instance.Finalizers)
+	}
+}
+
+func contains(obj metav1.Object, finalizer string) bool {
+	for _, candidate := range obj.GetFinalizers() {
+		if candidate == finalizer {
+			return true
+		}
+	}
+	return false
+}

@@ -197,6 +197,26 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	return newRoleInstanceSet, nil
 }
 
+func roleLifecycleApplyConfiguration(lifecycle *workloadsv1alpha2.RoleInstanceLifecycle) *workloadsv1alpha2client.RoleInstanceLifecycleApplyConfiguration {
+	if lifecycle == nil {
+		return nil
+	}
+	config := workloadsv1alpha2client.RoleInstanceLifecycle()
+	if lifecycle.PreUpdate != nil {
+		config.WithPreUpdate(workloadsv1alpha2client.RoleInstanceLifecycleHook().WithSignalLabels(lifecycle.PreUpdate.SignalLabels))
+	}
+	if lifecycle.PreRecover != nil {
+		config.WithPreRecover(workloadsv1alpha2client.RoleInstanceLifecycleHook().WithSignalLabels(lifecycle.PreRecover.SignalLabels))
+	}
+	if lifecycle.PostReady != nil {
+		config.WithPostReady(workloadsv1alpha2client.RoleInstanceLifecycleHook().WithSignalLabels(lifecycle.PostReady.SignalLabels))
+	}
+	if lifecycle.PreDelete != nil {
+		config.WithPreDelete(workloadsv1alpha2client.RoleInstanceLifecycleHook().WithSignalLabels(lifecycle.PreDelete.SignalLabels))
+	}
+	return config
+}
+
 // upgradeRoleInstanceSetOwnership transfers only the controller's main-resource
 // Update ownership to Apply. It must run only on the ordinary path, after sparse
 // membership has been cleared. The helper's patch guards resourceVersion; also
@@ -303,6 +323,9 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 		roleInstanceTemplateConfig.WithRestartPolicyConfig(restartPolicyApplyConfig)
 	} else {
 		roleInstanceTemplateConfig.WithRestartPolicy(role.GetRestartPolicy())
+	}
+	if role.Lifecycle != nil {
+		roleInstanceTemplateConfig.WithLifecycle(roleLifecycleApplyConfiguration(role.Lifecycle))
 	}
 	var constructErr error
 	switch {
