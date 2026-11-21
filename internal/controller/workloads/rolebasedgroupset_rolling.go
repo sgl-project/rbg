@@ -178,7 +178,10 @@ func (r *RoleBasedGroupSetReconciler) adoptGroupSetOrphans(
 //     no controller, which is how a child v0.7.0 or v0.8.0 left without the
 //     annotation ends up once it is orphaned, and an orphan adopted before that
 //     derivation, which a claim that only changed the owner reference would not
-//     enqueue.
+//     enqueue. A legacy somebody set on the orphan, for example through the
+//     template of the set that owned it before, is replaced as well: it looks the
+//     same as a derived one, and keeping both would leave the derived case broken.
+//     A set that wants legacy on its children declares it in the template.
 func (r *RoleBasedGroupSetReconciler) claimGroupSetOrphan(
 	set *workloadsv1alpha2.RoleBasedGroupSet, child *workloadsv1alpha2.RoleBasedGroup,
 ) error {

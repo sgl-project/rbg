@@ -241,7 +241,10 @@ func TestCreateRollingGroupSetChildAdoptsOrphan(t *testing.T) {
 // that can undo it (#603). An orphan adopted before that derivation has no mode, and
 // an owner reference change alone does not enqueue the RoleBasedGroup, so the
 // adoption pins that one too. A mode the template declares is stamped by the same
-// write. Both paths adopt through claimGroupSetOrphan.
+// write. A legacy that was set rather than derived, here by the template of the set
+// that owned the orphan before, cannot be told apart and is replaced too; the
+// adopting set has to declare legacy to keep it. Both paths adopt through
+// claimGroupSetOrphan.
 func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
 	modeKey := constants.DiscoveryConfigModeAnnotationKey
 	legacy := string(constants.LegacyDiscoveryConfigMode)
@@ -250,11 +253,16 @@ func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
 	tests := []struct {
 		name         string
 		templateMode string
-		orphanMode   string
-		wantMode     string
-		wantPresent  bool
+		// previousTemplateMode builds the orphan from the template of the set that
+		// owned it before, so its mode was set by that template, not derived.
+		previousTemplateMode string
+		orphanMode           string
+		wantMode             string
+		wantPresent          bool
 	}{
 		{name: "legacy becomes refine when the template declares no mode", orphanMode: legacy, wantMode: refine, wantPresent: true},
+		{name: "legacy the previous set's template declared becomes refine when the template declares no mode", previousTemplateMode: legacy, wantMode: refine, wantPresent: true},
+		{name: "legacy the previous set's template declared is kept when the template declares it too", templateMode: legacy, previousTemplateMode: legacy, wantMode: legacy, wantPresent: true},
 		{name: "legacy declared by the template is kept", templateMode: legacy, orphanMode: legacy, wantMode: legacy, wantPresent: true},
 		{name: "refine on the orphan is kept", orphanMode: refine, wantMode: refine, wantPresent: true},
 		// The claim is the only write: nothing else would make the RoleBasedGroup
@@ -285,8 +293,15 @@ func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
 				set.Spec.GroupTemplate.Annotations[modeKey] = tt.templateMode
 			}
 			orphan := newRBGForSet(set, 0)
-			orphan.OwnerReferences = nil
 			delete(orphan.Annotations, modeKey)
+			if tt.previousTemplateMode != "" {
+				previous := set.DeepCopy()
+				previous.UID = "previous-set-uid"
+				previous.Spec.GroupTemplate.Annotations[modeKey] = tt.previousTemplateMode
+				orphan = newRBGForSet(previous, 0)
+				require.Equal(t, tt.previousTemplateMode, orphan.Annotations[modeKey])
+			}
+			orphan.OwnerReferences = nil
 			if tt.orphanMode != "" {
 				orphan.Annotations[modeKey] = tt.orphanMode
 			}
@@ -313,8 +328,14 @@ func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
 			}
 			set := revisionTestRollingSet(1, &groupSetRevision{template: template})
 			orphan := revisionTestReadyChild(set, 0, &groupSetRevision{template: template})
-			orphan.OwnerReferences = nil
 			delete(orphan.Annotations, modeKey)
+			if tt.previousTemplateMode != "" {
+				previous := revisionTestTemplate(nil)
+				previous.Annotations = map[string]string{modeKey: tt.previousTemplateMode}
+				orphan = revisionTestReadyChild(set, 0, &groupSetRevision{template: previous})
+				require.Equal(t, tt.previousTemplateMode, orphan.Annotations[modeKey])
+			}
+			orphan.OwnerReferences = nil
 			if tt.orphanMode != "" {
 				if orphan.Annotations == nil {
 					orphan.Annotations = map[string]string{}

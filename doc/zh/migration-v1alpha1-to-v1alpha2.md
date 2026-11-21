@@ -81,7 +81,7 @@ discovery ConfigMap 是控制器创建的 Pod 发现信息（`config.yaml`），
 | --- | --- | --- |
 | v0.7.0 及以后创建，或全新 v0.9.0 安装 | `refine` | 无需操作。 |
 | 从 v0.6.0 或更早版本升级上来 | 派生为 `legacy` | 把 RBG 的发现模式注解设为 `refine`，触发一次 reconcile。 |
-| RoleBasedGroupSet 子对象（任意来源） | `refine`（显式设置为 `legacy` 的除外） | 没有这个注解的子对象无需操作，v0.7.0 和 v0.8.0 留下的子对象就是这种状态：升级后第一次 reconcile 时，控制器会把它固定为 `refine`，并创建或更新它的 discovery ConfigMap。workload spec、revision 和 Pod 都不会变化。带有 `legacy` 的子对象会保持不变；要切换它，请在 `spec.groupTemplate.annotations` 中设置 `rbg.workloads.x-k8s.io/discovery-config-mode: refine`。set controller 会把模板注解应用到子对象上，除此之外保留子对象已有的模式。唯一的例外是被 set 接管的孤儿对象：除非模板声明了模式，接管时会把它设置为 `refine`，无论它原先没有模式，还是带有在没有 set 期间派生出的 `legacy`。 |
+| RoleBasedGroupSet 子对象（任意来源） | `refine`（显式设置为 `legacy` 的除外） | 没有这个注解的子对象无需操作，v0.7.0 和 v0.8.0 留下的子对象就是这种状态：升级后第一次 reconcile 时，控制器会把它固定为 `refine`，并创建或更新它的 discovery ConfigMap。workload spec、revision 和 Pod 都不会变化。带有 `legacy` 的子对象会保持不变；要切换它，请在 `spec.groupTemplate.annotations` 中设置 `rbg.workloads.x-k8s.io/discovery-config-mode: refine`。set controller 会把模板注解应用到子对象上，除此之外保留子对象已有的模式。唯一的例外是被 set 接管的孤儿对象：除非模板声明了模式，接管时会把它设置为 `refine`，并丢弃它带有的任何 `legacy`。这不仅包括控制器在它没有 set 期间派生出的 `legacy`，也包括有人设置的 `legacy`，例如由之前拥有该子对象的 set 的模板写入的值；接管无法区分这两种情况。要让被接管的子对象保持 `legacy`，请在接管它的 set 的 `spec.groupTemplate.annotations` 中声明。 |
 
 对普通 RoleBasedGroup，先设置注解，再确认与 RBG 同名的 ConfigMap 已创建：
 
