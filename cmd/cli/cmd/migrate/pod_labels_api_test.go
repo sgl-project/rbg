@@ -36,6 +36,7 @@ import (
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/flowcontrol"
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
@@ -131,6 +132,21 @@ func TestPodLabelsCommandAPI(t *testing.T) {
 	require.Contains(t, out, "Legacy workload templates: unmarked=2 (informational)\nWARNING: The reported workloads can still create Pods without managed=true.")
 	require.Contains(t, out, "Plan to migrate the affected roles to RoleInstanceSet using the v1alpha2 API.")
 	require.NotContains(t, out, "WARNING: legacy workload template report")
+	t.Run("uses the command rate limiter for both clients", func(t *testing.T) {
+		limitedConfig := rest.CopyConfig(cfg)
+		limitedConfig.RateLimiter = flowcontrol.NewFakeNeverRateLimiter()
+		out, err := run(limitedConfig, "check")
+		require.NoError(t, err)
+		require.Contains(t, out, "candidates=0 patched=0 failed=0 dry-run=false check=true")
+		require.Contains(t, out, "Legacy workload templates: unmarked=2 (informational)")
+		require.NotContains(t, out, "WARNING: legacy workload template report")
+	})
+	t.Run("skips templates when the Pod scan times out", func(t *testing.T) {
+		out, err := run(cfg, "check", "--timeout=1ns")
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		require.NotContains(t, out, "legacy workload template report")
+		require.NotContains(t, out, "Legacy workload templates:")
+	})
 	t.Run("no migration advice without unmarked templates", func(t *testing.T) {
 		out, err := run(cfg, "check", "--all-namespaces=false")
 		require.NoError(t, err)

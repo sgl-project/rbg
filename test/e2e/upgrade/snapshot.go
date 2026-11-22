@@ -705,6 +705,7 @@ func checkNoRestarts(fs *findings, before, after map[string]RBGSnapshot) {
 // a question for the correctness suites, and this suite can only speak about what the
 // upgrade changed.
 func checkPodMetadataStable(fs *findings, before, after map[string]RBGSnapshot) {
+	allowManagedMarker := podLabelMigrationEnabled()
 	var labelProblems, annotationProblems, gateProblems []string
 	for rbgName, beforeSnap := range before {
 		afterSnap, ok := after[rbgName]
@@ -719,7 +720,7 @@ func checkPodMetadataStable(fs *findings, before, after map[string]RBGSnapshot) 
 				}
 				where := fmt.Sprintf("%s/%s: pod %s", rbgName, role, podName)
 
-				for _, diff := range podLabelDiff(beforeFacts.Labels, afterFacts.Labels) {
+				for _, diff := range podLabelDiff(beforeFacts.Labels, afterFacts.Labels, allowManagedMarker) {
 					labelProblems = append(labelProblems, where+" label "+diff)
 				}
 				for _, diff := range stringMapDiff(beforeFacts.Annotations, afterFacts.Annotations) {
@@ -740,8 +741,8 @@ func checkPodMetadataStable(fs *findings, before, after map[string]RBGSnapshot) 
 	fs.add("pod readiness gates were changed by the upgrade", gateProblems)
 }
 
-func podLabelDiff(before, after map[string]string) []string {
-	if _, existed := before[constants.ManagedLabelKey]; !existed && after[constants.ManagedLabelKey] == constants.ManagedLabelValue {
+func podLabelDiff(before, after map[string]string, allowManagedMarker bool) []string {
+	if _, existed := before[constants.ManagedLabelKey]; allowManagedMarker && !existed && after[constants.ManagedLabelKey] == constants.ManagedLabelValue {
 		after = copyStringMap(after)
 		delete(after, constants.ManagedLabelKey)
 	}

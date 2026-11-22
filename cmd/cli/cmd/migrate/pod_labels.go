@@ -76,6 +76,10 @@ func NewMigrateCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 				return err
 			}
 		}
+		// Use the command's shared limiter for both REST clients.
+		config = rest.CopyConfig(config)
+		config.QPS = -1
+		config.RateLimiter = nil
 		kube, err := kubernetes.NewForConfig(config)
 		if err != nil {
 			return err
@@ -84,7 +88,7 @@ func NewMigrateCmd(cf *genericclioptions.ConfigFlags) *cobra.Command {
 		defer cancel()
 		m := migrator{kube: kube, namespace: ns, limiter: rate.NewLimiter(rate.Limit(o.qps), 1), out: cmd.OutOrStdout()}
 		podErr := m.run(ctx, check, o.dryRun)
-		if check {
+		if check && ctx.Err() == nil {
 			if err := m.reportLegacyTemplates(ctx, config); err != nil {
 				_, _ = fmt.Fprintf(cmd.ErrOrStderr(), "WARNING: legacy workload template report is incomplete: %v\n", err)
 			}

@@ -52,10 +52,11 @@ func TestExportReleaseChartWithoutCheckout(t *testing.T) {
 func TestPodLabelDiffOnlyAllowsMarkerAddition(t *testing.T) {
 	before := map[string]string{constants.GroupNameLabelKey: "group"}
 	after := map[string]string{constants.GroupNameLabelKey: "group", constants.ManagedLabelKey: "true"}
-	require.Empty(t, podLabelDiff(before, after))
+	require.Empty(t, podLabelDiff(before, after, true))
+	require.NotEmpty(t, podLabelDiff(before, after, false))
 	require.Equal(t, "true", after[constants.ManagedLabelKey])
 	after[constants.GroupNameLabelKey] = "drift"
-	require.NotEmpty(t, podLabelDiff(before, after))
-	require.NotEmpty(t, podLabelDiff(map[string]string{constants.ManagedLabelKey: "false"}, map[string]string{constants.ManagedLabelKey: "true"}))
-	require.NotEmpty(t, podLabelDiff(map[string]string{constants.ManagedLabelKey: "true"}, nil))
+	require.NotEmpty(t, podLabelDiff(before, after, true))
+	require.NotEmpty(t, podLabelDiff(map[string]string{constants.ManagedLabelKey: "false"}, map[string]string{constants.ManagedLabelKey: "true"}, true))
+	require.NotEmpty(t, podLabelDiff(map[string]string{constants.ManagedLabelKey: "true"}, nil, true))
 }

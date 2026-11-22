@@ -62,12 +62,18 @@ jobs:
           echo "should_run=$SHOULD_RUN" >> $GITHUB_OUTPUT
 
   envtest:
+    name: ${{ matrix.pod_cache_scope == 'all' && 'envtest' || 'envtest (filtered)' }}
     needs: check-changes
     if: needs.check-changes.outputs.should_run == 'true'
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        pod_cache_scope: [all, filtered]
     env:
       GOPATH: ${{ github.workspace }}
       GO111MODULE: on
+      RBGS_POD_CACHE_SCOPE: ${{ matrix.pod_cache_scope }}
     defaults:
       run:
         working-directory: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
@@ -122,14 +128,14 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: envtest-logs
+          name: envtest-logs-${{ matrix.pod_cache_scope }}
           path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs/envtest.log
           retention-days: 7
 
       - name: Test Summary
         if: always()
         run: |
-          echo "## Envtest Results" >> $GITHUB_STEP_SUMMARY
+          echo "## Envtest Results ($RBGS_POD_CACHE_SCOPE)" >> $GITHUB_STEP_SUMMARY
           if [ -f envtest.log ]; then
             # Count passed/failed tests
             PASSED=$(grep -c "PASS:" envtest.log || echo "0")

@@ -299,7 +299,8 @@ production-integration work.
 - `kubectl rbg migrate pod-labels` with `check`, `--dry-run`, and a rate limit, plus the Helm
   pre-upgrade hook.
 - Unit and integration tests in the repository; the upgrade e2e asserts zero template diffs.
-- The [Monitoring](#monitoring) metrics are exported.
+- The five [Monitoring](#monitoring) metrics are deferred from Alpha to a dedicated follow-up
+  for secure metrics scraping and the first RBG-specific operational metrics.
 
 #### Beta
 

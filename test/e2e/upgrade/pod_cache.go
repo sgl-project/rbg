@@ -174,6 +174,7 @@ func runPodCacheRollbackSpec(f *framework.Framework) {
 		out, err := exec.Command("helm", args...).CombinedOutput()
 		gomega.Expect(err).ToNot(gomega.HaveOccurred(), "helm rollback failed: %s", out)
 		waitControllerRolledOut(f, fromTag())
+		waitFromReleaseServing(f)
 		afterRollback := waitQuiesced(f)
 		assertPodsUnchanged(before, afterRollback)
 		runHelmUpgradeWithScope(f, podcache.ScopeFiltered)
@@ -185,7 +186,7 @@ func runPodCacheRollbackSpec(f *framework.Framework) {
 func runHelmUpgradeWithScope(f *framework.Framework, scope string, extraSets ...string) *batchv1.Job {
 	args := append([]string{"--set", "controller.podCacheScope=" + scope}, extraSets...)
 	job := runHelmUpgrade(f, args...)
-	waitControllerRolledOut(f, toTag())
+	waitForUpgradeReady(f, fxV1alpha1)
 	return job
 }
 
