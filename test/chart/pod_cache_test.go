@@ -26,8 +26,6 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	batchv1 "k8s.io/api/batch/v1"
-	rbacv1 "k8s.io/api/rbac/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/yaml"
 )
 
@@ -39,7 +37,7 @@ func TestPodCacheHelmControls(t *testing.T) {
 		want  []string
 	}{
 		{name: "published image defaults"},
-		{name: "explicit defaults", flags: []string{"--set", "controller.podCacheScope=all,controller.watchListClient=false"}},
+		{name: "explicit defaults", flags: []string{"--set", "controller.podCacheScope=all,controller.watchListClient=false"}, want: []string{"--pod-cache-scope=all", "--watch-list-client=false"}},
 		{name: "filtered", flags: []string{"--set", "controller.podCacheScope=filtered"}, want: []string{"--pod-cache-scope=filtered"}},
 		{name: "watch list", flags: []string{"--set", "controller.watchListClient=true"}, want: []string{"--watch-list-client=true"}},
 	} {
@@ -90,29 +88,14 @@ func TestPodLabelMigrationHook(t *testing.T) {
 	require.EqualValues(t, 300, *job.Spec.ActiveDeadlineSeconds)
 	require.NotNil(t, job.Spec.TTLSecondsAfterFinished)
 	require.EqualValues(t, 259200, *job.Spec.TTLSecondsAfterFinished)
+	var manager appsv1.Deployment
+	require.NoError(t, yaml.Unmarshal([]byte(objs["Deployment/"+managerDeploymentName].raw), &manager))
+	require.Equal(t, manager.Spec.Template.Spec.ServiceAccountName, job.Spec.Template.Spec.ServiceAccountName)
 	require.Contains(t, objs, "ServiceAccount/"+job.Spec.Template.Spec.ServiceAccountName)
-	require.Contains(t, objs, "ClusterRoleBinding/rbgs-pod-label-migration-rbg-system")
-	var role rbacv1.ClusterRole
-	require.NoError(t, yaml.Unmarshal([]byte(objs["ClusterRole/rbgs-pod-label-migration-rbg-system"].raw), &role))
-	require.Equal(t, []rbacv1.PolicyRule{
-		{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "patch"}},
-		{APIGroups: []string{"apps"}, Resources: []string{"deployments", "statefulsets"}, Verbs: []string{"list"}},
-		{APIGroups: []string{"leaderworkerset.x-k8s.io"}, Resources: []string{"leaderworkersets"}, Verbs: []string{"list"}},
-	}, role.Rules)
-	for _, key := range []string{
-		"ServiceAccount/rbgs-pod-label-migration",
-		"ClusterRole/rbgs-pod-label-migration-rbg-system",
-		"ClusterRoleBinding/rbgs-pod-label-migration-rbg-system",
-	} {
-		obj, ok := objs[key]
-		require.True(t, ok, "%s is required before the hook runs", key)
-		var metadata struct {
-			Metadata metav1.ObjectMeta `json:"metadata"`
+	for key := range objs {
+		if strings.Contains(key, "pod-label-migration") {
+			require.Equal(t, "Job/rbgs-pod-label-migration-1", key)
 		}
-		require.NoError(t, yaml.Unmarshal([]byte(obj.raw), &metadata))
-		require.Equal(t, "pre-upgrade", metadata.Metadata.Annotations["helm.sh/hook"])
-		require.Equal(t, "-3", metadata.Metadata.Annotations["helm.sh/hook-weight"])
-		require.Contains(t, metadata.Metadata.Annotations["helm.sh/hook-delete-policy"], "hook-succeeded")
 	}
 	require.True(t, *job.Spec.Template.Spec.SecurityContext.RunAsNonRoot)
 	require.Len(t, job.Spec.Template.Spec.Containers, 1)

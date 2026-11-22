@@ -27,7 +27,6 @@ import (
 	"github.com/onsi/gomega"
 	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -141,6 +140,9 @@ func RunPodCacheSpecs(f *framework.Framework) {
 		}
 		gomega.Expect(failedJobs).To(gomega.HaveLen(1), "the failed upgrade must reach the migration hook")
 		job := failedJobs[0]
+		controller, err := f.Clientset.AppsV1().Deployments(controllerNamespace()).Get(f.Ctx, managerDeploymentName, metav1.GetOptions{})
+		gomega.Expect(err).ToNot(gomega.HaveOccurred())
+		gomega.Expect(job.Spec.Template.Spec.ServiceAccountName).To(gomega.Equal(controller.Spec.Template.Spec.ServiceAccountName))
 		gomega.Expect(job.Spec.Template.Spec.NodeSelector).To(gomega.HaveKeyWithValue(unschedulableNodeLabel, "true"))
 		gomega.Expect(job.Status.Conditions).To(gomega.ContainElement(gomega.And(
 			gomega.HaveField("Type", batchv1.JobFailed), gomega.HaveField("Status", corev1.ConditionTrue),
@@ -151,8 +153,6 @@ func RunPodCacheSpecs(f *framework.Framework) {
 		gomega.Expect(afterPods).To(gomega.Equal(beforePods), "the controller must not roll out after a failed pre-upgrade hook")
 
 		runHelmUpgradeWithScope(f, podcache.ScopeFiltered)
-		_, err = f.Clientset.CoreV1().ServiceAccounts(controllerNamespace()).Get(f.Ctx, job.Spec.Template.Spec.ServiceAccountName, metav1.GetOptions{})
-		gomega.Expect(apierrors.IsNotFound(err)).To(gomega.BeTrue(), "a successful retry should remove the temporary hook RBAC")
 		assertWorkloadsUnchanged(f, before, waitQuiesced(f))
 	})
 }

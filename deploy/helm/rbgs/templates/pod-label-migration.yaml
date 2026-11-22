@@ -1,52 +1,6 @@
 {{- if .Values.podLabelMigration.enabled }}
 {{- $name := printf "%s-pod-label-migration" .Release.Name | trunc 63 | trimSuffix "-" }}
 {{- $revision := .Release.Revision | toString }}
-apiVersion: v1
-kind: ServiceAccount
-metadata:
-  name: {{ $name }}
-  namespace: {{ .Release.Namespace }}
-  annotations:
-    "helm.sh/hook": pre-upgrade
-    "helm.sh/hook-weight": "-3"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: {{ $name }}-{{ .Release.Namespace }}
-  annotations:
-    "helm.sh/hook": pre-upgrade
-    "helm.sh/hook-weight": "-3"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
-rules:
-  - apiGroups: [""]
-    resources: ["pods"]
-    verbs: ["get", "list", "patch"]
-  - apiGroups: ["apps"]
-    resources: ["deployments", "statefulsets"]
-    verbs: ["list"]
-  - apiGroups: ["leaderworkerset.x-k8s.io"]
-    resources: ["leaderworkersets"]
-    verbs: ["list"]
----
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
-metadata:
-  name: {{ $name }}-{{ .Release.Namespace }}
-  annotations:
-    "helm.sh/hook": pre-upgrade
-    "helm.sh/hook-weight": "-3"
-    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
-roleRef:
-  apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
-  name: {{ $name }}-{{ .Release.Namespace }}
-subjects:
-  - kind: ServiceAccount
-    name: {{ $name }}
-    namespace: {{ .Release.Namespace }}
----
 apiVersion: batch/v1
 kind: Job
 metadata:
@@ -65,7 +19,7 @@ spec:
   ttlSecondsAfterFinished: {{ .Values.podLabelMigration.ttlSecondsAfterFinished }}
   template:
     spec:
-      serviceAccountName: {{ $name }}
+      serviceAccountName: rbgs-controller-sa
       restartPolicy: Never
       {{- with .Values.controller.podSecurityContext }}
       securityContext:

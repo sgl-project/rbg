@@ -37,19 +37,19 @@ spec:
             - --metrics-bind-address=:8443
             - --leader-elect
             - --health-probe-bind-address=:8081
-            {{- $podCacheScope := .Values.controller.podCacheScope | default "all" }}
+            {{- $podCacheScope := .Values.controller.podCacheScope }}
+            {{- if ne $podCacheScope nil }}
             {{- if not (has $podCacheScope (list "all" "filtered")) }}
             {{- fail "controller.podCacheScope must be all or filtered" }}
             {{- end }}
-            {{- if eq $podCacheScope "filtered" }}
-            - --pod-cache-scope=filtered
+            - --pod-cache-scope={{ $podCacheScope }}
             {{- end }}
-            {{- $watchListClient := .Values.controller.watchListClient | default false | toString }}
+            {{- if ne .Values.controller.watchListClient nil }}
+            {{- $watchListClient := .Values.controller.watchListClient | toString }}
             {{- if not (has $watchListClient (list "true" "false")) }}
             {{- fail "controller.watchListClient must be true or false" }}
             {{- end }}
-            {{- if eq $watchListClient "true" }}
-            - --watch-list-client=true
+            - --watch-list-client={{ $watchListClient }}
             {{- end }}
             {{- if .Values.controller.tuning }}
             - --max-concurrent-reconciles={{ .Values.controller.tuning.maxConcurrentReconciles | default 10 }}

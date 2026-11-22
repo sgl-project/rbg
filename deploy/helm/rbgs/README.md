@@ -124,8 +124,8 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | Key | Description | Default |
 | --- | ----------- | ------- |
 | `controller.replicaCount` | Number of controller replicas (leader election is enabled) | `2` |
-| `controller.podCacheScope` | Pod cache retention mode (`all` \| `filtered`) — see [Pod Cache Controls (Alpha)](#pod-cache-controls-alpha) | `all` |
-| `controller.watchListClient` | Enable client-go streaming lists for all informers when supported by the API server | `false` |
+| `controller.podCacheScope` | Pod cache retention mode (`all` \| `filtered`) — see [Pod Cache Controls (Alpha)](#pod-cache-controls-alpha) | Unset (`all` in Alpha) |
+| `controller.watchListClient` | Enable client-go streaming lists for all informers when supported by the API server | Unset (`false` in Alpha) |
 | `controller.image.repository` | Controller image repository | `rolebasedgroup/rbgs-controller` |
 | `controller.image.tag` | Controller image tag | pinned per release in `values.yaml` (falls back to `.Chart.AppVersion` if unset) |
 | `controller.image.pullPolicy` | Controller image pull policy | `IfNotPresent` |
@@ -254,24 +254,23 @@ With `filtered`, RBG-managed Pods (carrying `rbg.workloads.x-k8s.io/group-name`,
 `rbg.workloads.x-k8s.io/role-instance-name`, `workloads.x-k8s.io/warmup-name`,
 `rbg.workloads.x-k8s.io/managed=true`, or any `workloads.x-k8s.io` owner reference)
 are retained in full (minus `managedFields`), while unrelated Pods are reduced to
-metadata stubs. Set `controller.podCacheScope=all` to disable filtering on the current release.
+metadata stubs. Set `controller.podCacheScope=all` to disable filtering.
 
 `controller.watchListClient` (`--watch-list-client`) defaults to `false`; enabling it
 opts all controller informers into streaming lists where supported by the API server.
-The chart passes only enabled options. To opt in, use a controller image that supports
-the selected flags.
+When a value is unset, the chart uses the controller image's default. Set a value explicitly
+to pass the corresponding flag, including `all` and `false`. Explicit settings require a
+controller image that supports the flags.
 
 Set `podLabelMigration.enabled=true` to opt in to a pre-upgrade Job using
-`/kubectl-rbg` from the controller image. The Job's temporary role grants
-`get`, `list`, and `patch` on Pods and `list` on Deployments, StatefulSets, and
-LeaderWorkerSets across namespaces. If either migration command fails, the Job
-logs a warning and Helm continues. Helm waits for hooks
+`/kubectl-rbg` from the controller image. The Job uses `rbgs-controller-sa` from the
+installed release and relies on its existing permissions. If the account cannot list
+legacy workload types, the CLI warns that the template report is incomplete. If either
+migration command fails, the Job logs a warning and Helm continues. Helm waits for hooks
 even without `--wait-for-jobs`, so a hook that cannot start or exceeds its
 deadline can fail the upgrade.
 
-The Job and its logs remain until the configured TTL. Helm removes the temporary service
-account and RBAC after a successful hook. On failure, cleanup depends on the Helm version and
-failure point. A later upgrade with the hook enabled replaces any remaining RBAC. If you
+The hook creates just the Job, which remains with its logs until the configured TTL. If you
 increase `podLabelMigration.timeout`, allow enough time in the Job deadline and Helm's
 `--timeout` for both invocations and Pod startup.
 
