@@ -324,7 +324,7 @@ func (r *PodReconciler) emitWrapShadowedWarning(
 }
 
 func podTemplateSpecEqual(template1, template2 corev1.PodTemplateSpec) (bool, error) {
-	if equal, err := objectMetaEqual(template1.ObjectMeta, template2.ObjectMeta); !equal {
+	if equal, err := objectMetaEqual(template1.ObjectMeta, template2.ObjectMeta, constants.ManagedLabelKey); !equal {
 		return false, fmt.Errorf("objectMeta not equal: %s", err.Error())
 	}
 
@@ -425,12 +425,12 @@ func exclusiveAffinityApplied(podTemplateSpec corev1.PodTemplateSpec, topologyKe
 	return hasAffinity && hasAntiAffinity
 }
 
-func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {
+func objectMetaEqual(meta1, meta2 metav1.ObjectMeta, ignoredLabelKeys ...string) (bool, error) {
 	meta1Copy := meta1.DeepCopy()
 	meta2Copy := meta2.DeepCopy()
 
-	meta1Copy.Labels = utils.FilterSystemLabels(meta1Copy.Labels)
-	meta2Copy.Labels = utils.FilterSystemLabels(meta2Copy.Labels)
+	meta1Copy.Labels = utils.FilterSystemLabels(meta1Copy.Labels, ignoredLabelKeys...)
+	meta2Copy.Labels = utils.FilterSystemLabels(meta2Copy.Labels, ignoredLabelKeys...)
 	if !mapsEqual(meta1Copy.Labels, meta2Copy.Labels) {
 		return false, fmt.Errorf("label not equal, old [%s], new [%s]", meta1Copy.Labels, meta2Copy.Labels)
 	}

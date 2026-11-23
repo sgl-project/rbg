@@ -24,6 +24,7 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/pkg/podcache"
 )
 
 var (
@@ -40,17 +41,26 @@ type internalCache struct {
 }
 
 func NewCache(config *rest.Config, opts cache.Options) (cache.Cache, error) {
-	if opts.Scheme == nil {
-		opts.Scheme = clientgoscheme.Scheme
+	return NewCacheForScope(podcache.ScopeAll)(config, opts)
+}
+
+func NewCacheForScope(scope string) cache.NewCacheFunc {
+	return func(config *rest.Config, opts cache.Options) (cache.Cache, error) {
+		if err := podcache.Configure(&opts, scope); err != nil {
+			return nil, err
+		}
+		if opts.Scheme == nil {
+			opts.Scheme = clientgoscheme.Scheme
+		}
+		c, err := cache.New(config, opts)
+		if err != nil {
+			return nil, err
+		}
+		return &internalCache{
+			Cache:            c,
+			noDeepCopyLister: &noDeepCopyLister{cache: c, scheme: opts.Scheme},
+		}, nil
 	}
-	c, err := cache.New(config, opts)
-	if err != nil {
-		return nil, err
-	}
-	return &internalCache{
-		Cache:            c,
-		noDeepCopyLister: &noDeepCopyLister{cache: c, scheme: opts.Scheme},
-	}, nil
 }
 
 func (ic *internalCache) List(ctx context.Context, list client.ObjectList, opts ...client.ListOption) error {

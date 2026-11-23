@@ -26,6 +26,7 @@ import (
 	"github.com/spf13/pflag"
 	"k8s.io/cli-runtime/pkg/genericclioptions"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/rbgs/cmd/cli/cmd/migrate"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/rollout"
 	"sigs.k8s.io/rbgs/cmd/cli/cmd/status"
 	"sigs.k8s.io/rbgs/version"
@@ -72,6 +73,7 @@ func init() {
 
 	rootCmd.AddCommand(status.NewStatusCmd(cf))
 	rootCmd.AddCommand(rollout.NewRolloutCmd(cf))
+	rootCmd.AddCommand(migrate.NewMigrateCmd(cf))
 
 	// Display "kubectl rbg" instead of "rbg" in usage/help output.
 	// This is the standard approach used by kubectl plugins (e.g. krew).

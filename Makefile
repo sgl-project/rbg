@@ -88,14 +88,14 @@ test: manifests generate fmt vet ## Run tests.
 test-envtest: manifests generate setup-envtest ## Run envtest integration tests.
 	@echo "Running envtest tests..."
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-		go test -v ./test/envtest/testcase/... -timeout 30m
+		go test -v ./test/envtest/testcase/... ./pkg/utils/client ./cmd/cli/cmd/migrate -timeout 30m
 
 .PHONY: test-coverage-html
 test-coverage-html: test
 	go tool cover -html=cover.out -o cover.html
 
 .PHONY: test-chart
-test-chart: ## Render the Helm chart with helm template and assert the deprecated-workload-types toggle and the manager's probes and preStop drain. Requires helm; needs no cluster.
+test-chart: ## Test Helm chart rendering, workload toggles, probes, preStop drain and Pod cache controls. Requires helm; needs no cluster.
 	go test ./test/chart/ -v
 
 .PHONY: test-e2e-matrix-coverage
@@ -139,7 +139,7 @@ test-e2e-deprecated-disabled: ## Run the deprecated-workload-types-disabled e2e 
 		-timeout 30m
 
 # Runs against a throwaway cluster with NO rbgs install: the suite installs the
-# from-release itself from a git worktree of the tag, upgrades it in place to the
+# from-release itself from an exported chart of the tag, upgrades it in place to the
 # chart in this tree, then removes it again. Teardown deletes the workloads.x-k8s.io
 # CRDs, which cascades to every object of those kinds. The upgrade target defaults
 # to the chart's own image values, so no variables are needed to test a release; set

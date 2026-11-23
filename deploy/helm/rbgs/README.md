@@ -124,6 +124,8 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | Key | Description | Default |
 | --- | ----------- | ------- |
 | `controller.replicaCount` | Number of controller replicas (leader election is enabled) | `2` |
+| `controller.podCacheScope` | Pod cache retention mode (`all` \| `filtered`) — see [Pod Cache Controls (Alpha)](#pod-cache-controls-alpha) | Unset (`all` in Alpha) |
+| `controller.watchListClient` | Enable client-go streaming lists for all informers when supported by the API server | Unset (`false` in Alpha) |
 | `controller.image.repository` | Controller image repository | `rolebasedgroup/rbgs-controller` |
 | `controller.image.tag` | Controller image tag | pinned per release in `values.yaml` (falls back to `.Chart.AppVersion` if unset) |
 | `controller.image.pullPolicy` | Controller image pull policy | `IfNotPresent` |
@@ -161,6 +163,16 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `crdUpgrade.backoffLimit` | Job retry limit before marking failed | `3` |
 | `crdUpgrade.tolerations` | Job pod tolerations | `[{operator: Exists}]` |
 | `crdUpgrade.nodeSelector` | Job pod node selector | `{}` |
+
+### Pod Label Migration
+
+| Key | Description | Default |
+| --- | ----------- | ------- |
+| `podLabelMigration.enabled` | Run Pod-label migration as a pre-upgrade hook | `false` |
+| `podLabelMigration.rateLimit` | Maximum API requests per second for Pod label migration | `10` |
+| `podLabelMigration.timeout` | Overall timeout for each migration / check invocation | `2m` |
+| `podLabelMigration.activeDeadlineSeconds` | Job deadline, including scheduling and both CLI invocations | `300` |
+| `podLabelMigration.ttlSecondsAfterFinished` | Job TTL after completion | `259200` (3 days) |
 
 ## Uninstalling
 
@@ -233,4 +245,53 @@ helm -n rbgs-system get values rbgs
 kubectl -n rbgs-system get deploy rbgs-controller-manager -o yaml | grep -A20 'args:'
 ```
 
+
+## Pod Cache Controls (Alpha)
+
+`controller.podCacheScope` (`--pod-cache-scope`) accepts `all` (default) or `filtered`.
+With `filtered`, RBG-managed Pods (carrying `rbg.workloads.x-k8s.io/group-name`,
+`rolebasedgroup.workloads.x-k8s.io/name` (the v0.6 group label),
+`rbg.workloads.x-k8s.io/role-instance-name`, `workloads.x-k8s.io/warmup-name`,
+`rbg.workloads.x-k8s.io/managed=true`, or any `workloads.x-k8s.io` owner reference)
+are retained in full (minus `managedFields`), while unrelated Pods are reduced to
+metadata stubs. Set `controller.podCacheScope=all` to disable filtering.
+
+`controller.watchListClient` (`--watch-list-client`) defaults to `false`; enabling it
+opts all controller informers into streaming lists where supported by the API server.
+When a value is unset, the chart uses the controller image's default. Set a value explicitly
+to pass the corresponding flag, including `all` and `false`. Explicit settings require a
+controller image that supports the flags.
+
+Set `podLabelMigration.enabled=true` to opt in to a pre-upgrade Job using
+`/kubectl-rbg` from the controller image. The Job uses `rbgs-controller-sa` from the
+installed release and relies on its existing permissions. If the account cannot list
+legacy workload types, the CLI warns that the template report is incomplete. If either
+migration command fails, the Job logs a warning and Helm continues. Helm waits for hooks
+even without `--wait-for-jobs`, so a hook that cannot start or exceeds its
+deadline can fail the upgrade.
+
+The hook creates just the Job, which remains with its logs until the configured TTL. If you
+increase `podLabelMigration.timeout`, allow enough time in the Job deadline and Helm's
+`--timeout` for both invocations and Pod startup.
+
+Hooks do not run with `--no-hooks`. The CLI can backfill labels independently of Helm.
+When piping `helm template`
+to `kubectl apply`, pass `--no-hooks` to avoid creating the rendered hooks as ordinary resources.
+The migration preserves existing markers. The read-only check uses the same
+candidate selector as the migration and succeeds when no legacy-labeled Pods
+are missing the marker. It also reports unmarked templates of legacy RBG
+workloads and warns if that report is incomplete. The Pod scan determines the
+check's exit status.
+
+To inspect the result, use `kubectl logs -n rbgs-system job/<release>-pod-label-migration-<revision>`.
+You can also run the migration manually:
+
+```bash
+kubectl rbg migrate pod-labels -A --dry-run
+kubectl rbg migrate pod-labels -A --rate-limit=10 --timeout=2m
+kubectl rbg migrate pod-labels check -A
+```
+
+See [KEP-284](../../../keps/284-pod-cache-filter/README.md) for architecture and
+read-path details.
 

@@ -39,6 +39,48 @@ import (
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
+func TestPodTemplateSpecEqualIgnoresManagedMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before map[string]string
+		after  map[string]string
+	}{
+		{name: "added", before: map[string]string{}, after: map[string]string{constants.ManagedLabelKey: "true"}},
+		{name: "changed", before: map[string]string{constants.ManagedLabelKey: "true"}, after: map[string]string{constants.ManagedLabelKey: "false"}},
+		{name: "removed", before: map[string]string{constants.ManagedLabelKey: "true"}, after: map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeLabels, afterLabels := maps.Clone(tc.before), maps.Clone(tc.after)
+			before := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: tc.before}}
+			after := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: tc.after}}
+			equal, err := podTemplateSpecEqual(before, after)
+			assert.True(t, equal)
+			assert.NoError(t, err)
+			assert.Equal(t, beforeLabels, before.Labels)
+			assert.Equal(t, afterLabels, after.Labels)
+		})
+	}
+}
+
+func TestPodTemplateSpecEqualDetectsGroupNameDrift(t *testing.T) {
+	before := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{constants.GroupNameLabelKey: "group"}}}
+	after := before.DeepCopy()
+	after.Labels[constants.GroupNameLabelKey] = "other-group"
+	after.Labels[constants.ManagedLabelKey] = constants.ManagedLabelValue
+	equal, err := podTemplateSpecEqual(before, *after)
+	assert.False(t, equal)
+	assert.Error(t, err)
+}
+
+func TestServiceEqualDetectsManagedMarkerDrift(t *testing.T) {
+	before := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{constants.GroupNameLabelKey: "group"}}}
+	after := before.DeepCopy()
+	after.Labels[constants.ManagedLabelKey] = constants.ManagedLabelValue
+	equal, err := semanticallyEqualService(before, after)
+	assert.False(t, equal)
+	assert.Error(t, err)
+}
+
 func Test_podSpecEqual(t *testing.T) {
 	type args struct {
 		spec1 corev1.PodSpec

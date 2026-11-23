@@ -186,7 +186,7 @@ func FilterSystemAnnotations(annotations map[string]string) map[string]string {
 	return filtered
 }
 
-func FilterSystemLabels(labels map[string]string) map[string]string {
+func FilterSystemLabels(labels map[string]string, ignoredLabelKeys ...string) map[string]string {
 	if labels == nil {
 		return nil
 	}
@@ -198,6 +198,9 @@ func FilterSystemLabels(labels map[string]string) map[string]string {
 			!strings.HasPrefix(k, "rolebasedgroup.workloads.x-k8s.io/") {
 			filtered[k] = v
 		}
+	}
+	for _, key := range ignoredLabelKeys {
+		delete(filtered, key)
 	}
 	return filtered
 
