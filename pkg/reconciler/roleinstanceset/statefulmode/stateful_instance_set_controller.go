@@ -113,12 +113,11 @@ func NewReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 // empty (non-nil) map, which caches all namespaces for that type and lets the
 // field selector do the scoping.
 //
-// That remedy still issues a cluster-scope LIST/WATCH per kind, so it needs
-// cluster-wide list/watch on RoleInstanceSet and RoleInstance. It fits a local
-// controller confined to one namespace of a shared cluster; it does not fit an
-// install whose ServiceAccount only has namespace-scoped RBAC, which would
-// trade this startup error for cache-sync 403s. A namespace-only-RBAC mode
-// needs a multi-namespace lister implementation instead.
+// The opted-out informer needs only namespace-scoped RBAC for these kinds:
+// for an exact metadata.namespace field selector, controller-runtime sends
+// the informer's LIST/WATCH to that namespace. The remedy covers one
+// namespace; caching several needs listers that work with a
+// multiNamespaceInformer.
 func sharedIndexInformerForKind(cacher ctrlcache.Cache, gvk schema.GroupVersionKind) (toolscache.SharedIndexInformer, error) {
 	informer, err := cacher.GetInformerForKind(context.Background(), gvk)
 	if err != nil {
