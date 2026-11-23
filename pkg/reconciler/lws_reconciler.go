@@ -177,7 +177,9 @@ func (r *LeaderWorkerSetReconciler) CheckWorkloadReady(
 	if checkWorkloadClaimable(lws, rbg) != nil {
 		return false, nil
 	}
-	return lws.Status.ReadyReplicas == lws.Status.Replicas, nil
+	inRollout := lws.Status.UpdatedReplicas != lws.Status.Replicas
+	return checkWorkloadReady(ctx, r.client, rbg, role.Name, inRollout,
+		lws.Status.ReadyReplicas, lws.Spec.Replicas)
 }
 
 func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(

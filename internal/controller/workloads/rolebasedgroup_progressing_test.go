@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -640,6 +641,40 @@ func TestUnreadyDependencies(t *testing.T) {
 	}
 	if missingErr != nil {
 		t.Fatalf("unexpected observation error: %v", missingErr)
+	}
+
+	// A rolling dependency covered by a CoordinatedPolicy maxSkew rule must not
+	// report dependents as blocked (matching the execution gate).
+	rollingRIS := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+			Namespace: rbg.Namespace,
+			Labels:    map[string]string{workloadconstants.GroupNameLabelKey: rbg.Name},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To(int32(2))},
+		Status: workloadsv1alpha2.RoleInstanceSetStatus{
+			ReadyReplicas:   1,
+			CurrentRevision: "rev-1",
+			UpdateRevision:  "rev-2",
+		},
+	}
+	policy := &workloadsv1alpha2.CoordinatedPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+			Policies: []workloadsv1alpha2.CoordinatedPolicyRule{{
+				Name:  "skew",
+				Roles: []string{"prefill", "decode"},
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+					RollingUpdate: &workloadsv1alpha2.RollingUpdateCoordinationStrategy{
+						MaxSkew: ptr.To(intstr.FromString("10%")),
+					},
+				},
+			}},
+		},
+	}
+	coordinated, coordinatedErr := newReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollingRIS, policy).Build()).unreadyDependencies(ctx, rbg)
+	if len(coordinated) != 0 || coordinatedErr != nil {
+		t.Fatalf("coordinated rolling dependency must satisfy the gate, got blocked=%v err=%v", coordinated, coordinatedErr)
 	}
 }
 

@@ -272,12 +272,9 @@ func (r *DeploymentReconciler) CheckWorkloadReady(
 		return false, nil
 	}
 
-	// We don't check ready if workload is rolling update if maxSkew is set.
-	if utils.RoleInMaxSkewCoordinationV2(rbg, role.Name) &&
-		deploy.Status.UpdatedReplicas != deploy.Status.Replicas {
-		return true, nil
-	}
-	return deploy.Status.ReadyReplicas == *deploy.Spec.Replicas, nil
+	inRollout := deploy.Status.UpdatedReplicas != deploy.Status.Replicas
+	return checkWorkloadReady(ctx, r.client, rbg, role.Name, inRollout,
+		deploy.Status.ReadyReplicas, deploy.Spec.Replicas)
 }
 
 func (r *DeploymentReconciler) CleanupOrphanedWorkloads(

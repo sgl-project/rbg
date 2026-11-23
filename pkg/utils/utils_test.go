@@ -17,13 +17,22 @@ limitations under the License.
 package utils
 
 import (
+	"context"
+	"errors"
 	"testing"
 
-	"sigs.k8s.io/rbgs/api/workloads/constants"
-
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
+	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
 func TestFilterSystemLabelsPreservesManagedMarker(t *testing.T) {
@@ -685,4 +694,76 @@ func ptrToInt32(v int32) *int32 {
 // Helper function to create intstr.IntOrString pointer
 func ptrToIntStr(v intstr.IntOrString) *intstr.IntOrString {
 	return &v
+}
+
+type mockErrorReader struct {
+	client.Reader
+	err error
+}
+
+func (m *mockErrorReader) Get(_ context.Context, _ client.ObjectKey, _ client.Object, _ ...client.GetOption) error {
+	return m.err
+}
+
+func TestRoleInMaxSkewCoordinationV2WithClient(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default"}}
+	makePolicy := func(roles []string, ru *workloadsv1alpha2.RollingUpdateCoordinationStrategy) client.Reader {
+		p := &workloadsv1alpha2.CoordinatedPolicy{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default"},
+			Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+				Policies: []workloadsv1alpha2.CoordinatedPolicyRule{{
+					Name:     "rule",
+					Roles:    roles,
+					Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{RollingUpdate: ru},
+				}},
+			},
+		}
+		return fake.NewClientBuilder().WithScheme(scheme).WithObjects(p).Build()
+	}
+	withMaxSkew := &workloadsv1alpha2.RollingUpdateCoordinationStrategy{MaxSkew: ptrToIntStr(intstr.FromString("10%"))}
+
+	tests := []struct {
+		name      string
+		reader    client.Reader
+		rbg       *workloadsv1alpha2.RoleBasedGroup
+		roleName  string
+		expected  bool
+		expectErr bool
+	}{
+		{name: "nil rbg", reader: fake.NewClientBuilder().WithScheme(scheme).Build(), roleName: "roleA"},
+		{name: "nil reader", rbg: rbg, roleName: "roleA"},
+		{name: "empty roleName", reader: fake.NewClientBuilder().WithScheme(scheme).Build(), rbg: rbg},
+		{name: "policy not found", reader: fake.NewClientBuilder().WithScheme(scheme).Build(), rbg: rbg, roleName: "roleA"},
+		{
+			name: "CRD no match error",
+			reader: &mockErrorReader{err: &meta.NoResourceMatchError{
+				PartialResource: schema.GroupVersionResource{Group: "workloads.x-k8s.io", Resource: "coordinatedpolicies"},
+			}},
+			rbg: rbg, roleName: "roleA",
+		},
+		{name: "unregistered type in scheme", reader: fake.NewClientBuilder().Build(), rbg: rbg, roleName: "roleA"},
+		{name: "unexpected reader error", reader: &mockErrorReader{err: errors.New("apiserver down")}, rbg: rbg, roleName: "roleA", expectErr: true},
+		{name: "single role", reader: makePolicy([]string{"roleA"}, withMaxSkew), rbg: rbg, roleName: "roleA"},
+		{name: "duplicate same role only", reader: makePolicy([]string{"roleA", "roleA"}, withMaxSkew), rbg: rbg, roleName: "roleA"},
+		{name: "empty peer ignored", reader: makePolicy([]string{"roleA", ""}, withMaxSkew), rbg: rbg, roleName: "roleA"},
+		{name: "nil rolling update", reader: makePolicy([]string{"roleA", "roleB"}, nil), rbg: rbg, roleName: "roleA"},
+		{name: "nil maxSkew", reader: makePolicy([]string{"roleA", "roleB"}, &workloadsv1alpha2.RollingUpdateCoordinationStrategy{}), rbg: rbg, roleName: "roleA"},
+		{name: "matching role in maxSkew rule", reader: makePolicy([]string{"roleA", "roleB"}, withMaxSkew), rbg: rbg, roleName: "roleA", expected: true},
+		{name: "non-matching role", reader: makePolicy([]string{"roleA", "roleB"}, withMaxSkew), rbg: rbg, roleName: "roleC"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := RoleInMaxSkewCoordinationV2WithClient(context.Background(), tt.reader, tt.rbg, tt.roleName)
+			if tt.expectErr {
+				assert.Error(t, err)
+				return
+			}
+			assert.NoError(t, err)
+			assert.Equal(t, tt.expected, got)
+		})
+	}
 }

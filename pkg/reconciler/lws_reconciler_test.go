@@ -191,6 +191,9 @@ func TestLeaderWorkerSetReconciler_CheckWorkloadReady(t *testing.T) {
 							Namespace:       rbg.Namespace,
 							OwnerReferences: claimTestOwnedBy(rbg),
 						},
+						Spec: lwsv1.LeaderWorkerSetSpec{
+							Replicas: ptr.To(tt.lwsStatus.Replicas),
+						},
 						Status: tt.lwsStatus,
 					}
 					builder = builder.WithObjects(lws)

@@ -589,11 +589,10 @@ func (r *StatefulSetReconciler) CheckWorkloadReady(
 		return false, nil
 	}
 
-	if utils.RoleInMaxSkewCoordinationV2(rbg, role.Name) &&
-		sts.Status.CurrentRevision != sts.Status.UpdateRevision {
-		return true, nil
-	}
-	return sts.Status.ReadyReplicas == *sts.Spec.Replicas, nil
+	inRollout := sts.Status.CurrentRevision != "" &&
+		sts.Status.CurrentRevision != sts.Status.UpdateRevision
+	return checkWorkloadReady(ctx, r.client, rbg, role.Name, inRollout,
+		sts.Status.ReadyReplicas, sts.Spec.Replicas)
 }
 
 func (r *StatefulSetReconciler) CleanupOrphanedWorkloads(
