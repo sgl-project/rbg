@@ -193,7 +193,7 @@ func SetRoleBasedGroupSetHasEngineRuntimesLabel(rbgs *RoleBasedGroupSet) {
 // removed the map can stay nil, so callers only allocate when setting it.
 func setHasEngineRuntimesLabel(labels map[string]string, references bool) {
 	if references {
-		labels[constants.HasEngineRuntimesLabelKey] = "true"
+		labels[constants.HasEngineRuntimesLabelKey] = constants.HasEngineRuntimesLabelValue
 		return
 	}
 	delete(labels, constants.HasEngineRuntimesLabelKey)

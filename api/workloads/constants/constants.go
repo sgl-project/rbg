@@ -34,6 +34,10 @@ const (
 // controller keep it in sync with the spec.
 const HasEngineRuntimesLabelKey = RBGPrefix + "has-engine-runtimes"
 
+// HasEngineRuntimesLabelValue is the value carried by objects that reference
+// at least one engine runtime profile.
+const HasEngineRuntimesLabelValue = "true"
+
 // ========== Enum Types ==========
 
 // InstancePatternType defines supported organization patterns
