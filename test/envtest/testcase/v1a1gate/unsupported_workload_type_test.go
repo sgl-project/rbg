@@ -218,6 +218,18 @@ func describeUnsupportedWorkloadTypes(mode, suffix string, enableGate func()) bo
 			expectUnsupported(testutil.K8sClient.Create(testutil.Ctx, child), unsupportedType)
 		})
 
+		It("rejects a RoleBasedGroupSet create whose template names an unsupported type", func() {
+			err := testutil.K8sClient.Create(testutil.Ctx, v1a2Set(named("unsup-set-create"), v1a2Role("worker", unsupportedType)))
+			expectUnsupported(err, unsupportedType)
+		})
+
+		It("rejects a RoleBasedGroupSet update that changes a template role to an unsupported type", func() {
+			set := v1a2Set(named("unsup-set-update"), v1a2Role("worker", ""))
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+			set.Spec.GroupTemplate.Spec.Roles[0].Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: unsupportedType}
+			expectUnsupported(testutil.K8sClient.Update(testutil.Ctx, set), unsupportedType)
+		})
+
 		It("decides a deprecated type in the held revision by the mode", func() {
 			child := setChild(heldSet, heldSet.UID, heldRevision, v1a2Role("legacy", constants.StatefulSetWorkloadType))
 			child.Name = named("unsup-held-legacy")
