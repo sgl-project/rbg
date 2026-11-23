@@ -40,6 +40,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/envtest"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/pkg/podcache"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 func TestPodCacheAPI(t *testing.T) {
@@ -62,7 +63,9 @@ func TestPodCacheAPI(t *testing.T) {
 			require.NoError(t, err)
 			ctx := context.Background()
 			require.NoError(t, direct.Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "cache-test"}}))
-			for _, name := range []string{"unrelated", "legacy", "owned"} {
+			v06Selector := map[string]string{"rolebasedgroup.workloads.x-k8s.io/name": "v06"}
+			podNames := []string{"unrelated", "legacy", "owned", "v06-0"}
+			for _, name := range podNames {
 				pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "cache-test"}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "test/image"}}}}
 				if name == "legacy" {
 					pod.Labels = map[string]string{constants.GroupNameLabelKey: "group"}
@@ -70,7 +73,16 @@ func TestPodCacheAPI(t *testing.T) {
 				if name == "owned" {
 					pod.OwnerReferences = []metav1.OwnerReference{{APIVersion: "workloads.x-k8s.io/v1alpha2", Kind: "RoleInstance", Name: "owner", UID: "owner-uid"}}
 				}
+				if name == "v06-0" {
+					pod.Labels = v06Selector
+					pod.OwnerReferences = []metav1.OwnerReference{{APIVersion: "apps/v1", Kind: "StatefulSet", Name: "v06", UID: "v06-uid"}}
+				}
 				require.NoError(t, direct.Create(ctx, pod))
+				if name == "v06-0" {
+					pod.Status.Phase = corev1.PodRunning
+					pod.Status.Conditions = []corev1.PodCondition{{Type: corev1.PodReady, Status: corev1.ConditionTrue}}
+					require.NoError(t, direct.Status().Update(ctx, pod))
+				}
 			}
 			for _, tc := range []struct {
 				scope  string
@@ -132,6 +144,10 @@ func TestPodCacheAPI(t *testing.T) {
 							require.Len(t, list.Items[0].Spec.Containers, 1)
 						}
 					}
+					var v06Pods corev1.PodList
+					require.NoError(t, c.List(ctx, &v06Pods, client.InNamespace("cache-test"), client.MatchingLabels(v06Selector)))
+					require.Len(t, v06Pods.Items, 1)
+					require.True(t, utils.PodRunningAndReady(v06Pods.Items[0]), "the Pod matched by the v0.6 selector should retain readiness")
 					unrelated := &corev1.Pod{}
 					key := types.NamespacedName{Namespace: "cache-test", Name: "unrelated"}
 					require.NoError(t, direct.Get(ctx, key, unrelated))
@@ -166,7 +182,7 @@ func TestPodCacheAPI(t *testing.T) {
 								require.Len(t, pod.Spec.Containers, 1)
 							}
 						}
-						require.ElementsMatch(t, []string{"unrelated", "legacy", "owned"}, names)
+						require.ElementsMatch(t, podNames, names)
 					}
 					transient := unrelated.DeepCopy()
 					transient.Name = "delete-event"

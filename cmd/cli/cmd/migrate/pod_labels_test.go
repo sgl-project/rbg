@@ -68,7 +68,7 @@ func TestCandidatesDryRunAndRerun(t *testing.T) {
 					require.NotContains(t, string(patch.GetPatch()), "resourceVersion")
 				}
 			}
-			require.Equal(t, 3, lists)
+			require.Equal(t, 4, lists)
 			if dryRun {
 				require.Zero(t, patches)
 			} else {

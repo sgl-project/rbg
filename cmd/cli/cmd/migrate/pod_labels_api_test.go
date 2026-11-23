@@ -55,7 +55,8 @@ func TestPodLabelsCommandAPI(t *testing.T) {
 	ctx := context.Background()
 	_, err = kube.CoreV1().Namespaces().Create(ctx, &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{Name: "migration"}}, metav1.CreateOptions{})
 	require.NoError(t, err)
-	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "migration", Labels: map[string]string{constants.GroupNameLabelKey: "g", "keep": "yes"}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "test/image"}}}}
+	const v06GroupLabel = "rolebasedgroup.workloads.x-k8s.io/name"
+	pod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "p", Namespace: "migration", Labels: map[string]string{v06GroupLabel: "g", "keep": "yes"}}, Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "test/image"}}}}
 	pod, err = kube.CoreV1().Pods("migration").Create(ctx, pod, metav1.CreateOptions{})
 	require.NoError(t, err)
 	falsePod := &corev1.Pod{ObjectMeta: metav1.ObjectMeta{Name: "explicit-false", Namespace: "migration", Labels: map[string]string{
@@ -64,14 +65,17 @@ func TestPodLabelsCommandAPI(t *testing.T) {
 	falsePod, err = kube.CoreV1().Pods("migration").Create(ctx, falsePod, metav1.CreateOptions{})
 	require.NoError(t, err)
 	legacyLabels := map[string]string{constants.GroupNameLabelKey: "g"}
+	v06Labels := map[string]string{v06GroupLabel: "g"}
 	selector := &metav1.LabelSelector{MatchLabels: legacyLabels}
 	template := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: legacyLabels}, Spec: pod.Spec}
-	deployment, err := kube.AppsV1().Deployments("migration").Create(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "d", Namespace: "migration", Labels: legacyLabels}, Spec: appsv1.DeploymentSpec{
+	deployment, err := kube.AppsV1().Deployments("migration").Create(ctx, &appsv1.Deployment{ObjectMeta: metav1.ObjectMeta{Name: "d", Namespace: "migration", Labels: map[string]string{constants.GroupNameLabelKey: "g", v06GroupLabel: "g"}}, Spec: appsv1.DeploymentSpec{
 		Selector: selector, Template: template,
 	}}, metav1.CreateOptions{})
 	require.NoError(t, err)
-	statefulSet, err := kube.AppsV1().StatefulSets("migration").Create(ctx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "migration", Labels: legacyLabels}, Spec: appsv1.StatefulSetSpec{
-		ServiceName: "s", Selector: selector, Template: template,
+	statefulSet, err := kube.AppsV1().StatefulSets("migration").Create(ctx, &appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "migration", Labels: v06Labels}, Spec: appsv1.StatefulSetSpec{
+		ServiceName: "s",
+		Selector:    &metav1.LabelSelector{MatchLabels: v06Labels},
+		Template:    corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: v06Labels}, Spec: pod.Spec},
 	}}, metav1.CreateOptions{})
 	require.NoError(t, err)
 	markedTemplate := deployment.DeepCopy()
@@ -118,6 +122,7 @@ func TestPodLabelsCommandAPI(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, pod.UID, marked.UID)
 	require.Equal(t, pod.Spec, marked.Spec)
+	require.Equal(t, "g", marked.Labels[v06GroupLabel])
 	require.Equal(t, "yes", marked.Labels["keep"])
 	require.Equal(t, "true", marked.Labels[constants.ManagedLabelKey])
 	out, err = run(cfg)
@@ -127,7 +132,7 @@ func TestPodLabelsCommandAPI(t *testing.T) {
 	require.NoError(t, err, "unmarked legacy templates must not prevent a clean check: %s", out)
 	require.Contains(t, out, "candidates=0 patched=0 failed=0 dry-run=false check=true")
 	require.NotContains(t, out, "explicit-false")
-	require.Contains(t, out, "unmarked template Deployment migration/d (spec.template)")
+	require.Equal(t, 1, strings.Count(out, "unmarked template Deployment migration/d (spec.template)"))
 	require.Contains(t, out, "unmarked template StatefulSet migration/s (spec.template)")
 	require.Contains(t, out, "Legacy workload templates: unmarked=2 (informational)\nWARNING: The reported workloads can still create Pods without managed=true.")
 	require.Contains(t, out, "Plan to migrate the affected roles to RoleInstanceSet using the v1alpha2 API.")

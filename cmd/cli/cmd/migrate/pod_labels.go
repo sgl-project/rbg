@@ -231,7 +231,23 @@ func (m *migrator) reportLegacyTemplates(ctx context.Context, config *rest.Confi
 
 func (m *migrator) reportResourceTemplates(ctx context.Context, resource dynamic.ResourceInterface, kind string, paths [][]string) (int, error) {
 	unmarked := 0
-	opts := metav1.ListOptions{LabelSelector: constants.GroupNameLabelKey, Limit: listPageSize}
+	seen := make(map[types.UID]bool)
+	for _, labelKey := range []string{constants.GroupNameLabelKey, constants.LegacyGroupNameLabelKey} {
+		count, err := m.reportTemplatesForLabel(ctx, resource, kind, paths, labelKey, seen)
+		unmarked += count
+		if err != nil {
+			return unmarked, err
+		}
+	}
+	return unmarked, nil
+}
+
+func (m *migrator) reportTemplatesForLabel(
+	ctx context.Context, resource dynamic.ResourceInterface, kind string, paths [][]string,
+	labelKey string, seen map[types.UID]bool,
+) (int, error) {
+	unmarked := 0
+	opts := metav1.ListOptions{LabelSelector: labelKey, Limit: listPageSize}
 	for {
 		if err := m.limiter.Wait(ctx); err != nil {
 			return unmarked, err
@@ -241,6 +257,11 @@ func (m *migrator) reportResourceTemplates(ctx context.Context, resource dynamic
 			return unmarked, err
 		}
 		for _, obj := range list.Items {
+			uid := obj.GetUID()
+			if seen[uid] {
+				continue
+			}
+			seen[uid] = true
 			for _, path := range paths {
 				template, found, err := unstructured.NestedFieldNoCopy(obj.Object, path...)
 				if err != nil {

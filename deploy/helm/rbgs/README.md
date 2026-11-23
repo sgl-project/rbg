@@ -249,8 +249,8 @@ kubectl -n rbgs-system get deploy rbgs-controller-manager -o yaml | grep -A20 'a
 ## Pod Cache Controls (Alpha)
 
 `controller.podCacheScope` (`--pod-cache-scope`) accepts `all` (default) or `filtered`.
-The filtered scope targets workloads created by RBG through `v1alpha2`.
 With `filtered`, RBG-managed Pods (carrying `rbg.workloads.x-k8s.io/group-name`,
+`rolebasedgroup.workloads.x-k8s.io/name` (the v0.6 group label),
 `rbg.workloads.x-k8s.io/role-instance-name`, `workloads.x-k8s.io/warmup-name`,
 `rbg.workloads.x-k8s.io/managed=true`, or any `workloads.x-k8s.io` owner reference)
 are retained in full (minus `managedFields`), while unrelated Pods are reduced to

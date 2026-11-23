@@ -37,6 +37,9 @@ const (
 	ManagedLabelValue  = "true"
 	WarmupNameLabelKey = "workloads.x-k8s.io/warmup-name"
 
+	// LegacyGroupNameLabelKey is the group label used in v0.6 workload selectors.
+	LegacyGroupNameLabelKey = "rolebasedgroup.workloads.x-k8s.io/name"
+
 	// GroupUIDLabelKey identifies an RBG by a hash of its namespace and name.
 	// It is used as the match label for topology affinity.
 	GroupUIDLabelKey = RBGPrefix + "group-uid"
@@ -88,8 +91,8 @@ const (
 )
 
 // LegacyPodLabelKeys returns the Pod labels shared by cache admission and label migration.
-func LegacyPodLabelKeys() [3]string {
-	return [3]string{GroupNameLabelKey, RoleInstanceNameLabelKey, WarmupNameLabelKey}
+func LegacyPodLabelKeys() [4]string {
+	return [4]string{GroupNameLabelKey, RoleInstanceNameLabelKey, WarmupNameLabelKey, LegacyGroupNameLabelKey}
 }
 
 // Component level labels
