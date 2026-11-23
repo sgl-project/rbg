@@ -49945,6 +49945,15 @@ spec:
                       || !has(self.annotations) || !(''rbg.workloads.x-k8s.io/role-workload-type''
                       in self.annotations) || self.annotations[''rbg.workloads.x-k8s.io/role-workload-type'']
                       == ''workloads.x-k8s.io/v1alpha2/RoleInstanceSet'''
+                  - message: maxGroupRestarts is only supported for RoleInstanceSet
+                    rule: ((!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.restartPolicyConfig)
+                      || !has(self.leaderWorkerPattern.restartPolicyConfig.maxGroupRestarts))
+                      && (!has(self.customComponentsPattern) || !has(self.customComponentsPattern.restartPolicyConfig)
+                      || !has(self.customComponentsPattern.restartPolicyConfig.maxGroupRestarts)))
+                      || !has(self.annotations) || !('rbg.workloads.x-k8s.io/role-workload-type'
+                      in self.annotations) || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'].size()
+                      == 0 || self.annotations['rbg.workloads.x-k8s.io/role-workload-type']
+                      == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'
                 minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
@@ -92158,6 +92167,15 @@ spec:
                               ''LeaderOnly'' || !has(self.annotations) || !(''rbg.workloads.x-k8s.io/role-workload-type''
                               in self.annotations) || self.annotations[''rbg.workloads.x-k8s.io/role-workload-type'']
                               == ''workloads.x-k8s.io/v1alpha2/RoleInstanceSet'''
+                          - message: maxGroupRestarts is only supported for RoleInstanceSet
+                            rule: ((!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.restartPolicyConfig)
+                              || !has(self.leaderWorkerPattern.restartPolicyConfig.maxGroupRestarts))
+                              && (!has(self.customComponentsPattern) || !has(self.customComponentsPattern.restartPolicyConfig)
+                              || !has(self.customComponentsPattern.restartPolicyConfig.maxGroupRestarts)))
+                              || !has(self.annotations) || !('rbg.workloads.x-k8s.io/role-workload-type'
+                              in self.annotations) || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'].size()
+                              == 0 || self.annotations['rbg.workloads.x-k8s.io/role-workload-type']
+                              == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'
                         minItems: 1
                         type: array
                         x-kubernetes-list-map-keys:
