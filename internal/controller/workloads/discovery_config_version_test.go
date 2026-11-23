@@ -332,6 +332,40 @@ func TestDiscoveryConfigMapDoesNotAdoptForeignConfigMap(t *testing.T) {
 	assert.Contains(t, got.Data, "app.properties")
 }
 
+func TestDiscoveryConfigMapAdoptsOwnerlessDiscoveryConfigMap(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	legacyData, err := yaml.Marshal(discovery.ClusterConfig{
+		Group: discovery.GroupInfo{
+			Name:  rbg.Name,
+			Size:  1,
+			Roles: []string{"test-role"},
+		},
+		Roles: discovery.RolesInfo{
+			"test-role": discovery.RoleInstances{
+				Size: 1,
+				Instances: []discovery.Instance{{
+					Address: "test-rbg-test-role-0.s-test-rbg-test-role",
+				}},
+			},
+		},
+	})
+	require.NoError(t, err)
+	orphan := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Data:       map[string]string{discoveryConfigKey: string(legacyData)},
+	}
+	r, c := discoveryTestReconciler(t, rbg, orphan)
+
+	require.NoError(t, r.reconcileDiscoveryConfigMap(context.Background(), rbg))
+
+	got := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), got))
+	owner := metav1.GetControllerOf(got)
+	require.NotNil(t, owner)
+	assert.Equal(t, rbg.GetUID(), owner.UID)
+	assert.Contains(t, got.Data, discoveryConfigKey)
+}
+
 func TestReconcileContinuesAfterOversizedDiscoveryRollback(t *testing.T) {
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 	rbg.Spec.Roles[0].Replicas = ptr.To(int32(0))

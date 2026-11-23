@@ -70,6 +70,7 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils"
 	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
+	"sigs.k8s.io/yaml"
 	volcanoschedulingv1beta1 "volcano.sh/apis/pkg/apis/scheduling/v1beta1"
 )
 
@@ -657,7 +658,13 @@ func (r *RoleBasedGroupReconciler) applyDiscoveryConfigMap(
 	}
 
 	owner := metav1.GetControllerOf(existing)
-	if owner == nil || owner.UID != rbg.GetUID() {
+	if owner == nil && !isAdoptableDiscoveryConfigMap(existing, rbg) {
+		return fmt.Errorf(
+			"discovery ConfigMap %s/%s is not controlled by RoleBasedGroup %s and is not an ownerless discovery ConfigMap; refusing to adopt it",
+			existing.Namespace, existing.Name, rbg.Name,
+		)
+	}
+	if owner != nil && owner.UID != rbg.GetUID() {
 		return fmt.Errorf(
 			"discovery ConfigMap %s/%s is not controlled by RoleBasedGroup %s; refusing to adopt it",
 			existing.Namespace, existing.Name, rbg.Name,
@@ -674,6 +681,31 @@ func (r *RoleBasedGroupReconciler) applyDiscoveryConfigMap(
 		ctx, existing,
 		client.MergeFromWithOptions(old, client.MergeFromWithOptimisticLock{}),
 	)
+}
+
+// isAdoptableDiscoveryConfigMap recognizes the ownerless ConfigMap left behind
+// when an RBG is recreated with the same name. A foreign object is not adopted:
+// it must carry only discovery data, parse as one of the supported formats, and
+// name the same group.
+func isAdoptableDiscoveryConfigMap(existing *corev1.ConfigMap, rbg *workloadsv1alpha2.RoleBasedGroup) bool {
+	if len(existing.OwnerReferences) != 0 || len(existing.Data) != 1 || len(existing.BinaryData) != 0 {
+		return false
+	}
+	content, ok := existing.Data[discoveryConfigKey]
+	if !ok {
+		return false
+	}
+
+	var compact discovery.CompactConfig
+	if err := yaml.UnmarshalStrict([]byte(content), &compact); err == nil &&
+		compact.APIVersion == string(constants.DiscoveryConfigVersionV1) &&
+		compact.Group == rbg.Name {
+		return true
+	}
+
+	var legacy discovery.ClusterConfig
+	return yaml.UnmarshalStrict([]byte(content), &legacy) == nil &&
+		legacy.Group.Name == rbg.Name
 }
 
 func discoveryConfigOwnerReference(rbg *workloadsv1alpha2.RoleBasedGroup) metav1.OwnerReference {
