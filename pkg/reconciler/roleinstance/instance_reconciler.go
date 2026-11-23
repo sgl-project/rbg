@@ -197,6 +197,7 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 	if instance.DeletionTimestamp != nil {
 		return syncResult{}
 	}
+	ctx = synccontrol.WithBudgetObservation(ctx)
 	updateInstance, err := r.revisionControl.ApplyRevision(instance, updateRevision)
 	if err != nil {
 		return syncResult{err: err}

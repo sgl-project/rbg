@@ -23,6 +23,7 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -40,6 +41,29 @@ type Interface interface {
 	ClearRestarting(instance *workloadsv1alpha2.RoleInstance)
 	// CleanupRestartBudget releases retained Pod objects during RI teardown.
 	CleanupRestartBudget(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) error
+}
+
+type budgetObservationKey struct{}
+
+type budgetObservation struct {
+	checked          bool
+	uid              types.UID
+	generation       int64
+	selectedRevision string
+	fresh            *workloadsv1alpha2.RoleInstance
+	blocked          bool
+	err              error
+}
+
+// WithBudgetObservation scopes live budget reads to one Scale -> Update
+// reconcile. It deliberately carries no state across reconciles.
+func WithBudgetObservation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, budgetObservationKey{}, &budgetObservation{})
+}
+
+func budgetObservationFrom(ctx context.Context) *budgetObservation {
+	observation, _ := ctx.Value(budgetObservationKey{}).(*budgetObservation)
+	return observation
 }
 
 // restartingCache tracks the original Pod UIDs in an active group-restart wave.
