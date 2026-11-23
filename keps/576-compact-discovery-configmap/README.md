@@ -338,17 +338,19 @@ Rules:
    `rbg.workloads.x-k8s.io/discovery-config-version`.
 2. The supported values are `v1alpha1` and `v1`.
 3. The mutating webhook defaults the annotation to `v1` only on `CREATE`.
-   It never defaults a missing annotation on `UPDATE`; existing RBGs without
-   the annotation remain `v1alpha1`. An explicitly empty value is treated as
-   missing on `CREATE`. Objects whose deprecated stateful roles cannot
-   serialize compact content default to `v1alpha1`; `v1` remains rejected for
-   those roles.
+   It never defaults a missing annotation on `UPDATE`. Existing RBGs without
+   the annotation remain `v1alpha1`, while an UPDATE that rebuilds an object
+   and omits the key preserves the stored value. An explicitly empty value is
+   treated as missing on `CREATE`. Objects whose deprecated stateful roles
+   cannot serialize compact content default to `v1alpha1`; `v1` remains
+   rejected for those roles.
 4. Setting `v1alpha1` at creation is the documented opt-out.
 5. For an RBGSet, the webhook defaults the annotation in
    `spec.groupTemplate.annotations`. Child RBGs inherit that value, including
    the historical `v1alpha1` default when a set predates the annotation.
-   Direct edits to a child annotation are overwritten, and removing the key
-   from the template returns the children to `v1alpha1`.
+   Direct edits to a child annotation are overwritten, and a template UPDATE
+   that omits the key preserves the stored value. Set the key to `v1alpha1`
+   explicitly to roll the set and its children back.
 6. Admission rejects values other than `v1alpha1` and `v1`.
 7. Admission rejects `v1` for RBGs containing deprecated stateful roles.
 8. `RBGPredicate` watches the annotation, so annotation-only changes enqueue
@@ -631,7 +633,9 @@ Rollback:
 
 1. Change the annotation back to `v1alpha1`.
 2. The controller estimates the serialized v1alpha1 size. If it exceeds
-   1 MiB, the rollback is rejected and v1 content is retained.
+   1 MiB, the rollback is rejected and v1 content is retained. The controller
+   reports the configuration blocker and continues role reconciliation, so
+   reducing membership can make a retry fit.
 3. Otherwise, wait for reconcile and verify that ConfigMap content is
    v1alpha1.
 
@@ -642,8 +646,8 @@ Rollback:
 - v1 field completeness.
 - Behavior for the annotation missing, `v1alpha1`, and `v1`.
 - New-RBG defaulting, including the `v1alpha1` opt-out.
-- CREATE-only webhook defaulting; missing annotations are never defaulted on
-  update.
+- CREATE-only webhook defaulting; missing annotations are never defaulted to
+  `v1` on update, and a rebuilt UPDATE preserves the stored value.
 - RBGSet annotation propagation through `spec.groupTemplate.annotations`.
 - `RBGPredicate` enqueueing annotation-only changes.
 - Admission rejecting invalid annotation values and `v1` for deprecated

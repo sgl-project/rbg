@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	appsv1 "k8s.io/api/apps/v1"
@@ -34,9 +35,11 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/discovery"
+	"sigs.k8s.io/rbgs/pkg/reconciler"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 	"sigs.k8s.io/yaml"
 )
@@ -308,6 +311,92 @@ func TestDiscoveryConfigValueLimitIncludesKey(t *testing.T) {
 
 	over := append(exact, 'x')
 	assert.False(t, discoveryConfigValueWithinLimit(over))
+}
+
+func TestDiscoveryConfigMapDoesNotAdoptForeignConfigMap(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	foreign := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Data:       map[string]string{"app.properties": "owned by someone else"},
+	}
+	r, c := discoveryTestReconciler(t, rbg, foreign)
+
+	err := r.reconcileDiscoveryConfigMap(context.Background(), rbg)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "refusing to adopt")
+
+	got := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), got))
+	assert.Nil(t, metav1.GetControllerOf(got))
+	assert.NotContains(t, got.Data, discoveryConfigKey)
+	assert.Contains(t, got.Data, "app.properties")
+}
+
+func TestReconcileContinuesAfterOversizedDiscoveryRollback(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].Replicas = ptr.To(int32(0))
+	rbg.Spec.Roles[0].Annotations = map[string]string{
+		constants.ExcludedOrdinalsAnnotationKey: "1",
+	}
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+
+	compact := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.Name,
+			Namespace: rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
+			},
+		},
+		Data: map[string]string{discoveryConfigKey: "apiVersion: v1\n"},
+	}
+	role := &rbg.Spec.Roles[0]
+	ris := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.GetWorkloadName(role),
+			Namespace: rbg.Namespace,
+			Annotations: map[string]string{
+				constants.CommittedSkipOrdinalsAnnotationKey: "1",
+			},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
+			},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Replicas: ptr.To(int32(25000)),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+		},
+	}
+
+	r, c := discoveryTestReconciler(t, rbg, compact, ris)
+	r.apiReader = c
+	r.workloadReconciler = make(map[string]reconciler.WorkloadReconciler)
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace},
+	})
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "exceeding")
+
+	updated := &workloadsv1alpha2.RoleInstanceSet{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(ris), updated))
+	assert.Equal(t, int32(0), ptr.Deref(updated.Spec.Replicas, -1))
+
+	updatedRBG := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), updatedRBG))
+	foundBlocker := false
+	for _, condition := range updatedRBG.Status.Conditions {
+		if condition.Type == string(workloadsv1alpha2.RoleBasedGroupProgressing) &&
+			condition.Reason == constants.ProgressingReasonInvalidSpec {
+			foundBlocker = true
+			break
+		}
+	}
+	assert.True(t, foundBlocker, "oversized rollback must be reported as an InvalidSpec blocker")
+
+	got := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), got))
+	assert.Contains(t, got.Data[discoveryConfigKey], "apiVersion: v1")
 }
 
 func clientKey(rbg *workloadsv1alpha2.RoleBasedGroup) types.NamespacedName {

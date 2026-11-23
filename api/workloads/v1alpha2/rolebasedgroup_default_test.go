@@ -18,11 +18,13 @@ package v1alpha2
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	admissionv1 "k8s.io/api/admission/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
@@ -31,6 +33,18 @@ func defaultingContext(t *testing.T, operation admissionv1.Operation) context.Co
 	t.Helper()
 	return admission.NewContextWithRequest(context.Background(), admission.Request{
 		AdmissionRequest: admissionv1.AdmissionRequest{Operation: operation},
+	})
+}
+
+func updateDefaultingContext(t *testing.T, old runtime.Object) context.Context {
+	t.Helper()
+	raw, err := json.Marshal(old)
+	require.NoError(t, err)
+	return admission.NewContextWithRequest(context.Background(), admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			Operation: admissionv1.Update,
+			OldObject: runtime.RawExtension{Raw: raw},
+		},
 	})
 }
 
@@ -67,6 +81,14 @@ func TestRoleBasedGroupDefaulterDiscoveryConfigVersion(t *testing.T) {
 		rbg := &RoleBasedGroup{}
 		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(defaultingContext(t, admissionv1.Update), rbg))
 		assert.NotContains(t, rbg.Annotations, "rbg.workloads.x-k8s.io/discovery-config-version")
+	})
+
+	t.Run("UPDATE carries a stored version when the request omits the key", func(t *testing.T) {
+		old := &RoleBasedGroup{}
+		old.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1)
+		rbg := &RoleBasedGroup{}
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(updateDefaultingContext(t, old), rbg))
+		assert.Equal(t, constants.DiscoveryConfigVersionV1, rbg.GetDiscoveryConfigVersion())
 	})
 
 	t.Run("UPDATE keeps the selected version", func(t *testing.T) {
@@ -249,6 +271,20 @@ func TestRoleBasedGroupSetDefaulterDiscoveryConfigVersion(t *testing.T) {
 		rbgset := &RoleBasedGroupSet{}
 		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(defaultingContext(t, admissionv1.Update), rbgset))
 		assert.Nil(t, rbgset.Spec.GroupTemplate.Annotations)
+	})
+
+	t.Run("UPDATE carries a stored template version when the request omits the key", func(t *testing.T) {
+		old := &RoleBasedGroupSet{}
+		old.Spec.GroupTemplate.Annotations = map[string]string{
+			constants.DiscoveryConfigVersionAnnotationKey: string(constants.DiscoveryConfigVersionV1),
+		}
+		rbgset := &RoleBasedGroupSet{}
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(updateDefaultingContext(t, old), rbgset))
+		assert.Equal(
+			t,
+			string(constants.DiscoveryConfigVersionV1),
+			rbgset.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey],
+		)
 	})
 
 	t.Run("a context without an admission request never defaults", func(t *testing.T) {

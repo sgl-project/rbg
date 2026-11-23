@@ -18,8 +18,10 @@ package v1alpha2
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
+	admissionv1 "k8s.io/api/admission/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -46,8 +48,9 @@ func (d *RoleBasedGroupSetDefaulter) Default(ctx context.Context, obj runtime.Ob
 	}
 	// KEP-576: default only CREATE (decided from the admission operation), and
 	// only inside the template that child RBGs inherit their annotations from.
-	// A missing or empty template annotation on UPDATE keeps existing children
-	// on v1alpha1. A template with deprecated stateful roles cannot serialize
+	// A PUT that rebuilds the set and omits the template key carries the stored
+	// value forward instead of rolling the set and all of its children back to
+	// v1alpha1. A template with deprecated stateful roles cannot serialize
 	// compact content and defaults to v1alpha1 so the set controller can still
 	// recreate its children.
 	if isCreateAdmission(ctx) {
@@ -62,6 +65,13 @@ func (d *RoleBasedGroupSetDefaulter) Default(ctx context.Context, obj runtime.Ob
 			}
 			template.Annotations[constants.DiscoveryConfigVersionAnnotationKey] = string(version)
 		}
+	} else if template := &rbgset.Spec.GroupTemplate; template.Annotations[constants.DiscoveryConfigVersionAnnotationKey] == "" {
+		if version := storedRoleBasedGroupSetDiscoveryConfigVersion(ctx); version != "" {
+			if template.Annotations == nil {
+				template.Annotations = make(map[string]string, 1)
+			}
+			template.Annotations[constants.DiscoveryConfigVersionAnnotationKey] = version
+		}
 	}
 	if strategy := rbgset.Spec.RolloutStrategy; strategy != nil && strategy.Type == "" {
 		strategy.Type = InPlaceUpdateStrategyType
@@ -74,4 +84,16 @@ func (d *RoleBasedGroupSetDefaulter) Default(ctx context.Context, obj runtime.Ob
 		ru.RollingUpdate.Type = NormalizeUpdateStrategyType(ru.RollingUpdate.Type)
 	}
 	return nil
+}
+
+func storedRoleBasedGroupSetDiscoveryConfigVersion(ctx context.Context) string {
+	request, err := admission.RequestFromContext(ctx)
+	if err != nil || request.Operation != admissionv1.Update || len(request.OldObject.Raw) == 0 {
+		return ""
+	}
+	old := &RoleBasedGroupSet{}
+	if err := json.Unmarshal(request.OldObject.Raw, old); err != nil {
+		return ""
+	}
+	return old.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey]
 }

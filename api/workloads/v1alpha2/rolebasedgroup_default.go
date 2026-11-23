@@ -18,6 +18,7 @@ package v1alpha2
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	admissionv1 "k8s.io/api/admission/v1"
@@ -43,16 +44,21 @@ func (d *RoleBasedGroupDefaulter) Default(ctx context.Context, obj runtime.Objec
 		return fmt.Errorf("expected *RoleBasedGroup but got %T", obj)
 	}
 	// KEP-576: default only CREATE, decided from the admission operation so a
-	// decoded UPDATE object can never be mistaken for a create. A missing
-	// annotation on UPDATE must never be reinterpreted as v1. Deprecated
-	// stateful backends cannot serialize the compact format, so their default
-	// stays v1alpha1.
+	// decoded UPDATE object can never be mistaken for a create. A PUT that
+	// rebuilds the object and omits the annotation carries the stored value
+	// forward instead of silently rolling a new RBG back to v1alpha1.
+	// Deprecated stateful backends cannot serialize the compact format, so
+	// their default stays v1alpha1.
 	if isCreateAdmission(ctx) && rbg.GetDiscoveryConfigVersion() == "" {
 		version := constants.DiscoveryConfigVersionV1
 		if hasDeprecatedStatefulRole(rbg.Spec.Roles) {
 			version = constants.DiscoveryConfigVersionV1Alpha1
 		}
 		rbg.SetDiscoveryConfigVersion(version)
+	} else if rbg.GetDiscoveryConfigVersion() == "" {
+		if version := storedRoleBasedGroupDiscoveryConfigVersion(ctx); version != "" {
+			rbg.SetDiscoveryConfigVersion(version)
+		}
 	}
 	for i := range rbg.Spec.Roles {
 		ru := rbg.Spec.Roles[i].RolloutStrategy
@@ -69,4 +75,16 @@ func (d *RoleBasedGroupDefaulter) Default(ctx context.Context, obj runtime.Objec
 func isCreateAdmission(ctx context.Context) bool {
 	request, err := admission.RequestFromContext(ctx)
 	return err == nil && request.Operation == admissionv1.Create
+}
+
+func storedRoleBasedGroupDiscoveryConfigVersion(ctx context.Context) constants.DiscoveryConfigVersion {
+	request, err := admission.RequestFromContext(ctx)
+	if err != nil || request.Operation != admissionv1.Update || len(request.OldObject.Raw) == 0 {
+		return ""
+	}
+	old := &RoleBasedGroup{}
+	if err := json.Unmarshal(request.OldObject.Raw, old); err != nil {
+		return ""
+	}
+	return old.GetDiscoveryConfigVersion()
 }

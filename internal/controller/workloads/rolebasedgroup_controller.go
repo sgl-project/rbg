@@ -39,7 +39,6 @@ import (
 	kerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/apimachinery/pkg/util/sets"
-	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/client-go/util/workqueue"
@@ -225,9 +224,26 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Step 2: Reconcile the discovery ConfigMap.
 	// This must happen before reconcileRoles to ensure ConfigMap exists before workloads are created.
-	if err := r.reconcileDiscoveryConfigMap(ctx, rbg); err != nil {
-		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfigMap, err.Error())
-		return ctrl.Result{}, err
+	discoveryConfigErr := r.reconcileDiscoveryConfigMap(ctx, rbg)
+	if discoveryConfigErr != nil {
+		r.recorder.Event(rbg, corev1.EventTypeWarning, FailedReconcileDiscoveryConfigMap, discoveryConfigErr.Error())
+		entryBlocker = &metav1.Condition{
+			Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+			Status:             metav1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             constants.ProgressingReasonInvalidSpec,
+			Message:            discoveryConfigErr.Error(),
+			ObservedGeneration: rbg.Generation,
+		}
+		// A discovery failure is a configuration blocker, but it must not stop
+		// role reconciliation: scaling a sparse role down can be the only way
+		// to make an oversized v1alpha1 rollback fit again.
+		if reportErr := r.reportRBGProgressingBlocker(
+			ctx, rbg, entryBlocker,
+			constants.ProgressingReasonInvalidSpec, discoveryConfigErr.Error(),
+		); reportErr != nil {
+			log.FromContext(ctx).Error(reportErr, "Failed to report Progressing blocker for discovery ConfigMap failure")
+		}
 	}
 
 	// Step 3: Construct role statuses and the independent rollout completion barrier.
@@ -251,7 +267,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Step 6: Reconcile PodGroup for gang scheduling.
 	// The strategy is resolved once here and carried on ctx so that the PodGroup
-	// spec and every role's pod template built in Step 8 agree on one value.
+	// spec and every role's pod template built in Step 7 agree on one value.
 	ctx, gangStrategy, gangErr := gangcommon.ResolveGangStrategy(ctx, r.client, rbg)
 	if gangErr == nil {
 		gangErr = r.reconcilePodGroup(ctx, rbg, gangStrategy)
@@ -288,7 +304,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		logger.V(1).Info("Raised coordinated scaling targets to the gang minimum", "roles", raised)
 	}
 
-	// Step 8: Reconcile roles. Even a failed role must not prevent cleanup of
+	// Step 7: Reconcile roles. Even a failed role must not prevent cleanup of
 	// workloads removed from the spec.
 	// KEP-531: render outcomes are warning events only, never conditions
 	// (a status condition is future work); the resolver and the render
@@ -305,8 +321,19 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	// apierrors.IsConflict reports a match as soon as one constituent carries
 	// it, which would hide a quota or permission failure from another role.
 	r.reportRoleReconcileOutcome(ctx, rbg, roleErr, roleStatuses, expectedRolesRevisionHash, entryBlocker)
-	// Step 9: Cleanup orphaned resources.
-	if err := stderrors.Join(roleErr, r.cleanup(ctx, rbg)); err != nil {
+	if discoveryConfigErr != nil {
+		// The normal status snapshot above can replace the pre-role blocker with
+		// child activity. Re-report the discovery failure after roles so the
+		// persistent condition still names the configuration blocker.
+		if reportErr := r.reportRBGProgressingBlocker(
+			ctx, rbg, entryBlocker,
+			constants.ProgressingReasonInvalidSpec, discoveryConfigErr.Error(),
+		); reportErr != nil {
+			log.FromContext(ctx).Error(reportErr, "Failed to report final Progressing blocker for discovery ConfigMap failure")
+		}
+	}
+	// Step 8: Cleanup orphaned resources.
+	if err := stderrors.Join(roleErr, r.cleanup(ctx, rbg), discoveryConfigErr); err != nil {
 		return ctrl.Result{}, err
 	}
 	if err := r.finalizeRolloutStatus(ctx, rbg, expectedRolesRevisionHash); err != nil {
@@ -594,24 +621,65 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 		)
 	}
 
-	cmApplyConfig := coreapplyv1.ConfigMap(rbg.Name, rbg.Namespace).
-		WithData(
-			map[string]string{
+	return r.applyDiscoveryConfigMap(ctx, rbg, configData)
+}
+
+// applyDiscoveryConfigMap writes the discovery data without adopting an
+// unrelated object that happens to share the RBG's name. Reads go through the
+// uncached API reader, and updates carry the resource version so a replacement
+// between the ownership check and the write fails instead of being overwritten.
+func (r *RoleBasedGroupReconciler) applyDiscoveryConfigMap(
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	configData []byte,
+) error {
+	reader := client.Reader(r.client)
+	if r.apiReader != nil {
+		reader = r.apiReader
+	}
+
+	existing := &corev1.ConfigMap{}
+	err := reader.Get(ctx, client.ObjectKeyFromObject(rbg), existing)
+	if apierrors.IsNotFound(err) {
+		return r.client.Create(ctx, &corev1.ConfigMap{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:            rbg.Name,
+				Namespace:       rbg.Namespace,
+				OwnerReferences: []metav1.OwnerReference{discoveryConfigOwnerReference(rbg)},
+			},
+			Data: map[string]string{
 				discoveryConfigKey: string(configData),
 			},
-		).
-		WithOwnerReferences(
-			metaapplyv1.OwnerReference().
-				WithAPIVersion(rbg.APIVersion).
-				WithKind(rbg.Kind).
-				WithName(rbg.Name).
-				WithUID(rbg.GetUID()).
-				WithBlockOwnerDeletion(true).
-				WithController(true),
-		)
+		})
+	}
+	if err != nil {
+		return err
+	}
 
-	_, err = utils.ApplyObjectConfiguration(ctx, r.client, cmApplyConfig, utils.ApplySpec)
-	return err
+	owner := metav1.GetControllerOf(existing)
+	if owner == nil || owner.UID != rbg.GetUID() {
+		return fmt.Errorf(
+			"discovery ConfigMap %s/%s is not controlled by RoleBasedGroup %s; refusing to adopt it",
+			existing.Namespace, existing.Name, rbg.Name,
+		)
+	}
+
+	old := existing.DeepCopy()
+	if existing.Data == nil {
+		existing.Data = make(map[string]string, 1)
+	}
+	existing.Data[discoveryConfigKey] = string(configData)
+	existing.OwnerReferences = []metav1.OwnerReference{discoveryConfigOwnerReference(rbg)}
+	return r.client.Patch(
+		ctx, existing,
+		client.MergeFromWithOptions(old, client.MergeFromWithOptimisticLock{}),
+	)
+}
+
+func discoveryConfigOwnerReference(rbg *workloadsv1alpha2.RoleBasedGroup) metav1.OwnerReference {
+	return *metav1.NewControllerRef(
+		rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"),
+	)
 }
 
 func (r *RoleBasedGroupReconciler) reconcilePodGroup(
@@ -856,7 +924,7 @@ func (r *RoleBasedGroupReconciler) constructAndUpdateRoleStatuses(
 		roleStatuses = append(roleStatuses, roleStatus)
 
 		// Capacity status can deliberately retain old counts. Never use those counts
-		// to release rollout budget before Step 8 has applied the target workload.
+		// to release rollout budget before Step 7 has applied the target workload.
 		complete, err := r.roleWorkloadRolloutComplete(roleCtx, rbg, &role, expectedRolesRevisionHash[role.Name])
 		if err != nil {
 			return nil, err

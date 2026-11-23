@@ -68,6 +68,32 @@ func RunDiscoveryConfigMapTestCases(f *framework.Framework) {
 			ginkgo.By("Verifying prefill leader address is reachable through cluster DNS")
 			verifyPrefillLeaderAddressReachable(f, rbg)
 		})
+
+		ginkgo.It("should honor an explicit v1alpha1 opt-out", func() {
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("discovery-v1alpha1-optout", f.Namespace).
+				WithRoles([]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildStandaloneRole("router").WithReplicas(1).Obj(),
+				}).Obj()
+			rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+
+			f.RegisterDebugFn(func() {
+				dumpDebugInfo(f, rbg)
+				dumpDiscoveryConfigMapDebugInfo(f, rbg)
+			})
+			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+			f.ExpectRbgV2Equal(rbg)
+
+			cm := &corev1.ConfigMap{}
+			gomega.Eventually(func() error {
+				return f.Client.Get(f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, cm)
+			}, testutils.Timeout, testutils.Interval).Should(gomega.Succeed())
+
+			var cfg discovery.ClusterConfig
+			gomega.Expect(yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &cfg)).Should(gomega.Succeed())
+			gomega.Expect(cm.Data["config.yaml"]).Should(gomega.Not(gomega.ContainSubstring("apiVersion:")))
+			gomega.Expect(cfg.Roles["router"].Size).Should(gomega.Equal(1))
+			gomega.Expect(cfg.Roles["router"].Instances).Should(gomega.HaveLen(1))
+		})
 	})
 }
 

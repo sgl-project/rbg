@@ -317,14 +317,15 @@ metadata:
 2. 支持的取值是 `v1alpha1` 和 `v1`。
 3. mutating webhook 只在 `CREATE` 时把 annotation 默认为 `v1`。
    它不会在 `UPDATE` 时为缺失的 annotation 补默认值；没有 annotation 的
-   存量 RBG 保持 `v1alpha1`。显式空值在 `CREATE` 时按缺失处理。
+   存量 RBG 保持 `v1alpha1`，重建对象但省略该键的 `UPDATE` 会保留已
+   存储版本。显式空值在 `CREATE` 时按缺失处理。
    含 deprecated stateful role、无法序列化紧凑内容的对象默认为
    `v1alpha1`；对这些 role，`v1` 仍会被拒绝。
 4. 创建时显式设置 `v1alpha1` 是文档化的 opt-out。
 5. 对 RBGSet，webhook 在 `spec.groupTemplate.annotations` 中写默认值。
    child RBG 继承该值；早于该 annotation 的 set 保持历史默认
-   `v1alpha1`。直接修改 child annotation 会被覆盖，从模板删除该键会让
-   child 回到 `v1alpha1`。
+   `v1alpha1`。直接修改 child annotation 会被覆盖，省略该键的模板
+   `UPDATE` 会保留已存储版本；如需回滚，请显式设置 `v1alpha1`。
 6. Admission 拒绝 `v1alpha1` 和 `v1` 以外的取值。
 7. Admission 对包含 deprecated stateful role 的 RBG 拒绝 `v1`。
 8. `RBGPredicate` 监听该 annotation，因此只修改 annotation 也会让 RBG
@@ -599,7 +600,8 @@ excludedOrdinals: "1,3"
 
 1. 将 annotation 改回 `v1alpha1`。
 2. controller 估算 v1alpha1 序列化大小。如果超过 1 MiB，拒绝回滚并保留
-   v1 内容。
+   v1 内容。controller 会报告配置类 blocker，并继续 role reconcile，
+   因此缩减成员规模可以让后续重试重新满足大小限制。
 3. 否则，等待 reconcile 完成，确认 ConfigMap 恢复为 v1alpha1。
 
 ### 测试计划
@@ -609,7 +611,8 @@ excludedOrdinals: "1,3"
 - v1 字段完整性。
 - annotation 缺失、`v1alpha1` 和 `v1` 的行为。
 - 新 RBG 的默认值行为，包括 `v1alpha1` opt-out。
-- webhook 只在 CREATE 时默认；UPDATE 不会为缺失 annotation 补默认值。
+- webhook 只在 CREATE 时默认；UPDATE 不会为缺失 annotation 补 `v1`
+  默认值，重建对象的 UPDATE 会保留已存储版本。
 - RBGSet 通过 `spec.groupTemplate.annotations` 传播 annotation。
 - `RBGPredicate` 对仅修改 annotation 的变化入队。
 - Admission 拒绝非法 annotation 取值，并对 deprecated stateful role 拒绝
