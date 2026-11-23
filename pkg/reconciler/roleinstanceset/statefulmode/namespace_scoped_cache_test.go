@@ -80,6 +80,18 @@ func TestNewReconcilerWithNamespaceScopedCache(t *testing.T) {
 				},
 			},
 		},
+		{
+			// Only RoleInstanceSet is opted out; RoleInstance still inherits
+			// DefaultNamespaces and exercises the second informer lookup.
+			name: "DefaultNamespaces with only RoleInstanceSet opted out",
+			opts: cache.Options{
+				DefaultNamespaces: defaultNamespaces,
+				ByObject: map[client.Object]cache.ByObject{
+					&workloadsv1alpha2.RoleInstanceSet{}: {Namespaces: map[string]cache.Config{}, Field: nsSelector},
+				},
+			},
+			wantErr: "Kind=RoleInstance",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
