@@ -722,8 +722,11 @@ func isDeprecatedWorkloadType(wt string) bool {
 }
 
 // reconcilableWorkloadTypes are the canonical selectors of the workload types the
-// controller builds a reconciler for (pkg/reconciler.NewWorkloadReconciler), and
-// the only ones admission accepts on a new or changed role.
+// controller builds a reconciler for (pkg/reconciler.NewWorkloadReconciler). The
+// unsupported-type check rejects every other selector on a new or changed role.
+// Whether a reconcilable but deprecated type (Deployment, StatefulSet,
+// LeaderWorkerSet) is accepted is decided separately by the deprecated-type checks
+// and --enable-deprecated-workload-types.
 //
 // Any other apiVersion/kind fails the controller's pre-check, which stops the
 // whole RoleBasedGroup. A value that is not apiVersion/kind at all is different:
