@@ -20,6 +20,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -34,6 +36,84 @@ import (
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 	"sigs.k8s.io/yaml"
 )
+
+func roleBasedGroupSetControllerRef() metav1.OwnerReference {
+	return metav1.OwnerReference{
+		APIVersion: workloadsv1alpha2.GroupVersion.String(),
+		Kind:       "RoleBasedGroupSet",
+		Name:       "test-rbgset",
+		UID:        "rbgset-test-uid",
+		Controller: ptr.To(true),
+	}
+}
+
+// A set adopts an orphan between the RoleBasedGroup controller's read and its
+// write. The mode derived from the stale read must not land, and the retry must
+// leave the mode the adoption stamped: refine, or the legacy a template declares.
+// Without the stamp the retry would pin a child of a legacy template to refine and
+// apply its discovery ConfigMap before the metadata sync restored legacy.
+func TestEnsureDiscoveryConfigMode_AdoptionBetweenReadAndWrite(t *testing.T) {
+	tests := []struct {
+		name         string
+		templateMode constants.DiscoveryConfigMode
+		wantMode     constants.DiscoveryConfigMode
+	}{
+		{name: "template declares no mode", wantMode: constants.RefineDiscoveryConfigMode},
+		{
+			name:         "template declares legacy",
+			templateMode: constants.LegacyDiscoveryConfigMode,
+			wantMode:     constants.LegacyDiscoveryConfigMode,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			scheme := runtime.NewScheme()
+			_ = workloadsv1alpha2.AddToScheme(scheme)
+			_ = corev1.AddToScheme(scheme)
+
+			orphan := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+			orphan.Status.ObservedGeneration = 1
+			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(orphan).WithObjects(orphan).Build()
+			reconciler := &RoleBasedGroupReconciler{client: c, scheme: scheme}
+			key := types.NamespacedName{Name: orphan.Name, Namespace: orphan.Namespace}
+
+			// The reconcile reads the orphan: no controller, no mode, and status.
+			stale := &workloadsv1alpha2.RoleBasedGroup{}
+			require.NoError(t, c.Get(ctx, key, stale))
+
+			// The set controller adopts it before the reconcile writes.
+			set := &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-set", Namespace: orphan.Namespace, UID: "set-uid"},
+			}
+			if tt.templateMode != "" {
+				set.Spec.GroupTemplate.Annotations = map[string]string{
+					constants.DiscoveryConfigModeAnnotationKey: string(tt.templateMode),
+				}
+			}
+			adopted := stale.DeepCopy()
+			require.NoError(t, (&RoleBasedGroupSetReconciler{scheme: scheme}).claimGroupSetOrphan(set, adopted))
+			require.NoError(t, c.Update(ctx, adopted))
+
+			_, err := reconciler.ensureDiscoveryConfigMode(ctx, stale)
+			require.Error(t, err, "the write derived from the stale read must not go through")
+			assert.True(t, apierrors.IsConflict(err), "want a conflict, got %v", err)
+
+			persisted := &workloadsv1alpha2.RoleBasedGroup{}
+			require.NoError(t, c.Get(ctx, key, persisted))
+			require.True(t, metav1.IsControlledBy(persisted, set))
+			assert.Equal(t, tt.wantMode, persisted.GetDiscoveryConfigMode(),
+				"the adoption must stamp the mode in the write that changes the owner")
+
+			// The retry reads the adopted child and has nothing left to decide.
+			_, err = reconciler.ensureDiscoveryConfigMode(ctx, persisted)
+			require.NoError(t, err)
+			require.NoError(t, c.Get(ctx, key, persisted))
+			assert.Equal(t, tt.wantMode, persisted.GetDiscoveryConfigMode())
+		})
+	}
+}
 
 func TestEnsureDiscoveryConfigMode(t *testing.T) {
 	type testCase struct {
@@ -81,6 +161,84 @@ func TestEnsureDiscoveryConfigMode(t *testing.T) {
 			name: "existing refine annotation should not requeue",
 			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
 				rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
+			},
+			wantRequeue:        false,
+			wantMode:           constants.RefineDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "missing annotation with observed status should set legacy mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "RoleBasedGroupSet child with observed status and no annotation should set refine mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				rbg.OwnerReferences = []metav1.OwnerReference{roleBasedGroupSetControllerRef()}
+			},
+			wantRequeue:        false,
+			wantMode:           constants.RefineDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "RoleBasedGroupSet child with an explicit legacy mode should keep it",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				rbg.OwnerReferences = []metav1.OwnerReference{roleBasedGroupSetControllerRef()}
+				rbg.SetDiscoveryConfigMode(constants.LegacyDiscoveryConfigMode)
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "child of another kind with observed status should derive legacy mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				ref := roleBasedGroupSetControllerRef()
+				ref.Kind = "Other"
+				rbg.OwnerReferences = []metav1.OwnerReference{ref}
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "child of a RoleBasedGroupSet in another API group with observed status should derive legacy mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				ref := roleBasedGroupSetControllerRef()
+				ref.APIVersion = "example.com/v1alpha2"
+				rbg.OwnerReferences = []metav1.OwnerReference{ref}
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "RBG a RoleBasedGroupSet owns without controlling it should derive legacy mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				ref := roleBasedGroupSetControllerRef()
+				ref.Controller = ptr.To(false)
+				rbg.OwnerReferences = []metav1.OwnerReference{ref}
+			},
+			wantRequeue:        false,
+			wantMode:           constants.LegacyDiscoveryConfigMode,
+			wantModeAnnotation: true,
+		},
+		{
+			name: "RoleBasedGroupSet child of another served version with observed status should set refine mode",
+			mutateRBG: func(rbg *workloadsv1alpha2.RoleBasedGroup) {
+				rbg.Status.ObservedGeneration = 1
+				ref := roleBasedGroupSetControllerRef()
+				ref.APIVersion = workloadsv1alpha2.GroupVersion.Group + "/v1alpha1"
+				rbg.OwnerReferences = []metav1.OwnerReference{ref}
 			},
 			wantRequeue:        false,
 			wantMode:           constants.RefineDiscoveryConfigMode,
