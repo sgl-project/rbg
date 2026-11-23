@@ -169,7 +169,9 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 // held ControllerRevision its groupset-revision label names, and that revision can
 // still carry a type the live template has since moved off. Roles the live
 // template does not account for are therefore also looked up in that revision,
-// which must be controlled by the same verified parent.
+// which must be controlled by the same verified parent and be one the parent's
+// status names as its current or update revision. Retained history is never used
+// to re-create a child, so it grants nothing.
 //
 // The check does not authenticate the writer. A user who can read the parent
 // set (its name and UID are ordinary readable metadata) and create
@@ -250,14 +252,20 @@ func takeMatchingRoles(templateRoles []RoleSpec, wanted map[string]string) []Rol
 
 // heldRevisionRoles returns the template roles of the ControllerRevision that the
 // child's groupset-revision label names, or nil when the child names none, the
-// revision does not exist, or it is not controlled by parent. parent has already
-// been verified against the child's owner reference, so a revision of another set,
-// or one left behind by a deleted set of the same name, grants nothing.
+// label names neither of the parent's status-managed revisions, the revision does
+// not exist, or it is not controlled by parent.
+//
+// The set controller persists status.currentRevision and status.updateRevision
+// before it creates children, and re-creates a missing child only from one of
+// those two, so a retained older revision is not a template the set builds from.
+// parent has already been verified against the child's owner reference, so a
+// revision of another set, or one left behind by a deleted set of the same name,
+// grants nothing either.
 func heldRevisionRoles(
 	ctx context.Context, reader client.Reader, rbg *RoleBasedGroup, parent *RoleBasedGroupSet,
 ) ([]RoleSpec, error) {
 	name := rbg.Labels[constants.GroupSetRevisionLabelKey]
-	if name == "" {
+	if name == "" || (name != parent.Status.CurrentRevision && name != parent.Status.UpdateRevision) {
 		return nil, nil
 	}
 	revision := &appsv1.ControllerRevision{}

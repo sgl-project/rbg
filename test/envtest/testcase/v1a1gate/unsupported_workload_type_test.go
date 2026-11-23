@@ -100,6 +100,7 @@ func describeUnsupportedWorkloadTypes(mode, suffix string, enableGate func()) bo
 
 		var storedSet, heldSet *workloadsv1alpha2.RoleBasedGroupSet
 		heldRevision := named("rbgs-held")
+		retainedRevision := named("rbgs-retained")
 
 		BeforeAll(func() {
 			// Seed what predates the check with the gate offline: a set whose
@@ -116,24 +117,35 @@ func describeUnsupportedWorkloadTypes(mode, suffix string, enableGate func()) bo
 
 			// A set mid-rollout: the live template has moved to RoleInstanceSet,
 			// and the revision children below the partition are re-created from
-			// still carries the unsupported type and a deprecated one.
+			// still carries the unsupported type and a deprecated one. The set
+			// also retains an older revision with the unsupported type that its
+			// status no longer names.
 			heldSet = v1a2Set(named("unsup-held-set"), v1a2Role("worker", ""), v1a2Role("legacy", ""))
 			Expect(testutil.K8sClient.Create(testutil.Ctx, heldSet)).To(Succeed())
-			data, err := json.Marshal(&workloadsv1alpha2.RoleBasedGroupTemplateSpec{
-				Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{
-					v1a2Role("worker", unsupportedType),
-					v1a2Role("legacy", constants.StatefulSetWorkloadType),
-				}},
-			})
-			Expect(err).NotTo(HaveOccurred())
-			Expect(testutil.K8sClient.Create(testutil.Ctx, &appsv1.ControllerRevision{
-				ObjectMeta: metav1.ObjectMeta{
-					Name: heldRevision, Namespace: gateNamespace,
-					OwnerReferences: setControllerRef(heldSet, heldSet.UID),
-				},
-				Data:     runtime.RawExtension{Raw: data},
-				Revision: 1,
-			})).To(Succeed())
+			createRevision := func(name string, revision int64, roles ...workloadsv1alpha2.RoleSpec) {
+				data, err := json.Marshal(&workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+					Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: roles},
+				})
+				ExpectWithOffset(1, err).NotTo(HaveOccurred())
+				ExpectWithOffset(1, testutil.K8sClient.Create(testutil.Ctx, &appsv1.ControllerRevision{
+					ObjectMeta: metav1.ObjectMeta{
+						Name: name, Namespace: gateNamespace,
+						OwnerReferences: setControllerRef(heldSet, heldSet.UID),
+					},
+					Data:     runtime.RawExtension{Raw: data},
+					Revision: revision,
+				})).To(Succeed())
+			}
+			createRevision(retainedRevision, 1, v1a2Role("worker", unsupportedType))
+			createRevision(heldRevision, 2,
+				v1a2Role("worker", unsupportedType),
+				v1a2Role("legacy", constants.StatefulSetWorkloadType))
+			// No set controller runs in this suite, so write the status it persists
+			// before re-creating children: the held revision is current, the live
+			// template's revision is the update revision.
+			heldSet.Status.CurrentRevision = heldRevision
+			heldSet.Status.UpdateRevision = named("rbgs-live")
+			Expect(testutil.K8sClient.Status().Update(testutil.Ctx, heldSet)).To(Succeed())
 		})
 
 		AfterAll(func() {
@@ -197,6 +209,12 @@ func describeUnsupportedWorkloadTypes(mode, suffix string, enableGate func()) bo
 		It("rejects a set child whose label names no revision of its set", func() {
 			child := setChild(heldSet, heldSet.UID, named("rbgs-missing"), v1a2Role("worker", unsupportedType))
 			child.Name = named("unsup-no-revision")
+			expectUnsupported(testutil.K8sClient.Create(testutil.Ctx, child), unsupportedType)
+		})
+
+		It("rejects a set child copied from a retained revision the set status does not name", func() {
+			child := setChild(heldSet, heldSet.UID, retainedRevision, v1a2Role("worker", unsupportedType))
+			child.Name = named("unsup-retained")
 			expectUnsupported(testutil.K8sClient.Create(testutil.Ctx, child), unsupportedType)
 		})
 

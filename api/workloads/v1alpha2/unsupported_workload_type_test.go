@@ -270,7 +270,9 @@ func TestRoleBasedGroupValidator_UnsupportedWorkloadType_SetChild(t *testing.T) 
 // During a partitioned rollout the set controller re-creates a missing child below
 // the partition from the held ControllerRevision its groupset-revision label names.
 // That revision can still carry a type the live template has moved off, so the
-// exemption has to accept it, with the same owner verification as the parent.
+// exemption has to accept it, with the same owner verification as the parent. Only
+// the revisions the parent's status names are templates the set builds from;
+// retained history is not.
 func TestRoleBasedGroupValidator_SetChildFromHeldRevision(t *testing.T) {
 	const revisionName = "rbgs-held"
 	forBothDeprecatedModes(t, func(t *testing.T, enableDeprecated bool) {
@@ -299,12 +301,24 @@ func TestRoleBasedGroupValidator_SetChildFromHeldRevision(t *testing.T) {
 		held := revision(revisionName, parent.UID,
 			roleWithWorkloadType("worker", "apps/v1/DaemonSet"),
 			roleWithWorkloadType("legacy", constants.StatefulSetWorkloadType))
+		// An older revision the set still retains in its history, controlled by the
+		// same parent, that the parent's status no longer names.
+		retained := revision("rbgs-retained", parent.UID, roleWithWorkloadType("worker", "apps/v1/DaemonSet"))
 		foreign := revision("rbgs-foreign", "other-set-uid", roleWithWorkloadType("worker", "apps/v1/DaemonSet"))
 
-		newValidator := func() *RoleBasedGroupValidator {
-			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(parent, held, foreign).Build()
+		// statusNaming returns the parent with status.currentRevision set to name and
+		// status.updateRevision set to the live template's revision.
+		statusNaming := func(name string) *RoleBasedGroupSet {
+			p := parent.DeepCopy()
+			p.Status.CurrentRevision = name
+			p.Status.UpdateRevision = "rbgs-live"
+			return p
+		}
+		newValidatorFor := func(p *RoleBasedGroupSet) *RoleBasedGroupValidator {
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(p, held, retained, foreign).Build()
 			return &RoleBasedGroupValidator{Client: c, APIReader: c, EnableDeprecatedWorkloadTypes: enableDeprecated}
 		}
+		newValidator := func() *RoleBasedGroupValidator { return newValidatorFor(statusNaming(revisionName)) }
 		child := func(revision string, roles ...RoleSpec) *RoleBasedGroup {
 			rbg := rbgWithRoles(roles...)
 			rbg.Name = parent.Name + "-0"
@@ -345,14 +359,36 @@ func TestRoleBasedGroupValidator_SetChildFromHeldRevision(t *testing.T) {
 			assert.Contains(t, err.Error(), "is not supported")
 		})
 
-		t.Run("a label naming a missing revision grants nothing", func(t *testing.T) {
-			_, err := newValidator().ValidateCreate(ctx, child("rbgs-missing", roleWithWorkloadType("worker", "apps/v1/DaemonSet")))
+		t.Run("the held revision named as the update revision is accepted too", func(t *testing.T) {
+			p := parent.DeepCopy()
+			p.Status.CurrentRevision = "rbgs-older"
+			p.Status.UpdateRevision = revisionName
+			_, err := newValidatorFor(p).ValidateCreate(ctx, child(revisionName, roleWithWorkloadType("worker", "apps/v1/DaemonSet")))
+			require.NoError(t, err)
+		})
+
+		t.Run("a retained revision the parent status does not name grants nothing", func(t *testing.T) {
+			_, err := newValidator().ValidateCreate(ctx, child("rbgs-retained", roleWithWorkloadType("worker", "apps/v1/DaemonSet")))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "is not supported")
 		})
 
-		t.Run("a revision another set controls grants nothing", func(t *testing.T) {
-			_, err := newValidator().ValidateCreate(ctx, child("rbgs-foreign", roleWithWorkloadType("worker", "apps/v1/DaemonSet")))
+		t.Run("a parent without status revisions grants nothing from a revision", func(t *testing.T) {
+			_, err := newValidatorFor(parent).ValidateCreate(ctx, child(revisionName, roleWithWorkloadType("worker", "apps/v1/DaemonSet")))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "is not supported")
+		})
+
+		t.Run("a status-named revision that does not exist grants nothing", func(t *testing.T) {
+			_, err := newValidatorFor(statusNaming("rbgs-missing")).ValidateCreate(ctx,
+				child("rbgs-missing", roleWithWorkloadType("worker", "apps/v1/DaemonSet")))
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), "is not supported")
+		})
+
+		t.Run("a status-named revision another set controls grants nothing", func(t *testing.T) {
+			_, err := newValidatorFor(statusNaming("rbgs-foreign")).ValidateCreate(ctx,
+				child("rbgs-foreign", roleWithWorkloadType("worker", "apps/v1/DaemonSet")))
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), "is not supported")
 		})
