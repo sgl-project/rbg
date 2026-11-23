@@ -594,7 +594,11 @@ var _ = Describe("Stateful selective scale-down", func() {
 			}
 			return current.Spec.UpdateStrategy.Paused
 		}, timeout, interval).Should(BeTrue())
-		Expect(markPodsReady()).To(Succeed())
+		// The rollout can still replace or concurrently update Pods while
+		// paused. Retry so the fixture re-lists and re-targets rebuilt Pods.
+		Eventually(func() error {
+			return markPodsReady()
+		}, timeout, interval).Should(Succeed())
 		Consistently(func() types.UID { return instances(group.Name)[setKey.Name+"-4"] }, time.Second, interval).Should(Equal(original[setKey.Name+"-4"]))
 		Expect(instances(group.Name)).To(HaveKey(setKey.Name + "-6"))
 		Expect(instances(group.Name)).NotTo(HaveKey(setKey.Name + "-5"))

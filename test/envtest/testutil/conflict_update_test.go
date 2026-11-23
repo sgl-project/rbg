@@ -480,3 +480,74 @@ func TestUpdateRoleInstanceStatusOnConflictRefusesReplacementBeforeFirstRead(t *
 		t.Fatalf("expected no status writes, got %d", got)
 	}
 }
+
+// TestUpdateRoleInstanceStatusOnConflictSkipsWrite pins the skip contract for
+// the RoleInstance variant: a mutation that returns true leaves the freshly
+// read object unwritten.
+func TestUpdateRoleInstanceStatusOnConflictSkipsWrite(t *testing.T) {
+	ctx := context.Background()
+	base := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "ri-a", Namespace: "default", UID: types.UID("original-uid")},
+	}
+	var statusWrites int32
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(base).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				atomic.AddInt32(&statusWrites, 1)
+				return c.Status().Update(ctx, obj, opts...)
+			},
+		}).Build()
+	swapClient(t, c)
+
+	if err := UpdateRoleInstanceStatusOnConflict(ctx, base, func(ri *workloadsv1alpha2.RoleInstance) bool {
+		return true
+	}); err != nil {
+		t.Fatalf("expected a skipped write, got %v", err)
+	}
+	if got := atomic.LoadInt32(&statusWrites); got != 0 {
+		t.Fatalf("expected no status writes, got %d", got)
+	}
+}
+
+// TestUpdateRoleInstanceStatusOnConflictExhaustion pins the exhaustion
+// contract for the duplicated RoleInstance retry loop: the returned error
+// remains recognizable as both the fixture retry sentinel and the underlying
+// Kubernetes conflict.
+func TestUpdateRoleInstanceStatusOnConflictExhaustion(t *testing.T) {
+	ctx := context.Background()
+	base := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "ri-a", Namespace: "default", UID: types.UID("original-uid")},
+	}
+	var statusWrites int32
+	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(base).
+		WithInterceptorFuncs(interceptor.Funcs{
+			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+				n := atomic.AddInt32(&statusWrites, 1)
+				return apierrors.NewConflict(
+					schema.GroupResource{Group: "workloads.x-k8s.io", Resource: "roleinstances"},
+					obj.GetName(), fmt.Errorf("write %d: the object has been modified", n))
+			},
+		}).Build()
+	swapClient(t, c)
+
+	err := UpdateRoleInstanceStatusOnConflict(ctx, base, func(ri *workloadsv1alpha2.RoleInstance) bool {
+		ri.Status.RestartCount = 7
+		return false
+	})
+	if !errors.Is(err, ErrConflictExhausted) {
+		t.Fatalf("expected ErrConflictExhausted, got %v", err)
+	}
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("expected the underlying conflict to remain wrapped, got %v", err)
+	}
+	if !IsRetryable(err) {
+		t.Fatalf("expected the exhaustion error to be retryable, got %v", err)
+	}
+	if got := atomic.LoadInt32(&statusWrites); got < 2 {
+		t.Fatalf("expected the conflict to be retried, got %d writes", got)
+	}
+}
