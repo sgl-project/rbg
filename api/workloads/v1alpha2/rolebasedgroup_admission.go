@@ -18,9 +18,11 @@ package v1alpha2
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 
+	appsv1 "k8s.io/api/apps/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -110,19 +112,32 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	if err := validateNoNewEngineRuntimeViolations(rbg.Spec.Roles, nil); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	// A RoleBasedGroupSet controller replaces deleted children by re-creating
+	// them from its own template. Those children are not new user-facing uses:
+	// a deprecated or unsupported workload type already exists in the set's
+	// template, so the replacement inherits it. Look up the verified parent
+	// template, and the held revision a child below a rollout partition is
+	// re-created from, and use them as the pre-existing role set, without
+	// exempting unrelated creates. In strict mode a deprecated type is rejected whatever
+	// the template says, so only unsupported types are worth the lookup.
+	exemptible := isUnsupportedWorkloadType
 	if v.EnableDeprecatedWorkloadTypes {
-		// A RoleBasedGroupSet controller replaces deleted children by re-creating
-		// them from its own template. Those children are not new user-facing uses:
-		// the deprecated workload type already exists in the set's template, so the
-		// replacement inherits it. Look up the verified parent template and use it
-		// as the pre-existing role set, without exempting unrelated creates.
-		oldRoles, err := v.legacySetTemplateRoles(ctx, rbg)
-		if err != nil {
-			allErrs = append(allErrs, err)
-		} else if err := validateNoNewDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRoles); err != nil {
+		exemptible = func(wt string) bool { return isDeprecatedWorkloadType(wt) || isUnsupportedWorkloadType(wt) }
+	}
+	oldRoles, err := v.legacySetTemplateRoles(ctx, rbg, exemptible)
+	if err != nil {
+		allErrs = append(allErrs, err)
+	} else {
+		if err := validateNoNewUnsupportedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRoles); err != nil {
 			allErrs = append(allErrs, err)
 		}
-	} else {
+		if v.EnableDeprecatedWorkloadTypes {
+			if err := validateNoNewDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRoles); err != nil {
+				allErrs = append(allErrs, err)
+			}
+		}
+	}
+	if !v.EnableDeprecatedWorkloadTypes {
 		if err := validateNoDeprecatedWorkloadTypes("spec.roles", rbg.Spec.Roles); err != nil {
 			allErrs = append(allErrs, err)
 		}
@@ -138,15 +153,25 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 
 // legacySetTemplateRoles returns the role list from the owning
 // RoleBasedGroupSet's group template when the object being created carries a
-// deprecated workload type and is controlled by that set. It returns nil for
-// every other create, so unrelated deprecated uses stay rejected.
+// workload type that exemptible accepts (a deprecated one, or one no reconciler
+// supports) and is controlled by that set. It returns nil for every other
+// create, so unrelated uses of those types stay rejected.
 //
 // The exemption is owner-reference aware but does not trust the owner reference
 // alone: the parent is fetched by name through the uncached API reader, its UID
 // must match the reference, and only template roles whose name and workload
-// type match a deprecated role in the new child are returned. A reference with
+// type match an exemptible role in the new child are returned. A reference with
 // an unknown UID, or a stale cached copy of a parent that has since been
 // migrated or replaced, grants nothing.
+//
+// The live template is not the only one the set creates children from. During a
+// partitioned rollout a missing child below the partition is re-created from the
+// held ControllerRevision its groupset-revision label names, and that revision can
+// still carry a type the live template has since moved off. Roles the live
+// template does not account for are therefore also looked up in that revision,
+// which must be controlled by the same verified parent and be one the parent's
+// status names as its current or update revision. Retained history is never used
+// to re-create a child, so it grants nothing.
 //
 // The check does not authenticate the writer. A user who can read the parent
 // set (its name and UID are ordinary readable metadata) and create
@@ -157,9 +182,9 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 // the parent — but it is a known boundary of the exemption, not a proof of
 // controller identity.
 func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
-	ctx context.Context, rbg *RoleBasedGroup,
+	ctx context.Context, rbg *RoleBasedGroup, exemptible func(workloadType string) bool,
 ) ([]RoleSpec, error) {
-	if !containsDeprecatedWorkloadType(rbg.Spec.Roles) {
+	if !containsWorkloadType(rbg.Spec.Roles, exemptible) {
 		return nil, nil
 	}
 	// Prefer the uncached API reader for the security decision; fall back to the
@@ -188,26 +213,22 @@ func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 		return nil, nil
 	}
 
-	templateRoles := parent.Spec.GroupTemplate.Spec.Roles
-	if len(templateRoles) == 0 {
-		return nil, nil
-	}
-
 	wanted := make(map[string]string, len(rbg.Spec.Roles))
 	for i := range rbg.Spec.Roles {
 		role := &rbg.Spec.Roles[i]
 		wt := role.GetWorkloadType()
-		if isDeprecatedWorkloadType(wt) {
+		if exemptible(wt) {
 			wanted[role.Name] = wt
 		}
 	}
 
-	exempt := make([]RoleSpec, 0, len(templateRoles))
-	for i := range templateRoles {
-		role := &templateRoles[i]
-		if wt, ok := wanted[role.Name]; ok && wt == role.GetWorkloadType() {
-			exempt = append(exempt, *role.DeepCopy())
+	exempt := takeMatchingRoles(parent.Spec.GroupTemplate.Spec.Roles, wanted)
+	if len(wanted) > 0 {
+		heldRoles, err := heldRevisionRoles(ctx, reader, rbg, parent)
+		if err != nil {
+			return nil, err
 		}
+		exempt = append(exempt, takeMatchingRoles(heldRoles, wanted)...)
 	}
 	if len(exempt) == 0 {
 		return nil, nil
@@ -215,12 +236,63 @@ func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 	return exempt, nil
 }
 
-// containsDeprecatedWorkloadType reports whether any role in the slice uses one
-// of the deprecated workload types. It gates the parent lookup so ordinary
-// creates never pay for an extra read.
-func containsDeprecatedWorkloadType(roles []RoleSpec) bool {
+// takeMatchingRoles returns copies of the template roles whose name and workload
+// type match an entry in wanted, and removes the matched entries from wanted.
+func takeMatchingRoles(templateRoles []RoleSpec, wanted map[string]string) []RoleSpec {
+	var matched []RoleSpec
+	for i := range templateRoles {
+		role := &templateRoles[i]
+		if wt, ok := wanted[role.Name]; ok && wt == role.GetWorkloadType() {
+			matched = append(matched, *role.DeepCopy())
+			delete(wanted, role.Name)
+		}
+	}
+	return matched
+}
+
+// heldRevisionRoles returns the template roles of the ControllerRevision that the
+// child's groupset-revision label names, or nil when the child names none, the
+// label names neither of the parent's status-managed revisions, the revision does
+// not exist, or it is not controlled by parent.
+//
+// The set controller persists status.currentRevision and status.updateRevision
+// before it creates children, and re-creates a missing child only from one of
+// those two, so a retained older revision is not a template the set builds from.
+// parent has already been verified against the child's owner reference, so a
+// revision of another set, or one left behind by a deleted set of the same name,
+// grants nothing either.
+func heldRevisionRoles(
+	ctx context.Context, reader client.Reader, rbg *RoleBasedGroup, parent *RoleBasedGroupSet,
+) ([]RoleSpec, error) {
+	name := rbg.Labels[constants.GroupSetRevisionLabelKey]
+	if name == "" || (name != parent.Status.CurrentRevision && name != parent.Status.UpdateRevision) {
+		return nil, nil
+	}
+	revision := &appsv1.ControllerRevision{}
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: rbg.Namespace, Name: name}, revision); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("unable to verify ControllerRevision %s/%s of RoleBasedGroupSet %s: %w",
+			rbg.Namespace, name, parent.Name, err)
+	}
+	if !metav1.IsControlledBy(revision, parent) {
+		return nil, nil
+	}
+	template := &RoleBasedGroupTemplateSpec{}
+	if err := json.Unmarshal(revision.Data.Raw, template); err != nil {
+		return nil, fmt.Errorf("unable to read ControllerRevision %s/%s of RoleBasedGroupSet %s: %w",
+			rbg.Namespace, name, parent.Name, err)
+	}
+	return template.Spec.Roles, nil
+}
+
+// containsWorkloadType reports whether any role in the slice has a workload type
+// that match accepts. It gates the parent lookup so ordinary creates never pay
+// for an extra read.
+func containsWorkloadType(roles []RoleSpec, match func(workloadType string) bool) bool {
 	for i := range roles {
-		if isDeprecatedWorkloadType(roles[i].GetWorkloadType()) {
+		if match(roles[i].GetWorkloadType()) {
 			return true
 		}
 	}
@@ -261,6 +333,9 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		allErrs = append(allErrs, err)
 	}
 	if err := validateNoNewEngineRuntimeViolations(rbg.Spec.Roles, oldRBG.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := validateNoNewUnsupportedWorkloadTypes("spec.roles", rbg.Spec.Roles, oldRBG.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {

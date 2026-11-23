@@ -47,9 +47,10 @@ const (
 	// admission gate treats it as deprecated to keep new uses out.
 	InstanceSetWorkloadType string = "workloads.x-k8s.io/v1alpha1/InstanceSet"
 	// InstanceWorkloadType is the v1alpha1-only Instance superseded by RoleInstance.
-	// It is never a role workload selector and is not matched by the admission
-	// gate; it exists so the Helm RBAC generator can gate the dead grants for the
-	// legacy resource behind the deprecated-workload-types toggle.
+	// It is never a role workload selector: admission rejects a role that names it
+	// as unsupported, like any other type no reconciler handles. It exists so the
+	// Helm RBAC generator can gate the dead grants for the legacy resource behind
+	// the deprecated-workload-types toggle.
 	InstanceWorkloadType        string = "workloads.x-k8s.io/v1alpha1/Instance"
 	RoleInstanceSetWorkloadType string = "workloads.x-k8s.io/v1alpha2/RoleInstanceSet"
 	LeaderWorkerSetWorkloadType string = "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet"

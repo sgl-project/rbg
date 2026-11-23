@@ -65,7 +65,8 @@ Interpret the inventory as follows:
 | `apps/v1/StatefulSet` | The role still depends on a StatefulSet. | Migrate to `RoleInstanceSet`. |
 | `leaderworkerset.x-k8s.io/v1/LeaderWorkerSet` | The role still depends on a LeaderWorkerSet. | Migrate to `RoleInstanceSet`. |
 | `workloads.x-k8s.io/v1alpha1/InstanceSet` | The selector has not been reconciled since v0.7.0 and blocks the whole RBG. | Migrate to `RoleInstanceSet`; then delete the old InstanceSet manually. |
-| Any other value | Unknown compatibility value. | Stop and review the object with its owner; do not guess. |
+| A value with no `/` after its first character, such as `RoleInstanceSet` or `StatefulSet` | Not an `apiVersion/kind` selector. The controller falls back to `RoleInstanceSet` for it, whatever it names, so the role runs as a `RoleInstanceSet`. Admission rejects it on a new role and on a role whose value changes; a role that already stores it stays writable. | Review the object with its owner. Set `workloads.x-k8s.io/v1alpha2/RoleInstanceSet` or remove the annotation; either keeps what the role runs. |
+| Any other value | No reconciler supports it, so it blocks the whole RBG. Admission rejects it on a new role and on a role whose value changes; a role that already stores it stays writable. | Stop and review the object with its owner; do not guess. |
 
 The inventory is an impact report, not a rollout decision. The operator decides which role to migrate first and when to pause.
 
