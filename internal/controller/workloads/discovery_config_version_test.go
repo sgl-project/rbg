@@ -302,6 +302,14 @@ func TestRBGPredicateDiscoveryConfigVersion(t *testing.T) {
 	}
 }
 
+func TestDiscoveryConfigValueLimitIncludesKey(t *testing.T) {
+	exact := []byte(strings.Repeat("x", maxDiscoveryConfigMapBytes-len(discoveryConfigKey)))
+	assert.True(t, discoveryConfigValueWithinLimit(exact))
+
+	over := append(exact, 'x')
+	assert.False(t, discoveryConfigValueWithinLimit(over))
+}
+
 func clientKey(rbg *workloadsv1alpha2.RoleBasedGroup) types.NamespacedName {
 	return types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace}
 }

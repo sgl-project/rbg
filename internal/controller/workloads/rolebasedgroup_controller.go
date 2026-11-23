@@ -501,11 +501,22 @@ func (r *RoleBasedGroupReconciler) preCheck(ctx context.Context, rbg *workloadsv
 	return errors.Wrap(kerrors.NewAggregate(errs), "invalid role workload declarations")
 }
 
-// maxDiscoveryConfigMapBytes is a conservative data-value limit below the
-// Kubernetes API server's 1 MiB ConfigMap object limit. Rejecting oversized
-// v1alpha1 content before the write keeps the existing compact content in
-// place instead of failing the API-server write.
+// discoveryConfigKey is the only data key written to the RBG discovery
+// ConfigMap. Kubernetes counts both keys and values toward the 1 MiB ConfigMap
+// limit, so the controller uses a value budget reduced by this key.
+const discoveryConfigKey = "config.yaml"
+
+// maxDiscoveryConfigMapBytes is the Kubernetes ConfigMap data limit.
 const maxDiscoveryConfigMapBytes = 1 << 20
+
+// maxDiscoveryConfigDataBytes is the value budget after reserving the key.
+const maxDiscoveryConfigDataBytes = maxDiscoveryConfigMapBytes - len(discoveryConfigKey)
+
+// discoveryConfigValueWithinLimit reports whether the fixed data key and the
+// serialized value fit the Kubernetes ConfigMap limit.
+func discoveryConfigValueWithinLimit(value []byte) bool {
+	return len(discoveryConfigKey)+len(value) <= maxDiscoveryConfigMapBytes
+}
 
 func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	ctx context.Context,
@@ -527,8 +538,6 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	if !rbg.HasStatefulRole() {
 		return nil
 	}
-
-	const configKey = "config.yaml"
 
 	statefulOnlyRBG := rbg.DeepCopy()
 	statefulOnlyRBG.Spec.Roles = nil
@@ -563,12 +572,12 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	if compact {
 		configData, err = builder.BuildCompact(ctx)
 	} else {
-		if lowerBound, estimateErr := builder.LegacySizeLowerBound(ctx); estimateErr != nil {
+		if upperBound, estimateErr := builder.LegacySizeUpperBound(ctx); estimateErr != nil {
 			return estimateErr
-		} else if lowerBound > maxDiscoveryConfigMapBytes {
+		} else if upperBound > int64(maxDiscoveryConfigDataBytes) {
 			return fmt.Errorf(
-				"estimated discovery ConfigMap content for version v1alpha1 is at least %d bytes, exceeding the %d-byte limit",
-				lowerBound, maxDiscoveryConfigMapBytes,
+				"estimated discovery ConfigMap value for version v1alpha1 is at most %d bytes, exceeding the %d-byte data budget after the %d-byte key",
+				upperBound, maxDiscoveryConfigDataBytes, len(discoveryConfigKey),
 			)
 		}
 		configData, err = builder.Build(ctx)
@@ -578,17 +587,17 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 	}
 	// A rollback whose enumeration no longer fits in a ConfigMap is rejected
 	// before the write, so the current content is retained.
-	if len(configData) > maxDiscoveryConfigMapBytes {
+	if !discoveryConfigValueWithinLimit(configData) {
 		return fmt.Errorf(
-			"discovery ConfigMap content for version %s is %d bytes, exceeding the %d-byte limit; requested version %s",
-			selectedVersion, len(configData), maxDiscoveryConfigMapBytes, version,
+			"discovery ConfigMap value for version %s is %d bytes, exceeding the %d-byte data budget after the %d-byte key; requested version %s",
+			selectedVersion, len(configData), maxDiscoveryConfigDataBytes, len(discoveryConfigKey), version,
 		)
 	}
 
 	cmApplyConfig := coreapplyv1.ConfigMap(rbg.Name, rbg.Namespace).
 		WithData(
 			map[string]string{
-				configKey: string(configData),
+				discoveryConfigKey: string(configData),
 			},
 		).
 		WithOwnerReferences(
@@ -1344,6 +1353,7 @@ func (r *RoleBasedGroupReconciler) SetupWithManager(mgr ctrl.Manager, options co
 		For(&workloadsv1alpha2.RoleBasedGroup{}, builder.WithPredicates(RBGPredicate())).
 		Owns(&workloadsv1alpha2.RoleInstanceSet{}, builder.WithPredicates(WorkloadPredicate())).
 		Owns(&corev1.Service{}).
+		Owns(&corev1.ConfigMap{}, builder.WithPredicates(discoveryConfigMapPredicate())).
 		Owns(&workloadsv1alpha2.RoleBasedGroupScalingAdapter{}, builder.MatchEveryOwner, builder.WithPredicates(RBGScalingAdapterPredicate())).
 		Watches(&workloadsv1alpha2.RoleBasedGroup{}, handler.Funcs{
 			// CreateFunc, UpdateFunc, GenericFunc are intentionally nil (no-op).
@@ -1889,6 +1899,27 @@ func calculateCoordinationUpdatedReplicasBound(maxSkew intstr.IntOrString, refUp
 	lower := math.Round(float64(max(100*a*d-s*b*d, 0)) / float64(100*b))
 	upper := math.Round(float64(max(s*b*d+100*a*d, 0)) / float64(100*b))
 	return int32(lower), int32(upper)
+}
+
+// DiscoveryConfigMapPredicate enqueues only ConfigMap deletion. Creation and
+// updates are produced by the RBG reconciler itself, so enqueueing them would
+// create unnecessary feedback. Deletion is the event the controller otherwise
+// cannot observe after an RBG has settled.
+func discoveryConfigMapPredicate() predicate.Funcs {
+	return predicate.Funcs{
+		CreateFunc: func(event.CreateEvent) bool {
+			return false
+		},
+		UpdateFunc: func(event.UpdateEvent) bool {
+			return false
+		},
+		DeleteFunc: func(event.DeleteEvent) bool {
+			return true
+		},
+		GenericFunc: func(event.GenericEvent) bool {
+			return false
+		},
+	}
 }
 
 func RBGPredicate() predicate.Funcs {

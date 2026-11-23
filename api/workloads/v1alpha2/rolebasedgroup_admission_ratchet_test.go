@@ -23,12 +23,71 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 func templateWithoutContainers(name string) RoleTemplate {
 	return RoleTemplate{Name: name}
+}
+
+func TestRatchetAllowsUpdatesToInvalidDiscoveryConfigVersions(t *testing.T) {
+	base := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "group"},
+		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{{Name: "worker"}}},
+	}
+	oldRBG := base.DeepCopy()
+	oldRBG.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersion("v2"))
+
+	updated := oldRBG.DeepCopy()
+	updated.Labels = map[string]string{"team": "a"}
+	validator := &RoleBasedGroupValidator{EnableDeprecatedWorkloadTypes: true, Client: fake.NewClientBuilder().Build()}
+	_, err := validator.ValidateUpdate(context.Background(), oldRBG, updated)
+	require.NoError(t, err, "a persisted invalid version must not block unrelated updates: %v", err)
+
+	newlyInvalid := base.DeepCopy()
+	newlyInvalid.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersion("v2"))
+	_, err = validator.ValidateUpdate(context.Background(), base, newlyInvalid)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported value")
+
+	deleting := oldRBG.DeepCopy()
+	deleting.DeletionTimestamp = ptr.To(metav1.Now())
+	_, err = validator.ValidateUpdate(context.Background(), oldRBG, deleting)
+	require.NoError(t, err, "deletion-carried updates must not be blocked by the version ratchet: %v", err)
+}
+
+func TestRatchetAllowsRBGSetUpdatesToInvalidDiscoveryConfigVersions(t *testing.T) {
+	base := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "set"},
+		Spec: RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+		},
+	}
+	oldRBGS := base.DeepCopy()
+	oldRBGS.Spec.GroupTemplate.Annotations = map[string]string{
+		constants.DiscoveryConfigVersionAnnotationKey: "v2",
+	}
+
+	updated := oldRBGS.DeepCopy()
+	updated.Labels = map[string]string{"team": "a"}
+	validator := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+	_, err := validator.ValidateUpdate(context.Background(), oldRBGS, updated)
+	require.NoError(t, err, "a persisted invalid set version must not block unrelated updates: %v", err)
+
+	newlyInvalid := base.DeepCopy()
+	newlyInvalid.Spec.GroupTemplate.Annotations = map[string]string{
+		constants.DiscoveryConfigVersionAnnotationKey: "v2",
+	}
+	_, err = validator.ValidateUpdate(context.Background(), base, newlyInvalid)
+	require.Error(t, err)
+	require.Contains(t, err.Error(), "unsupported value")
+
+	deleting := oldRBGS.DeepCopy()
+	deleting.DeletionTimestamp = ptr.To(metav1.Now())
+	_, err = validator.ValidateUpdate(context.Background(), oldRBGS, deleting)
+	require.NoError(t, err, "deletion-carried set updates must not be blocked by the version ratchet: %v", err)
 }
 
 // A persisted object with two invalid templates must stay partially fixable:

@@ -19,7 +19,9 @@ package discovery
 import (
 	"context"
 	"fmt"
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"github.com/google/go-cmp/cmp"
@@ -419,6 +421,7 @@ func legacyAddressMetrics(
 ) (int64, int64) {
 	ccp := role.GetCustomComponentsPattern()
 	lwp := role.GetLeaderWorkerPattern()
+	portBytes := legacyPortBytes(role.ServicePorts)
 
 	switch {
 	case ccp != nil:
@@ -432,9 +435,12 @@ func legacyAddressMetrics(
 			if size < 0 {
 				size = 0
 			}
-			count += size
-			entryBytes += size * int64(len(workloadName)+len(comp.Name)+len(svcName)+
-				len("-0-")+len("-0.")+legacyInstanceLineOverhead)
+			count = saturatingAdd(count, size)
+			entryBytes = saturatingAdd(entryBytes, saturatingMul(size, saturatingAdd(
+				int64(len(workloadName)+len(comp.Name)+len(svcName)+
+					len("-0-")+len("-0.")+legacyInstanceLineOverhead),
+				portBytes,
+			)))
 		}
 		return count, entryBytes
 	case lwp != nil:
@@ -443,25 +449,96 @@ func legacyAddressMetrics(
 			size = 1
 		}
 		if role.GetWorkloadType() == constants.LeaderWorkerSetWorkloadType {
-			return size, size * int64(len(workloadName)+len(serviceName)+len("-0.")+legacyInstanceLineOverhead)
+			return size, saturatingMul(size, saturatingAdd(
+				int64(len(workloadName)+len(serviceName)+len("-0.")+legacyInstanceLineOverhead),
+				portBytes,
+			))
 		}
-		return size, size * int64(len(workloadName)+len(serviceName)+len("-0-0.")+legacyInstanceLineOverhead)
+		return size, saturatingMul(size, saturatingAdd(
+			int64(len(workloadName)+len(serviceName)+len("-0-0.")+legacyInstanceLineOverhead),
+			portBytes,
+		))
 	default:
-		return 1, int64(len(workloadName) + len(serviceName) + len("-0.") + legacyInstanceLineOverhead)
+		return 1, saturatingAdd(
+			int64(len(workloadName)+len(serviceName)+len("-0.")+legacyInstanceLineOverhead),
+			portBytes,
+		)
 	}
 }
 
 // legacyInstanceLineOverhead is the YAML cost of one list entry beyond the
-// address itself: the newline plus "    - address: ". Ports are deliberately
-// excluded, which keeps the estimate a lower bound.
+// address itself: the newline plus "    - address: ".
 const legacyInstanceLineOverhead = 1 + len("    - address: ")
 
-// LegacySizeLowerBound estimates a lower bound for the serialized v1alpha1
-// content without enumerating instances or materializing addresses. It lets
-// the controller reject an oversized rollback before allocating the full
-// instance list.
-func (b *ConfigBuilder) LegacySizeLowerBound(ctx context.Context) (int64, error) {
-	var total int64
+// legacyPortsHeaderOverhead is the YAML cost of the per-instance ports mapping:
+// a newline, the sibling indentation, and "ports:".
+const legacyPortsHeaderOverhead = 1 + len("      ports:")
+
+// legacyPortLineOverhead is the YAML cost of one port entry beyond its key and
+// value: a newline, child indentation, and ": ".
+const legacyPortLineOverhead = 1 + len("        ") + len(": ")
+
+// legacyPortBytes estimates the serialized cost of the port map copied onto
+// every legacy instance entry.
+func legacyPortBytes(ports []corev1.ServicePort) int64 {
+	if len(ports) == 0 {
+		return 0
+	}
+	total := int64(legacyPortsHeaderOverhead)
+	for _, port := range ports {
+		total = saturatingAdd(total, int64(
+			len(generatePortKey(port))+
+				len(strconv.Itoa(int(port.Port)))+
+				legacyPortLineOverhead,
+		))
+	}
+	return total
+}
+
+func saturatingAdd(left, right int64) int64 {
+	if right > 0 && left > math.MaxInt64-right {
+		return math.MaxInt64
+	}
+	if right < 0 && left < math.MinInt64-right {
+		return math.MinInt64
+	}
+	return left + right
+}
+
+func saturatingMul(left, right int64) int64 {
+	if left == 0 || right == 0 {
+		return 0
+	}
+	if left > 0 && right > 0 && left > math.MaxInt64/right {
+		return math.MaxInt64
+	}
+	if left > 0 && right < 0 && right < math.MinInt64/left {
+		return math.MinInt64
+	}
+	if left < 0 && right > 0 && left < math.MinInt64/right {
+		return math.MinInt64
+	}
+	if left < 0 && right < 0 && left < math.MaxInt64/right {
+		return math.MaxInt64
+	}
+	return left * right
+}
+
+// legacyDocumentOverheadBytes is a conservative fixed allowance for the YAML
+// document, group, and role scaffolding outside instance entries.
+const legacyDocumentOverheadBytes = 1 << 10
+
+// legacyRoleOverheadBytes is a conservative per-role allowance for the role
+// header, size, instances header, and indentation outside instance entries.
+const legacyRoleOverheadBytes = 1 << 8
+
+// LegacySizeUpperBound estimates a conservative upper bound for the serialized
+// v1alpha1 content without enumerating instances or materializing addresses.
+// It lets the controller reject an oversized rollback before allocating the
+// full instance list.
+func (b *ConfigBuilder) LegacySizeUpperBound(ctx context.Context) (int64, error) {
+	total := int64(legacyDocumentOverheadBytes) +
+		int64(len(b.rbg.Spec.Roles))*int64(legacyRoleOverheadBytes)
 	for i := range b.rbg.Spec.Roles {
 		role := &b.rbg.Spec.Roles[i]
 		if !workloadsv1alpha2.IsStatefulRole(role) {
@@ -483,7 +560,7 @@ func (b *ConfigBuilder) LegacySizeLowerBound(ctx context.Context) (int64, error)
 		if count == 0 {
 			continue
 		}
-		total += int64(members) * entryBytes
+		total = saturatingAdd(total, saturatingMul(int64(members), entryBytes))
 	}
 	return total, nil
 }

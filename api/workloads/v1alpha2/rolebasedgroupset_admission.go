@@ -86,7 +86,6 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 	if err := validateRBGSetDiscoveryConfigVersion(rbgs); err != nil {
 		allErrs = append(allErrs, err)
 	}
-
 	return nil, utilerrors.NewAggregate(allErrs)
 }
 
@@ -144,11 +143,29 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj, n
 			allErrs = append(allErrs, err)
 		}
 	}
-	if err := validateRBGSetDiscoveryConfigVersion(rbgs); err != nil {
-		allErrs = append(allErrs, err)
+	if rbgs.DeletionTimestamp == nil {
+		if err := ratchetRBGSetDiscoveryConfigVersion(oldRBGS, rbgs); err != nil {
+			allErrs = append(allErrs, err)
+		}
 	}
 
 	return nil, utilerrors.NewAggregate(allErrs)
+}
+
+// ratchetRBGSetDiscoveryConfigVersion permits updates to objects that already
+// carry an invalid version (for example, one written while admission was
+// unavailable), while rejecting a version violation introduced by this update.
+// DeletionTimestamp updates skip the check entirely.
+func ratchetRBGSetDiscoveryConfigVersion(oldRBGS, rbgs *RoleBasedGroupSet) error {
+	newErr := validateRBGSetDiscoveryConfigVersion(rbgs)
+	if newErr == nil {
+		return nil
+	}
+	oldViolation := make(map[string]bool)
+	for _, key := range violationKeys(validateRBGSetDiscoveryConfigVersion(oldRBGS)) {
+		oldViolation[key] = true
+	}
+	return ratchetError(newErr, oldViolation)
 }
 
 // ValidateDelete just implements admission.CustomValidator. This verb is currently no-op.

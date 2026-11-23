@@ -18,6 +18,8 @@ package discovery
 
 import (
 	"context"
+	"fmt"
+	"math"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -948,7 +950,7 @@ func TestConfigBuilder_MemberSummaryMatchesCommittedChild(t *testing.T) {
 	}
 }
 
-func TestConfigBuilder_LegacySizeLowerBound(t *testing.T) {
+func TestConfigBuilder_LegacySizeUpperBound(t *testing.T) {
 	replicas := int32(3)
 	schema := runtime.NewScheme()
 	_ = corev1.AddToScheme(schema)
@@ -1025,13 +1027,13 @@ func TestConfigBuilder_LegacySizeLowerBound(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), tt.rbg, nil)
-			lower, err := builder.LegacySizeLowerBound(context.Background())
+			upper, err := builder.LegacySizeUpperBound(context.Background())
 			require.NoError(t, err)
 
 			built, err := builder.Build(context.Background())
 			require.NoError(t, err)
-			require.LessOrEqual(t, lower, int64(len(built)),
-				"the estimator must stay a lower bound of the serialized content")
+			require.GreaterOrEqual(t, upper, int64(len(built)),
+				"the estimator must stay an upper bound of the serialized content")
 		})
 	}
 
@@ -1053,9 +1055,49 @@ func TestConfigBuilder_LegacySizeLowerBound(t *testing.T) {
 			},
 		}
 		builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
-		lower, err := builder.LegacySizeLowerBound(context.Background())
+		upper, err := builder.LegacySizeUpperBound(context.Background())
 		require.NoError(t, err)
-		require.Greater(t, lower, int64(1<<20))
+		require.Greater(t, upper, int64(1<<20))
+	})
+
+	t.Run("maximum int32 replicas and leader-worker size saturate", func(t *testing.T) {
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "test"},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "worker",
+					Replicas: ptr.To(int32(math.MaxInt32)),
+					Pattern: workloadsv1alpha2.Pattern{
+						LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+							Size: ptr.To(int32(math.MaxInt32)),
+						},
+					},
+				}},
+			},
+		}
+		builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+		upper, err := builder.LegacySizeUpperBound(context.Background())
+		require.NoError(t, err)
+		require.Equal(t, int64(math.MaxInt64), upper)
+	})
+
+	t.Run("port-heavy role exceeds the budget before enumeration", func(t *testing.T) {
+		ports := make([]corev1.ServicePort, 60000)
+		for i := range ports {
+			ports[i] = corev1.ServicePort{Name: fmt.Sprintf("port-%06d", i), Port: 8080}
+		}
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "test"},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name: "worker", Replicas: ptr.To(int32(1)), ServicePorts: ports,
+				}},
+			},
+		}
+		builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+		upper, err := builder.LegacySizeUpperBound(context.Background())
+		require.NoError(t, err)
+		require.Greater(t, upper, int64(1<<20))
 	})
 
 	t.Run("huge replicas with zero-address role skip enumeration", func(t *testing.T) {

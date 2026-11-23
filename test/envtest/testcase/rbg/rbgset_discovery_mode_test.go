@@ -138,6 +138,26 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 		}, timeout, interval).Should(Succeed())
 	})
 
+	It("rebuilds a deleted ConfigMap without changing the RBG", func() {
+		waitForReconciledChild()
+		before := getChild(Default).DeepCopy()
+
+		cm := &corev1.ConfigMap{}
+		Expect(testutil.K8sClient.Get(testutil.Ctx, childKey, cm)).To(Succeed())
+		Expect(testutil.K8sClient.Delete(testutil.Ctx, cm)).To(Succeed())
+
+		Eventually(func(g Gomega) {
+			rebuilt := &corev1.ConfigMap{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, childKey, rebuilt)).To(Succeed())
+			g.Expect(rebuilt.Data).To(HaveKey("config.yaml"))
+			g.Expect(metav1.GetControllerOf(rebuilt)).NotTo(BeNil())
+			g.Expect(workerSize(g)).To(Equal(1))
+		}, timeout, interval).Should(Succeed())
+
+		after := getChild(Default)
+		Expect(after.Generation).To(Equal(before.Generation))
+	})
+
 	It("keeps a child with pre-KEP metadata current", func() {
 		waitForReconciledChild()
 		var before *workloadsv1alpha2.RoleInstanceSet

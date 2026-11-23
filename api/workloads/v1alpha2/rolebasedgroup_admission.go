@@ -352,10 +352,6 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 			allErrs = append(allErrs, err)
 		}
 	}
-	if err := ValidateDiscoveryConfigVersion(rbg); err != nil {
-		allErrs = append(allErrs, err)
-	}
-
 	// A single validation error is returned unwrapped so apierrors.IsInvalid and
 	// friends keep recognizing the rejection type.
 	if len(allErrs) == 1 {
@@ -380,6 +376,7 @@ func ratchetUpdateableSpec(oldRBG, rbg *RoleBasedGroup, oldManaged, newManaged b
 		validateExcludedOrdinals,
 		func(g *RoleBasedGroup, _ bool) error { return ValidateRollingUpdate(g) },
 		func(g *RoleBasedGroup, _ bool) error { return ValidateRoleDependencies(g) },
+		func(g *RoleBasedGroup, _ bool) error { return ValidateDiscoveryConfigVersion(g) },
 	}
 	var newErrs, oldErrs []error
 	for _, check := range checks {
