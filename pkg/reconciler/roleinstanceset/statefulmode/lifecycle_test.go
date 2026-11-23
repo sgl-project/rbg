@@ -25,6 +25,7 @@ import (
 	"github.com/stretchr/testify/require"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -35,6 +36,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/readiness"
+	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 )
 
 const preDeleteHoldLabel = "consumer.example/held"
@@ -96,6 +98,51 @@ func TestStatefulRollingUpdateAndScaleDownWaitForPreDeleteHook(t *testing.T) {
 			h.assertDeleted(t, instance.Name)
 		})
 	}
+}
+
+func TestStatefulPreUpdateBlocksWorkloadUpdateAndClearsPodMirror(t *testing.T) {
+	h := newRollbackTestHarness(t, "kep527-pre-update", 1, 0, 0)
+	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"patio.workloads.x-k8s.io/pre-update": "blocked"},
+		},
+	}
+	instance := h.instance(0, h.intermediate.Name, true)
+	instance.ResourceVersion = "1"
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      instance.Name,
+			Namespace: instance.Namespace,
+			Labels: map[string]string{
+				constants.RoleInstanceNameLabelKey: instance.Name,
+			},
+		},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(instance, pod).
+		Build()
+	h.control.hookControl = roleinstancelifecycle.NewHookControl(c)
+	h.control.client = c
+
+	h.reconcile(t, instance)
+	h.assertDeleted(t)
+	require.Equal(t, constants.RoleInstanceHookStatePreUpdate, roleinstancelifecycle.HookState(instance))
+	require.Equal(t, "blocked", instance.Labels["patio.workloads.x-k8s.io/pre-update"])
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pod), pod))
+	require.Equal(t, "blocked", pod.Labels["patio.workloads.x-k8s.io/pre-update"])
+
+	delete(instance.Labels, "patio.workloads.x-k8s.io/pre-update")
+	require.NoError(t, c.Update(context.Background(), instance))
+	h.reconcile(t, instance)
+	h.assertDeleted(t, instance.Name)
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pod), pod))
+	require.Empty(t, pod.Labels["patio.workloads.x-k8s.io/pre-update"])
 }
 
 func TestStatefulPreDeleteWaitsForFinalizer(t *testing.T) {

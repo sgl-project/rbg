@@ -137,6 +137,9 @@ func (r *reconciler) prepareLifecycleOperation(
 		return lifecycleOperationResult{}, nil
 	}
 	lifecycleConfig := instance.Spec.Lifecycle
+	if err := r.hookControl.SyncRuntimeLabels(ctx, instance, lifecycleConfig, pods); err != nil {
+		return lifecycleOperationResult{}, err
+	}
 	if err := r.hookControl.CleanupPostReady(ctx, instance, lifecycleConfig, pods); err != nil {
 		return lifecycleOperationResult{}, err
 	}

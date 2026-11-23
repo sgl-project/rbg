@@ -36,10 +36,12 @@ import (
 	"k8s.io/kubernetes/pkg/controller/history"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
+	sigsclient "sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
+	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	setprogressing "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
@@ -195,6 +197,7 @@ func NewDefaultStatefulInstanceSetControl(
 	instanceControl *StatefulInstanceControl,
 	inplaceControl instanceinplace.Interface,
 	lifecycleControl instancelifecycle.Interface,
+	hookControl *roleinstancelifecycle.HookControl,
 	statusUpdater StatusUpdaterInterface,
 	controllerHistory history.Interface,
 	recorder record.EventRecorder) StatefulInstanceSetControlInterface {
@@ -205,6 +208,8 @@ func NewDefaultStatefulInstanceSetControl(
 		recorder:              recorder,
 		inplaceControl:        inplaceControl,
 		lifecycleControl:      lifecycleControl,
+		hookControl:           hookControl,
+		client:                hookControl.Client,
 		revisionEqualityCache: lru.New(utils.MaxRevisionEqualityCacheEntries),
 	}
 }
@@ -219,6 +224,8 @@ type defaultStatefulInstanceSetControl struct {
 	recorder          record.EventRecorder
 	inplaceControl    instanceinplace.Interface
 	lifecycleControl  instancelifecycle.Interface
+	hookControl       *roleinstancelifecycle.HookControl
+	client            sigsclient.Client
 	// revisionEqualityCache caches semantic revision equality results to avoid
 	// expensive ApplyRevision + getPatch reconstruction on every reconcile.
 	revisionEqualityCache *lru.Cache
@@ -796,6 +803,14 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 		if isTerminating(target) {
 			continue
 		}
+		if blocked, err := ssc.prepareLifecycleUpdate(ctx, set, target); err != nil {
+			return status, err
+		} else if blocked {
+			if !isFree && !baseUnavail.Has(target.Name) {
+				newlyUnavail++
+			}
+			continue
+		}
 		if set.Spec.UpdateStrategy.Type == workloadsv1alpha2.RecreatePodUpdateStrategyType {
 			blocked, err := ssc.prepareDelete(set, target)
 			if err != nil {
@@ -969,7 +984,7 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 	}
 	transitioned := inplacing
 	if !inplacing {
-		_, actualDeleting, err := ssc.deleteInstance(set, target)
+		_, actualDeleting, err := ssc.deleteInstance(ctx, set, target, false)
 		if err != nil {
 			return false, err
 		}
@@ -1237,7 +1252,7 @@ func (ssc *defaultStatefulInstanceSetControl) processReplica(
 
 // processCondemned processes a condemned instance for deletion
 func (ssc *defaultStatefulInstanceSetControl) processCondemned(
-	_ context.Context,
+	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
 	firstUnhealthyInstance *workloadsv1alpha2.RoleInstance,
 	monotonic bool,
@@ -1259,7 +1274,7 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 	}
 
 	klog.V(2).InfoS("InstanceSet terminating condemned Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance))
-	_, deleting, err := ssc.deleteInstance(set, instance)
+	_, deleting, err := ssc.deleteInstance(ctx, set, instance, true)
 	if err != nil {
 		return monotonic, err
 	}
@@ -1400,11 +1415,18 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 
 // deleteInstance deletes an instance and returns if it was actually deleted
 func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
+	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instance *workloadsv1alpha2.RoleInstance,
+	finalDeletion bool,
 ) (bool, bool, error) {
 	if isTerminating(instance) {
 		return false, false, nil
+	}
+	if finalDeletion {
+		if blocked, err := ssc.prepareLifecycleDelete(ctx, set, instance); err != nil || blocked {
+			return false, false, err
+		}
 	}
 	if blocked, err := ssc.prepareDelete(set, instance); err != nil || blocked {
 		return false, false, err
@@ -1416,6 +1438,101 @@ func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
 	}
 
 	return true, true, nil
+}
+
+func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleUpdate(
+	ctx context.Context,
+	set *workloadsv1alpha2.RoleInstanceSet,
+	instance *workloadsv1alpha2.RoleInstance,
+) (bool, error) {
+	var hook *workloadsv1alpha2.RoleInstanceLifecycleHook
+	if set.Spec.RoleInstanceTemplate.Lifecycle != nil {
+		hook = set.Spec.RoleInstanceTemplate.Lifecycle.PreUpdate
+	}
+	return ssc.prepareLifecycleHook(
+		ctx,
+		set,
+		instance,
+		hook,
+		constants.RoleInstanceHookStatePreUpdate,
+		constants.RoleInstanceHookStateUpdating,
+	)
+}
+
+func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleDelete(
+	ctx context.Context,
+	set *workloadsv1alpha2.RoleInstanceSet,
+	instance *workloadsv1alpha2.RoleInstance,
+) (bool, error) {
+	var hook *workloadsv1alpha2.RoleInstanceLifecycleHook
+	if set.Spec.RoleInstanceTemplate.Lifecycle != nil {
+		hook = set.Spec.RoleInstanceTemplate.Lifecycle.PreDelete
+	}
+	return ssc.prepareLifecycleHook(
+		ctx,
+		set,
+		instance,
+		hook,
+		constants.RoleInstanceHookStatePreDelete,
+		constants.RoleInstanceHookStateTerminating,
+	)
+}
+
+func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleHook(
+	ctx context.Context,
+	set *workloadsv1alpha2.RoleInstanceSet,
+	instance *workloadsv1alpha2.RoleInstance,
+	hook *workloadsv1alpha2.RoleInstanceLifecycleHook,
+	state constants.RoleInstanceLifecycleHookStateType,
+	nextState constants.RoleInstanceLifecycleHookStateType,
+) (bool, error) {
+	if ssc.hookControl == nil || hook == nil {
+		return false, nil
+	}
+	pods, err := ssc.lifecyclePods(ctx, instance)
+	if err != nil {
+		return true, err
+	}
+	if roleinstancelifecycle.HookState(instance) != state {
+		if err := ssc.hookControl.EnterHook(ctx, instance, state, hook, pods); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	if !roleinstancelifecycle.HookReleased(instance, hook) {
+		if err := ssc.hookControl.SyncRuntimeLabels(ctx, instance, set.Spec.RoleInstanceTemplate.Lifecycle, pods); err != nil {
+			return true, err
+		}
+		return true, nil
+	}
+	if err := ssc.hookControl.SyncRuntimeLabels(ctx, instance, set.Spec.RoleInstanceTemplate.Lifecycle, pods); err != nil {
+		return true, err
+	}
+	if err := ssc.hookControl.SetHookState(ctx, instance, nextState, pods); err != nil {
+		return true, err
+	}
+	return false, nil
+}
+
+func (ssc *defaultStatefulInstanceSetControl) lifecyclePods(
+	ctx context.Context,
+	instance *workloadsv1alpha2.RoleInstance,
+) ([]*corev1.Pod, error) {
+	if ssc.client == nil {
+		return nil, nil
+	}
+	podList := &corev1.PodList{}
+	if err := ssc.client.List(ctx, podList,
+		sigsclient.InNamespace(instance.Namespace),
+		sigsclient.MatchingLabels{constants.RoleInstanceNameLabelKey: instance.Name},
+	); err != nil {
+		return nil, err
+	}
+	pods := make([]*corev1.Pod, 0, len(podList.Items))
+	for i := range podList.Items {
+		pods = append(pods, &podList.Items[i])
+	}
+	return pods, nil
 }
 
 func (ssc *defaultStatefulInstanceSetControl) prepareDelete(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance) (bool, error) {

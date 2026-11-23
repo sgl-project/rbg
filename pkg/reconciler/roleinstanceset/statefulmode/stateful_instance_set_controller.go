@@ -49,6 +49,7 @@ import (
 	instancelisters "sigs.k8s.io/rbgs/client-go/listers/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
+	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 )
 
 func init() {
@@ -170,6 +171,7 @@ func newReconciler(mgr manager.Manager) (reconcile.Reconciler, error) {
 				recorder),
 			instanceinplace.New(utilclient.NewClientFromManager(mgr, "stateful-instanceset-controller"), revisionadapter.NewDefaultImpl()),
 			instancelifecycle.New(utilclient.NewClientFromManager(mgr, "stateful-instanceset-controller")),
+			roleinstancelifecycle.NewHookControl(utilclient.NewClientFromManager(mgr, "stateful-instanceset-controller")),
 			NewRealStatefulInstanceSetStatusUpdater(sigsruntimeClient, roleInstanceSetLister),
 			utilhistory.NewHistory(sigsruntimeClient),
 			recorder,
