@@ -194,6 +194,7 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(
 		// the admission fallback is irrelevant without webhooks anyway.
 		return nil
 	}
+	epoch := workloadsv1alpha2.BeginEngineRuntimeLabelScan()
 	rbgList := &workloadsv1alpha2.RoleBasedGroupList{}
 	if err := r.List(ctx, rbgList); err != nil {
 		return fmt.Errorf("listing rolebasedgroups for engine runtime label backfill: %w", err)
@@ -225,9 +226,9 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(
 			return fmt.Errorf("backfilling engine runtime label on rolebasedgroupset %s/%s: %w", rbgs.Namespace, rbgs.Name, err)
 		}
 	}
-	// A clean full scan with no writes: the scoped admission lookup can
-	// take over from the unscoped fallback.
-	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
+	// A clean full scan with no writes and no concurrent drift: the scoped
+	// admission lookup can take over from the unscoped fallback.
+	workloadsv1alpha2.CompleteEngineRuntimeLabelScan(epoch)
 	return nil
 }
 
@@ -278,7 +279,7 @@ func roleSpecHasEngineRuntimes(spec *workloadsv1alpha2.RoleBasedGroupSpec) bool 
 func flagLabelDrift(labels map[string]string, references bool) {
 	if references {
 		if _, ok := labels[constants.HasEngineRuntimesLabelKey]; !ok {
-			workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+			workloadsv1alpha2.MarkEngineRuntimeLabelDrift()
 		}
 	}
 }

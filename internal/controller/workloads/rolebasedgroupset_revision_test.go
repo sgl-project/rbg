@@ -1538,6 +1538,7 @@ func TestSyncRollingGroupSet_InPlaceUpdateFullSpecAndMetadata(t *testing.T) {
 		},
 	}}
 	update.template.Spec.Roles[0].Replicas = ptr.To(int32(3))
+	update.template.Spec.Roles[0].EngineRuntimes = []workloadsv1alpha2.EngineRuntime{{ProfileName: "ik"}}
 	update.template.Spec.Roles[0].StandalonePattern = &workloadsv1alpha2.StandalonePattern{
 		TemplateSource: workloadsv1alpha2.TemplateSource{TemplateRef: &workloadsv1alpha2.TemplateRef{Name: "shared"}},
 	}
@@ -1548,7 +1549,10 @@ func TestSyncRollingGroupSet_InPlaceUpdateFullSpecAndMetadata(t *testing.T) {
 	update.template = normalizedGroupSetTemplate(update.template)
 	set := revisionTestRollingSet(1, update)
 	// Even if reserved labels leak into the raw template, child identity wins.
-	for _, key := range []string{constants.GroupSetNameLabelKey, constants.GroupSetIndexLabelKey, constants.GroupSetRevisionLabelKey} {
+	for _, key := range []string{
+		constants.GroupSetNameLabelKey, constants.GroupSetIndexLabelKey,
+		constants.GroupSetRevisionLabelKey, constants.HasEngineRuntimesLabelKey,
+	} {
 		set.Spec.GroupTemplate.Labels[key] = "must-not-win"
 	}
 	original := revisionTestReadyChild(set, 0, current)
@@ -1564,6 +1568,7 @@ func TestSyncRollingGroupSet_InPlaceUpdateFullSpecAndMetadata(t *testing.T) {
 	assert.Equal(t, map[string]string{
 		"changed": "new", "added": "new",
 		constants.GroupSetNameLabelKey: set.Name, constants.GroupSetIndexLabelKey: "0", constants.GroupSetRevisionLabelKey: update.name,
+		constants.HasEngineRuntimesLabelKey: constants.HasEngineRuntimesLabelValue,
 	}, child.Labels)
 	assert.Equal(t, map[string]string{
 		"changed": "new", "added": "new", constants.DiscoveryConfigModeAnnotationKey: "refine",
@@ -1594,6 +1599,7 @@ func TestSyncRollingGroupSet_InPlaceUpdateFullSpecAndMetadata(t *testing.T) {
 	child = revisionTestGetChild(t, r, set, 0)
 	assert.Equal(t, map[string]string{
 		constants.GroupSetNameLabelKey: set.Name, constants.GroupSetIndexLabelKey: "0", constants.GroupSetRevisionLabelKey: cleared.name,
+		constants.HasEngineRuntimesLabelKey: constants.HasEngineRuntimesLabelValue,
 	}, child.Labels)
 	assert.Equal(t, map[string]string{
 		constants.DiscoveryConfigModeAnnotationKey: "refine", constants.RolloutRequestAnnotationKey: "2",

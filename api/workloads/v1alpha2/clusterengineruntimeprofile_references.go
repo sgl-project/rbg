@@ -19,7 +19,7 @@ package v1alpha2
 import (
 	"context"
 	"fmt"
-	"sync/atomic"
+	"sync"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -33,27 +33,68 @@ const (
 	roleBasedGroupSetKind = "RoleBasedGroupSet"
 )
 
-// engineRuntimeLabelConverged records whether the has-engine-runtimes
+// engineRuntimeLabelConvergence tracks whether the has-engine-runtimes
 // label scan has completed at least once with no mismatch since this
 // process started. Until then the admission webhook keeps using the
 // unscoped reference lookup, so the upgrade window before the backfill
 // converges cannot admit a write that pre-label referencing objects should
 // have blocked.
-var engineRuntimeLabelConverged atomic.Bool
+var engineRuntimeLabelConvergence struct {
+	mu sync.RWMutex
+
+	converged  bool
+	driftEpoch uint64
+}
 
 // SetEngineRuntimeLabelConverged records whether the has-engine-runtimes
 // label backfill has converged. The ClusterEngineRuntimeProfile controller
 // sets it after a full scan finds no mismatch; it resets on process
 // restart.
 func SetEngineRuntimeLabelConverged(converged bool) {
-	engineRuntimeLabelConverged.Store(converged)
+	engineRuntimeLabelConvergence.mu.Lock()
+	defer engineRuntimeLabelConvergence.mu.Unlock()
+	engineRuntimeLabelConvergence.converged = converged
+	if !converged {
+		engineRuntimeLabelConvergence.driftEpoch++
+	}
 }
 
 // EngineRuntimeLabelConverged reports whether the has-engine-runtimes label
 // backfill has converged in this process. Admission falls back to the
 // unscoped reference lookup while it has not.
 func EngineRuntimeLabelConverged() bool {
-	return engineRuntimeLabelConverged.Load()
+	engineRuntimeLabelConvergence.mu.RLock()
+	defer engineRuntimeLabelConvergence.mu.RUnlock()
+	return engineRuntimeLabelConvergence.converged
+}
+
+// BeginEngineRuntimeLabelScan returns the current drift epoch for a label
+// backfill scan. The scan must complete only if that epoch is unchanged.
+func BeginEngineRuntimeLabelScan() uint64 {
+	engineRuntimeLabelConvergence.mu.RLock()
+	defer engineRuntimeLabelConvergence.mu.RUnlock()
+	return engineRuntimeLabelConvergence.driftEpoch
+}
+
+// CompleteEngineRuntimeLabelScan marks the label scan converged only when
+// no drift event arrived while it was running.
+func CompleteEngineRuntimeLabelScan(epoch uint64) {
+	engineRuntimeLabelConvergence.mu.Lock()
+	defer engineRuntimeLabelConvergence.mu.Unlock()
+	if engineRuntimeLabelConvergence.driftEpoch != epoch {
+		engineRuntimeLabelConvergence.converged = false
+		return
+	}
+	engineRuntimeLabelConvergence.converged = true
+}
+
+// MarkEngineRuntimeLabelDrift records that a referencing object arrived
+// without the has-engine-runtimes label and invalidates any in-flight scan.
+func MarkEngineRuntimeLabelDrift() {
+	engineRuntimeLabelConvergence.mu.Lock()
+	defer engineRuntimeLabelConvergence.mu.Unlock()
+	engineRuntimeLabelConvergence.driftEpoch++
+	engineRuntimeLabelConvergence.converged = false
 }
 
 // EngineRuntimeProfileReference names one live referencing object of a

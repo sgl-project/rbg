@@ -533,6 +533,9 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateLabelUpdate(
 ) bool {
 	templateLabels := rbgset.Spec.GroupTemplate.Labels
 	for k, v := range templateLabels {
+		if k == constants.HasEngineRuntimesLabelKey {
+			continue
+		}
 		if rbg.Labels[k] != v {
 			return true
 		}

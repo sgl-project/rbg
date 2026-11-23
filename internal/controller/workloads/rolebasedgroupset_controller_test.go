@@ -1663,4 +1663,11 @@ func TestRoleBasedGroupSetReconciler_EngineRuntimeLabelNotDivergence(t *testing.
 	fresh := newRBGForSet(rbgset, 0)
 	assert.Equal(t, "true", fresh.Labels[constants.HasEngineRuntimesLabelKey],
 		"newRBGForSet must stamp the engine-runtime reference label")
+
+	rbgset.Spec.GroupTemplate.Labels[constants.HasEngineRuntimesLabelKey] = "user-value"
+	assert.False(t, r.needsTemplateLabelUpdate(rbgset, rbg),
+		"a user-supplied reserved label must not fight the system-managed value")
+	r.syncRBGMetadata(rbgset, rbg)
+	assert.Equal(t, constants.HasEngineRuntimesLabelValue, rbg.Labels[constants.HasEngineRuntimesLabelKey],
+		"syncRBGMetadata must derive the reserved label from the child spec")
 }
