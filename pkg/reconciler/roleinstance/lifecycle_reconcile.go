@@ -162,32 +162,9 @@ func (r *reconciler) prepareLifecycleOperation(
 
 	if update {
 		newStatus.Phase = workloadsv1alpha2.RoleInstancePhaseUpdating
-		if lifecycleConfig.PreUpdate == nil {
-			if lifecycle.HookState(instance) == constants.RoleInstanceHookStatePreUpdate {
-				if err := r.hookControl.SetHookState(ctx, instance, constants.RoleInstanceHookStateUpdating, pods); err != nil {
-					return lifecycleOperationResult{}, err
-				}
-			}
-			return lifecycleOperationResult{operation: true}, nil
-		}
-		if lifecycle.HookState(instance) != constants.RoleInstanceHookStatePreUpdate {
-			if err := r.hookControl.EnterHook(
-				ctx, instance, constants.RoleInstanceHookStatePreUpdate, lifecycleConfig.PreUpdate, pods); err != nil {
-				return lifecycleOperationResult{}, err
-			}
-			r.recorder.Eventf(instance, v1.EventTypeNormal, "LifecycleHookEntered",
-				"preUpdate lifecycle hook entered; waiting for signal labels to be removed")
-			return lifecycleOperationResult{blocked: true, operation: true}, nil
-		}
-		if !lifecycle.HookReleased(instance, lifecycleConfig.PreUpdate) {
-			if err := r.hookControl.SyncRuntimeLabels(ctx, instance, lifecycleConfig, pods); err != nil {
-				return lifecycleOperationResult{}, err
-			}
-			return lifecycleOperationResult{blocked: true, operation: true}, nil
-		}
-		if err := r.hookControl.SetHookState(ctx, instance, constants.RoleInstanceHookStateUpdating, pods); err != nil {
-			return lifecycleOperationResult{}, err
-		}
+		// preUpdate is gated by the owning RoleInstanceSet controller before it
+		// mutates workload Pods. The RoleInstance controller must not re-enter
+		// the hook after that controller has already applied the update.
 		return lifecycleOperationResult{operation: true}, nil
 	}
 
