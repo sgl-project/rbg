@@ -103,7 +103,7 @@ func updateOnConflict(ctx context.Context, snapshot *corev1.Pod, mutate func(*co
 			return err
 		}
 		if apierrors.IsConflict(err) {
-			return fmt.Errorf("%w: %v", ErrConflictExhausted, err)
+			return fmt.Errorf("%w: %w", ErrConflictExhausted, err)
 		}
 	}
 	return err
@@ -145,7 +145,7 @@ func UpdateRoleInstanceStatusOnConflict(ctx context.Context, snapshot *workloads
 			return err
 		}
 		if apierrors.IsConflict(err) {
-			return fmt.Errorf("%w: %v", ErrConflictExhausted, err)
+			return fmt.Errorf("%w: %w", ErrConflictExhausted, err)
 		}
 	}
 	return err

@@ -19,6 +19,7 @@ package testutil
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -224,13 +225,75 @@ func TestUpdatePodStatusOnConflictRefusesReplacementBeforeFirstRead(t *testing.T
 	}
 }
 
-// TestUpdatePodStatusOnConflictSkipsWrite pins the skip contract: a mutation
-// that returns true leaves the freshly read object unwritten.
+// TestUpdatePodStatusOnConflictSkipsWrite pins the skip contract for every
+// guard covered by ShouldSkipPodStatusUpdate: a mutation that returns true
+// leaves the freshly read object unwritten.
 func TestUpdatePodStatusOnConflictSkipsWrite(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		pod  *corev1.Pod
+	}{
+		{
+			name: "failed",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default", UID: types.UID("original-uid")},
+				Status:     corev1.PodStatus{Phase: corev1.PodFailed},
+			},
+		},
+		{
+			name: "succeeded",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default", UID: types.UID("original-uid")},
+				Status:     corev1.PodStatus{Phase: corev1.PodSucceeded},
+			},
+		},
+		{
+			name: "terminating",
+			pod: &corev1.Pod{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:              "pod-a",
+					Namespace:         "default",
+					UID:               types.UID("original-uid"),
+					DeletionTimestamp: &metav1.Time{Time: metav1.Now().Time},
+					Finalizers:        []string{"fixture.example.com/termination"},
+				},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var statusWrites int32
+			c := fake.NewClientBuilder().WithScheme(testScheme(t)).
+				WithObjects(tt.pod).
+				WithStatusSubresource(&corev1.Pod{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
+						atomic.AddInt32(&statusWrites, 1)
+						return c.Status().Update(ctx, obj, opts...)
+					},
+				}).Build()
+			swapClient(t, c)
+
+			if err := UpdatePodStatusOnConflict(ctx, tt.pod, func(pod *corev1.Pod) bool {
+				return ShouldSkipPodStatusUpdate(pod)
+			}); err != nil {
+				t.Fatalf("expected a skipped write, got %v", err)
+			}
+			if got := atomic.LoadInt32(&statusWrites); got != 0 {
+				t.Fatalf("expected no status writes, got %d", got)
+			}
+		})
+	}
+}
+
+// TestUpdatePodStatusOnConflictExhaustion pins the exhaustion contract: the
+// returned error remains recognizable as both the fixture retry sentinel and
+// the underlying Kubernetes conflict.
+func TestUpdatePodStatusOnConflictExhaustion(t *testing.T) {
 	ctx := context.Background()
 	base := &corev1.Pod{
 		ObjectMeta: metav1.ObjectMeta{Name: "pod-a", Namespace: "default", UID: types.UID("original-uid")},
-		Status:     corev1.PodStatus{Phase: corev1.PodFailed},
 	}
 	var statusWrites int32
 	c := fake.NewClientBuilder().WithScheme(testScheme(t)).
@@ -238,19 +301,29 @@ func TestUpdatePodStatusOnConflictSkipsWrite(t *testing.T) {
 		WithStatusSubresource(&corev1.Pod{}).
 		WithInterceptorFuncs(interceptor.Funcs{
 			SubResourceUpdate: func(ctx context.Context, c client.Client, subResourceName string, obj client.Object, opts ...client.SubResourceUpdateOption) error {
-				atomic.AddInt32(&statusWrites, 1)
-				return c.Status().Update(ctx, obj, opts...)
+				n := atomic.AddInt32(&statusWrites, 1)
+				return apierrors.NewConflict(
+					schema.GroupResource{Group: "", Resource: "pods"},
+					obj.GetName(), fmt.Errorf("write %d: the object has been modified", n))
 			},
 		}).Build()
 	swapClient(t, c)
 
-	if err := UpdatePodStatusOnConflict(ctx, base, func(pod *corev1.Pod) bool {
-		return ShouldSkipPodStatusUpdate(pod)
-	}); err != nil {
-		t.Fatalf("expected a skipped write, got %v", err)
+	err := UpdatePodStatusOnConflict(ctx, base, func(pod *corev1.Pod) bool {
+		pod.Status.Phase = corev1.PodFailed
+		return false
+	})
+	if !errors.Is(err, ErrConflictExhausted) {
+		t.Fatalf("expected ErrConflictExhausted, got %v", err)
 	}
-	if got := atomic.LoadInt32(&statusWrites); got != 0 {
-		t.Fatalf("expected no status writes, got %d", got)
+	if !apierrors.IsConflict(err) {
+		t.Fatalf("expected the underlying conflict to remain wrapped, got %v", err)
+	}
+	if !IsRetryable(err) {
+		t.Fatalf("expected the exhaustion error to be retryable, got %v", err)
+	}
+	if got := atomic.LoadInt32(&statusWrites); got < 2 {
+		t.Fatalf("expected the conflict to be retried, got %d writes", got)
 	}
 }
 

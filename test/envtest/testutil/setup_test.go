@@ -17,6 +17,7 @@ limitations under the License.
 package testutil
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -152,10 +153,27 @@ func assertCondition(t *testing.T, pod *corev1.Pod, conditionType corev1.PodCond
 	for _, cond := range pod.Status.Conditions {
 		if cond.Type == conditionType {
 			if cond.Status != want {
-				t.Errorf("condition %s = %s, want %s", conditionType, cond.Status, want)
+				t.Errorf("condition %s = %s, want %s%s", conditionType, cond.Status, want, messageFromMsgAndArgs(msgAndArgs))
 			}
 			return
 		}
 	}
-	t.Fatalf("condition %s not found", conditionType)
+	t.Fatalf("condition %s not found%s", conditionType, messageFromMsgAndArgs(msgAndArgs))
+}
+
+func messageFromMsgAndArgs(msgAndArgs []interface{}) string {
+	switch len(msgAndArgs) {
+	case 0:
+		return ""
+	case 1:
+		if msg, ok := msgAndArgs[0].(string); ok {
+			return ": " + msg
+		}
+		return ": " + fmt.Sprint(msgAndArgs[0])
+	default:
+		if format, ok := msgAndArgs[0].(string); ok {
+			return ": " + fmt.Sprintf(format, msgAndArgs[1:]...)
+		}
+		return ": " + fmt.Sprint(msgAndArgs...)
+	}
 }
