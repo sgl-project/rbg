@@ -149,6 +149,9 @@ func (r *RoleBasedGroupSetReconciler) listRollingGroupSetChildren(
 func (r *RoleBasedGroupSetReconciler) adoptGroupSetOrphans(
 	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, children *workloadsv1alpha2.RoleBasedGroupList,
 ) (bool, error) {
+	if err := r.recheckGroupSetBeforeAdoptingOrphans(ctx, set, children.Items); err != nil {
+		return false, err
+	}
 	adopted := false
 	for i := range children.Items {
 		child := &children.Items[i]
@@ -207,6 +210,39 @@ func (r *RoleBasedGroupSetReconciler) adoptGroupSetChild(
 	}
 	// A child that vanished mid-reconcile is simply absent on the next listing.
 	return client.IgnoreNotFound(r.client.Update(ctx, child))
+}
+
+// recheckGroupSetForAdoption re-reads the set from the API server before it adopts anything it
+// listed. A cascade=orphan delete marks the set deleting before the owner references are stripped,
+// so an orphan in the listing can be one the set's own deletion just released while the copy read
+// before the listing still looks live. Adopting it would leave it controlled by a UID that is about
+// to disappear: a same-named replacement then refuses to claim it, and once the old set is gone the
+// garbage collector deletes it.
+func (r *RoleBasedGroupSetReconciler) recheckGroupSetForAdoption(
+	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, kind string,
+) error {
+	fresh := &workloadsv1alpha2.RoleBasedGroupSet{}
+	if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(set), fresh); err != nil {
+		return err
+	}
+	if fresh.UID != set.UID || !fresh.DeletionTimestamp.IsZero() || !set.DeletionTimestamp.IsZero() {
+		return fmt.Errorf("cannot adopt %s for RoleBasedGroupSet %s/%s: parent was replaced or is deleting",
+			kind, set.Namespace, set.Name)
+	}
+	return nil
+}
+
+// recheckGroupSetBeforeAdoptingOrphans runs recheckGroupSetForAdoption once if the listing holds
+// an orphan this set would claim, so the common case without orphans costs no extra read.
+func (r *RoleBasedGroupSetReconciler) recheckGroupSetBeforeAdoptingOrphans(
+	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, children []workloadsv1alpha2.RoleBasedGroup,
+) error {
+	for i := range children {
+		if metav1.GetControllerOfNoCopy(&children[i]) == nil && r.isOwnedOrAdoptable(set, &children[i]) {
+			return r.recheckGroupSetForAdoption(ctx, set, "RoleBasedGroups")
+		}
+	}
+	return nil
 }
 
 func (r *RoleBasedGroupSetReconciler) reconcileRollingGroupSet(ctx context.Context, key types.NamespacedName) (ctrl.Result, error) {
@@ -559,6 +595,9 @@ func (r *RoleBasedGroupSetReconciler) createRollingGroupSetChild(
 			return fmt.Errorf("RoleBasedGroup %s already exists and is not owned by RoleBasedGroupSet %s", child.Name, set.Name)
 		}
 		if metav1.GetControllerOfNoCopy(existing) == nil {
+			if err := r.recheckGroupSetForAdoption(ctx, set, "RoleBasedGroups"); err != nil {
+				return err
+			}
 			return r.adoptGroupSetChild(ctx, set, existing)
 		}
 	}

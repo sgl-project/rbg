@@ -324,12 +324,8 @@ func (r *RoleBasedGroupSetReconciler) pruneGroupSetRevisions(
 		}
 		if metav1.GetControllerOfNoCopy(revision) == nil {
 			if !parentChecked {
-				fresh := &workloadsv1alpha2.RoleBasedGroupSet{}
-				if err := r.apiReader.Get(ctx, client.ObjectKeyFromObject(set), fresh); err != nil {
+				if err := r.recheckGroupSetForAdoption(ctx, set, "ControllerRevisions"); err != nil {
 					return err
-				}
-				if fresh.UID != set.UID || !fresh.DeletionTimestamp.IsZero() || !set.DeletionTimestamp.IsZero() {
-					return fmt.Errorf("cannot adopt ControllerRevisions for RoleBasedGroupSet %s/%s: parent was replaced or is deleting", set.Namespace, set.Name)
 				}
 				parentChecked = true
 			}

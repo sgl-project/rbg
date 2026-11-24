@@ -99,6 +99,11 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Error(err, "Failed to list child RoleBasedGroups")
 		return ctrl.Result{}, err
 	}
+	// The set and its children come from separate informers, so the cached set can predate the
+	// deletion that released an orphan in this listing.
+	if err := r.recheckGroupSetBeforeAdoptingOrphans(ctx, rbgset, rbglist.Items); err != nil {
+		return ctrl.Result{}, err
+	}
 
 	// 3. Calculate the difference between the desired state and the current state to determine which RBGs to create or delete.
 	// Map existing RBGs by their index label for efficient lookup.

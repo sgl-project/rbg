@@ -23,6 +23,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -30,6 +31,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -135,7 +137,7 @@ func TestRoleBasedGroupSetReconciler_ForeignChildUID(t *testing.T) {
 		child.OwnerReferences = nil
 
 		c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(set, child).WithObjects(set, child).Build()
-		r := &RoleBasedGroupSetReconciler{client: c, scheme: scheme}
+		r := &RoleBasedGroupSetReconciler{client: c, apiReader: c, scheme: scheme}
 
 		_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(set)})
 		require.NoError(t, err)
@@ -236,6 +238,107 @@ func TestCreateRollingGroupSetChildAdoptsOrphan(t *testing.T) {
 		"adoption must not apply the new template outside the rollout budget")
 }
 
+// The create collision re-reads the child but not the set, so it must not adopt an orphan for a
+// set the API server already reports as deleting.
+func TestCreateRollingGroupSetChildDoesNotAdoptForDeletingSet(t *testing.T) {
+	ctx := context.Background()
+	template := revisionTestTemplate(nil)
+	set := revisionTestRollingSet(1, &groupSetRevision{template: template})
+	// The API server adds this finalizer for an orphan delete; the fake client does not.
+	set.Finalizers = []string{metav1.FinalizerOrphanDependents}
+	orphan := revisionTestReadyChild(set, 0, &groupSetRevision{template: template})
+	orphan.OwnerReferences = nil
+	r, _ := revisionTestRollingReconciler(t, set, orphan)
+	require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), set))
+	revision, err := r.ensureGroupSetRevision(ctx, set, &set.Spec.GroupTemplate)
+	require.NoError(t, err)
+	require.NoError(t, r.client.Delete(ctx, set.DeepCopy(), client.PropagationPolicy(metav1.DeletePropagationOrphan)))
+
+	err = r.createRollingGroupSetChild(ctx, set, newRBGForSetRevision(set, 0, revision))
+	assert.ErrorContains(t, err, "cannot adopt RoleBasedGroups")
+	assert.Nil(t, metav1.GetControllerOfNoCopy(revisionTestGetChild(t, r, set, 0)),
+		"a deleting set must not adopt the orphan")
+}
+
+// A cascade=orphan delete marks the set deleting before the owner references of its children are
+// stripped. A reconcile that read the set before the delete and lists the children after the strip
+// must not adopt them back, or the same-named replacement can never claim them.
+func TestGroupSetDoesNotReadoptChildrenReleasedByItsOrphanDelete(t *testing.T) {
+	for _, rolling := range []bool{true, false} {
+		t.Run(fmt.Sprintf("rolling=%t", rolling), func(t *testing.T) {
+			ctx := context.Background()
+			scheme := runtime.NewScheme()
+			require.NoError(t, appsv1.AddToScheme(scheme))
+			require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+			template := revisionTestTemplate(nil)
+			newSet := func(uid types.UID) *workloadsv1alpha2.RoleBasedGroupSet {
+				set := revisionTestRollingSet(2, &groupSetRevision{template: template})
+				set.UID = uid
+				if !rolling {
+					set.Spec.RolloutStrategy = nil
+				}
+				return set
+			}
+			predecessor := newSet("deleted-set-uid")
+			// The API server adds this finalizer for an orphan delete; the fake client does not.
+			predecessor.Finalizers = []string{metav1.FinalizerOrphanDependents}
+			objects := []client.Object{predecessor}
+			for index := 0; index < 2; index++ {
+				objects = append(objects, revisionTestReadyChild(predecessor, index, &groupSetRevision{template: template}))
+			}
+			key := client.ObjectKeyFromObject(predecessor)
+
+			deleteBeforeListing := true
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).
+				WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroup{}, &workloadsv1alpha2.RoleBasedGroupSet{}).
+				WithInterceptorFuncs(interceptor.Funcs{
+					List: func(ctx context.Context, inner client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+						if _, ok := list.(*workloadsv1alpha2.RoleBasedGroupList); ok && deleteBeforeListing {
+							deleteBeforeListing = false
+							// The orphan delete lands after the reconcile read the set: the set is
+							// marked deleting, then the garbage collector releases its children.
+							set := &workloadsv1alpha2.RoleBasedGroupSet{}
+							require.NoError(t, inner.Get(ctx, key, set))
+							require.NoError(t, inner.Delete(ctx, set, client.PropagationPolicy(metav1.DeletePropagationOrphan)))
+							for index := 0; index < 2; index++ {
+								child := &workloadsv1alpha2.RoleBasedGroup{}
+								require.NoError(t, inner.Get(ctx, client.ObjectKey{
+									Namespace: key.Namespace, Name: fmt.Sprintf("%s-%d", key.Name, index),
+								}, child))
+								child.OwnerReferences = nil
+								require.NoError(t, inner.Update(ctx, child))
+							}
+						}
+						return inner.List(ctx, list, opts...)
+					},
+				}).Build()
+			r := &RoleBasedGroupSetReconciler{client: c, apiReader: c, scheme: scheme}
+
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			assert.ErrorContains(t, err, "cannot adopt RoleBasedGroups")
+			for index := 0; index < 2; index++ {
+				assert.Nil(t, metav1.GetControllerOfNoCopy(revisionTestGetChild(t, r, predecessor, index)),
+					"the deleting set must not adopt ordinal %d back", index)
+			}
+
+			deleting := &workloadsv1alpha2.RoleBasedGroupSet{}
+			require.NoError(t, c.Get(ctx, key, deleting))
+			deleting.Finalizers = nil
+			require.NoError(t, c.Update(ctx, deleting))
+			replacement := newSet("replacement-set-uid")
+			require.NoError(t, c.Create(ctx, replacement))
+
+			_, err = r.Reconcile(ctx, ctrl.Request{NamespacedName: key})
+			require.NoError(t, err)
+			for index := 0; index < 2; index++ {
+				child := revisionTestGetChild(t, r, replacement, index)
+				assert.True(t, metav1.IsControlledBy(child, replacement), "the replacement must adopt ordinal %d", index)
+				assert.Equal(t, types.UID("original-"+child.Name), child.UID, "adoption must not recreate ordinal %d", index)
+			}
+		})
+	}
+}
+
 // An orphan derives the legacy discovery config mode while it has no controller, and
 // the metadata sync keeps the mode a child carries, so the adoption is the one place
 // that can undo it (#603). An orphan adopted before that derivation has no mode, and
@@ -307,7 +410,7 @@ func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
 			}
 
 			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(set, orphan).WithObjects(set, orphan).Build()
-			r := &RoleBasedGroupSetReconciler{client: c, scheme: scheme}
+			r := &RoleBasedGroupSetReconciler{client: c, apiReader: c, scheme: scheme}
 			_, err := r.Reconcile(context.Background(), ctrl.Request{NamespacedName: client.ObjectKeyFromObject(set)})
 			require.NoError(t, err)
 

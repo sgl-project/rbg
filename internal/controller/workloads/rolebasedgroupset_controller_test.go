@@ -1275,12 +1275,10 @@ func TestRoleBasedGroupSetReconciler_Reconcile_OptimizedOrder(t *testing.T) {
 		existingRBGs = append(existingRBGs, rbg)
 	}
 
-	r := &RoleBasedGroupSetReconciler{
-		client: fake.NewClientBuilder().WithScheme(scheme).
-			WithRuntimeObjects(existingRBGs...).
-			WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroupSet{}).Build(),
-		scheme: scheme,
-	}
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithRuntimeObjects(existingRBGs...).
+		WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroupSet{}).Build()
+	r := &RoleBasedGroupSetReconciler{client: c, apiReader: c, scheme: scheme}
 
 	// Run reconcile
 	_, err := r.Reconcile(
@@ -1490,12 +1488,10 @@ func TestRoleBasedGroupSetReconciler_Reconcile_StatusUpdate(t *testing.T) {
 				}
 
 				// Configure the fake client to provide a status subresource for the CRD.
-				r := &RoleBasedGroupSetReconciler{
-					client: fake.NewClientBuilder().WithScheme(scheme).
-						WithRuntimeObjects(objs...).
-						WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroupSet{}).Build(),
-					scheme: scheme,
-				}
+				c := fake.NewClientBuilder().WithScheme(scheme).
+					WithRuntimeObjects(objs...).
+					WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroupSet{}).Build()
+				r := &RoleBasedGroupSetReconciler{client: c, apiReader: c, scheme: scheme}
 
 				// Run the full reconcile loop. Since replicas in spec match the number of existing
 				// objects, no scaling will occur, and it will proceed to status update.
