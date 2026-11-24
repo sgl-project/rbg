@@ -268,17 +268,8 @@ rbg_build_info{version, commit, go_version}
 示例查询：
 
 ```promql
-# 当前构建 series，包含 version 和 commit label。
-rbg_build_info
-
-# 按构建统计 controller 副本数。
-count by (version, commit) (rbg_build_info)
-
-# 当副本运行非预期版本时告警。
-rbg_build_info{version!="v0.8.0"} == 1
-
-# 当存在多个版本时告警。
-count(count by (version) (rbg_build_info)) > 1
+# 当前运行哪些版本，例如确认 rollout 已收敛到单一版本。
+count by (version) (rbg_build_info)
 ```
 
 ### Workload 容量指标
