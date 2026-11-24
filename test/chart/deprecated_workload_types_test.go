@@ -27,6 +27,7 @@ limitations under the License.
 package chart
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -99,14 +100,19 @@ func requireHelm(t *testing.T) {
 }
 
 // renderChart runs `helm template` and returns the rendered manifest stream.
+// Only stdout is the manifest: helm writes warnings to stderr, for example when the
+// kubeconfig is group- or world-readable, so stderr is kept apart and shown only
+// when helm fails.
 func renderChart(t *testing.T, extraArgs ...string) string {
 	t.Helper()
 	requireHelm(t)
 	args := append([]string{"template", "rbgs", chartDir(t)}, extraArgs...)
 	cmd := exec.Command("helm", args...)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("helm template failed: %v\n%s", err, out)
+		t.Fatalf("helm template failed: %v\n%s", err, stderr.String())
 	}
 	return string(out)
 }
