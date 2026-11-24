@@ -23,7 +23,6 @@
   - [Pod Cache 指标（KEP-284）](#pod-cache-指标kep-284)
   - [Controller 阶段指标](#controller-阶段指标)
   - [特性指标](#特性指标)
-  - [可选指标](#可选指标)
   - [采集架构](#采集架构)
   - [实现说明](#实现说明)
   - [安全抓取与部署](#安全抓取与部署)
@@ -65,8 +64,7 @@ RBG 目前暴露 controller-runtime 和 Go runtime 指标，但没有自己的 w
 运维人员无法通过 controller 的 metrics endpoint 对 role 容量损失、rollout 阻塞或 Pod cache 正确性进行告警。
 
 本 KEP 在现有 `/metrics` endpoint 上增加一组少量 workload 与 controller 指标。
-首批实现覆盖 RBG workload 指标（构建信息、role 副本数、group 进度、rollout 耗时）以及五个 KEP-284 Pod cache 指标。
-后续阶段增加 controller 阶段耗时、Warmup、RoleInstance phase、扩缩容和 gang scheduling 指标。
+所有指标在本 KEP 中一并实现，不按 alpha/beta 对指标分阶段。
 设计复用 controller-runtime metrics registry，从 informer cache 读取 workload 状态，并保持 label 有界。
 
 ## 动机
@@ -109,13 +107,7 @@ RBG controller 已经提供 `/metrics`，但该 endpoint 只包含内置的 cont
 通过现有 controller-runtime metrics registry 和 `/metrics` endpoint 暴露 RBG 指标。
 不新增第二个 metrics endpoint。
 
-实现分阶段：
-
-| 阶段 | 指标 | 目的 |
-|---|---|---|
-| Alpha | `rbg_build_info`、`rbg_role_replicas`、`rbg_group_progressing_info`、`rbg_rollout_duration_seconds`、以及 `rbg_pod_cache_*` 指标（由 KEP-284 定义） | 容量、进度、rollout SLO、cache 正确性 |
-| Beta | Controller 阶段耗时/失败、Warmup 耗时/失败、RoleInstance phase 耗时、扩缩容失败、gang PodGroup 失败 | 定位慢或失败的 controller 路径 |
-| 可选 | gang scheduling 耗时 | 特性调优与验证 |
+指标清单中的所有指标一并实现；本 KEP 不按 alpha 和 beta 分阶段。
 
 状态 gauge 在抓取时从 informer cache 采集。
 counter 和 histogram 在对应事件发生时记录。
@@ -174,28 +166,27 @@ KEP-284 预期该 counter 保持为 0。
 下表列出本 KEP 提议的所有指标。
 具体语义在后续章节分别定义。
 
-| 指标 | 阶段 | 类型 | Label | 用途 |
-|---|---|---|---|---|
-| `rbg_build_info` | Alpha | Gauge | `version`、`commit`、`go_version` | 标识 controller 构建版本 |
-| `rbg_role_replicas` | Alpha | Gauge | `namespace`、`rbg`、`role`、`state` | 跟踪每个 role 的 desired、ready、updated 副本 |
-| `rbg_group_progressing_info` | Alpha | Gauge | `namespace`、`rbg`、`status`、`reason` | 报告当前 group 进度或阻塞原因 |
-| `rbg_rollout_duration_seconds` | Alpha | Histogram | `namespace`、`rbg` | 测量 rollout 完成耗时 |
-| `rbg_pod_cache_stub_reads_total` | Alpha | Counter | `method` | 检测 Pod cache 非预期 stub 读取 |
-| `rbg_pod_cache_scope` | Alpha | Gauge | `scope` | 报告 Pod cache 模式 |
-| `rbg_pod_cache_objects` | Alpha | Gauge | `form` | 统计缓存完整 Pod 和 stub 数量 |
-| `rbg_pod_cache_transform_total` | Alpha | Counter | `result` | 统计 Pod cache 转换决策 |
-| `rbg_pod_cache_initial_sync_seconds` | Alpha | Gauge | 无 | 报告 Pod informer 初始同步耗时 |
-| `rbg_controller_stage_duration_seconds` | Beta | Histogram | `controller`、`stage` | 定位慢的 reconcile 阶段 |
-| `rbg_controller_stage_failures_total` | Beta | Counter | `controller`、`stage`、`reason_class` | 按 reconcile 阶段统计失败 |
-| `rbg_warmup_duration_seconds` | Beta | Histogram | `namespace`、`warmup` | 测量 Warmup 完成耗时 |
-| `rbg_warmup_failures_total` | Beta | Counter | `namespace`、`warmup`、`reason` | 按 reason 统计 Warmup 失败 |
-| `rbg_roleinstance_phase_duration_seconds` | Beta | Histogram | `phase` | 测量 RI 各 phase 停留时间 |
-| `rbg_scaling_adapter_scale_failures_total` | Beta | Counter | `namespace`、`adapter`、`reason_class` | 统计 scaling adapter 失败 |
-| `rbg_gang_podgroup_reconcile_failures_total` | Beta | Counter | `scheduler`、`reason_class` | 统计 PodGroup reconcile 失败 |
-| `rbg_gang_scheduling_duration_seconds` | 可选 | Histogram | `scheduler` | 测量 gang scheduling 完成耗时 |
+| 指标 | 类型 | Label | 用途 |
+|---|---|---|---|
+| `rbg_build_info` | Gauge | `version`、`commit`、`go_version` | 标识 controller 构建版本 |
+| `rbg_role_replicas` | Gauge | `namespace`、`rbg`、`role`、`state` | 跟踪每个 role 的 desired、ready、updated 副本 |
+| `rbg_group_progressing_info` | Gauge | `namespace`、`rbg`、`status`、`reason` | 报告当前 group 进度或阻塞原因 |
+| `rbg_rollout_duration_seconds` | Histogram | `namespace`、`rbg` | 测量 rollout 完成耗时 |
+| `rbg_pod_cache_stub_reads_total` | Counter | `method` | 检测 Pod cache 非预期 stub 读取 |
+| `rbg_pod_cache_scope` | Gauge | `scope` | 报告 Pod cache 模式 |
+| `rbg_pod_cache_objects` | Gauge | `form` | 统计缓存完整 Pod 和 stub 数量 |
+| `rbg_pod_cache_transform_total` | Counter | `result` | 统计 Pod cache 转换决策 |
+| `rbg_pod_cache_initial_sync_seconds` | Gauge | 无 | 报告 Pod informer 初始同步耗时 |
+| `rbg_controller_stage_duration_seconds` | Histogram | `controller`、`stage` | 定位慢的 reconcile 阶段 |
+| `rbg_controller_stage_failures_total` | Counter | `controller`、`stage`、`reason_class` | 按 reconcile 阶段统计失败 |
+| `rbg_warmup_duration_seconds` | Histogram | `namespace`、`warmup` | 测量 Warmup 完成耗时 |
+| `rbg_warmup_failures_total` | Counter | `namespace`、`warmup`、`reason` | 按 reason 统计 Warmup 失败 |
+| `rbg_roleinstance_phase_duration_seconds` | Histogram | `phase` | 测量 RI 各 phase 停留时间 |
+| `rbg_scaling_adapter_scale_failures_total` | Counter | `namespace`、`adapter`、`reason_class` | 统计 scaling adapter 失败 |
+| `rbg_gang_podgroup_reconcile_failures_total` | Counter | `scheduler`、`reason_class` | 统计 PodGroup reconcile 失败 |
 
-阶段（Stage）表示本 KEP 何时交付该指标，而非由哪个 KEP 定义。
-`rbg_pod_cache_*` 指标由 KEP-284 定义、是其 alpha 毕业的必需项；本 KEP 负责实现，因此在 Alpha 交付。
+所有指标一并实现。
+`rbg_pod_cache_*` 指标由 KEP-284 定义、是其 alpha 毕业的必需项；本 KEP 负责实现。
 
 ### 术语
 
@@ -368,7 +359,7 @@ histogram_quantile(
 
 这些指标由 [KEP-284](../284-pod-cache-filter/README.md) 定义。
 定义归属保留在 KEP-284；本 KEP 负责实现。
-全部五个都是 KEP-284 alpha 毕业的必需项，因此随 KEP-284 alpha 一并交付，而非在此列为可选。
+全部五个都是 KEP-284 alpha 毕业的必需项；本 KEP 负责实现。
 
 ```text
 rbg_pod_cache_stub_reads_total{method}
@@ -399,8 +390,6 @@ rbg_pod_cache_stub_reads_total > 0
 | `rbg_pod_cache_initial_sync_seconds` | Gauge | 无 | Pod informer 初始同步耗时 |
 
 ### Controller 阶段指标
-
-这些指标目标为 beta。
 
 ```text
 rbg_controller_stage_duration_seconds{controller, stage}
@@ -436,8 +425,6 @@ rbg_controller_stage_failures_total{controller, stage, reason_class}
 
 ### 特性指标
 
-这些指标目标为 beta。
-
 | 指标 | 类型 | Label | 含义 |
 |---|---|---|---|
 | `rbg_warmup_duration_seconds` | Histogram | `namespace`、`warmup` | Warmup 从开始到完成的耗时 |
@@ -449,15 +436,6 @@ rbg_controller_stage_failures_total{controller, stage, reason_class}
 RI phase 为 KEP-502 定义的 `Creating`、`Running`、`Updating`、`Recovering`。
 KEP-502 不定义 `Terminating` phase；删除由 `metadata.deletionTimestamp` 表示，而非 phase。
 `status.phase` 缺失的 RI 应跳过，不归入臆造值。
-
-### 可选指标
-
-该指标不是 alpha 或 beta 的必需项。
-当 gang scheduling 需要调优或验证时再添加。
-
-| 指标 | 类型 | Label | 含义 |
-|---|---|---|---|
-| `rbg_gang_scheduling_duration_seconds` | Histogram | `scheduler` | 从 PodGroup 创建到 gang scheduling 完成的耗时 |
 
 ### 采集架构
 
@@ -556,7 +534,7 @@ controller 已支持：
 #### 集成测试
 
 - 使用 envtest 启动 controller 并抓取 `/metrics`。
-- 验证 RBG 创建和 status 更新后出现 alpha 指标。
+- 验证 RBG 创建和 status 更新后出现这些指标。
 - 验证 RBG 删除后 series 消失。
 - 验证 leader election：只有 leader 发布 workload 状态 gauge。
 - 使用具备 TokenReview / SubjectAccessReview 权限的 ServiceAccount 验证安全抓取。
@@ -574,16 +552,15 @@ controller 已支持：
 
 #### Alpha
 
-- 实现并注册 alpha 指标。
+- 实现并注册清单中的所有指标。
 - 按 KEP-284 alpha 毕业要求导出 KEP-284 Pod cache 指标。
+- reason label 使用 KEP-502 taxonomy，不使用原始错误字符串。
 - 单元和集成测试通过。
 - 文档化安全抓取权限。
 - 用户文档列出指标名称、label 和示例查询。
 
 #### Beta
 
-- 实现 controller 阶段、Warmup、RI phase、扩缩容和 gang 失败指标。
-- reason label 使用 KEP-502 taxonomy，不使用原始错误字符串。
 - 在代表性集群规模下测量基数和抓取延迟。
 - 测试升级和降级路径。
 - 文档化 SLO 示例和告警规则。
@@ -701,7 +678,7 @@ counter 和 histogram 在进程重启后从 0 开始。
 
 ###### 还缺哪些指标？
 
-per-role rollout 耗时和 gang scheduling 耗时有用，但为保持 alpha 集合小，推迟到 beta 或可选阶段。
+per-role rollout 耗时和 gang scheduling 耗时有用，但不在本 KEP 范围内。
 
 ### 依赖
 
@@ -762,7 +739,7 @@ Pod cache 指标依赖 KEP-284。
 - `number_of_roles` 是缓存 RBG 中的 role 总数（每个 role 三个 `state` 值）。
 - `number_of_rbg_progressing_series` 最多为每个具有当前进度 condition 的 RBG 一条。
 - `13 * number_of_RBGs_with_completed_rollouts` 对应 `rbg_rollout_duration_seconds{namespace,rbg}`：10 个 bucket 加 `+Inf`、`_sum`、`_count`，每个完成过至少一次 rollout 的 RBG 都会保留。
-- `fixed_series` 涵盖 `rbg_build_info`、Pod cache stub 读取，以及（beta 阶段的）controller 阶段 series，与对象数量无关。
+- `fixed_series` 涵盖 `rbg_build_info`、Pod cache stub 读取，以及 controller 阶段 series，与对象数量无关。
 
 ###### 启用该功能是否可能导致资源耗尽？
 
@@ -802,7 +779,7 @@ generation 检查失败时不再发出 `rbg_group_progressing_info`，减少误�
 1. 查看 `rbg_group_progressing_info` 的当前阻塞 reason。
 2. 查看 `rbg_role_replicas` 的 desired/ready/updated 差距。
 3. 查看 `rbg_rollout_duration_seconds` 的慢 rollout。
-4. beta 指标可用后，查看 controller 阶段耗时和失败。
+4. 查看 controller 阶段耗时和失败。
 5. 查看 `rbg_pod_cache_stub_reads_total` 的 cache 正确性违规。
 
 ## 实施历史

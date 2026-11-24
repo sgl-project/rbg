@@ -23,3 +23,10 @@ metrics:
   - rbg_pod_cache_objects
   - rbg_pod_cache_transform_total
   - rbg_pod_cache_initial_sync_seconds
+  - rbg_controller_stage_duration_seconds
+  - rbg_controller_stage_failures_total
+  - rbg_warmup_duration_seconds
+  - rbg_warmup_failures_total
+  - rbg_roleinstance_phase_duration_seconds
+  - rbg_scaling_adapter_scale_failures_total
+  - rbg_gang_podgroup_reconcile_failures_total
