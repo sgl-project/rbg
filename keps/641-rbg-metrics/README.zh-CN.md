@@ -13,6 +13,7 @@
   - [备注、约束与注意事项](#备注约束与注意事项)
   - [风险与缓解](#风险与缓解)
 - [设计细节](#设计细节)
+  - [指标清单](#指标清单)
   - [术语](#术语)
   - [指标命名与标签](#指标命名与标签)
   - [构建信息指标](#构建信息指标)
@@ -166,6 +167,31 @@ KEP-284 预期该 counter 保持为 0。
 | 重启后 rollout 耗时不准确 | 在内存中按对象 UID 和目标 revision 记录开始时间；没有开始时间则跳过样本 |
 
 ## 设计细节
+
+### 指标清单
+
+下表列出本 KEP 提议的所有指标。
+具体语义在后续章节分别定义。
+
+| 指标 | 阶段 | 类型 | Label | 用途 |
+|---|---|---|---|---|
+| `rbg_build_info` | Alpha | Gauge | `version`、`commit`、`go_version` | 标识 controller 构建版本 |
+| `rbg_role_replicas` | Alpha | Gauge | `namespace`、`rbg`、`role`、`state` | 跟踪每个 role 的 desired、ready、updated 副本 |
+| `rbg_group_progressing_info` | Alpha | Gauge | `namespace`、`rbg`、`status`、`reason` | 报告当前 group 进度或阻塞原因 |
+| `rbg_rollout_duration_seconds` | Alpha | Histogram | `namespace`、`rbg` | 测量 rollout 完成耗时 |
+| `rbg_pod_cache_stub_reads_total` | Alpha | Counter | `method` | 检测 Pod cache 非预期 stub 读取 |
+| `rbg_controller_stage_duration_seconds` | Beta | Histogram | `controller`、`stage` | 定位慢的 reconcile 阶段 |
+| `rbg_controller_stage_failures_total` | Beta | Counter | `controller`、`stage`、`reason_class` | 按 reconcile 阶段统计失败 |
+| `rbg_warmup_duration_seconds` | Beta | Histogram | `namespace`、`warmup` | 测量 Warmup 完成耗时 |
+| `rbg_warmup_failures_total` | Beta | Counter | `namespace`、`warmup`、`reason` | 按 reason 统计 Warmup 失败 |
+| `rbg_roleinstance_phase_duration_seconds` | Beta | Histogram | `phase` | 测量 RI 各 phase 停留时间 |
+| `rbg_scaling_adapter_scale_failures_total` | Beta | Counter | `namespace`、`adapter`、`reason_class` | 统计 scaling adapter 失败 |
+| `rbg_gang_podgroup_reconcile_failures_total` | Beta | Counter | `scheduler`、`reason_class` | 统计 PodGroup reconcile 失败 |
+| `rbg_pod_cache_scope` | 可选 | Gauge | `scope` | 报告 Pod cache 模式 |
+| `rbg_pod_cache_objects` | 可选 | Gauge | `form` | 统计缓存完整 Pod 和 stub 数量 |
+| `rbg_pod_cache_transform_total` | 可选 | Counter | `result` | 统计 Pod cache 转换决策 |
+| `rbg_pod_cache_initial_sync_seconds` | 可选 | Gauge | 无 | 报告 Pod informer 初始同步耗时 |
+| `rbg_gang_scheduling_duration_seconds` | 可选 | Histogram | `scheduler` | 测量 gang scheduling 完成耗时 |
 
 ### 术语
 

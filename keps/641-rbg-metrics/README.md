@@ -13,6 +13,7 @@ English | [简体中文](README.zh-CN.md)
   - [Notes/Constraints/Caveats](#notesconstraintscaveats)
   - [Risks and Mitigations](#risks-and-mitigations)
 - [Design Details](#design-details)
+  - [Metric Inventory](#metric-inventory)
   - [Terminology](#terminology)
   - [Metric Naming and Labels](#metric-naming-and-labels)
   - [Build Information Metric](#build-information-metric)
@@ -166,6 +167,31 @@ A non-zero value identifies a read path that received a stub when it should have
 | Rollout duration is inaccurate after restart | Track start time in memory keyed by object UID and target revision; skip samples with no start time |
 
 ## Design Details
+
+### Metric Inventory
+
+The following table lists all metrics proposed by this KEP.
+Detailed semantics are defined in the sections that follow.
+
+| Metric | Stage | Type | Labels | Purpose |
+|---|---|---|---|---|
+| `rbg_build_info` | Alpha | Gauge | `version`, `commit`, `go_version` | Identify the controller build |
+| `rbg_role_replicas` | Alpha | Gauge | `namespace`, `rbg`, `role`, `state` | Track desired, ready, and updated replicas per role |
+| `rbg_group_progressing_info` | Alpha | Gauge | `namespace`, `rbg`, `status`, `reason` | Report the current group progress or blocker |
+| `rbg_rollout_duration_seconds` | Alpha | Histogram | `namespace`, `rbg` | Measure rollout completion time |
+| `rbg_pod_cache_stub_reads_total` | Alpha | Counter | `method` | Detect unexpected stub reads from the Pod cache |
+| `rbg_controller_stage_duration_seconds` | Beta | Histogram | `controller`, `stage` | Locate slow reconcile stages |
+| `rbg_controller_stage_failures_total` | Beta | Counter | `controller`, `stage`, `reason_class` | Count failures by reconcile stage |
+| `rbg_warmup_duration_seconds` | Beta | Histogram | `namespace`, `warmup` | Measure Warmup completion time |
+| `rbg_warmup_failures_total` | Beta | Counter | `namespace`, `warmup`, `reason` | Count Warmup failures by reason |
+| `rbg_roleinstance_phase_duration_seconds` | Beta | Histogram | `phase` | Measure time spent in each RI phase |
+| `rbg_scaling_adapter_scale_failures_total` | Beta | Counter | `namespace`, `adapter`, `reason_class` | Count scaling adapter failures |
+| `rbg_gang_podgroup_reconcile_failures_total` | Beta | Counter | `scheduler`, `reason_class` | Count PodGroup reconcile failures |
+| `rbg_pod_cache_scope` | Optional | Gauge | `scope` | Report Pod cache mode |
+| `rbg_pod_cache_objects` | Optional | Gauge | `form` | Count cached whole Pods and stubs |
+| `rbg_pod_cache_transform_total` | Optional | Counter | `result` | Count Pod cache transform decisions |
+| `rbg_pod_cache_initial_sync_seconds` | Optional | Gauge | none | Report Pod informer initial sync duration |
+| `rbg_gang_scheduling_duration_seconds` | Optional | Histogram | `scheduler` | Measure gang scheduling completion time |
 
 ### Terminology
 
