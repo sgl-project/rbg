@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -44,6 +45,14 @@ var engineRuntimeLabelConvergence struct {
 
 	converged  bool
 	driftEpoch uint64
+}
+
+// engineRuntimeLabelStartupScanner converges the process-local gate on every
+// webhook replica, including replicas that never become leader and therefore
+// never run the profile controller.
+type engineRuntimeLabelStartupScanner struct {
+	reader     client.Reader
+	retryAfter time.Duration
 }
 
 // SetEngineRuntimeLabelConverged records whether the has-engine-runtimes
@@ -95,6 +104,68 @@ func MarkEngineRuntimeLabelDrift() {
 	defer engineRuntimeLabelConvergence.mu.Unlock()
 	engineRuntimeLabelConvergence.driftEpoch++
 	engineRuntimeLabelConvergence.converged = false
+}
+
+// Start scans until this replica observes a clean label state, then blocks
+// until the manager shuts down. Failed or mismatching scans retry instead of
+// failing the manager.
+func (s *engineRuntimeLabelStartupScanner) Start(ctx context.Context) error {
+	for {
+		epoch := BeginEngineRuntimeLabelScan()
+		converged, err := scanEngineRuntimeLabelState(ctx, s.reader)
+		if err == nil && converged {
+			CompleteEngineRuntimeLabelScan(epoch)
+			<-ctx.Done()
+			return nil
+		}
+
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(s.retryAfter):
+		}
+	}
+}
+
+// NeedLeaderElection reports that the scanner must run on every webhook
+// replica, not only on the leader.
+func (s *engineRuntimeLabelStartupScanner) NeedLeaderElection() bool {
+	return false
+}
+
+// scanEngineRuntimeLabelState reports whether every live RoleBasedGroup and
+// RoleBasedGroupSet carries the label state implied by its spec.
+func scanEngineRuntimeLabelState(ctx context.Context, reader client.Reader) (bool, error) {
+	rbgList := &RoleBasedGroupList{}
+	if err := reader.List(ctx, rbgList); err != nil {
+		return false, fmt.Errorf("list rolebasedgroups for engine runtime label convergence: %w", err)
+	}
+	for i := range rbgList.Items {
+		if !engineRuntimeLabelMatchesSpec(rbgList.Items[i].Labels, &rbgList.Items[i].Spec) {
+			return false, nil
+		}
+	}
+
+	rbgsList := &RoleBasedGroupSetList{}
+	if err := reader.List(ctx, rbgsList); err != nil {
+		return false, fmt.Errorf("list rolebasedgroupsets for engine runtime label convergence: %w", err)
+	}
+	for i := range rbgsList.Items {
+		if !engineRuntimeLabelMatchesSpec(rbgsList.Items[i].Labels, &rbgsList.Items[i].Spec.GroupTemplate.Spec) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// engineRuntimeLabelMatchesSpec reports whether an object's top-level label
+// state agrees with whether its roles reference any engine runtime profile.
+func engineRuntimeLabelMatchesSpec(labels map[string]string, spec *RoleBasedGroupSpec) bool {
+	if roleSpecReferencesEngineRuntime(spec) {
+		return labels[constants.HasEngineRuntimesLabelKey] == constants.HasEngineRuntimesLabelValue
+	}
+	_, present := labels[constants.HasEngineRuntimesLabelKey]
+	return !present
 }
 
 // EngineRuntimeProfileReference names one live referencing object of a

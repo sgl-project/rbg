@@ -974,9 +974,10 @@ to the unscoped lookup, so pre-label references still block writes; once a
 clean scan converges, the scoped lookup takes over. Objects written with the
 webhooks disabled (`--enable-webhooks=none`, a debugging mode) can drift from
 the label; that mode has no admission to protect anyway. With leader election
-enabled, non-leader replicas serve webhooks but never run the controller, so
-their convergence flag never flips and they keep the unscoped lookup — the
-pre-optimization behavior, correct and simply unoptimized. A set's group template counts as a reference even
+enabled, non-leader replicas serve webhooks but never run the controller.
+Each replica still runs its own startup scan through the uncached API reader
+and flips its local convergence gate once it observes a clean label state, so
+every webhook replica eventually takes the scoped lookup. A set's group template counts as a reference even
 at zero replicas, no child RBG required. The rejection names the referencing
 objects and points to the new-profile workflow. The webhook deploys with the
 controller image, mirroring the RoleBasedGroup webhook's deployment shape, and

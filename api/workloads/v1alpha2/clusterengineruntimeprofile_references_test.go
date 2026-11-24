@@ -17,13 +17,21 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 func TestEngineRuntimeLabelConvergenceDriftEpoch(t *testing.T) {
 	SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { SetEngineRuntimeLabelConverged(false) })
 
 	epoch := BeginEngineRuntimeLabelScan()
 	MarkEngineRuntimeLabelDrift()
@@ -35,4 +43,55 @@ func TestEngineRuntimeLabelConvergenceDriftEpoch(t *testing.T) {
 	CompleteEngineRuntimeLabelScan(epoch)
 	assert.True(t, EngineRuntimeLabelConverged(),
 		"a scan with no intervening drift may converge")
+}
+
+func TestEngineRuntimeLabelStartupScanner(t *testing.T) {
+	SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { SetEngineRuntimeLabelConverged(false) })
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, AddToScheme(scheme))
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(
+		rbgReferencing("grp", "ns-a", "ik"),
+		rbgsReferencing("set", "ns-a", "ik", 0),
+	).Build()
+	scanner := &engineRuntimeLabelStartupScanner{
+		reader:     reader,
+		retryAfter: time.Millisecond,
+	}
+	assert.False(t, scanner.NeedLeaderElection(),
+		"the scanner must run on non-leader webhook replicas")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- scanner.Start(ctx) }()
+
+	require.Eventually(t, func() bool {
+		return EngineRuntimeLabelConverged()
+	}, time.Second, 5*time.Millisecond, "a clean startup scan should converge this replica")
+
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("scanner did not stop after the manager context was canceled")
+	}
+}
+
+func TestEngineRuntimeLabelStartupScannerDoesNotConvergePreLabelObjects(t *testing.T) {
+	SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { SetEngineRuntimeLabelConverged(false) })
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, AddToScheme(scheme))
+	unlabeled := rbgReferencing("grp-old", "ns-old", "ik")
+	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(unlabeled).Build()
+
+	converged, err := scanEngineRuntimeLabelState(context.Background(), reader)
+	require.NoError(t, err)
+	assert.False(t, converged,
+		"a referencing object written before the label shipped must keep the startup scan unconverged")
 }
