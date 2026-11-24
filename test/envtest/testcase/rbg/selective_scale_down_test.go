@@ -552,15 +552,17 @@ var _ = Describe("Stateful selective scale-down", func() {
 						return err
 					}
 				}
-				// Preserve lifecycle/update readiness gate conditions the controllers write.
-				conditions := pod.Status.Conditions
-				testutil.SetPodRunningAndReady(pod)
-				for _, condition := range conditions {
-					if condition.Type != corev1.PodReady && condition.Type != corev1.ContainersReady {
-						pod.Status.Conditions = append(pod.Status.Conditions, condition)
+				// SetPodRunningAndReady upserts the kubelet conditions and
+				// preserves lifecycle/update readiness gate conditions the
+				// controllers write; the conflict-safe write rereads the Pod
+				// on every retry instead of reusing the List's version.
+				if err := testutil.UpdatePodStatusOnConflict(testutil.Ctx, pod, func(pod *corev1.Pod) bool {
+					if testutil.ShouldSkipPodStatusUpdate(pod) {
+						return true
 					}
-				}
-				if err := testutil.K8sClient.Status().Update(testutil.Ctx, pod); err != nil {
+					testutil.SetPodRunningAndReady(pod)
+					return false
+				}); err != nil {
 					return err
 				}
 			}
@@ -592,7 +594,11 @@ var _ = Describe("Stateful selective scale-down", func() {
 			}
 			return current.Spec.UpdateStrategy.Paused
 		}, timeout, interval).Should(BeTrue())
-		Expect(markPodsReady()).To(Succeed())
+		// The rollout can still replace or concurrently update Pods while
+		// paused. Retry so the fixture re-lists and re-targets rebuilt Pods.
+		Eventually(func() error {
+			return markPodsReady()
+		}, timeout, interval).Should(Succeed())
 		Consistently(func() types.UID { return instances(group.Name)[setKey.Name+"-4"] }, time.Second, interval).Should(Equal(original[setKey.Name+"-4"]))
 		Expect(instances(group.Name)).To(HaveKey(setKey.Name + "-6"))
 		Expect(instances(group.Name)).NotTo(HaveKey(setKey.Name + "-5"))
