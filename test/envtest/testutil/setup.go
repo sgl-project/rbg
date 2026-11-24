@@ -238,7 +238,10 @@ func SetupInstanceController(mgr manager.Manager, bindings *instancesync.NodeBin
 
 // SetupInstanceSetController sets up the InstanceSet controller
 func SetupInstanceSetController(mgr manager.Manager) error {
-	instanceSetReconciler := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
+	instanceSetReconciler, err := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
+	if err != nil {
+		return err
+	}
 	return instanceSetReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
