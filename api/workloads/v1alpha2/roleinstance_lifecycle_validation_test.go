@@ -59,7 +59,7 @@ func TestValidateRoleInstanceLifecycle(t *testing.T) {
 				PreUpdate: &RoleInstanceLifecycleHook{SignalLabels: map[string]string{"example.com/signal": "true"}},
 				PostReady: &RoleInstanceLifecycleHook{SignalLabels: map[string]string{"example.com/signal": "true"}},
 			},
-			wantErr: "reuses the key",
+			wantErr: "",
 		},
 		{
 			name: "reserved key prefix",

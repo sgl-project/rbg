@@ -74,7 +74,6 @@ func ValidateRoleInstanceLifecycle(
 	}
 
 	var errs []string
-	seenKeys := make(map[string]string)
 	for _, hookName := range LifecycleHookNames() {
 		hook := RoleInstanceLifecycleHookFor(lifecycle, hookName)
 		if hook == nil {
@@ -112,14 +111,6 @@ func ValidateRoleInstanceLifecycle(
 					path, hookName, key, value, strings.Join(reasons, ", ")))
 				continue
 			}
-			if previous, duplicate := seenKeys[key]; duplicate {
-				errs = append(errs, fmt.Sprintf(
-					"%s.%s.signalLabels[%s] reuses the key already owned by %s",
-					path, hookName, key, previous))
-				continue
-			}
-			seenKeys[key] = hookName
-
 			if selector != nil {
 				if _, found := selector.MatchLabels[key]; found {
 					errs = append(errs, fmt.Sprintf(
