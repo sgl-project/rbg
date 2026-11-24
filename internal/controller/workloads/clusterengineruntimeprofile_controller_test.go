@@ -18,6 +18,8 @@ package workloads
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -29,6 +31,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -266,4 +269,90 @@ func TestClusterEngineRuntimeProfileLabelBackfill(t *testing.T) {
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-stale"}, got))
 	assert.NotContains(t, got.Labels, constants.HasEngineRuntimesLabelKey,
 		"a stale label on an object that no longer references any profile must be removed")
+}
+
+func TestClusterEngineRuntimeProfileDriftWarningSurvivesBackfillFailure(t *testing.T) {
+	ctx := context.Background()
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	profile := cerpFor("ik")
+	profile.Generation = 2
+	profile.Status = workloadsv1alpha2.ClusterEngineRuntimeProfileStatus{
+		ReferenceCount:       1,
+		ReferencedGeneration: 1,
+		Conditions: []metav1.Condition{{
+			Type: workloadsv1alpha2.FrozenConditionType, Status: metav1.ConditionTrue,
+			Reason: workloadsv1alpha2.ReasonReferenced, ObservedGeneration: 1,
+			LastTransitionTime: metav1.Now(),
+		}},
+	}
+	unlabeled := controllerRBG("grp-old", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	failures := 1
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.ClusterEngineRuntimeProfile{}).
+		WithObjects(profile, unlabeled).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*workloadsv1alpha2.RoleBasedGroup); ok && failures > 0 {
+					failures--
+					return errors.New("failed calling webhook: no endpoints available")
+				}
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	warnings := 0
+	for i := 1; i <= 3; i++ {
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "ik"}})
+		if i == 1 {
+			require.Error(t, err, "the failed backfill still returns an error for retry")
+		} else {
+			require.NoError(t, err)
+		}
+		for _, event := range drainControllerEvents(recorder) {
+			if strings.Contains(event, ReasonEngineRuntimeProfileMutatedWhileReferenced) {
+				warnings++
+			}
+		}
+	}
+	assert.Equal(t, 1, warnings,
+		"the drift warning must survive a failed label backfill")
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillContinuesAfterPatchFailure(t *testing.T) {
+	ctx := context.Background()
+	bad := controllerRBG("grp-bad", "ns-a", "ik")
+	good := controllerRBG("grp-good", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(bad, good).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				if obj.GetName() == "grp-bad" {
+					return errors.New("webhook rejected the patch")
+				}
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: record.NewFakeRecorder(32)}
+
+	err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "grp-bad")
+
+	got := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-good"}, got))
+	assert.Equal(t, constants.HasEngineRuntimesLabelValue, got.Labels[constants.HasEngineRuntimesLabelKey],
+		"a patch failure on one object must not stop the rest of the backfill scan")
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"convergence must wait until every mismatching object is patched")
 }

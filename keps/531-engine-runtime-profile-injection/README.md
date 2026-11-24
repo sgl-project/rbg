@@ -975,9 +975,10 @@ clean scan converges, the scoped lookup takes over. Objects written with the
 webhooks disabled (`--enable-webhooks=none`, a debugging mode) can drift from
 the label; that mode has no admission to protect anyway. With leader election
 enabled, non-leader replicas serve webhooks but never run the controller.
-Each replica still runs its own startup scan through the uncached API reader
-and flips its local convergence gate once it observes a clean label state, so
-every webhook replica eventually takes the scoped lookup. A set's group template counts as a reference even
+Each replica still runs its own read-only startup scan through the manager's
+cache and flips its local convergence gate once it observes a clean label
+state, so every webhook replica eventually takes the scoped lookup. A set's
+group template counts as a reference even
 at zero replicas, no child RBG required. The rejection names the referencing
 objects and points to the new-profile workflow. The webhook deploys with the
 controller image, mirroring the RoleBasedGroup webhook's deployment shape, and
@@ -1547,6 +1548,15 @@ controller's startup reconcile; adoption, per workload (`component` or
 them. Until the new controller serves that entry, its `failurePolicy: Fail`
 means CERP updates and deletes are rejected rather than slipping past
 unvalidated — retry them once the upgrade has completed.
+
+**The label backfill is one deliberate upgrade-time write.** A pre-existing
+referencing object gets the `has-engine-runtimes` label on the profile
+controller's first reconcile. That merge patch still traverses the mutating
+webhook, so a top-level RoleBasedGroup stored by v0.7.0 or v0.8.0 with an
+empty or `Recreate` `rollingUpdate.type` is normalized to the current enum as
+part of the same write. The one-time normalization can bump
+`metadata.generation` and the revision/role hash; set children already receive
+the equivalent strategy heal from the set controller.
 
 **Rollback.** `helm rollback` restores the previous controller and webhook
 configuration but keeps the new CRDs, because the CRD upgrader runs only on

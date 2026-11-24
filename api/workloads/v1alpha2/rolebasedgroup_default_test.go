@@ -340,6 +340,21 @@ func TestRoleBasedGroupDefaulter_EngineRuntimeLabel(t *testing.T) {
 		stamp(rbg)
 		assert.NotContains(t, rbg.Labels, constants.HasEngineRuntimesLabelKey)
 	})
+
+	t.Run("a legacy referencing role gets the label and the strategy heal", func(t *testing.T) {
+		rbg := &RoleBasedGroup{Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+			Name:           "worker",
+			EngineRuntimes: []EngineRuntime{{ProfileName: "ik"}},
+			RolloutStrategy: &RolloutStrategy{
+				Type:          RollingUpdateStrategyType,
+				RollingUpdate: &RollingUpdate{},
+			},
+		}}}}
+		stamp(rbg)
+		assert.Equal(t, constants.HasEngineRuntimesLabelValue, rbg.Labels[constants.HasEngineRuntimesLabelKey])
+		assert.Equal(t, InPlaceIfPossibleUpdateStrategyType,
+			rbg.Spec.Roles[0].RolloutStrategy.RollingUpdate.Type)
+	})
 }
 
 // TestRoleBasedGroupSetDefaulter_EngineRuntimeLabel pins the set-side label

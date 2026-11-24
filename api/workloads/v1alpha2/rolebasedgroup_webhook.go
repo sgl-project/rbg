@@ -67,7 +67,7 @@ func (r *CoordinatedPolicy) SetupWebhookWithManager(mgr ctrl.Manager, perRoleGan
 
 func (r *ClusterEngineRuntimeProfile) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	scanner := &engineRuntimeLabelStartupScanner{
-		reader:     mgr.GetAPIReader(),
+		reader:     mgr.GetCache(),
 		retryAfter: 30 * time.Second,
 	}
 	if err := mgr.Add(scanner); err != nil {

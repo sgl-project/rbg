@@ -49,7 +49,8 @@ var engineRuntimeLabelConvergence struct {
 
 // engineRuntimeLabelStartupScanner converges the process-local gate on every
 // webhook replica, including replicas that never become leader and therefore
-// never run the profile controller.
+// never run the profile controller. It reads through the manager's shared
+// cache and never writes.
 type engineRuntimeLabelStartupScanner struct {
 	reader     client.Reader
 	retryAfter time.Duration
@@ -111,6 +112,16 @@ func MarkEngineRuntimeLabelDrift() {
 // failing the manager.
 func (s *engineRuntimeLabelStartupScanner) Start(ctx context.Context) error {
 	for {
+		if syncer, ok := s.reader.(interface {
+			WaitForCacheSync(context.Context) bool
+		}); ok && !syncer.WaitForCacheSync(ctx) {
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-time.After(s.retryAfter):
+			}
+			continue
+		}
 		epoch := BeginEngineRuntimeLabelScan()
 		converged, err := scanEngineRuntimeLabelState(ctx, s.reader)
 		if err == nil && converged {

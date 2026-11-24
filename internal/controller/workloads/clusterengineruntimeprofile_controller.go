@@ -19,11 +19,12 @@ package workloads
 import (
 	"context"
 	"fmt"
-	"reflect"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
@@ -160,19 +161,19 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 		}
 	}
 
-	// Backfill after the status write: a failed label patch must not block
-	// status tracking, but it does return an error so the reconcile retries
-	// and the admission webhook keeps its unscoped fallback until the scan
-	// has completed cleanly.
-	if err := r.backfillHasEngineRuntimesLabels(ctx); err != nil {
-		return ctrl.Result{}, err
-	}
-
 	if mutatedWhileReferenced {
 		r.Recorder.Event(profile, corev1.EventTypeWarning, ReasonEngineRuntimeProfileMutatedWhileReferenced,
 			fmt.Sprintf(
 				"the spec of referenced engine runtime profile %q changed since the baseline was recorded (generation %d, baseline %d) — a write the webhook did not block or a legal edit in a zero-reference window never observed; check the validating webhook configuration; renders read the drifted spec live",
 				profile.Name, profile.Generation, desired.ReferencedGeneration))
+	}
+
+	// Backfill after the status write and after the warning: a failed label
+	// patch must not block status tracking or lose the one-shot bypass event.
+	// It still returns an error so the reconcile retries and the admission
+	// webhook keeps its unscoped fallback until the scan has completed cleanly.
+	if err := r.backfillHasEngineRuntimesLabels(ctx); err != nil {
+		return ctrl.Result{}, err
 	}
 
 	return ctrl.Result{}, nil
@@ -185,7 +186,7 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 // only objects whose label state disagrees with their spec are patched, so
 // steady state costs one cached List and no writes. Label-only patches do
 // not change metadata.generation, so they do not re-trigger this
-// controller's watches.
+// controller's watches; a mismatching object is patched only once.
 func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(ctx context.Context) error {
 	if workloadsv1alpha2.EngineRuntimeLabelConverged() {
 		// Every admitted write maintains the label, so a converged process
@@ -195,19 +196,22 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(
 		return nil
 	}
 	epoch := workloadsv1alpha2.BeginEngineRuntimeLabelScan()
+	var allErrs []error
 	rbgList := &workloadsv1alpha2.RoleBasedGroupList{}
 	if err := r.List(ctx, rbgList); err != nil {
 		return fmt.Errorf("listing rolebasedgroups for engine runtime label backfill: %w", err)
 	}
 	for i := range rbgList.Items {
 		rbg := &rbgList.Items[i]
-		desired := rbg.DeepCopy()
-		workloadsv1alpha2.SetHasEngineRuntimesLabel(desired)
-		if reflect.DeepEqual(rbg.Labels, desired.Labels) {
+		if engineRuntimeLabelMatches(rbg.Labels, roleSpecHasEngineRuntimes(&rbg.Spec)) {
 			continue
 		}
-		if err := r.Patch(ctx, desired, client.MergeFrom(rbg)); err != nil {
-			return fmt.Errorf("backfilling engine runtime label on rolebasedgroup %s/%s: %w", rbg.Namespace, rbg.Name, err)
+		base := rbg.DeepCopy()
+		workloadsv1alpha2.SetHasEngineRuntimesLabel(rbg)
+		if err := r.Patch(ctx, rbg, client.MergeFrom(base)); err != nil {
+			if !apierrors.IsNotFound(err) {
+				allErrs = append(allErrs, fmt.Errorf("backfilling engine runtime label on rolebasedgroup %s/%s: %w", rbg.Namespace, rbg.Name, err))
+			}
 		}
 	}
 
@@ -217,19 +221,32 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(
 	}
 	for i := range rbgsList.Items {
 		rbgs := &rbgsList.Items[i]
-		desired := rbgs.DeepCopy()
-		workloadsv1alpha2.SetRoleBasedGroupSetHasEngineRuntimesLabel(desired)
-		if reflect.DeepEqual(rbgs.Labels, desired.Labels) {
+		if engineRuntimeLabelMatches(rbgs.Labels, roleSpecHasEngineRuntimes(&rbgs.Spec.GroupTemplate.Spec)) {
 			continue
 		}
-		if err := r.Patch(ctx, desired, client.MergeFrom(rbgs)); err != nil {
-			return fmt.Errorf("backfilling engine runtime label on rolebasedgroupset %s/%s: %w", rbgs.Namespace, rbgs.Name, err)
+		base := rbgs.DeepCopy()
+		workloadsv1alpha2.SetRoleBasedGroupSetHasEngineRuntimesLabel(rbgs)
+		if err := r.Patch(ctx, rbgs, client.MergeFrom(base)); err != nil {
+			if !apierrors.IsNotFound(err) {
+				allErrs = append(allErrs, fmt.Errorf("backfilling engine runtime label on rolebasedgroupset %s/%s: %w", rbgs.Namespace, rbgs.Name, err))
+			}
 		}
+	}
+	if len(allErrs) > 0 {
+		return utilerrors.NewAggregate(allErrs)
 	}
 	// A clean full scan with no writes and no concurrent drift: the scoped
 	// admission lookup can take over from the unscoped fallback.
 	workloadsv1alpha2.CompleteEngineRuntimeLabelScan(epoch)
 	return nil
+}
+
+func engineRuntimeLabelMatches(labels map[string]string, references bool) bool {
+	if references {
+		return labels[constants.HasEngineRuntimesLabelKey] == constants.HasEngineRuntimesLabelValue
+	}
+	_, present := labels[constants.HasEngineRuntimesLabelKey]
+	return !present
 }
 
 // SetupWithManager registers the controller. The CERP watch carries the
