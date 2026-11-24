@@ -17,19 +17,31 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"bufio"
+	"context"
+	"crypto/tls"
 	"fmt"
+	"io"
+	"net/http"
 	"os"
+	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
+	authenticationv1 "k8s.io/api/authentication/v1"
+	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	apiextv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/config"
 
@@ -200,6 +212,38 @@ func RunRBACAndWebhookBootstrapTestCases(f *framework.Framework) {
 					}
 				},
 			)
+
+			ginkgo.It(
+				"should authorize metrics with a ServiceAccount token", ginkgo.Label("metrics"), func() {
+					ctx, cancel := context.WithTimeout(f.Ctx, bootstrapTimeout)
+					defer cancel()
+
+					allowedToken, cleanupAllowed, err := createMetricsServiceAccount(ctx, f, ns, true)
+					gomega.Expect(err).ShouldNot(gomega.HaveOccurred(), "create metrics reader ServiceAccount")
+					ginkgo.DeferCleanup(cleanupAllowed)
+
+					deniedToken, cleanupDenied, err := createMetricsServiceAccount(ctx, f, ns, false)
+					gomega.Expect(err).ShouldNot(gomega.HaveOccurred(), "create metrics denied ServiceAccount")
+					ginkgo.DeferCleanup(cleanupDenied)
+
+					metricsEndpoint, stopPortForward, err := startMetricsPortForward(ctx, ns)
+					gomega.Expect(err).ShouldNot(gomega.HaveOccurred(), "port-forward controller metrics")
+					ginkgo.DeferCleanup(stopPortForward)
+
+					status, body, err := requestMetrics(ctx, metricsEndpoint, "")
+					gomega.Expect(err).ShouldNot(gomega.HaveOccurred(), "request metrics without credentials")
+					gomega.Expect(status).Should(gomega.Equal(http.StatusUnauthorized), "body: %s", body)
+
+					status, body, err = requestMetrics(ctx, metricsEndpoint, deniedToken)
+					gomega.Expect(err).ShouldNot(gomega.HaveOccurred(), "request metrics with unauthorized ServiceAccount")
+					gomega.Expect(status).Should(gomega.Equal(http.StatusForbidden), "body: %s", body)
+
+					status, body, err = requestMetrics(ctx, metricsEndpoint, allowedToken)
+					gomega.Expect(err).ShouldNot(gomega.HaveOccurred(), "request metrics with authorized ServiceAccount")
+					gomega.Expect(status).Should(gomega.Equal(http.StatusOK), "body: %s", body)
+					gomega.Expect(body).Should(gomega.ContainSubstring("# HELP"))
+				},
+			)
 		},
 	)
 }
@@ -252,6 +296,196 @@ func secretRuleViolations(role *rbacv1.Role, secretName string) []string {
 		}
 	}
 	return violations
+}
+
+func createMetricsServiceAccount(
+	ctx context.Context, f *framework.Framework, namespace string, allowMetrics bool,
+) (string, func(), error) {
+	sa, err := f.Clientset.CoreV1().ServiceAccounts(namespace).Create(ctx, &corev1.ServiceAccount{
+		ObjectMeta: metav1.ObjectMeta{GenerateName: "metrics-reader-"},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		return "", func() {}, err
+	}
+
+	roleName := ""
+	bindingName := ""
+	cleanup := func() {
+		deleteCtx, cancel := context.WithTimeout(context.Background(), bootstrapTimeout)
+		defer cancel()
+
+		if bindingName != "" {
+			_ = f.Clientset.RbacV1().ClusterRoleBindings().Delete(deleteCtx, bindingName, metav1.DeleteOptions{})
+		}
+		if roleName != "" {
+			_ = f.Clientset.RbacV1().ClusterRoles().Delete(deleteCtx, roleName, metav1.DeleteOptions{})
+		}
+		_ = f.Clientset.CoreV1().ServiceAccounts(namespace).Delete(deleteCtx, sa.Name, metav1.DeleteOptions{})
+	}
+
+	if allowMetrics {
+		role, err := f.Clientset.RbacV1().ClusterRoles().Create(ctx, &rbacv1.ClusterRole{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "metrics-reader-"},
+			Rules: []rbacv1.PolicyRule{{
+				Verbs:           []string{"get"},
+				NonResourceURLs: []string{"/metrics"},
+			}},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+		roleName = role.Name
+
+		binding, err := f.Clientset.RbacV1().ClusterRoleBindings().Create(ctx, &rbacv1.ClusterRoleBinding{
+			ObjectMeta: metav1.ObjectMeta{GenerateName: "metrics-reader-"},
+			RoleRef: rbacv1.RoleRef{
+				APIGroup: rbacv1.GroupName,
+				Kind:     "ClusterRole",
+				Name:     role.Name,
+			},
+			Subjects: []rbacv1.Subject{{
+				Kind:      rbacv1.ServiceAccountKind,
+				Name:      sa.Name,
+				Namespace: namespace,
+			}},
+		}, metav1.CreateOptions{})
+		if err != nil {
+			cleanup()
+			return "", func() {}, err
+		}
+		bindingName = binding.Name
+	}
+
+	tokenRequest, err := f.Clientset.CoreV1().ServiceAccounts(namespace).CreateToken(ctx, sa.Name, &authenticationv1.TokenRequest{
+		Spec: authenticationv1.TokenRequestSpec{ExpirationSeconds: ptr.To(int64(600))},
+	}, metav1.CreateOptions{})
+	if err != nil {
+		cleanup()
+		return "", func() {}, err
+	}
+	if tokenRequest.Status.Token == "" {
+		cleanup()
+		return "", func() {}, fmt.Errorf("TokenRequest for ServiceAccount %s/%s returned an empty token", namespace, sa.Name)
+	}
+
+	return tokenRequest.Status.Token, cleanup, nil
+}
+
+func startMetricsPortForward(ctx context.Context, namespace string) (string, func(), error) {
+	clientset, err := kubernetes.NewForConfig(config.GetConfigOrDie())
+	if err != nil {
+		return "", func() {}, err
+	}
+
+	pods, err := clientset.CoreV1().Pods(namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "control-plane=rbgs-controller",
+	})
+	if err != nil {
+		return "", func() {}, err
+	}
+	var pod *corev1.Pod
+	for i := range pods.Items {
+		if pods.Items[i].Status.Phase == corev1.PodRunning {
+			pod = &pods.Items[i]
+			break
+		}
+	}
+	if pod == nil {
+		return "", func() {}, fmt.Errorf("no running controller pod found in namespace %s", namespace)
+	}
+
+	if _, err := exec.LookPath("kubectl"); err != nil {
+		return "", func() {}, fmt.Errorf("kubectl is required for metrics port-forward: %w", err)
+	}
+	command := exec.CommandContext(ctx, "kubectl", "--namespace", namespace, "port-forward",
+		"pod/"+pod.Name, "--address", "127.0.0.1", ":8443")
+	command.Stderr = io.Discard
+	stdout, err := command.StdoutPipe()
+	if err != nil {
+		return "", func() {}, err
+	}
+	if err := command.Start(); err != nil {
+		return "", func() {}, err
+	}
+
+	processDone := make(chan error, 1)
+	go func() {
+		processDone <- command.Wait()
+	}()
+
+	forwardedPort := make(chan int, 1)
+	scanDone := make(chan error, 1)
+	go func() {
+		scanner := bufio.NewScanner(stdout)
+		for scanner.Scan() {
+			line := scanner.Text()
+			prefix := "Forwarding from 127.0.0.1:"
+			if !strings.HasPrefix(line, prefix) {
+				continue
+			}
+			portText, _, ok := strings.Cut(strings.TrimPrefix(line, prefix), " -> ")
+			if !ok {
+				continue
+			}
+			port, err := strconv.Atoi(portText)
+			if err != nil {
+				continue
+			}
+			forwardedPort <- port
+		}
+		scanDone <- scanner.Err()
+	}()
+
+	var stopOnce sync.Once
+	stop := func() {
+		stopOnce.Do(func() {
+			if command.Process != nil {
+				_ = command.Process.Kill()
+			}
+			select {
+			case <-processDone:
+			case <-time.After(bootstrapInterval):
+			}
+		})
+	}
+
+	select {
+	case port := <-forwardedPort:
+		return fmt.Sprintf("https://127.0.0.1:%d/metrics", port), stop, nil
+	case err := <-processDone:
+		return "", func() {}, fmt.Errorf("start port-forward: %w", err)
+	case err := <-scanDone:
+		if err != nil {
+			return "", func() {}, fmt.Errorf("read port-forward output: %w", err)
+		}
+		return "", func() {}, fmt.Errorf("port-forward output closed before becoming ready")
+	case <-ctx.Done():
+		stop()
+		return "", func() {}, ctx.Err()
+	}
+}
+
+func requestMetrics(ctx context.Context, endpoint, token string) (int, string, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return 0, "", err
+	}
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	}}
+	response, err := client.Do(request)
+	if err != nil {
+		return 0, "", err
+	}
+	defer func() { _ = response.Body.Close() }()
+
+	body, err := io.ReadAll(response.Body)
+	return response.StatusCode, string(body), err
 }
 
 // newCRDClient builds a read client that understands CustomResourceDefinition, which the
