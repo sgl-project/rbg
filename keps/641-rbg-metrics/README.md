@@ -20,7 +20,7 @@ English | [简体中文](README.zh-CN.md)
   - [Workload Capacity Metrics](#workload-capacity-metrics)
   - [Group Progress Metric](#group-progress-metric)
   - [Rollout Duration Metric](#rollout-duration-metric)
-  - [Pod Cache Correctness Metric](#pod-cache-correctness-metric)
+  - [Pod Cache Metrics (KEP-284)](#pod-cache-metrics-kep-284)
   - [Controller Stage Metrics](#controller-stage-metrics)
   - [Feature Metrics](#feature-metrics)
   - [Optional Metrics](#optional-metrics)
@@ -113,8 +113,9 @@ The implementation is staged:
 | Stage | Metrics | Purpose |
 |---|---|---|
 | Alpha | `rbg_build_info`, `rbg_role_replicas`, `rbg_group_progressing_info`, `rbg_rollout_duration_seconds`, `rbg_pod_cache_stub_reads_total` | Capacity, progress, rollout SLO, cache correctness |
+| Alpha (KEP-284) | Pod cache scope/objects/transform/initial sync | Defined by KEP-284; required for its alpha |
 | Beta | Controller stage duration/failures, Warmup duration/failures, RoleInstance phase duration, scaling failures, gang PodGroup failures | Locate slow or failing controller paths |
-| Optional | Pod cache scope/objects/transform/initial sync, gang scheduling duration | Feature-specific tuning and validation |
+| Optional | Gang scheduling duration | Feature-specific tuning and validation |
 
 State gauges are collected from the informer cache at scrape time.
 Counters and histograms are recorded when the corresponding event occurs.
@@ -129,7 +130,7 @@ The operator queries:
 
 ```promql
 rbg_role_replicas{role="decode", state="desired"} > 0
-  and
+  and on(namespace, rbg, role)
 rbg_role_replicas{role="decode", state="ready"} == 0
 ```
 
@@ -161,7 +162,7 @@ A non-zero value identifies a read path that received a stub when it should have
 | Risk | Mitigation |
 |---|---|
 | Label cardinality grows with objects and roles | Use only `namespace`, `rbg`, `role`, and bounded enum labels; collect state from current cache objects so deleted objects stop emitting series |
-| Stale status produces misleading progress | Export `rbg_group_progressing_info` only when group and condition `observedGeneration` match `metadata.generation`; withdraw stale series |
+| Stale status produces misleading progress | Export `rbg_group_progressing_info` only when group and condition `observedGeneration` match `metadata.generation`; stale series stop being emitted at the next scrape |
 | Secure scraping fails because Prometheus lacks RBAC | Document and test TokenReview / SubjectAccessReview permissions for the scraping ServiceAccount |
 | Metric collection adds scrape latency | Read from informer cache, avoid per-Pod series, and bound histogram buckets |
 | Rollout duration is inaccurate after restart | Track start time in memory keyed by object UID and target revision; skip samples with no start time |
@@ -187,10 +188,10 @@ Detailed semantics are defined in the sections that follow.
 | `rbg_roleinstance_phase_duration_seconds` | Beta | Histogram | `phase` | Measure time spent in each RI phase |
 | `rbg_scaling_adapter_scale_failures_total` | Beta | Counter | `namespace`, `adapter`, `reason_class` | Count scaling adapter failures |
 | `rbg_gang_podgroup_reconcile_failures_total` | Beta | Counter | `scheduler`, `reason_class` | Count PodGroup reconcile failures |
-| `rbg_pod_cache_scope` | Optional | Gauge | `scope` | Report Pod cache mode |
-| `rbg_pod_cache_objects` | Optional | Gauge | `form` | Count cached whole Pods and stubs |
-| `rbg_pod_cache_transform_total` | Optional | Counter | `result` | Count Pod cache transform decisions |
-| `rbg_pod_cache_initial_sync_seconds` | Optional | Gauge | none | Report Pod informer initial sync duration |
+| `rbg_pod_cache_scope` | Alpha (KEP-284) | Gauge | `scope` | Report Pod cache mode |
+| `rbg_pod_cache_objects` | Alpha (KEP-284) | Gauge | `form` | Count cached whole Pods and stubs |
+| `rbg_pod_cache_transform_total` | Alpha (KEP-284) | Counter | `result` | Count Pod cache transform decisions |
+| `rbg_pod_cache_initial_sync_seconds` | Alpha (KEP-284) | Gauge | none | Report Pod informer initial sync duration |
 | `rbg_gang_scheduling_duration_seconds` | Optional | Histogram | `scheduler` | Measure gang scheduling completion time |
 
 ### Terminology
@@ -232,13 +233,18 @@ Allowed labels:
 | `role` | Role name inside an RBG | Bounded by roles per RBG |
 | `state` | Replica state: `desired`, `ready`, `updated` | Fixed enum |
 | `status` | Condition status: `True`, `False`, `Unknown` | Fixed enum |
-| `reason` | KEP-502 progress reason, or `Other` | Bounded enum |
+| `reason` | Bounded reason: a KEP-502 progress reason (or `Other`) for progress metrics, or a feature-specific bounded reason for feature metrics such as Warmup | Bounded enum |
 | `controller` | Controller name | Fixed enum |
 | `stage` | Reconcile stage name | Fixed enum |
-| `reason_class` | Classified failure family | Bounded enum |
+| `reason_class` | Classified operation-failure family from the KEP-502 taxonomy | Bounded enum |
 | `phase` | RI lifecycle phase | Fixed enum |
 | `scheduler` | Gang scheduler backend | Fixed enum |
 | `method` | Pod cache read path | Bounded enum |
+| `warmup` | Warmup object name | Bounded by Warmup objects |
+| `adapter` | Scaling adapter name | Bounded by adapter objects |
+| `scope` | Pod cache mode: `all`, `filtered` | Fixed enum |
+| `form` | Cached Pod form: `whole`, `stub` | Fixed enum |
+| `result` | Transform decision: `whole`, `stub` | Fixed enum |
 | `version`, `commit`, `go_version` | Build information | One series per build |
 
 Do not use Pod names, node names, revision hashes, generation values, condition messages, or raw error strings as labels.
@@ -301,8 +307,8 @@ Example:
 
 ```promql
 rbg_role_replicas{state="ready"}
-  /
-rbg_role_replicas{state="desired"}
+  / ignoring(state)
+(rbg_role_replicas{state="desired"} > 0)
 ```
 
 ### Group Progress Metric
@@ -321,7 +327,7 @@ Semantics:
 - Use the condition's `status` and controller-selected `reason`.
 - Map unfamiliar reasons to `Other`.
 - Export `Unknown/ObservationIncomplete` as reported.
-- Withdraw the previous series when the condition changes, disappears, or becomes stale.
+- The previous series is no longer emitted at the next scrape when the condition changes, disappears, or becomes stale.
 
 The reason values follow the KEP-502 taxonomy, including `Converged`, `Paused`, `WaitingForQuota`, `WaitingForResources`, `WaitingForGang`, and `WaitingForDependencies`.
 
@@ -364,7 +370,11 @@ histogram_quantile(
 )
 ```
 
-### Pod Cache Correctness Metric
+### Pod Cache Metrics (KEP-284)
+
+These metrics are defined by [KEP-284](../284-pod-cache-filter/README.md).
+KEP-284 retains definition ownership; this KEP implements them.
+All five are required for KEP-284's alpha graduation, so they ship with KEP-284 alpha rather than being optional here.
 
 ```text
 rbg_pod_cache_stub_reads_total{method}
@@ -372,7 +382,6 @@ rbg_pod_cache_stub_reads_total{method}
 
 Type: Counter.
 
-This metric is defined by KEP-284.
 It counts stubs returned by a cached Pod `List`.
 The expected value is zero.
 A non-zero value means a read path received a stub where a whole Pod was expected.
@@ -385,6 +394,15 @@ Example alert:
 ```promql
 rbg_pod_cache_stub_reads_total > 0
 ```
+
+The remaining KEP-284 metrics:
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `rbg_pod_cache_scope` | Gauge | `scope` | Configured Pod cache mode, `all` or `filtered`, set to 1 |
+| `rbg_pod_cache_objects` | Gauge | `form` | Cached Pods by form: `whole` or `stub` |
+| `rbg_pod_cache_transform_total` | Counter | `result` | Pod transform decisions: `whole` or `stub` |
+| `rbg_pod_cache_initial_sync_seconds` | Gauge | none | Pod informer initial sync duration |
 
 ### Controller Stage Metrics
 
@@ -416,7 +434,8 @@ rbg_controller_stage_failures_total{controller, stage, reason_class}
 | `roleinstance` | `sync_instance` | Create, update, recover, or delete Pods |
 | `roleinstance` | `update_status` | Write RI status |
 
-`reason_class` uses bounded failure families from KEP-502, such as `PermissionDenied`, `AdmissionDenied`, `WaitingForQuota`, `WaitingForResources`, and `UnclassifiedBlocker`.
+`reason_class` uses bounded operation-failure families from KEP-502, such as `PermissionDenied`, `AdmissionDenied`, and `UnclassifiedBlocker`.
+`WaitingFor*` reasons are blockers, not operation failures; they are reported through progress/blocker metrics rather than counted in `*_failures_total`.
 Do not use raw error messages.
 
 These metrics complement, not replace, `controller_runtime_reconcile_time_seconds` and `controller_runtime_reconcile_errors_total`.
@@ -433,19 +452,17 @@ These metrics are targeted for beta.
 | `rbg_scaling_adapter_scale_failures_total` | Counter | `namespace`, `adapter`, `reason_class` | Scaling adapter failures |
 | `rbg_gang_podgroup_reconcile_failures_total` | Counter | `scheduler`, `reason_class` | PodGroup reconcile failures |
 
-RI phases are `Creating`, `Running`, `Updating`, `Recovering`, and `Terminating`, as defined by KEP-502.
+RI phases are `Creating`, `Running`, `Updating`, and `Recovering`, as defined by KEP-502.
+KEP-502 defines no `Terminating` phase; deletion is indicated by `metadata.deletionTimestamp`, not by phase.
+An RI with an absent `status.phase` is skipped, not bucketed into an invented value.
 
 ### Optional Metrics
 
-These metrics are not required for alpha or beta.
-Add them when the corresponding feature needs tuning or validation.
+This metric is not required for alpha or beta.
+Add it when gang scheduling needs tuning or validation.
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
-| `rbg_pod_cache_scope` | Gauge | `scope` | Pod cache mode: `all` or `filtered` |
-| `rbg_pod_cache_objects` | Gauge | `form` | Cached Pods by form: `whole` or `stub` |
-| `rbg_pod_cache_transform_total` | Counter | `result` | Pod transform decisions: `whole` or `stub` |
-| `rbg_pod_cache_initial_sync_seconds` | Gauge | none | Pod informer initial sync duration |
 | `rbg_gang_scheduling_duration_seconds` | Histogram | `scheduler` | Time from PodGroup creation to gang scheduling completion |
 
 ### Collection Architecture
@@ -540,7 +557,8 @@ Without these permissions, the metrics endpoint exists but Prometheus cannot scr
 
 #### Alpha
 
-- The five alpha metrics are implemented and registered.
+- The five core alpha metrics are implemented and registered.
+- The KEP-284 Pod cache metrics are exported, as required by KEP-284's alpha graduation.
 - Unit and integration tests pass.
 - Secure scraping permissions are documented.
 - User documentation lists metric names, labels, and example queries.
@@ -716,10 +734,18 @@ The expected increase is small: one collector over cached RBG objects and a boun
 Cardinality is approximately:
 
 ```text
-3 * number_of_roles + number_of_rbg_progressing_series + fixed_controller_series
+3 * number_of_roles
+  + number_of_rbg_progressing_series
+  + 13 * number_of_RBGs_with_completed_rollouts
+  + fixed_series
 ```
 
-where `number_of_roles` is the total number of roles across cached RBGs, and `number_of_rbg_progressing_series` is at most one per RBG with a current progress condition.
+where:
+
+- `number_of_roles` is the total number of roles across cached RBGs (three `state` values each).
+- `number_of_rbg_progressing_series` is at most one per RBG with a current progress condition.
+- `13 * number_of_RBGs_with_completed_rollouts` accounts for `rbg_rollout_duration_seconds{namespace,rbg}`: 10 buckets plus `+Inf`, `_sum`, and `_count`, retained for each RBG that has completed at least one rollout.
+- `fixed_series` covers `rbg_build_info`, Pod cache stub reads, and (at beta) controller-stage series, independent of object count.
 
 ###### Can enabling / using this feature result in resource exhaustion of some node resources?
 
@@ -732,7 +758,7 @@ The main risk is Prometheus series cardinality, mitigated by bounded labels and 
 
 The informer cache may become stale.
 State gauges reflect the last cached state.
-`rbg_group_progressing_info` is withdrawn when generation checks fail, reducing misleading progress reports.
+`rbg_group_progressing_info` is no longer emitted when generation checks fail, reducing misleading progress reports.
 
 ###### What are other known failure modes?
 
@@ -752,7 +778,7 @@ State gauges reflect the last cached state.
   - Detection: `rbg_group_progressing_info` absent while RBG status exists.
   - Mitigation: check `observedGeneration` and controller reconcile errors.
   - Diagnostics: RBG status and controller logs.
-  - Testing: unit test for stale condition withdrawal.
+  - Testing: unit test that a stale condition stops being emitted.
 
 ###### What steps should be taken if SLOs are not being met to determine the problem?
 

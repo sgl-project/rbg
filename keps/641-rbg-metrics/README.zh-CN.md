@@ -20,7 +20,7 @@
   - [Workload 容量指标](#workload-容量指标)
   - [Group 进度指标](#group-进度指标)
   - [Rollout 耗时指标](#rollout-耗时指标)
-  - [Pod Cache 正确性指标](#pod-cache-正确性指标)
+  - [Pod Cache 指标（KEP-284）](#pod-cache-指标kep-284)
   - [Controller 阶段指标](#controller-阶段指标)
   - [特性指标](#特性指标)
   - [可选指标](#可选指标)
@@ -113,8 +113,9 @@ RBG controller 已经提供 `/metrics`，但该 endpoint 只包含内置的 cont
 | 阶段 | 指标 | 目的 |
 |---|---|---|
 | Alpha | `rbg_build_info`、`rbg_role_replicas`、`rbg_group_progressing_info`、`rbg_rollout_duration_seconds`、`rbg_pod_cache_stub_reads_total` | 容量、进度、rollout SLO、cache 正确性 |
+| Alpha（KEP-284） | Pod cache scope/objects/transform/initial sync | 由 KEP-284 定义；其 alpha 必需 |
 | Beta | Controller 阶段耗时/失败、Warmup 耗时/失败、RoleInstance phase 耗时、扩缩容失败、gang PodGroup 失败 | 定位慢或失败的 controller 路径 |
-| 可选 | Pod cache scope/objects/transform/initial sync、gang scheduling 耗时 | 特性调优与验证 |
+| 可选 | gang scheduling 耗时 | 特性调优与验证 |
 
 状态 gauge 在抓取时从 informer cache 采集。
 counter 和 histogram 在对应事件发生时记录。
@@ -129,7 +130,7 @@ counter 和 histogram 在对应事件发生时记录。
 
 ```promql
 rbg_role_replicas{role="decode", state="desired"} > 0
-  and
+  and on(namespace, rbg, role)
 rbg_role_replicas{role="decode", state="ready"} == 0
 ```
 
@@ -161,7 +162,7 @@ KEP-284 预期该 counter 保持为 0。
 | 风险 | 缓解 |
 |---|---|
 | label 基数随对象和 role 数量增长 | 只使用 `namespace`、`rbg`、`role` 和有界枚举 label；从当前 cache 对象采集状态，删除的对象不再产生 series |
-| 过期 status 产生误导性进度 | 仅当 group 和 condition 的 `observedGeneration` 都等于 `metadata.generation` 时导出 `rbg_group_progressing_info`；撤销过期 series |
+| 过期 status 产生误导性进度 | 仅当 group 和 condition 的 `observedGeneration` 都等于 `metadata.generation` 时导出 `rbg_group_progressing_info`；过期 series 在下次 scrape 时不再发出 |
 | Prometheus 缺少 RBAC 导致安全抓取失败 | 文档化并测试抓取 ServiceAccount 的 TokenReview / SubjectAccessReview 权限 |
 | 指标采集增加抓取延迟 | 从 informer cache 读取，避免 per-Pod series，限制 histogram bucket |
 | 重启后 rollout 耗时不准确 | 在内存中按对象 UID 和目标 revision 记录开始时间；没有开始时间则跳过样本 |
@@ -187,10 +188,10 @@ KEP-284 预期该 counter 保持为 0。
 | `rbg_roleinstance_phase_duration_seconds` | Beta | Histogram | `phase` | 测量 RI 各 phase 停留时间 |
 | `rbg_scaling_adapter_scale_failures_total` | Beta | Counter | `namespace`、`adapter`、`reason_class` | 统计 scaling adapter 失败 |
 | `rbg_gang_podgroup_reconcile_failures_total` | Beta | Counter | `scheduler`、`reason_class` | 统计 PodGroup reconcile 失败 |
-| `rbg_pod_cache_scope` | 可选 | Gauge | `scope` | 报告 Pod cache 模式 |
-| `rbg_pod_cache_objects` | 可选 | Gauge | `form` | 统计缓存完整 Pod 和 stub 数量 |
-| `rbg_pod_cache_transform_total` | 可选 | Counter | `result` | 统计 Pod cache 转换决策 |
-| `rbg_pod_cache_initial_sync_seconds` | 可选 | Gauge | 无 | 报告 Pod informer 初始同步耗时 |
+| `rbg_pod_cache_scope` | Alpha（KEP-284） | Gauge | `scope` | 报告 Pod cache 模式 |
+| `rbg_pod_cache_objects` | Alpha（KEP-284） | Gauge | `form` | 统计缓存完整 Pod 和 stub 数量 |
+| `rbg_pod_cache_transform_total` | Alpha（KEP-284） | Counter | `result` | 统计 Pod cache 转换决策 |
+| `rbg_pod_cache_initial_sync_seconds` | Alpha（KEP-284） | Gauge | 无 | 报告 Pod informer 初始同步耗时 |
 | `rbg_gang_scheduling_duration_seconds` | 可选 | Histogram | `scheduler` | 测量 gang scheduling 完成耗时 |
 
 ### 术语
@@ -232,13 +233,18 @@ KEP-284 预期该 counter 保持为 0。
 | `role` | RBG 内部 role 名称 | 受每个 RBG 的 role 数量限制 |
 | `state` | 副本状态：`desired`、`ready`、`updated` | 固定枚举 |
 | `status` | condition 状态：`True`、`False`、`Unknown` | 固定枚举 |
-| `reason` | KEP-502 进度 reason，或 `Other` | 有界枚举 |
+| `reason` | 有界 reason：进度指标用 KEP-502 进度 reason（或 `Other`），Warmup 等特性指标用特性自身的有界 reason | 有界枚举 |
 | `controller` | controller 名称 | 固定枚举 |
 | `stage` | reconcile 阶段名称 | 固定枚举 |
-| `reason_class` | 归类后的失败家族 | 有界枚举 |
+| `reason_class` | KEP-502 taxonomy 中归类后的操作失败家族 | 有界枚举 |
 | `phase` | RI 生命周期 phase | 固定枚举 |
 | `scheduler` | gang scheduler 后端 | 固定枚举 |
 | `method` | Pod cache 读取路径 | 有界枚举 |
+| `warmup` | Warmup 对象名 | 受 Warmup 对象数量限制 |
+| `adapter` | Scaling adapter 名称 | 受 adapter 对象数量限制 |
+| `scope` | Pod cache 模式：`all`、`filtered` | 固定枚举 |
+| `form` | 缓存 Pod 形式：`whole`、`stub` | 固定枚举 |
+| `result` | 转换决策：`whole`、`stub` | 固定枚举 |
 | `version`、`commit`、`go_version` | 构建信息 | 每个构建一条 series |
 
 不使用 Pod 名称、node 名称、revision hash、generation 值、condition message 或原始错误字符串作为 label。
@@ -301,8 +307,8 @@ rbg_role_replicas{namespace, rbg, role, state}
 
 ```promql
 rbg_role_replicas{state="ready"}
-  /
-rbg_role_replicas{state="desired"}
+  / ignoring(state)
+(rbg_role_replicas{state="desired"} > 0)
 ```
 
 ### Group 进度指标
@@ -321,7 +327,7 @@ rbg_group_progressing_info{namespace, rbg, status, reason}
 - 使用 condition 的 `status` 和 controller 选择的 `reason`。
 - 未知 reason 映射为 `Other`。
 - 按实际报告导出 `Unknown/ObservationIncomplete`。
-- condition 变化、消失或过期时，撤销旧 series。
+- condition 变化、消失或过期时，旧 series 在下次 scrape 时不再发出。
 
 reason 值遵循 KEP-502 taxonomy，包括 `Converged`、`Paused`、`WaitingForQuota`、`WaitingForResources`、`WaitingForGang`、`WaitingForDependencies`。
 
@@ -364,7 +370,11 @@ histogram_quantile(
 )
 ```
 
-### Pod Cache 正确性指标
+### Pod Cache 指标（KEP-284）
+
+这些指标由 [KEP-284](../284-pod-cache-filter/README.md) 定义。
+定义归属保留在 KEP-284；本 KEP 负责实现。
+全部五个都是 KEP-284 alpha 毕业的必需项，因此随 KEP-284 alpha 一并交付，而非在此列为可选。
 
 ```text
 rbg_pod_cache_stub_reads_total{method}
@@ -372,7 +382,6 @@ rbg_pod_cache_stub_reads_total{method}
 
 类型：Counter。
 
-该指标由 KEP-284 定义。
 它统计缓存 Pod `List` 返回 stub 的次数。
 预期值为 0。
 非零值表示某个读取路径在应返回完整 Pod 时收到了 stub。
@@ -385,6 +394,15 @@ rbg_pod_cache_stub_reads_total{method}
 ```promql
 rbg_pod_cache_stub_reads_total > 0
 ```
+
+其余 KEP-284 指标：
+
+| 指标 | 类型 | Label | 含义 |
+|---|---|---|---|
+| `rbg_pod_cache_scope` | Gauge | `scope` | 配置的 Pod cache 模式，`all` 或 `filtered`，置为 1 |
+| `rbg_pod_cache_objects` | Gauge | `form` | 按形式统计缓存 Pod：`whole` 或 `stub` |
+| `rbg_pod_cache_transform_total` | Counter | `result` | Pod 转换决策：`whole` 或 `stub` |
+| `rbg_pod_cache_initial_sync_seconds` | Gauge | 无 | Pod informer 初始同步耗时 |
 
 ### Controller 阶段指标
 
@@ -416,7 +434,8 @@ rbg_controller_stage_failures_total{controller, stage, reason_class}
 | `roleinstance` | `sync_instance` | 创建、更新、恢复或删除 Pod |
 | `roleinstance` | `update_status` | 写入 RI status |
 
-`reason_class` 使用 KEP-502 的有界失败家族，例如 `PermissionDenied`、`AdmissionDenied`、`WaitingForQuota`、`WaitingForResources`、`UnclassifiedBlocker`。
+`reason_class` 使用 KEP-502 的有界操作失败家族，例如 `PermissionDenied`、`AdmissionDenied`、`UnclassifiedBlocker`。
+`WaitingFor*` 是阻塞原因而非操作失败；它们通过进度/阻塞指标报告，而不计入 `*_failures_total`。
 不使用原始错误 message。
 
 这些指标补充而不是替代 `controller_runtime_reconcile_time_seconds` 和 `controller_runtime_reconcile_errors_total`。
@@ -433,19 +452,17 @@ rbg_controller_stage_failures_total{controller, stage, reason_class}
 | `rbg_scaling_adapter_scale_failures_total` | Counter | `namespace`、`adapter`、`reason_class` | Scaling adapter 失败 |
 | `rbg_gang_podgroup_reconcile_failures_total` | Counter | `scheduler`、`reason_class` | PodGroup reconcile 失败 |
 
-RI phase 为 KEP-502 定义的 `Creating`、`Running`、`Updating`、`Recovering`、`Terminating`。
+RI phase 为 KEP-502 定义的 `Creating`、`Running`、`Updating`、`Recovering`。
+KEP-502 不定义 `Terminating` phase；删除由 `metadata.deletionTimestamp` 表示，而非 phase。
+`status.phase` 缺失的 RI 应跳过，不归入臆造值。
 
 ### 可选指标
 
-这些指标不是 alpha 或 beta 的必需项。
-当对应特性需要调优或验证时再添加。
+该指标不是 alpha 或 beta 的必需项。
+当 gang scheduling 需要调优或验证时再添加。
 
 | 指标 | 类型 | Label | 含义 |
 |---|---|---|---|
-| `rbg_pod_cache_scope` | Gauge | `scope` | Pod cache 模式：`all` 或 `filtered` |
-| `rbg_pod_cache_objects` | Gauge | `form` | 按形式统计缓存 Pod：`whole` 或 `stub` |
-| `rbg_pod_cache_transform_total` | Counter | `result` | Pod 转换决策：`whole` 或 `stub` |
-| `rbg_pod_cache_initial_sync_seconds` | Gauge | 无 | Pod informer 初始同步耗时 |
 | `rbg_gang_scheduling_duration_seconds` | Histogram | `scheduler` | 从 PodGroup 创建到 gang scheduling 完成的耗时 |
 
 ### 采集架构
@@ -540,7 +557,8 @@ controller 已支持：
 
 #### Alpha
 
-- 实现并注册五个 alpha 指标。
+- 实现并注册五个核心 alpha 指标。
+- 按 KEP-284 alpha 毕业要求导出 KEP-284 Pod cache 指标。
 - 单元和集成测试通过。
 - 文档化安全抓取权限。
 - 用户文档列出指标名称、label 和示例查询。
@@ -716,10 +734,18 @@ Pod cache 指标依赖 KEP-284。
 基数约为：
 
 ```text
-3 * number_of_roles + number_of_rbg_progressing_series + fixed_controller_series
+3 * number_of_roles
+  + number_of_rbg_progressing_series
+  + 13 * number_of_RBGs_with_completed_rollouts
+  + fixed_series
 ```
 
-其中 `number_of_roles` 是缓存 RBG 中的 role 总数，`number_of_rbg_progressing_series` 最多为每个具有当前进度 condition 的 RBG 一条。
+其中：
+
+- `number_of_roles` 是缓存 RBG 中的 role 总数（每个 role 三个 `state` 值）。
+- `number_of_rbg_progressing_series` 最多为每个具有当前进度 condition 的 RBG 一条。
+- `13 * number_of_RBGs_with_completed_rollouts` 对应 `rbg_rollout_duration_seconds{namespace,rbg}`：10 个 bucket 加 `+Inf`、`_sum`、`_count`，每个完成过至少一次 rollout 的 RBG 都会保留。
+- `fixed_series` 涵盖 `rbg_build_info`、Pod cache stub 读取，以及（beta 阶段的）controller 阶段 series，与对象数量无关。
 
 ###### 启用该功能是否可能导致资源耗尽？
 
@@ -732,7 +758,7 @@ Pod cache 指标依赖 KEP-284。
 
 informer cache 可能过期。
 状态 gauge 反映最后缓存状态。
-generation 检查失败时撤销 `rbg_group_progressing_info`，减少误导性进度报告。
+generation 检查失败时不再发出 `rbg_group_progressing_info`，减少误导性进度报告。
 
 ###### 其他已知故障模式？
 
@@ -752,7 +778,7 @@ generation 检查失败时撤销 `rbg_group_progressing_info`，减少误导性�
   - 检测：RBG status 存在，但 `rbg_group_progressing_info` 缺失。
   - 缓解：检查 `observedGeneration` 和 controller reconcile 错误。
   - 诊断：RBG status 和 controller 日志。
-  - 测试：过期 condition 撤销单元测试。
+  - 测试：过期 condition 不再发出的单元测试。
 
 ###### SLO 不满足时应采取什么步骤？
 
