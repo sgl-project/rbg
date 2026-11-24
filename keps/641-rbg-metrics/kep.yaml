@@ -1,0 +1,20 @@
+title: RBG Workload and Controller Metrics
+kep-number: 641
+authors:
+  - "@diw-zw"
+status: provisional
+creation-date: 2026-11-24
+reviewers: []
+approvers: []
+see-also:
+  - /keps/502-workload-status-model
+  - /keps/284-pod-cache-filter
+  - /keps/430-gang-scheduling
+  - /keps/129-rbg-warmup
+stage: alpha
+metrics:
+  - rbg_build_info
+  - rbg_role_replicas
+  - rbg_group_progressing_info
+  - rbg_rollout_duration_seconds
+  - rbg_pod_cache_stub_reads_total
