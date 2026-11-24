@@ -254,6 +254,23 @@ rbg_build_info{version, commit, go_version}
 
 该指标标识 controller 构建版本。
 它不描述 workload 状态。
+值固定为 `1`；构建元数据通过 label 携带，并通过 PromQL 查询，而不是从 metric value 读取。
+
+示例查询：
+
+```promql
+# 当前构建 series，包含 version 和 commit label。
+rbg_build_info
+
+# 按构建统计 controller 副本数。
+count by (version, commit) (rbg_build_info)
+
+# 当副本运行非预期版本时告警。
+rbg_build_info{version!="v0.8.0"} == 1
+
+# 当存在多个版本时告警。
+count(count by (version) (rbg_build_info)) > 1
+```
 
 ### Workload 容量指标
 

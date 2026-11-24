@@ -254,6 +254,23 @@ Value: `1`.
 
 This metric identifies the controller build.
 It does not describe workload state.
+The value is always `1`; build metadata is carried by labels and queried through PromQL, not read from the metric value.
+
+Example queries:
+
+```promql
+# Current build series, including version and commit labels.
+rbg_build_info
+
+# Count controller replicas by build.
+count by (version, commit) (rbg_build_info)
+
+# Alert when a replica runs an unexpected version.
+rbg_build_info{version!="v0.8.0"} == 1
+
+# Alert when more than one version is present.
+count(count by (version) (rbg_build_info)) > 1
+```
 
 ### Workload Capacity Metrics
 
