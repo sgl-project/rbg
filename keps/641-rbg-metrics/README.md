@@ -181,6 +181,10 @@ Detailed semantics are defined in the sections that follow.
 | `rbg_group_progressing_info` | Alpha | Gauge | `namespace`, `rbg`, `status`, `reason` | Report the current group progress or blocker |
 | `rbg_rollout_duration_seconds` | Alpha | Histogram | `namespace`, `rbg` | Measure rollout completion time |
 | `rbg_pod_cache_stub_reads_total` | Alpha | Counter | `method` | Detect unexpected stub reads from the Pod cache |
+| `rbg_pod_cache_scope` | Alpha | Gauge | `scope` | Report Pod cache mode |
+| `rbg_pod_cache_objects` | Alpha | Gauge | `form` | Count cached whole Pods and stubs |
+| `rbg_pod_cache_transform_total` | Alpha | Counter | `result` | Count Pod cache transform decisions |
+| `rbg_pod_cache_initial_sync_seconds` | Alpha | Gauge | none | Report Pod informer initial sync duration |
 | `rbg_controller_stage_duration_seconds` | Beta | Histogram | `controller`, `stage` | Locate slow reconcile stages |
 | `rbg_controller_stage_failures_total` | Beta | Counter | `controller`, `stage`, `reason_class` | Count failures by reconcile stage |
 | `rbg_warmup_duration_seconds` | Beta | Histogram | `namespace`, `warmup` | Measure Warmup completion time |
@@ -188,10 +192,6 @@ Detailed semantics are defined in the sections that follow.
 | `rbg_roleinstance_phase_duration_seconds` | Beta | Histogram | `phase` | Measure time spent in each RI phase |
 | `rbg_scaling_adapter_scale_failures_total` | Beta | Counter | `namespace`, `adapter`, `reason_class` | Count scaling adapter failures |
 | `rbg_gang_podgroup_reconcile_failures_total` | Beta | Counter | `scheduler`, `reason_class` | Count PodGroup reconcile failures |
-| `rbg_pod_cache_scope` | Alpha | Gauge | `scope` | Report Pod cache mode |
-| `rbg_pod_cache_objects` | Alpha | Gauge | `form` | Count cached whole Pods and stubs |
-| `rbg_pod_cache_transform_total` | Alpha | Counter | `result` | Count Pod cache transform decisions |
-| `rbg_pod_cache_initial_sync_seconds` | Alpha | Gauge | none | Report Pod informer initial sync duration |
 | `rbg_gang_scheduling_duration_seconds` | Optional | Histogram | `scheduler` | Measure gang scheduling completion time |
 
 Stage means when this KEP delivers the metric, not which KEP defines it.

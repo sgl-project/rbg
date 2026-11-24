@@ -181,6 +181,10 @@ KEP-284 预期该 counter 保持为 0。
 | `rbg_group_progressing_info` | Alpha | Gauge | `namespace`、`rbg`、`status`、`reason` | 报告当前 group 进度或阻塞原因 |
 | `rbg_rollout_duration_seconds` | Alpha | Histogram | `namespace`、`rbg` | 测量 rollout 完成耗时 |
 | `rbg_pod_cache_stub_reads_total` | Alpha | Counter | `method` | 检测 Pod cache 非预期 stub 读取 |
+| `rbg_pod_cache_scope` | Alpha | Gauge | `scope` | 报告 Pod cache 模式 |
+| `rbg_pod_cache_objects` | Alpha | Gauge | `form` | 统计缓存完整 Pod 和 stub 数量 |
+| `rbg_pod_cache_transform_total` | Alpha | Counter | `result` | 统计 Pod cache 转换决策 |
+| `rbg_pod_cache_initial_sync_seconds` | Alpha | Gauge | 无 | 报告 Pod informer 初始同步耗时 |
 | `rbg_controller_stage_duration_seconds` | Beta | Histogram | `controller`、`stage` | 定位慢的 reconcile 阶段 |
 | `rbg_controller_stage_failures_total` | Beta | Counter | `controller`、`stage`、`reason_class` | 按 reconcile 阶段统计失败 |
 | `rbg_warmup_duration_seconds` | Beta | Histogram | `namespace`、`warmup` | 测量 Warmup 完成耗时 |
@@ -188,10 +192,6 @@ KEP-284 预期该 counter 保持为 0。
 | `rbg_roleinstance_phase_duration_seconds` | Beta | Histogram | `phase` | 测量 RI 各 phase 停留时间 |
 | `rbg_scaling_adapter_scale_failures_total` | Beta | Counter | `namespace`、`adapter`、`reason_class` | 统计 scaling adapter 失败 |
 | `rbg_gang_podgroup_reconcile_failures_total` | Beta | Counter | `scheduler`、`reason_class` | 统计 PodGroup reconcile 失败 |
-| `rbg_pod_cache_scope` | Alpha | Gauge | `scope` | 报告 Pod cache 模式 |
-| `rbg_pod_cache_objects` | Alpha | Gauge | `form` | 统计缓存完整 Pod 和 stub 数量 |
-| `rbg_pod_cache_transform_total` | Alpha | Counter | `result` | 统计 Pod cache 转换决策 |
-| `rbg_pod_cache_initial_sync_seconds` | Alpha | Gauge | 无 | 报告 Pod informer 初始同步耗时 |
 | `rbg_gang_scheduling_duration_seconds` | 可选 | Histogram | `scheduler` | 测量 gang scheduling 完成耗时 |
 
 阶段（Stage）表示本 KEP 何时交付该指标，而非由哪个 KEP 定义。
