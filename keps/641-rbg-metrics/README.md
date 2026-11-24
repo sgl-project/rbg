@@ -25,6 +25,7 @@ English | [简体中文](README.zh-CN.md)
   - [Feature Metrics](#feature-metrics)
   - [Optional Metrics](#optional-metrics)
   - [Collection Architecture](#collection-architecture)
+  - [Implementation Notes](#implementation-notes)
   - [Secure Scraping and Deployment](#secure-scraping-and-deployment)
   - [Test Plan](#test-plan)
     - [Prerequisite testing updates](#prerequisite-testing-updates)
@@ -492,6 +493,29 @@ Pod cache metrics:
 
 No new informer or watch is introduced.
 The collector reuses the RBG informer already required by the controller.
+
+### Implementation Notes
+
+These are design decisions for the implementation PR, not code.
+
+**Collector wiring and leader gating.**
+Add a new `pkg/metrics` package.
+Construct the workload state collector after the manager exists, give it a read-only `client.Reader` backed by `mgr.GetCache()`, and register it with `metrics.Registry`.
+The collector must emit only on the elected leader: gate emission on leadership (for example, check leader status inside `Collect`, or wrap the collector in a leader-aware runnable) so non-leader replicas emit no workload series.
+This avoids duplicate or stale series across replicas.
+
+**Rollout start-time state.**
+The rollout start map is held by the rollout-duration recorder, keyed by RBG UID and target revision.
+Entries are removed when the rollout completes or the RBG is deleted, so the map stays bounded by in-flight rollouts.
+
+**Read-only and upgrade safety.**
+Metrics collection adds no writes to the reconcile path and does not change rendered templates or revision hashes, so upgrading the controller does not roll existing workloads.
+Change scope: the new `pkg/metrics` package, wiring in `cmd/rbgs/main.go`, and the metrics Service, optional ServiceMonitor, and scraping RBAC.
+The Helm chart, `config/`, and `deploy/kubectl` move together.
+
+**Stage timing and reason classification.**
+Stage duration is recorded by timing wrappers around the named reconcile steps.
+`reason_class` reuses the single KEP-502 error-classification function so all controllers report the same bounded families.
 
 ### Secure Scraping and Deployment
 

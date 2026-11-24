@@ -25,6 +25,7 @@
   - [特性指标](#特性指标)
   - [可选指标](#可选指标)
   - [采集架构](#采集架构)
+  - [实现说明](#实现说明)
   - [安全抓取与部署](#安全抓取与部署)
   - [测试计划](#测试计划)
     - [前置测试更新](#前置测试更新)
@@ -492,6 +493,29 @@ Pod cache 指标：
 
 不引入新的 informer 或 watch。
 collector 复用 controller 已经需要的 RBG informer。
+
+### 实现说明
+
+以下是给实现 PR 的设计决策，而非代码。
+
+**Collector 接线与 leader 门控。**
+新增 `pkg/metrics` 包。
+在 manager 创建后构造 workload 状态 collector，为其提供基于 `mgr.GetCache()` 的只读 `client.Reader`，并注册到 `metrics.Registry`。
+collector 必须只在 elected leader 上发出：按 leadership 门控发出（例如在 `Collect` 内检查 leader 状态，或用 leader-aware runnable 包装 collector），使非 leader 副本不发出 workload series。
+这样避免多副本间的重复或过期 series。
+
+**Rollout 起始时间状态。**
+rollout 起始 map 由 rollout 耗时记录器持有，key 为 RBG UID 和目标 revision。
+rollout 完成或 RBG 删除时移除条目，使 map 以在途 rollout 为上界。
+
+**只读与升级安全。**
+指标采集不向 reconcile 路径新增写入，也不改变渲染模板或 revision hash，因此升级 controller 不会滚动已有 workload。
+改动范围：新增 `pkg/metrics` 包、`cmd/rbgs/main.go` 接线，以及 metrics Service、可选 ServiceMonitor 和抓取 RBAC。
+Helm chart、`config/`、`deploy/kubectl` 一起改动。
+
+**阶段计时与 reason 归类。**
+阶段耗时通过对具名 reconcile 步骤的计时包装记录。
+`reason_class` 复用 KEP-502 的同一个错误归类函数，使所有 controller 报告相同的有界家族。
 
 ### 安全抓取与部署
 
