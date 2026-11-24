@@ -703,6 +703,7 @@ func cacheOptions() cache.Options {
 		Scheme: scheme,
 		ByObject: map[client.Object]cache.ByObject{
 			&corev1.Service{}:     {Label: keyExistsSelector},
+			&corev1.ConfigMap{}:   {Label: keyExistsSelector},
 			&appsv1.StatefulSet{}: {Label: keyExistsSelector},
 			&appsv1.Deployment{}:  {Label: keyExistsSelector},
 		},

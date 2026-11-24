@@ -53,6 +53,26 @@ func TestParse(t *testing.T) {
 	}
 }
 
+func TestCount(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  int
+	}{
+		{value: "", want: 0},
+		{value: "1", want: 1},
+		{value: "1,3", want: 2},
+		{value: "1-3,8-10", want: 6},
+	} {
+		r, err := Parse(tt.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := r.Count(); got != tt.want {
+			t.Fatalf("Count(%q) = %d, want %d", tt.value, got, tt.want)
+		}
+	}
+}
+
 func TestSummarize(t *testing.T) {
 	for _, tc := range []struct {
 		ranges   string

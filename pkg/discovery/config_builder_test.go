@@ -20,6 +20,8 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/google/go-cmp/cmp"
@@ -1060,6 +1062,25 @@ func TestConfigBuilder_LegacySizeUpperBound(t *testing.T) {
 		require.Greater(t, upper, int64(1<<20))
 	})
 
+	t.Run("large ordinals remain an upper bound", func(t *testing.T) {
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "test"},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "worker",
+					Replicas: ptr.To(int32(1000)),
+				}},
+			},
+		}
+		builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+
+		upper, err := builder.LegacySizeUpperBound(context.Background())
+		require.NoError(t, err)
+		built, err := builder.Build(context.Background())
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, upper, int64(len(built)))
+	})
+
 	t.Run("maximum int32 replicas and leader-worker size saturate", func(t *testing.T) {
 		rbg := &workloadsv1alpha2.RoleBasedGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: "test"},
@@ -1173,26 +1194,60 @@ func TestConfigBuilder_BuildCompactMatchesLegacyAddresses(t *testing.T) {
 
 	for _, role := range compact.Roles {
 		legacyInstances := legacy.Roles[role.Name].Instances
-		require.Len(t, legacyInstances, expandCompactRole(t, role))
+		require.Equal(t, legacyInstances, expandCompactRole(t, role))
 	}
 }
 
-func expandCompactRole(t *testing.T, role CompactRole) int {
+func TestBuildCompactSkipsStatelessRoles(t *testing.T) {
+	schema := runtime.NewScheme()
+	_ = corev1.AddToScheme(schema)
+	_ = workloadsv1alpha2.AddToScheme(schema)
+
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "stateful", Replicas: ptr.To(int32(1))},
+				{
+					Name:     "stateless",
+					Replicas: ptr.To(int32(1)),
+					Annotations: map[string]string{
+						constants.RoleWorkloadTypeAnnotationKey: constants.DeploymentWorkloadType,
+					},
+				},
+			},
+		},
+	}
+	builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+
+	data, err := builder.BuildCompact(context.Background())
+	require.NoError(t, err)
+
+	var config CompactConfig
+	require.NoError(t, yaml.UnmarshalStrict(data, &config))
+	require.Len(t, config.Roles, 1)
+	assert.Equal(t, "stateful", config.Roles[0].Name)
+}
+
+func expandCompactRole(t *testing.T, role CompactRole) []Instance {
 	members, err := decodeCompactMembers(role.Members, role.ExcludedOrdinals)
 	require.NoError(t, err)
-	var count int
-	for range members {
-		count += componentAddresses(role)
-	}
-	return count
-}
 
-func componentAddresses(role CompactRole) int {
-	count := 0
-	for _, component := range role.Components {
-		count += component.Size
+	instances := make([]Instance, 0, role.Members)
+	for _, member := range members {
+		for _, component := range role.Components {
+			for i := 0; i < component.Size; i++ {
+				address := component.Base
+				address = strings.ReplaceAll(address, "{roleIndex}", strconv.Itoa(member))
+				address = strings.ReplaceAll(address, "{componentIndex}", strconv.Itoa(component.Offset+i))
+				instances = append(instances, Instance{
+					Address: address,
+					Ports:   role.Ports,
+				})
+			}
+		}
 	}
-	return count
+	return instances
 }
 
 // TestConfigBuilder_getRoleNames tests the getRoleNames method of ConfigBuilder

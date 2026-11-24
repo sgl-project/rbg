@@ -82,6 +82,15 @@ func (r Ranges) Contains(ordinal int) bool {
 	return i < len(r.intervals) && r.intervals[i].first <= ordinal
 }
 
+// Count returns the number of ordinals covered by the normalized ranges.
+func (r Ranges) Count() int {
+	var total int64
+	for _, interval := range r.intervals {
+		total += int64(interval.last) - int64(interval.first) + 1
+	}
+	return int(total)
+}
+
 // Position returns an allowed ordinal's zero-based position without expanding
 // ranges or allocating the prefix. Excluded or out-of-range ordinals return false.
 func (r Ranges) Position(ordinal int) (int, bool) {

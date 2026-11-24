@@ -182,9 +182,10 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 		Conditions:         src.Status.Conditions,
 	}
 
-	// Stash v1alpha2-only fields on the v1alpha1 view. The stash covers the strategy and
-	// rollout status only: v1alpha1 has no representation for groupTemplate labels and
-	// annotations, so such a write still drops them and thereby changes revision identity.
+	// Stash v1alpha2-only fields on the v1alpha1 view. The stash covers the
+	// rollout strategy, rollout status, and discovery-config-version: v1alpha1
+	// has no representation for groupTemplate labels and annotations, so any
+	// other annotation is still dropped on a v1alpha1 write.
 	// removeConversionAnnotations only strips v1alpha1 stash keys, so these must be added
 	// after it; clear any stale copies first.
 	delete(dst.Annotations, annotationV1alpha2RolloutStrategy)

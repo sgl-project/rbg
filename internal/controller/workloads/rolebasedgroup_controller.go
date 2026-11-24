@@ -49,6 +49,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
@@ -646,6 +647,7 @@ func (r *RoleBasedGroupReconciler) applyDiscoveryConfigMap(
 			ObjectMeta: metav1.ObjectMeta{
 				Name:            rbg.Name,
 				Namespace:       rbg.Namespace,
+				Labels:          map[string]string{constants.GroupNameLabelKey: rbg.Name},
 				OwnerReferences: []metav1.OwnerReference{discoveryConfigOwnerReference(rbg)},
 			},
 			Data: map[string]string{
@@ -676,7 +678,13 @@ func (r *RoleBasedGroupReconciler) applyDiscoveryConfigMap(
 		existing.Data = make(map[string]string, 1)
 	}
 	existing.Data[discoveryConfigKey] = string(configData)
-	existing.OwnerReferences = []metav1.OwnerReference{discoveryConfigOwnerReference(rbg)}
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string, 1)
+	}
+	existing.Labels[constants.GroupNameLabelKey] = rbg.Name
+	if err := controllerutil.SetControllerReference(rbg, existing, r.scheme); err != nil {
+		return err
+	}
 	return r.client.Patch(
 		ctx, existing,
 		client.MergeFromWithOptions(old, client.MergeFromWithOptimisticLock{}),

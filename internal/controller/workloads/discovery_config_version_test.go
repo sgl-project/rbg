@@ -366,6 +366,127 @@ func TestDiscoveryConfigMapAdoptsOwnerlessDiscoveryConfigMap(t *testing.T) {
 	assert.Contains(t, got.Data, discoveryConfigKey)
 }
 
+func TestDiscoveryConfigMapPreservesNonControllerOwnersAndAddsCacheLabel(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	controller := *metav1.NewControllerRef(
+		rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"),
+	)
+	otherOwner := metav1.OwnerReference{
+		APIVersion: "example.com/v1",
+		Kind:       "Other",
+		Name:       "other",
+		UID:        "other-uid",
+	}
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            rbg.Name,
+			Namespace:       rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{controller, otherOwner},
+		},
+		Data: map[string]string{discoveryConfigKey: "group:\n  name: test-rbg\n"},
+	}
+	r, c := discoveryTestReconciler(t, rbg, existing)
+
+	require.NoError(t, r.reconcileDiscoveryConfigMap(context.Background(), rbg))
+
+	got := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), got))
+	assert.Equal(t, rbg.Name, got.Labels[constants.GroupNameLabelKey])
+	assert.Contains(t, got.OwnerReferences, otherOwner)
+	assert.Equal(t, rbg.GetUID(), metav1.GetControllerOf(got).UID)
+}
+
+func TestDiscoveryConfigMapAddsGroupLabelOnCreate(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	r, c := discoveryTestReconciler(t, rbg)
+
+	require.NoError(t, r.reconcileDiscoveryConfigMap(context.Background(), rbg))
+
+	got := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), got))
+	assert.Equal(t, rbg.Name, got.Labels[constants.GroupNameLabelKey])
+}
+
+func TestIsAdoptableDiscoveryConfigMap(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	validLegacy := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Data:       map[string]string{discoveryConfigKey: "group:\n  name: test-rbg\n"},
+	}
+	validCompact := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Data:       map[string]string{discoveryConfigKey: "apiVersion: v1\ngroup: test-rbg\n"},
+	}
+
+	tests := []struct {
+		name string
+		cm   *corev1.ConfigMap
+		want bool
+	}{
+		{name: "valid legacy content", cm: validLegacy, want: true},
+		{name: "valid compact content", cm: validCompact, want: true},
+		{
+			name: "owner reference with a different UID",
+			cm: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      rbg.Name,
+					Namespace: rbg.Namespace,
+					OwnerReferences: []metav1.OwnerReference{{
+						APIVersion: "workloads.x-k8s.io/v1alpha2",
+						Kind:       "RoleBasedGroup",
+						Name:       "other",
+						UID:        "other-uid",
+						Controller: ptr.To(true),
+					}},
+				},
+				Data: validLegacy.Data,
+			},
+			want: false,
+		},
+		{
+			name: "valid content naming a different group",
+			cm: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+				Data:       map[string]string{discoveryConfigKey: "group:\n  name: other-rbg\n"},
+			},
+			want: false,
+		},
+		{
+			name: "BinaryData present",
+			cm: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+				Data:       validLegacy.Data,
+				BinaryData: map[string][]byte{"other": []byte("value")},
+			},
+			want: false,
+		},
+		{
+			name: "unparsable content",
+			cm: &corev1.ConfigMap{
+				ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+				Data:       map[string]string{discoveryConfigKey: "not: [valid: yaml"},
+			},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, isAdoptableDiscoveryConfigMap(tt.cm, rbg))
+		})
+	}
+}
+
+func TestDiscoveryConfigMapPredicate(t *testing.T) {
+	predicate := discoveryConfigMapPredicate()
+	obj := &corev1.ConfigMap{}
+
+	assert.False(t, predicate.CreateFunc(event.CreateEvent{Object: obj}))
+	assert.False(t, predicate.UpdateFunc(event.UpdateEvent{ObjectOld: obj, ObjectNew: obj}))
+	assert.True(t, predicate.DeleteFunc(event.DeleteEvent{Object: obj}))
+	assert.False(t, predicate.GenericFunc(event.GenericEvent{Object: obj}))
+}
+
 func TestReconcileContinuesAfterOversizedDiscoveryRollback(t *testing.T) {
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 	rbg.Spec.Roles[0].Replicas = ptr.To(int32(0))
