@@ -65,7 +65,7 @@ RBG currently exposes controller-runtime and Go runtime metrics, but no workload
 Operators cannot alert on role capacity loss, rollout blockers, or Pod cache correctness from the controller endpoint.
 
 This KEP adds a small set of workload and controller metrics on the existing `/metrics` endpoint.
-The first implementation covers five metrics: build information, role replica counts, group progress, rollout duration, and Pod cache stub reads.
+The first implementation covers the RBG workload metrics (build information, role replica counts, group progress, rollout duration) and the five KEP-284 Pod cache metrics.
 Later stages add controller stage timing, Warmup, RoleInstance phase, scaling, and gang scheduling metrics.
 The design reuses the controller-runtime metrics registry, reads workload state from the informer cache, and keeps labels bounded.
 
@@ -113,8 +113,7 @@ The implementation is staged:
 
 | Stage | Metrics | Purpose |
 |---|---|---|
-| Alpha | `rbg_build_info`, `rbg_role_replicas`, `rbg_group_progressing_info`, `rbg_rollout_duration_seconds`, `rbg_pod_cache_stub_reads_total` | Capacity, progress, rollout SLO, cache correctness |
-| Alpha (KEP-284) | Pod cache scope/objects/transform/initial sync | Defined by KEP-284; required for its alpha |
+| Alpha | `rbg_build_info`, `rbg_role_replicas`, `rbg_group_progressing_info`, `rbg_rollout_duration_seconds`, and the `rbg_pod_cache_*` metrics (defined by KEP-284) | Capacity, progress, rollout SLO, cache correctness |
 | Beta | Controller stage duration/failures, Warmup duration/failures, RoleInstance phase duration, scaling failures, gang PodGroup failures | Locate slow or failing controller paths |
 | Optional | Gang scheduling duration | Feature-specific tuning and validation |
 
@@ -189,11 +188,14 @@ Detailed semantics are defined in the sections that follow.
 | `rbg_roleinstance_phase_duration_seconds` | Beta | Histogram | `phase` | Measure time spent in each RI phase |
 | `rbg_scaling_adapter_scale_failures_total` | Beta | Counter | `namespace`, `adapter`, `reason_class` | Count scaling adapter failures |
 | `rbg_gang_podgroup_reconcile_failures_total` | Beta | Counter | `scheduler`, `reason_class` | Count PodGroup reconcile failures |
-| `rbg_pod_cache_scope` | Alpha (KEP-284) | Gauge | `scope` | Report Pod cache mode |
-| `rbg_pod_cache_objects` | Alpha (KEP-284) | Gauge | `form` | Count cached whole Pods and stubs |
-| `rbg_pod_cache_transform_total` | Alpha (KEP-284) | Counter | `result` | Count Pod cache transform decisions |
-| `rbg_pod_cache_initial_sync_seconds` | Alpha (KEP-284) | Gauge | none | Report Pod informer initial sync duration |
+| `rbg_pod_cache_scope` | Alpha | Gauge | `scope` | Report Pod cache mode |
+| `rbg_pod_cache_objects` | Alpha | Gauge | `form` | Count cached whole Pods and stubs |
+| `rbg_pod_cache_transform_total` | Alpha | Counter | `result` | Count Pod cache transform decisions |
+| `rbg_pod_cache_initial_sync_seconds` | Alpha | Gauge | none | Report Pod informer initial sync duration |
 | `rbg_gang_scheduling_duration_seconds` | Optional | Histogram | `scheduler` | Measure gang scheduling completion time |
+
+Stage means when this KEP delivers the metric, not which KEP defines it.
+The `rbg_pod_cache_*` metrics are defined by KEP-284 and required for its alpha graduation; this KEP implements them, so they are delivered at Alpha.
 
 ### Terminology
 
@@ -581,7 +583,7 @@ Without these permissions, the metrics endpoint exists but Prometheus cannot scr
 
 #### Alpha
 
-- The five core alpha metrics are implemented and registered.
+- The alpha metrics are implemented and registered.
 - The KEP-284 Pod cache metrics are exported, as required by KEP-284's alpha graduation.
 - Unit and integration tests pass.
 - Secure scraping permissions are documented.

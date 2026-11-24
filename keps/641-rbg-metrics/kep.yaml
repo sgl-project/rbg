@@ -17,4 +17,9 @@ metrics:
   - rbg_role_replicas
   - rbg_group_progressing_info
   - rbg_rollout_duration_seconds
+  # The rbg_pod_cache_* metrics are defined by KEP-284 and implemented by this KEP.
   - rbg_pod_cache_stub_reads_total
+  - rbg_pod_cache_scope
+  - rbg_pod_cache_objects
+  - rbg_pod_cache_transform_total
+  - rbg_pod_cache_initial_sync_seconds
