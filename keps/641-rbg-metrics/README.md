@@ -1,5 +1,7 @@
 # KEP-641: RBG Workload and Controller Metrics
 
+English | [简体中文](README.zh-CN.md)
+
 <!-- toc -->
 - [Release Signoff Checklist](#release-signoff-checklist)
 - [Summary](#summary)
