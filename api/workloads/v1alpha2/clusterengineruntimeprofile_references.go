@@ -175,14 +175,31 @@ func (s *engineRuntimeLabelStartupScanner) watch(ctx context.Context) error {
 
 func (s *engineRuntimeLabelStartupScanner) eventHandler() toolscache.ResourceEventHandler {
 	return toolscache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { s.observe(obj) },
-		UpdateFunc: func(_, newObj interface{}) { s.observe(newObj) },
+		AddFunc: func(obj interface{}) {
+			if !s.objectMatches(obj) {
+				s.markDrift(obj)
+				s.wake()
+			}
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldMatch, oldValid := s.objectMatchState(oldObj)
+			newMatch, newValid := s.objectMatchState(newObj)
+			if !oldValid || !newValid || oldMatch == newMatch {
+				return
+			}
+			if newMatch {
+				s.wake()
+				return
+			}
+			s.markDrift(newObj)
+			s.wake()
+		},
+		DeleteFunc: func(obj interface{}) {
+			if !s.objectMatches(obj) {
+				s.wake()
+			}
+		},
 	}
-}
-
-func (s *engineRuntimeLabelStartupScanner) observe(obj interface{}) {
-	s.markDrift(obj)
-	s.wake()
 }
 
 func (s *engineRuntimeLabelStartupScanner) markDrift(obj interface{}) {
@@ -195,6 +212,22 @@ func (s *engineRuntimeLabelStartupScanner) markDrift(obj interface{}) {
 		if !engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec.GroupTemplate.Spec) {
 			MarkEngineRuntimeLabelDrift()
 		}
+	}
+}
+
+func (s *engineRuntimeLabelStartupScanner) objectMatches(obj interface{}) bool {
+	matches, valid := s.objectMatchState(obj)
+	return valid && matches
+}
+
+func (s *engineRuntimeLabelStartupScanner) objectMatchState(obj interface{}) (bool, bool) {
+	switch typed := obj.(type) {
+	case *RoleBasedGroup:
+		return engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec), true
+	case *RoleBasedGroupSet:
+		return engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec.GroupTemplate.Spec), true
+	default:
+		return false, false
 	}
 }
 

@@ -20,13 +20,13 @@ import (
 	"context"
 	"fmt"
 	"sync"
+	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -55,6 +55,7 @@ const (
 	ReasonEngineRuntimeLabelBackfillFailed           = "EngineRuntimeLabelBackfillFailed"
 
 	engineRuntimeLabelBackfillRetryLimit = 3
+	engineRuntimeLabelBackfillRetryAfter = 30 * time.Second
 )
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=get;list;watch
@@ -75,10 +76,18 @@ type ClusterEngineRuntimeProfileReconciler struct {
 	engineRuntimeLabelBackfillFailure sync.Map
 }
 
+type engineRuntimeLabelBackfillKey struct {
+	Kind      string
+	Namespace string
+	Name      string
+}
+
 type engineRuntimeLabelBackfillFailureState struct {
-	mu       sync.Mutex
-	attempts int
-	warned   bool
+	mu         sync.Mutex
+	generation int64
+	attempts   int
+	retryAt    time.Time
+	warned     bool
 }
 
 func NewClusterEngineRuntimeProfileReconciler(mgr ctrl.Manager) *ClusterEngineRuntimeProfileReconciler {
@@ -188,11 +197,7 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 	// patch must not block status tracking or lose the one-shot bypass event.
 	// It still returns an error so the reconcile retries and the admission
 	// webhook keeps its unscoped fallback until the scan has completed cleanly.
-	if err := r.backfillHasEngineRuntimesLabels(ctx); err != nil {
-		return ctrl.Result{}, err
-	}
-
-	return ctrl.Result{}, nil
+	return r.backfillHasEngineRuntimesLabels(ctx)
 }
 
 // backfillHasEngineRuntimesLabels converges the has-engine-runtimes label
@@ -200,120 +205,227 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 // label (the upgrade path), or bypassed the admission defaulters
 // (--enable-webhooks=none). The scan runs on the manager's informer cache;
 // only objects whose label state disagrees with their spec are patched, so
-// steady state costs one cached List and no writes. Label-only patches do
-// not change metadata.generation, so they do not re-trigger this
-// controller's watches; a mismatching object is patched only once.
-func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(ctx context.Context) error {
+// steady state costs one cached List and no writes. Label-only changes to
+// has-engine-runtimes deliberately requeue the referenced profiles so a
+// bypassed write is repaired.
+func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(ctx context.Context) (ctrl.Result, error) {
 	if workloadsv1alpha2.EngineRuntimeLabelConverged() {
 		// Every admitted write maintains the label, so a converged process
 		// only re-scans on restart. Objects written with webhooks disabled
 		// (--enable-webhooks=none) can drift; that is a debugging mode and
 		// the admission fallback is irrelevant without webhooks anyway.
-		return nil
+		return ctrl.Result{}, nil
 	}
 	epoch := workloadsv1alpha2.BeginEngineRuntimeLabelScan()
 	var allErrs []error
 	stuck := false
+	var requeueAfter time.Duration
 	rbgList := &workloadsv1alpha2.RoleBasedGroupList{}
 	if err := r.List(ctx, rbgList); err != nil {
-		return fmt.Errorf("listing rolebasedgroups for engine runtime label backfill: %w", err)
+		return ctrl.Result{}, fmt.Errorf("listing rolebasedgroups for engine runtime label backfill: %w", err)
 	}
 	for i := range rbgList.Items {
 		rbg := &rbgList.Items[i]
-		if engineRuntimeLabelMatches(rbg.Labels, roleSpecHasEngineRuntimes(&rbg.Spec)) {
-			r.engineRuntimeLabelBackfillFailure.Delete(client.ObjectKeyFromObject(rbg))
-			continue
+		outcome, err := r.backfillEngineRuntimeLabel(ctx, rbg)
+		if err != nil {
+			allErrs = append(allErrs, err)
 		}
-		if engineRuntimeBackfillWouldChangeSpec(ctx, rbg) {
-			r.warnEngineRuntimeLabelBackfillSkipped(rbg)
-			stuck = true
-			continue
-		}
-		base := rbg.DeepCopy()
-		workloadsv1alpha2.SetHasEngineRuntimesLabel(rbg)
-		if err := r.Patch(ctx, rbg, client.MergeFrom(base)); err != nil {
-			if retry := r.recordEngineRuntimeLabelBackfillFailure(rbg, err); retry {
-				allErrs = append(allErrs, fmt.Errorf("backfilling engine runtime label on rolebasedgroup %s/%s: %w", rbg.Namespace, rbg.Name, err))
-			}
-			if !apierrors.IsNotFound(err) {
-				stuck = true
-			}
-		} else {
-			r.engineRuntimeLabelBackfillFailure.Delete(client.ObjectKeyFromObject(rbg))
-		}
+		stuck = stuck || outcome.stuck
+		requeueAfter = engineRuntimeLabelBackfillNextRetry(requeueAfter, outcome.requeueAfter)
 	}
 
 	rbgsList := &workloadsv1alpha2.RoleBasedGroupSetList{}
 	if err := r.List(ctx, rbgsList); err != nil {
-		return fmt.Errorf("listing rolebasedgroupsets for engine runtime label backfill: %w", err)
+		return ctrl.Result{}, fmt.Errorf("listing rolebasedgroupsets for engine runtime label backfill: %w", err)
 	}
 	for i := range rbgsList.Items {
 		rbgs := &rbgsList.Items[i]
-		if engineRuntimeLabelMatches(rbgs.Labels, roleSpecHasEngineRuntimes(&rbgs.Spec.GroupTemplate.Spec)) {
-			r.engineRuntimeLabelBackfillFailure.Delete(client.ObjectKeyFromObject(rbgs))
-			continue
+		outcome, err := r.backfillEngineRuntimeLabel(ctx, rbgs)
+		if err != nil {
+			allErrs = append(allErrs, err)
 		}
-		if engineRuntimeBackfillWouldChangeSpec(ctx, rbgs) {
-			r.warnEngineRuntimeLabelBackfillSkipped(rbgs)
-			stuck = true
-			continue
-		}
-		base := rbgs.DeepCopy()
-		workloadsv1alpha2.SetRoleBasedGroupSetHasEngineRuntimesLabel(rbgs)
-		if err := r.Patch(ctx, rbgs, client.MergeFrom(base)); err != nil {
-			if retry := r.recordEngineRuntimeLabelBackfillFailure(rbgs, err); retry {
-				allErrs = append(allErrs, fmt.Errorf("backfilling engine runtime label on rolebasedgroupset %s/%s: %w", rbgs.Namespace, rbgs.Name, err))
-			}
-			if !apierrors.IsNotFound(err) {
-				stuck = true
-			}
-		} else {
-			r.engineRuntimeLabelBackfillFailure.Delete(client.ObjectKeyFromObject(rbgs))
-		}
+		stuck = stuck || outcome.stuck
+		requeueAfter = engineRuntimeLabelBackfillNextRetry(requeueAfter, outcome.requeueAfter)
 	}
 	if len(allErrs) > 0 {
-		return utilerrors.NewAggregate(allErrs)
+		return ctrl.Result{}, utilerrors.NewAggregate(allErrs)
+	}
+	if requeueAfter > 0 {
+		return ctrl.Result{RequeueAfter: requeueAfter}, nil
 	}
 	if stuck {
-		return nil
+		return ctrl.Result{}, nil
 	}
 	// A clean full scan with no writes and no concurrent drift: the scoped
 	// admission lookup can take over from the unscoped fallback.
 	workloadsv1alpha2.CompleteEngineRuntimeLabelScan(epoch)
-	return nil
+	return ctrl.Result{}, nil
+}
+
+type engineRuntimeLabelBackfillOutcome struct {
+	stuck        bool
+	requeueAfter time.Duration
+}
+
+func (r *ClusterEngineRuntimeProfileReconciler) backfillEngineRuntimeLabel(
+	ctx context.Context, obj client.Object,
+) (engineRuntimeLabelBackfillOutcome, error) {
+	key := engineRuntimeLabelBackfillKeyForObject(obj)
+	if engineRuntimeLabelMatches(obj.GetLabels(), engineRuntimeLabelObjectReferences(obj)) {
+		r.engineRuntimeLabelBackfillFailure.Delete(key)
+		return engineRuntimeLabelBackfillOutcome{}, nil
+	}
+	if engineRuntimeBackfillWouldChangeSpec(ctx, obj) {
+		r.warnEngineRuntimeLabelBackfillSkipped(obj)
+		return engineRuntimeLabelBackfillOutcome{stuck: true}, nil
+	}
+
+	attempt, retryAfter := r.shouldAttemptEngineRuntimeLabelBackfill(obj, time.Now())
+	if !attempt {
+		return engineRuntimeLabelBackfillOutcome{stuck: true, requeueAfter: retryAfter}, nil
+	}
+
+	base := obj.DeepCopyObject().(client.Object)
+	setEngineRuntimeLabelObject(obj)
+	if err := r.Patch(ctx, obj, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		retry, scheduledRetry := r.recordEngineRuntimeLabelBackfillFailure(obj, err)
+		outcome := engineRuntimeLabelBackfillOutcome{
+			stuck:        !apierrors.IsNotFound(err),
+			requeueAfter: scheduledRetry,
+		}
+		if !retry {
+			return outcome, nil
+		}
+		return outcome, fmt.Errorf(
+			"backfilling engine runtime label on %s %s/%s: %w",
+			engineRuntimeLabelObjectKind(obj), obj.GetNamespace(), obj.GetName(), err)
+	}
+
+	r.engineRuntimeLabelBackfillFailure.Delete(key)
+	return engineRuntimeLabelBackfillOutcome{}, nil
+}
+
+func engineRuntimeLabelBackfillNextRetry(current, candidate time.Duration) time.Duration {
+	if candidate > 0 && (current == 0 || candidate < current) {
+		return candidate
+	}
+	return current
 }
 
 func (r *ClusterEngineRuntimeProfileReconciler) recordEngineRuntimeLabelBackfillFailure(
 	obj client.Object, err error,
-) bool {
+) (bool, time.Duration) {
 	if apierrors.IsNotFound(err) {
-		r.engineRuntimeLabelBackfillFailure.Delete(client.ObjectKeyFromObject(obj))
-		return false
+		r.engineRuntimeLabelBackfillFailure.Delete(engineRuntimeLabelBackfillKeyForObject(obj))
+		return false, 0
 	}
 
-	key := client.ObjectKeyFromObject(obj)
-	value, _ := r.engineRuntimeLabelBackfillFailure.LoadOrStore(key, &engineRuntimeLabelBackfillFailureState{})
+	key := engineRuntimeLabelBackfillKeyForObject(obj)
+	value, _ := r.engineRuntimeLabelBackfillFailure.LoadOrStore(key, &engineRuntimeLabelBackfillFailureState{
+		generation: obj.GetGeneration(),
+	})
 	state, ok := value.(*engineRuntimeLabelBackfillFailureState)
 	if !ok {
-		return true
+		return true, 0
 	}
 
 	state.mu.Lock()
 	defer state.mu.Unlock()
+	if state.generation != obj.GetGeneration() {
+		state.generation = obj.GetGeneration()
+		state.attempts = 0
+		state.retryAt = time.Time{}
+		state.warned = false
+	}
 	state.attempts++
 	if state.attempts < engineRuntimeLabelBackfillRetryLimit {
-		return true
+		return true, 0
 	}
 	if state.warned {
-		return false
+		return false, 0
 	}
 	state.warned = true
+	state.retryAt = time.Now().Add(engineRuntimeLabelBackfillRetryAfter)
 	if r.Recorder != nil {
 		r.Recorder.Event(obj, corev1.EventTypeWarning, ReasonEngineRuntimeLabelBackfillFailed,
 			fmt.Sprintf("the engine runtime label backfill failed %d times: %v; the object stays unlabeled and admission keeps the unscoped lookup",
 				state.attempts, err))
 	}
-	return false
+	return false, engineRuntimeLabelBackfillRetryAfter
+}
+
+func (r *ClusterEngineRuntimeProfileReconciler) shouldAttemptEngineRuntimeLabelBackfill(
+	obj client.Object, now time.Time,
+) (bool, time.Duration) {
+	key := engineRuntimeLabelBackfillKeyForObject(obj)
+	value, loaded := r.engineRuntimeLabelBackfillFailure.Load(key)
+	if !loaded {
+		return true, 0
+	}
+	state, ok := value.(*engineRuntimeLabelBackfillFailureState)
+	if !ok {
+		return true, 0
+	}
+
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if state.generation != obj.GetGeneration() {
+		state.generation = obj.GetGeneration()
+		state.attempts = 0
+		state.retryAt = time.Time{}
+		state.warned = false
+		return true, 0
+	}
+	if state.attempts < engineRuntimeLabelBackfillRetryLimit {
+		return true, 0
+	}
+	if state.attempts == engineRuntimeLabelBackfillRetryLimit {
+		if now.Before(state.retryAt) {
+			return false, time.Until(state.retryAt)
+		}
+		return true, 0
+	}
+	return false, 0
+}
+
+func engineRuntimeLabelBackfillKeyForObject(obj client.Object) engineRuntimeLabelBackfillKey {
+	key := engineRuntimeLabelBackfillKey{
+		Namespace: obj.GetNamespace(),
+		Name:      obj.GetName(),
+	}
+	key.Kind = engineRuntimeLabelObjectKind(obj)
+	return key
+}
+
+func engineRuntimeLabelObjectKind(obj client.Object) string {
+	switch obj.(type) {
+	case *workloadsv1alpha2.RoleBasedGroup:
+		return "RoleBasedGroup"
+	case *workloadsv1alpha2.RoleBasedGroupSet:
+		return "RoleBasedGroupSet"
+	default:
+		return ""
+	}
+}
+
+func engineRuntimeLabelObjectReferences(obj client.Object) bool {
+	switch typed := obj.(type) {
+	case *workloadsv1alpha2.RoleBasedGroup:
+		return roleSpecHasEngineRuntimes(&typed.Spec)
+	case *workloadsv1alpha2.RoleBasedGroupSet:
+		return roleSpecHasEngineRuntimes(&typed.Spec.GroupTemplate.Spec)
+	default:
+		return false
+	}
+}
+
+func setEngineRuntimeLabelObject(obj client.Object) {
+	switch typed := obj.(type) {
+	case *workloadsv1alpha2.RoleBasedGroup:
+		workloadsv1alpha2.SetHasEngineRuntimesLabel(typed)
+	case *workloadsv1alpha2.RoleBasedGroupSet:
+		workloadsv1alpha2.SetRoleBasedGroupSetHasEngineRuntimesLabel(typed)
+	}
 }
 
 func engineRuntimeBackfillWouldChangeSpec(ctx context.Context, obj client.Object) bool {
@@ -339,7 +451,7 @@ func (r *ClusterEngineRuntimeProfileReconciler) warnEngineRuntimeLabelBackfillSk
 	if r.Recorder == nil {
 		return
 	}
-	key := types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
+	key := engineRuntimeLabelBackfillKeyForObject(obj)
 	if _, warned := r.warnedEngineRuntimeLabelBackfill.LoadOrStore(key, struct{}{}); warned {
 		return
 	}

@@ -24,6 +24,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -106,7 +107,7 @@ func TestEngineRuntimeLabelStartupScannerMarksDrift(t *testing.T) {
 	rbg := rbgReferencing("grp-old", "ns-old", "ik")
 	delete(rbg.Labels, constants.HasEngineRuntimesLabelKey)
 
-	scanner.observe(rbg)
+	scanner.eventHandler().OnAdd(rbg, false)
 	assert.False(t, EngineRuntimeLabelConverged(),
 		"an unlabeled referencing object must un-converge every webhook replica")
 	select {
@@ -143,7 +144,7 @@ func TestEngineRuntimeLabelStartupScannerWaitsForLabelRepair(t *testing.T) {
 
 	fixed := rbgReferencing("grp-old", "ns-old", "ik")
 	reader.setRBG(fixed)
-	scanner.observe(fixed)
+	scanner.eventHandler().OnUpdate(unlabeled, fixed)
 
 	require.Eventually(t, func() bool {
 		return EngineRuntimeLabelConverged()
@@ -155,6 +156,37 @@ func TestEngineRuntimeLabelStartupScannerWaitsForLabelRepair(t *testing.T) {
 		require.NoError(t, err)
 	case <-time.After(time.Second):
 		t.Fatal("scanner did not stop after the manager context was canceled")
+	}
+}
+
+func TestEngineRuntimeLabelStartupScannerIgnoresStatusOnlyUpdates(t *testing.T) {
+	scanner := &engineRuntimeLabelStartupScanner{drift: make(chan struct{}, 1)}
+	old := rbgReferencing("grp-old", "ns-old", "ik")
+	newObj := old.DeepCopy()
+	newObj.Status.Conditions = []metav1.Condition{{
+		Type:               "Ready",
+		Status:             metav1.ConditionTrue,
+		LastTransitionTime: metav1.Now(),
+	}}
+
+	scanner.eventHandler().OnUpdate(old, newObj)
+	select {
+	case <-scanner.drift:
+		t.Fatal("a status-only update must not wake the scanner")
+	default:
+	}
+}
+
+func TestEngineRuntimeLabelStartupScannerWakesOnMismatchDelete(t *testing.T) {
+	scanner := &engineRuntimeLabelStartupScanner{drift: make(chan struct{}, 1)}
+	unlabeled := rbgReferencing("grp-old", "ns-old", "ik")
+	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+
+	scanner.eventHandler().OnDelete(unlabeled)
+	select {
+	case <-scanner.drift:
+	default:
+		t.Fatal("deleting the last mismatching object must wake the scanner")
 	}
 }
 
