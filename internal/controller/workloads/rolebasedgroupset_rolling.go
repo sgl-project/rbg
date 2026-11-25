@@ -561,6 +561,18 @@ func (r *RoleBasedGroupSetReconciler) createRollingGroupSetChild(
 		if metav1.GetControllerOfNoCopy(existing) == nil {
 			return r.adoptGroupSetChild(ctx, set, existing)
 		}
+		// The name is derived from the ordinal, so a child of this set that holds it is the one
+		// being created here. Listing skipped it because its ordinal label is missing or wrong;
+		// restore the label, or every pass would retry this create and report progress.
+		want := child.Labels[constants.GroupSetIndexLabelKey]
+		if existing.DeletionTimestamp.IsZero() && existing.Labels[constants.GroupSetIndexLabelKey] != want {
+			repaired := existing.DeepCopy()
+			if repaired.Labels == nil {
+				repaired.Labels = make(map[string]string)
+			}
+			repaired.Labels[constants.GroupSetIndexLabelKey] = want
+			return r.client.Patch(ctx, repaired, client.MergeFromWithOptions(existing, client.MergeFromWithOptimisticLock{}))
+		}
 	}
 	return nil
 }

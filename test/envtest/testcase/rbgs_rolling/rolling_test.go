@@ -328,6 +328,31 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Expect(set.Status.UpdateRevision).To(Equal(revision))
 	})
 
+	It("repairs the ordinal label of a ready group it cannot delete", func() {
+		setName := "rbgs-index-label"
+		// maxUnavailable=0 keeps every ready group, so the broken one can't be deleted and rebuilt.
+		Expect(testutil.K8sClient.Create(testutil.Ctx,
+			buildRollingSet(setName, testNs, 2, 1, 0, 1, 0))).Should(Succeed())
+		waitRollout(testNs, setName, rolloutComplete)
+		child := fetchChildren(testNs, setName)[1]
+		Expect(child).NotTo(BeNil())
+		uid := child.UID
+		base := child.DeepCopy()
+		delete(child.Labels, constants.GroupSetIndexLabelKey)
+		Expect(testutil.K8sClient.Patch(testutil.Ctx, child, client.MergeFrom(base))).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			got := &workloadsv1alpha2.RoleBasedGroup{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKey{Namespace: testNs, Name: childName(setName, 1)}, got)).To(Succeed())
+			g.Expect(got.Labels).To(HaveKeyWithValue(constants.GroupSetIndexLabelKey, "1"))
+			g.Expect(got.UID).To(Equal(uid))
+		}, timeout, interval).Should(Succeed())
+		set := waitRollout(testNs, setName, rolloutComplete)
+		Expect(set.Status.Replicas).To(Equal(int32(2)))
+		Expect(fetchChildren(testNs, setName)).To(HaveLen(2))
+	})
+
 	DescribeTable("paces role scaling until downstream workloads are ready", func(strategy workloadsv1alpha2.GroupUpdateStrategyType, pattern constants.InstancePatternType) {
 		setName := "rbgs-scaling"
 		set := buildRollingSet(setName, testNs, 3, 1, 1, 0, 1)
