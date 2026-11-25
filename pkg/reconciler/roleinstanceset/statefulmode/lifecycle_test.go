@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/features"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/readiness"
 	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
@@ -101,6 +102,7 @@ func TestStatefulRollingUpdateAndScaleDownWaitForPreDeleteHook(t *testing.T) {
 }
 
 func TestStatefulPreUpdateBlocksWorkloadUpdateAndClearsPodMirror(t *testing.T) {
+	enableLifecycleHooksForTest(t)
 	h := newRollbackTestHarness(t, "kep527-pre-update", 1, 0, 0)
 	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
 	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
@@ -143,6 +145,67 @@ func TestStatefulPreUpdateBlocksWorkloadUpdateAndClearsPodMirror(t *testing.T) {
 	h.assertDeleted(t, instance.Name)
 	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pod), pod))
 	require.Empty(t, pod.Labels["patio.workloads.x-k8s.io/pre-update"])
+}
+
+// A disabled feature gate must disable the Stateful barrier too: updates and
+// deletions proceed instead of waiting for hooks the RoleInstance controller
+// no longer honors.
+func TestStatefulLifecycleHooksDisabledWithGateOff(t *testing.T) {
+	features.SetRoleInstanceLifecycleHooks(false)
+	h := newRollbackTestHarness(t, "kep527-gate-off", 1, 0, 0)
+	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"patio.workloads.x-k8s.io/pre-update": "blocked"},
+		},
+	}
+	instance := h.instance(0, h.intermediate.Name, true)
+	instance.ResourceVersion = "1"
+
+	h.reconcile(t, instance)
+	h.assertDeleted(t, instance.Name)
+}
+
+// Terminating is durable authorization: a scale-down retry after preDelete
+// was released must delete the instance without reinstalling the signals and
+// asking for a second acknowledgement.
+func TestStatefulPreDeleteTerminatingResumesWithoutReplay(t *testing.T) {
+	enableLifecycleHooksForTest(t)
+	h := newRollbackTestHarness(t, "kep527-terminating", 1, 0, 0)
+	h.set.Spec.Replicas = ptr.To(int32(0))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/drain": "true"},
+		},
+	}
+	instance := h.instance(0, h.current.Name, true)
+	instance.ResourceVersion = "1"
+	instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(constants.RoleInstanceHookStateTerminating)
+	instance.Annotations = map[string]string{
+		constants.RoleInstanceLifecycleHookSignalLabelKeys: "consumer.example/drain",
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(instance).
+		Build()
+	h.control.hookControl = roleinstancelifecycle.NewHookControl(c)
+	h.control.client = c
+
+	h.reconcile(t, instance)
+	h.assertDeleted(t, instance.Name)
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
+	require.NotContains(t, instance.Labels, "consumer.example/drain",
+		"Terminating must not reinstall released preDelete signals")
+}
+
+func enableLifecycleHooksForTest(t *testing.T) {
+	t.Helper()
+	features.SetRoleInstanceLifecycleHooks(true)
+	t.Cleanup(func() { features.SetRoleInstanceLifecycleHooks(false) })
 }
 
 func TestStatefulPreDeleteWaitsForFinalizer(t *testing.T) {

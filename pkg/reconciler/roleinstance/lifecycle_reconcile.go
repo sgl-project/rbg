@@ -48,12 +48,13 @@ func (r *reconciler) reconcileLifecycleDeletion(
 	instance *workloadsv1alpha2.RoleInstance,
 ) (bool, error) {
 	if !r.lifecycleEnabled(instance) || instance.Spec.Lifecycle.PreDelete == nil {
-		if r.lifecycleEnabled(instance) {
-			if removed, err := r.hookControl.RemovePreDeleteFinalizer(ctx, instance); err != nil {
-				return false, err
-			} else if removed {
-				return false, nil
-			}
+		// The preDelete hook will not run here: it is unconfigured, no hooks
+		// remain, or the feature gate is disabled. The reserved finalizer must
+		// not outlive the hook that installed it, or deletion hangs forever.
+		if removed, err := r.hookControl.RemovePreDeleteFinalizer(ctx, instance); err != nil {
+			return false, err
+		} else if removed {
+			return false, nil
 		}
 		return false, nil
 	}
@@ -67,7 +68,13 @@ func (r *reconciler) reconcileLifecycleDeletion(
 		return false, nil
 	}
 
-	if lifecycle.HookState(instance) != constants.RoleInstanceHookStatePreDelete {
+	state := lifecycle.HookState(instance)
+	// Terminating is durable authorization: preDelete has already been
+	// acknowledged, so a retry after a partial cleanup failure must resume
+	// deletion instead of replaying the hook and asking for a second
+	// acknowledgement.
+	if state != constants.RoleInstanceHookStatePreDelete &&
+		state != constants.RoleInstanceHookStateTerminating {
 		pods, _, err := r.getOwnedPods(ctx, instance)
 		if err != nil {
 			return true, err
@@ -82,7 +89,8 @@ func (r *reconciler) reconcileLifecycleDeletion(
 		return true, nil
 	}
 
-	if !lifecycle.HookReleased(instance, instance.Spec.Lifecycle.PreDelete) {
+	if state == constants.RoleInstanceHookStatePreDelete &&
+		!lifecycle.HookReleased(instance, instance.Spec.Lifecycle.PreDelete) {
 		pods, _, err := r.getOwnedPods(ctx, instance)
 		if err != nil {
 			return true, err
@@ -134,6 +142,9 @@ func (r *reconciler) prepareLifecycleOperation(
 	pods []*v1.Pod,
 ) (lifecycleOperationResult, error) {
 	if !r.lifecycleEnabled(instance) {
+		if err := r.cleanupStaleLifecycle(ctx, instance, pods); err != nil {
+			return lifecycleOperationResult{}, err
+		}
 		return lifecycleOperationResult{}, nil
 	}
 	lifecycleConfig := instance.Spec.Lifecycle
@@ -154,7 +165,10 @@ func (r *reconciler) prepareLifecycleOperation(
 	}
 
 	update := facts.updateActive && instance.Status.Phase != workloadsv1alpha2.RoleInstancePhaseCreating
-	recovery := !update && !facts.podsPresent &&
+	// A genuinely new instance starts at Creating, not Recovering: entering
+	// preRecover before the first Pod exists would emit a spurious recovery
+	// signal that the next reconcile bypasses once the phase latches.
+	recovery := !update && !facts.podsPresent && !facts.newInstance &&
 		instance.Status.Phase != workloadsv1alpha2.RoleInstancePhaseCreating
 	if !update && !recovery {
 		return lifecycleOperationResult{}, nil
@@ -177,7 +191,12 @@ func (r *reconciler) prepareLifecycleOperation(
 		}
 		return lifecycleOperationResult{operation: true}, nil
 	}
-	if lifecycle.HookState(instance) != constants.RoleInstanceHookStatePreRecover {
+	hookState := lifecycle.HookState(instance)
+	// Recovering is durable authorization: preRecover has already been
+	// acknowledged, so a retry after partial Pod creation resumes recovery
+	// instead of replaying the hook and asking for a second acknowledgement.
+	if hookState != constants.RoleInstanceHookStatePreRecover &&
+		hookState != constants.RoleInstanceHookStateRecovering {
 		if err := r.hookControl.EnterHook(
 			ctx, instance, constants.RoleInstanceHookStatePreRecover, lifecycleConfig.PreRecover, pods); err != nil {
 			return lifecycleOperationResult{}, err
@@ -186,16 +205,48 @@ func (r *reconciler) prepareLifecycleOperation(
 			"preRecover lifecycle hook entered; waiting for signal labels to be removed")
 		return lifecycleOperationResult{blocked: true, operation: true}, nil
 	}
-	if !lifecycle.HookReleased(instance, lifecycleConfig.PreRecover) {
+	if hookState == constants.RoleInstanceHookStatePreRecover &&
+		!lifecycle.HookReleased(instance, lifecycleConfig.PreRecover) {
 		if err := r.hookControl.SyncRuntimeLabels(ctx, instance, lifecycleConfig, pods); err != nil {
 			return lifecycleOperationResult{}, err
 		}
 		return lifecycleOperationResult{blocked: true, operation: true}, nil
 	}
-	if err := r.hookControl.SetHookState(ctx, instance, constants.RoleInstanceHookStateRecovering, pods); err != nil {
-		return lifecycleOperationResult{}, err
+	if hookState != constants.RoleInstanceHookStateRecovering {
+		if err := r.hookControl.SetHookState(ctx, instance, constants.RoleInstanceHookStateRecovering, pods); err != nil {
+			return lifecycleOperationResult{}, err
+		}
 	}
 	return lifecycleOperationResult{operation: true}, nil
+}
+
+// cleanupStaleLifecycle removes protocol state that the current
+// configuration no longer owns. With the gate enabled but no hooks
+// configured, every runtime signal label and the hook-state label are stale.
+// The preDelete finalizer is removed even when the gate is disabled: it must
+// never block deletion of an object whose hook the controller will not run.
+// Every operation here is a no-op when no protocol state is present, so
+// instances that never used the feature stay untouched.
+func (r *reconciler) cleanupStaleLifecycle(
+	ctx context.Context,
+	instance *workloadsv1alpha2.RoleInstance,
+	pods []*v1.Pod,
+) error {
+	if instance == nil {
+		return nil
+	}
+	if features.RoleInstanceLifecycleHooksEnabled() {
+		if lifecycle.HookState(instance) != "" {
+			if err := r.hookControl.SetHookState(ctx, instance, "", pods); err != nil {
+				return err
+			}
+		}
+		if err := r.hookControl.SyncRuntimeLabels(ctx, instance, instance.Spec.Lifecycle, pods); err != nil {
+			return err
+		}
+	}
+	_, err := r.hookControl.RemovePreDeleteFinalizer(ctx, instance)
+	return err
 }
 
 func (r *reconciler) finishLifecycleOperation(
