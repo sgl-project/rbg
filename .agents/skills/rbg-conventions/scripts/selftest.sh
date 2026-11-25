@@ -10,9 +10,10 @@ work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 
 # The fake kubectl answers its Nth call from $FAKE/N.{rc,out,err}, or from $FAKE/default.* when
-# there is no N.rc; an N.cmd (or default.cmd) script, run with N set to the call number, computes
-# output. It logs the arguments of every call to $FAKE/calls, and the content of every file passed
-# with -f to $FAKE/inputs.
+# there is no N.rc; an N.cmd (or default.cmd) script, run with N set to the call number and with
+# kubectl's arguments, computes output, and when N.rc holds `cmd` its exit status is kubectl's. It
+# logs the arguments of every call to $FAKE/calls, and the content of every file passed with -f to
+# $FAKE/inputs.
 cat >"$work/kubectl" <<'EOF'
 #!/usr/bin/env bash
 n=$(($(cat "$FAKE/count" 2>/dev/null || echo 0) + 1))
@@ -25,10 +26,15 @@ for arg in "$@"; do
 done
 f=$FAKE/$n
 [ -e "$f.rc" ] || f=$FAKE/default
+rc=$(cat "$f.rc" 2>/dev/null || echo 0)
 [ ! -e "$f.out" ] || cat "$f.out"
-[ ! -e "$f.cmd" ] || N=$n bash "$f.cmd"
+if [ -e "$f.cmd" ]; then
+  N=$n bash "$f.cmd" "$@"
+  status=$?
+  [ "$rc" != cmd ] || rc=$status
+fi
 [ ! -e "$f.err" ] || cat "$f.err" >&2
-exit "$(cat "$f.rc" 2>/dev/null || echo 0)"
+exit "$rc"
 EOF
 chmod +x "$work/kubectl"
 export KUBECTL=$work/kubectl RBG_VERIFY_RETRY_DELAY=0 RBG_VERIFY_STATE_DIR=$work/state
@@ -48,7 +54,8 @@ check() {
 }
 
 # scenario NAME starts a fresh fake; answer N|default RC [STDOUT] [STDERR] scripts one answer;
-# compute N|default RC SCRIPT scripts an answer whose output SCRIPT prints.
+# compute N|default RC SCRIPT scripts an answer whose output SCRIPT prints; route N|default SCRIPT
+# scripts an answer that SCRIPT computes from kubectl's arguments, including its exit status.
 scenario() {
   export FAKE=$work/fake.$1
   mkdir -p "$FAKE"
@@ -61,6 +68,10 @@ answer() {
 compute() {
   echo "$2" >"$FAKE/$1.rc"
   printf '%s\n' "$3" >"$FAKE/$1.cmd"
+}
+route() {
+  echo cmd >"$FAKE/$1.rc"
+  printf '%s\n' "$2" >"$FAKE/$1.cmd"
 }
 calls() { if [ -e "$FAKE/calls" ]; then wc -l <"$FAKE/calls" | tr -d ' '; else echo 0; fi; }
 # run CMD... runs CMD and sets rc, out and err.
@@ -356,6 +367,165 @@ answer default 0 ''
 run "$here/rbg-fixtures.sh" apply -n ns-image --image 'busybox|x'
 check "an image reference that sed would misread is refused before anything is written" \
   "$rc $(calls)" "2 0"
+
+# A new namespace: it is absent, its create returns a UID, and the fixtures are applied to it.
+scenario fixtures-default
+answer 1 0 ''
+answer 2 0 'u1'
+answer default 0 ''
+run "$here/rbg-fixtures.sh" apply -n ns-default
+check "by default only the RoleInstanceSet fixtures are applied" \
+  "$rc $(grep -c '^apply -n ns-default' "$FAKE/calls") $(grep -c '^  name: fx-' "$FAKE/inputs") $(grep -c 'role-workload-type' "$FAKE/inputs")" \
+  "0 1 6 0"
+
+scenario fixtures-deprecated
+answer 1 0 ''
+answer 2 0 'u2'
+answer default 0 ''
+run "$here/rbg-fixtures.sh" apply -n ns-deprecated --with-deprecated --image registry.example/busybox:1
+check "--with-deprecated adds the StatefulSet and Deployment fixtures to the same apply" \
+  "$rc $(grep -c '^apply -n ns-deprecated' "$FAKE/calls") $(grep -c '^  name: fx-' "$FAKE/inputs") $(grep -c 'role-workload-type: apps/v1/' "$FAKE/inputs")" \
+  "0 1 8 2"
+check "every fixture gets the image" \
+  "$(grep -c 'image: registry.example/busybox:1$' "$FAKE/inputs") $(grep -c '__IMAGE__' "$FAKE/inputs")" "9 0"
+
+echo "== cluster-preflight.sh"
+cat >"$work/ps" <<'EOF'
+#!/usr/bin/env bash
+[ ! -e "$FAKE/ps" ] || cat "$FAKE/ps"
+EOF
+cat >"$work/helm" <<'EOF'
+#!/usr/bin/env bash
+if [ -e "$FAKE/helm" ]; then cat "$FAKE/helm"; else echo '[]'; fi
+EOF
+cat >"$work/exe" <<'EOF'
+#!/usr/bin/env bash
+# The executable of process $1 is $FAKE/exe.$1; without that file it can't be read.
+[ ! -e "$FAKE/exe.$1" ] || echo "$FAKE/exe.$1"
+EOF
+chmod +x "$work/ps" "$work/helm" "$work/exe"
+export RBG_PREFLIGHT_PS=$work/ps HELM=$work/helm RBG_PREFLIGHT_EXE=$work/exe
+
+# preflight NAME starts a fresh fake that answers the preflight's queries as a cluster that nobody
+# else uses would. $FAKE/KEY replaces the answer to one query; KEY.rc and KEY.err make it fail.
+preflight() {
+  scenario "$1"
+  # shellcheck disable=SC2016 # expanded by the fake kubectl
+  route default 'def="{\"items\": []}"
+case "$*" in
+  "config current-context") echo ctx; exit 0 ;;
+  "config view --minify"*) echo https://192.0.2.1:6443; exit 0 ;;
+  "version -o json") key=version def="{\"serverVersion\": {\"gitVersion\": \"v1.31.0\"}}" ;;
+  "get --raw /apis/workloads.x-k8s.io") key=api def="{\"kind\": \"APIGroup\"}" ;;
+  "get pods -A -l control-plane=rbgs-controller -o json") key=pods ;;
+  "get leases -A --field-selector metadata.name=rbg-controller -o json") key=leases ;;
+  "get validatingwebhookconfigurations,mutatingwebhookconfigurations -o json") key=webhooks ;;
+  "get namespaces -l rbg-conventions/verification=true -o json") key=namespaces ;;
+  "get rolebasedgroups.workloads.x-k8s.io -A --no-headers") key=rbgs def= ;;
+  "get nodes -l type=kwok --no-headers") key=kwok def= ;;
+  *) echo "unexpected: kubectl $*" >&2; exit 1 ;;
+esac
+[ ! -e "$FAKE/$key.err" ] || cat "$FAKE/$key.err" >&2
+[ ! -e "$FAKE/$key.rc" ] || exit "$(cat "$FAKE/$key.rc")"
+if [ -e "$FAKE/$key" ]; then cat "$FAKE/$key"; elif [ -n "$def" ]; then echo "$def"; fi'
+}
+found() { printf '%s\n' "$out" | grep -c "^FOUND: ${1:-}"; }
+
+preflight preflight-clear
+HELM=$work/no-helm
+run "$here/cluster-preflight.sh"
+HELM=$work/helm
+check "a cluster that nobody else uses passes, also without helm" \
+  "$rc $(found) $(printf '%s\n' "$out" | grep -c 'Helm releases were not checked')" "0 0 1"
+
+preflight preflight-others
+printf '%s\n' '{"items": [{"metadata": {"namespace": "rbgs-system", "name": "rbgs-controller-manager-1"},
+  "spec": {"containers": [{"image": "rolebasedgroup/rbgs-controller:v0.9.0"}]}, "status": {"phase": "Running"}}]}' \
+  >"$FAKE/pods"
+printf '{"items": [
+  {"metadata": {"namespace": "rbgs-system", "name": "rbg-controller"}, "spec": {"holderIdentity": "h1", "renewTime": "%s"}},
+  {"metadata": {"namespace": "old", "name": "rbg-controller"}, "spec": {"holderIdentity": "h2", "renewTime": "2020-01-01T00:00:00.000000Z"}}]}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%S.000000Z)" >"$FAKE/leases"
+printf '%s\n' '{"items": [
+  {"kind": "ValidatingWebhookConfiguration", "metadata": {"name": "rbgs-validating"}, "webhooks": [
+    {"clientConfig": {"service": {"namespace": "rbgs-system", "name": "rbgs-webhook-service"}},
+     "rules": [{"apiGroups": ["workloads.x-k8s.io"]}]}]},
+  {"kind": "MutatingWebhookConfiguration", "metadata": {"name": "other"}, "webhooks": [{"rules": [{"apiGroups": ["apps"]}]}]}]}' \
+  >"$FAKE/webhooks"
+printf '%s\n' 'tenant-a   rbg-1   10d' 'tenant-a   rbg-2   10d' >"$FAKE/rbgs"
+printf '%s\n' 'kwok-node-0   Ready   agent   1d   kwok' >"$FAKE/kwok"
+printf '%s\n' '[{"name": "rbgs", "namespace": "rbgs-system", "chart": "rbgs-0.9.0", "status": "deployed"},
+  {"name": "x", "namespace": "y", "chart": "other-1.0.0", "status": "deployed"}]' >"$FAKE/helm"
+printf '%s\n' '  101   01:00 /tmp/go-build1/b001/exe/rbgs --enable-webhooks=none' \
+  '  102   01:00 kubectl proxy --port=8001' '  103   01:00 /usr/bin/vim notes.txt' \
+  '  104   01:00 /usr/local/go/bin/go run -trimpath ./cmd/rbgs --leader-elect=false' \
+  '  105   00:01 /bin/bash -c ps -A | grep -E cmd/rbgs' \
+  '  106   02:00 ./bin/manager --development=true --health-probe-bind-address=:8082' \
+  '  107   02:00 /var/folders/x/T/__debug_bin3112 --leader-elect=false' \
+  '  108   02:00 /usr/local/bin/manager --config /etc/other.yaml' >"$FAKE/ps"
+# The controller built by `make build` and by a debugger, and another program called manager.
+printf '\177ELF\0%s\0' 'sigs.k8s.io/rbgs/internal/controller/workloads.(*RoleBasedGroupReconciler).Reconcile' \
+  >"$FAKE/exe.106"
+cp "$FAKE/exe.106" "$FAKE/exe.107"
+printf '\177ELF\0%s\0' 'example.com/other/controllers.(*Reconciler).Reconcile' >"$FAKE/exe.108"
+run "$here/cluster-preflight.sh"
+check "another install, a running controller, another run's RoleBasedGroups and a stress test are found" \
+  "$rc $(found) $(found 'RBG controller Pod rbgs-system/') $(found 'leader-election Lease rbgs-system/') $(found '.*rbgs-validating') $(found '2 RoleBasedGroup(s) in namespace tenant-a') $(found '1 kwok') $(found 'RBG controller process') $(found 'Helm release rbgs-system/rbgs ')" \
+  "1 10 1 1 1 1 1 4 1"
+check "a shell that only mentions cmd/rbgs is not a controller" "$(found '.*/bin/bash')" "0"
+check "builds called manager or run by a debugger count by their code, whatever their flags" \
+  "$(found '.*\./bin/manager --development') $(found '.*__debug_bin3112') $(found '.*/usr/local/bin/manager') $(printf '%s\n' "$out" | grep -c '^UNKNOWN')" \
+  "1 1 0 0"
+check "a stale Lease and a kubectl proxy are only reported" \
+  "$(printf '%s\n' "$out" | grep -c -E '^info: (leader-election Lease old/|kubectl proxy)')" "2"
+
+preflight preflight-unreadable
+printf '%s\n' '  301   00:10 /tmp/go-build9/b001/exe/main --metrics-bind-address=:8080' >"$FAKE/ps"
+run "$here/cluster-preflight.sh"
+check "a process called main whose executable can't be read makes the result incomplete" \
+  "$rc $(found) $(printf '%s\n' "$out" | grep -c '^UNKNOWN: cannot read the executable of process 301 ')" "2 0 1"
+
+preflight preflight-mine
+printf '%s\n' '{"items": [
+  {"metadata": {"name": "ns-mine", "uid": "u1", "labels": {"rbg-conventions/owner": "t1"}}},
+  {"metadata": {"name": "ns-theirs", "uid": "u2", "labels": {"rbg-conventions/owner": "t2"}}}]}' >"$FAKE/namespaces"
+printf '%s\n' 'ns-mine   fx-standalone   1m' 'ns-theirs   fx-standalone   1m' >"$FAKE/rbgs"
+printf 't1 u1\n' >"$(state_file ns-mine)"
+run "$here/cluster-preflight.sh" -n ns-mine -n ns-other
+check "the namespaces you name pass with their RoleBasedGroups; another run's are found" \
+  "$rc $(found) $(found '.*ns-theirs')" "1 2 2"
+run "$here/cluster-preflight.sh"
+check "a namespace this machine created that you don't name is found, as another session's" \
+  "$rc $(found) $(found 'verification namespace ns-mine was created on this machine by another session') $(found '1 RoleBasedGroup(s) in namespace ns-mine')" \
+  "1 4 1 1"
+run "$here/cluster-preflight.sh" -n ns-theirs
+check "a namespace you name without a matching record is found" \
+  "$rc $(found 'verification namespace ns-theirs was named with -n, but another run')" "1 1"
+
+preflight preflight-no-crds
+printf '%s\n' "$absent" >"$FAKE/api.err"
+echo 1 >"$FAKE/api.rc"
+run "$here/cluster-preflight.sh"
+check "missing RBG CRDs are found, and RoleBasedGroups are not listed" \
+  "$rc $(found 'the RBG CRDs are not installed') $(grep -c '^get rolebasedgroups' "$FAKE/calls")" "1 1 0"
+
+preflight preflight-forbidden
+printf '%s\n' 'Error from server (Forbidden): pods is forbidden: User "u" cannot list resource "pods" in API group "" at the cluster scope' \
+  >"$FAKE/pods.err"
+echo 1 >"$FAKE/pods.rc"
+run "$here/cluster-preflight.sh"
+check "a check that can't run makes the result incomplete" \
+  "$rc $(printf '%s\n' "$out" | grep -c '^UNKNOWN: cannot list RBG controller Pods: .*(Forbidden)')" "2 1"
+printf '%s\n' 'kwok-node-0   Ready   agent   1d   kwok' >"$FAKE/kwok"
+run "$here/cluster-preflight.sh"
+check "a finding decides the exit status even when another check can't run" \
+  "$rc $(found '1 kwok') $(printf '%s\n' "$out" | grep -c -e '^UNKNOWN: ' -e 'this result is incomplete')" "1 1 2"
+
+preflight preflight-unreachable
+printf '%s\n' "$refused" >"$FAKE/version.err"
+echo 1 >"$FAKE/version.rc"
+run "$here/cluster-preflight.sh"
+check "an unreachable API server stops the checks" "$rc $(grep -c '^get ' "$FAKE/calls")" "2 0"
 
 echo "== crd-default-on-read.sh"
 scenario crd-null-conditions
