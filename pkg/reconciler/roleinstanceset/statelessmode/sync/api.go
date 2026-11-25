@@ -17,6 +17,8 @@ limitations under the License.
 package sync
 
 import (
+	"context"
+
 	apps "k8s.io/api/apps/v1"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -24,6 +26,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
+	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
 )
 
@@ -38,6 +41,7 @@ type Interface interface {
 	) (bool, error)
 
 	Update(
+		ctx context.Context,
 		set *workloadsv1alpha2.RoleInstanceSet,
 		currentRevision *apps.ControllerRevision,
 		updateRevision *apps.ControllerRevision,
@@ -50,6 +54,7 @@ type realControl struct {
 	client.Client
 	lifecycleControl lifecycle.Interface
 	inplaceControl   inplaceupdate.Interface
+	hookControl      *roleinstancelifecycle.HookControl
 	recorder         record.EventRecorder
 }
 
@@ -58,6 +63,7 @@ func New(c client.Client, recorder record.EventRecorder) Interface {
 		Client:           c,
 		inplaceControl:   inplaceupdate.New(c, utils.RevisionAdapterImpl),
 		lifecycleControl: lifecycle.New(c),
+		hookControl:      roleinstancelifecycle.NewHookControl(c),
 		recorder:         recorder,
 	}
 }

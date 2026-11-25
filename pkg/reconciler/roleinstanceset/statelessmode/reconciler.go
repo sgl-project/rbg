@@ -81,10 +81,10 @@ type ReconcileInstanceSet struct {
 // and what is in the InstanceSet.Spec
 func (r *ReconcileInstanceSet) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	klog.Infof("Start syncing InstanceSet %s", request.String())
-	return r.doReconcile(request)
+	return r.doReconcile(ctx, request)
 }
 
-func (r *ReconcileInstanceSet) doReconcile(request reconcile.Request) (res reconcile.Result, retErr error) {
+func (r *ReconcileInstanceSet) doReconcile(ctx context.Context, request reconcile.Request) (res reconcile.Result, retErr error) {
 	startTime := time.Now()
 	defer func() {
 		if retErr == nil {
@@ -188,7 +188,7 @@ func (r *ReconcileInstanceSet) doReconcile(request reconcile.Request) (res recon
 	*newStatus.CollisionCount = collisionCount
 
 	// scale and update
-	syncErr := r.syncInstanceSet(set, &newStatus, currentRevision, updateRevision, revisions, filteredInstances)
+	syncErr := r.syncInstanceSet(ctx, set, &newStatus, currentRevision, updateRevision, revisions, filteredInstances)
 
 	// update new status
 	if err = r.statusUpdater.UpdateInstanceSetStatus(set, &newStatus, filteredInstances); err != nil {
@@ -210,6 +210,7 @@ func (r *ReconcileInstanceSet) doReconcile(request reconcile.Request) (res recon
 }
 
 func (r *ReconcileInstanceSet) syncInstanceSet(
+	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus,
 	currentRevision, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision,
 	filteredInstances []*workloadsv1alpha2.RoleInstance,
@@ -252,7 +253,7 @@ func (r *ReconcileInstanceSet) syncInstanceSet(
 		return scaleErr
 	}
 
-	updateErr = r.syncControl.Update(updateSet, currentRevision, updateRevision, revisions, filteredInstances)
+	updateErr = r.syncControl.Update(ctx, updateSet, currentRevision, updateRevision, revisions, filteredInstances)
 	if updateErr != nil {
 		updateReason := setprogressing.ClassifySetOperationError(updateErr)
 		setprogressing.EmitOperationFailureEvent(r.recorder, set, updateReason, updateErr)
