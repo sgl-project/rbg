@@ -249,6 +249,22 @@ func TestClusterRoleGrantsReflectToggle(t *testing.T) {
 	}
 }
 
+func TestClusterRoleGrantsMetricsReviewPermissions(t *testing.T) {
+	role := clusterRole(t, renderChart(t))
+
+	for _, tc := range []struct {
+		apiGroup string
+		resource string
+	}{
+		{apiGroup: "authentication.k8s.io", resource: "tokenreviews"},
+		{apiGroup: "authorization.k8s.io", resource: "subjectaccessreviews"},
+	} {
+		if !hasRule(t, role, tc.apiGroup, tc.resource, "create") {
+			t.Errorf("ClusterRole lacks create on %s/%s", tc.apiGroup, tc.resource)
+		}
+	}
+}
+
 // TestToggleDeltaIsScopedToDeprecatedRBACAndFlag renders the chart with the toggle on
 // and off and asserts the two renders differ in exactly two objects — the controller
 // ClusterRole and the manager Deployment — and in no others. This is the guard the
@@ -297,4 +313,39 @@ func keysNotIn(a, b map[string]k8sObject) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func clusterRole(t *testing.T, manifest string) rbacv1.ClusterRole {
+	t.Helper()
+	obj, ok := splitObjects(t, manifest)["ClusterRole/"+controllerClusterRoleName]
+	if !ok {
+		t.Fatalf("ClusterRole %q not found in rendered chart", controllerClusterRoleName)
+	}
+	var role rbacv1.ClusterRole
+	if err := yaml.Unmarshal([]byte(obj.raw), &role); err != nil {
+		t.Fatalf("unmarshal ClusterRole: %v", err)
+	}
+	return role
+}
+
+func hasRule(t *testing.T, role rbacv1.ClusterRole, apiGroup, resource, verb string) bool {
+	t.Helper()
+	for _, rule := range role.Rules {
+		if !contains(rule.APIGroups, apiGroup) || !contains(rule.Resources, resource) {
+			continue
+		}
+		if contains(rule.Verbs, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
