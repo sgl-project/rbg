@@ -22,6 +22,8 @@ import (
 	"sync"
 	"time"
 
+	toolscache "k8s.io/client-go/tools/cache"
+	"sigs.k8s.io/controller-runtime/pkg/cache"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -53,7 +55,9 @@ var engineRuntimeLabelConvergence struct {
 // cache and never writes.
 type engineRuntimeLabelStartupScanner struct {
 	reader     client.Reader
+	cache      cache.Cache
 	retryAfter time.Duration
+	drift      chan struct{}
 }
 
 // SetEngineRuntimeLabelConverged records whether the has-engine-runtimes
@@ -111,10 +115,16 @@ func MarkEngineRuntimeLabelDrift() {
 // until the manager shuts down. Failed or mismatching scans retry instead of
 // failing the manager.
 func (s *engineRuntimeLabelStartupScanner) Start(ctx context.Context) error {
+	if s.drift == nil {
+		s.drift = make(chan struct{}, 1)
+	}
+	if s.cache != nil {
+		if err := s.watch(ctx); err != nil {
+			return err
+		}
+	}
 	for {
-		if syncer, ok := s.reader.(interface {
-			WaitForCacheSync(context.Context) bool
-		}); ok && !syncer.WaitForCacheSync(ctx) {
+		if s.cache != nil && !s.cache.WaitForCacheSync(ctx) {
 			select {
 			case <-ctx.Done():
 				return nil
@@ -126,8 +136,12 @@ func (s *engineRuntimeLabelStartupScanner) Start(ctx context.Context) error {
 		converged, err := scanEngineRuntimeLabelState(ctx, s.reader)
 		if err == nil && converged {
 			CompleteEngineRuntimeLabelScan(epoch)
-			<-ctx.Done()
-			return nil
+			select {
+			case <-ctx.Done():
+				return nil
+			case <-s.drift:
+				continue
+			}
 		}
 
 		select {
@@ -135,6 +149,54 @@ func (s *engineRuntimeLabelStartupScanner) Start(ctx context.Context) error {
 			return nil
 		case <-time.After(s.retryAfter):
 		}
+	}
+}
+
+func (s *engineRuntimeLabelStartupScanner) watch(ctx context.Context) error {
+	rbgInformer, err := s.cache.GetInformer(ctx, &RoleBasedGroup{})
+	if err != nil {
+		return fmt.Errorf("get rolebasedgroup informer for engine runtime label convergence: %w", err)
+	}
+	if _, err := rbgInformer.AddEventHandler(s.eventHandler()); err != nil {
+		return fmt.Errorf("watch rolebasedgroups for engine runtime label convergence: %w", err)
+	}
+
+	rbgsInformer, err := s.cache.GetInformer(ctx, &RoleBasedGroupSet{})
+	if err != nil {
+		return fmt.Errorf("get rolebasedgroupset informer for engine runtime label convergence: %w", err)
+	}
+	if _, err := rbgsInformer.AddEventHandler(s.eventHandler()); err != nil {
+		return fmt.Errorf("watch rolebasedgroupsets for engine runtime label convergence: %w", err)
+	}
+	return nil
+}
+
+func (s *engineRuntimeLabelStartupScanner) eventHandler() toolscache.ResourceEventHandler {
+	return toolscache.ResourceEventHandlerFuncs{
+		AddFunc:    func(obj interface{}) { s.markDrift(obj) },
+		UpdateFunc: func(_, newObj interface{}) { s.markDrift(newObj) },
+	}
+}
+
+func (s *engineRuntimeLabelStartupScanner) markDrift(obj interface{}) {
+	switch typed := obj.(type) {
+	case *RoleBasedGroup:
+		if !engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec) {
+			MarkEngineRuntimeLabelDrift()
+			s.wake()
+		}
+	case *RoleBasedGroupSet:
+		if !engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec.GroupTemplate.Spec) {
+			MarkEngineRuntimeLabelDrift()
+			s.wake()
+		}
+	}
+}
+
+func (s *engineRuntimeLabelStartupScanner) wake() {
+	select {
+	case s.drift <- struct{}{}:
+	default:
 	}
 }
 

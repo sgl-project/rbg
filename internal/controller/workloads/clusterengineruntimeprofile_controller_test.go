@@ -356,3 +356,42 @@ func TestClusterEngineRuntimeProfileLabelBackfillContinuesAfterPatchFailure(t *t
 	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
 		"convergence must wait until every mismatching object is patched")
 }
+
+func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategyObjects(t *testing.T) {
+	ctx := context.Background()
+	legacy := controllerRBG("grp-legacy", "ns-a", "ik")
+	legacy.Spec.Roles[0].RolloutStrategy = &workloadsv1alpha2.RolloutStrategy{
+		Type:          workloadsv1alpha2.RollingUpdateStrategyType,
+		RollingUpdate: &workloadsv1alpha2.RollingUpdate{},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	patches := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(legacy).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				patches++
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	require.NoError(t, r.backfillHasEngineRuntimesLabels(ctx))
+	assert.Equal(t, 0, patches,
+		"the backfill must not patch an object whose stored strategy the mutating webhook would heal")
+	got := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-legacy"}, got))
+	assert.NotContains(t, got.Labels, constants.HasEngineRuntimesLabelKey,
+		"a skipped object must stay unlabeled so admission keeps the unscoped lookup")
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"the gate must not converge past a skipped referencing object")
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1)
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillSkipped)
+}

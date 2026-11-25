@@ -21,9 +21,11 @@ import (
 	"fmt"
 
 	corev1 "k8s.io/api/core/v1"
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/tools/record"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -47,6 +49,7 @@ const (
 	// uninstalled). The event fires once per drift, on the Frozen condition's
 	// reason flip, not on every reconcile.
 	ReasonEngineRuntimeProfileMutatedWhileReferenced = "EngineRuntimeProfileMutatedWhileReferenced"
+	ReasonEngineRuntimeLabelBackfillSkipped          = "EngineRuntimeLabelBackfillSkipped"
 )
 
 // +kubebuilder:rbac:groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=get;list;watch
@@ -62,13 +65,15 @@ const (
 // rendering never consults it, and it is never authoritative.
 type ClusterEngineRuntimeProfileReconciler struct {
 	client.Client
-	Recorder record.EventRecorder
+	Recorder                         record.EventRecorder
+	warnedEngineRuntimeLabelBackfill map[types.NamespacedName]struct{}
 }
 
 func NewClusterEngineRuntimeProfileReconciler(mgr ctrl.Manager) *ClusterEngineRuntimeProfileReconciler {
 	return &ClusterEngineRuntimeProfileReconciler{
-		Client:   mgr.GetClient(),
-		Recorder: mgr.GetEventRecorderFor("clusterengineruntimeprofile-controller"),
+		Client:                           mgr.GetClient(),
+		Recorder:                         mgr.GetEventRecorderFor("clusterengineruntimeprofile-controller"),
+		warnedEngineRuntimeLabelBackfill: make(map[types.NamespacedName]struct{}),
 	}
 }
 
@@ -197,6 +202,7 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(
 	}
 	epoch := workloadsv1alpha2.BeginEngineRuntimeLabelScan()
 	var allErrs []error
+	stuck := false
 	rbgList := &workloadsv1alpha2.RoleBasedGroupList{}
 	if err := r.List(ctx, rbgList); err != nil {
 		return fmt.Errorf("listing rolebasedgroups for engine runtime label backfill: %w", err)
@@ -206,11 +212,17 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(
 		if engineRuntimeLabelMatches(rbg.Labels, roleSpecHasEngineRuntimes(&rbg.Spec)) {
 			continue
 		}
+		if engineRuntimeBackfillWouldChangeSpec(ctx, rbg) {
+			r.warnEngineRuntimeLabelBackfillSkipped(rbg)
+			stuck = true
+			continue
+		}
 		base := rbg.DeepCopy()
 		workloadsv1alpha2.SetHasEngineRuntimesLabel(rbg)
 		if err := r.Patch(ctx, rbg, client.MergeFrom(base)); err != nil {
 			if !apierrors.IsNotFound(err) {
 				allErrs = append(allErrs, fmt.Errorf("backfilling engine runtime label on rolebasedgroup %s/%s: %w", rbg.Namespace, rbg.Name, err))
+				stuck = true
 			}
 		}
 	}
@@ -224,21 +236,65 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(
 		if engineRuntimeLabelMatches(rbgs.Labels, roleSpecHasEngineRuntimes(&rbgs.Spec.GroupTemplate.Spec)) {
 			continue
 		}
+		if engineRuntimeBackfillWouldChangeSpec(ctx, rbgs) {
+			r.warnEngineRuntimeLabelBackfillSkipped(rbgs)
+			stuck = true
+			continue
+		}
 		base := rbgs.DeepCopy()
 		workloadsv1alpha2.SetRoleBasedGroupSetHasEngineRuntimesLabel(rbgs)
 		if err := r.Patch(ctx, rbgs, client.MergeFrom(base)); err != nil {
 			if !apierrors.IsNotFound(err) {
 				allErrs = append(allErrs, fmt.Errorf("backfilling engine runtime label on rolebasedgroupset %s/%s: %w", rbgs.Namespace, rbgs.Name, err))
+				stuck = true
 			}
 		}
 	}
 	if len(allErrs) > 0 {
 		return utilerrors.NewAggregate(allErrs)
 	}
+	if stuck {
+		return nil
+	}
 	// A clean full scan with no writes and no concurrent drift: the scoped
 	// admission lookup can take over from the unscoped fallback.
 	workloadsv1alpha2.CompleteEngineRuntimeLabelScan(epoch)
 	return nil
+}
+
+func engineRuntimeBackfillWouldChangeSpec(ctx context.Context, obj client.Object) bool {
+	switch typed := obj.(type) {
+	case *workloadsv1alpha2.RoleBasedGroup:
+		candidate := typed.DeepCopy()
+		if err := (&workloadsv1alpha2.RoleBasedGroupDefaulter{}).Default(ctx, candidate); err != nil {
+			return true
+		}
+		return !apiequality.Semantic.DeepEqual(typed.Spec, candidate.Spec)
+	case *workloadsv1alpha2.RoleBasedGroupSet:
+		candidate := typed.DeepCopy()
+		if err := (&workloadsv1alpha2.RoleBasedGroupSetDefaulter{}).Default(ctx, candidate); err != nil {
+			return true
+		}
+		return !apiequality.Semantic.DeepEqual(typed.Spec, candidate.Spec)
+	default:
+		return true
+	}
+}
+
+func (r *ClusterEngineRuntimeProfileReconciler) warnEngineRuntimeLabelBackfillSkipped(obj client.Object) {
+	if r.Recorder == nil {
+		return
+	}
+	key := types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
+	if r.warnedEngineRuntimeLabelBackfill == nil {
+		r.warnedEngineRuntimeLabelBackfill = make(map[types.NamespacedName]struct{})
+	}
+	if _, warned := r.warnedEngineRuntimeLabelBackfill[key]; warned {
+		return
+	}
+	r.warnedEngineRuntimeLabelBackfill[key] = struct{}{}
+	r.Recorder.Event(obj, corev1.EventTypeWarning, ReasonEngineRuntimeLabelBackfillSkipped,
+		"the engine runtime label backfill skipped this object because the mutating webhook would also normalize its stored spec; touch the object to let the webhook label it")
 }
 
 func engineRuntimeLabelMatches(labels map[string]string, references bool) bool {
@@ -274,7 +330,6 @@ func profilesReferencedByRBG(_ context.Context, obj client.Object) []reconcile.R
 	if !ok {
 		return nil
 	}
-	flagLabelDrift(rbg.Labels, roleSpecHasEngineRuntimes(&rbg.Spec))
 	return profilesReferencedBy(&rbg.Spec)
 }
 
@@ -293,14 +348,6 @@ func roleSpecHasEngineRuntimes(spec *workloadsv1alpha2.RoleBasedGroupSpec) bool 
 // arrives without the has-engine-runtimes label — a write that bypassed the
 // admission defaulters. The next profile reconcile then re-runs the
 // backfill, so a converged process does not stay blind to bypassed writes.
-func flagLabelDrift(labels map[string]string, references bool) {
-	if references {
-		if _, ok := labels[constants.HasEngineRuntimesLabelKey]; !ok {
-			workloadsv1alpha2.MarkEngineRuntimeLabelDrift()
-		}
-	}
-}
-
 // profilesReferencedByRBGSet maps a RoleBasedGroupSet to the profiles named
 // by its group template's roles — a set's group template counts as a live
 // reference even at zero replicas, no child RoleBasedGroup required.
@@ -309,7 +356,6 @@ func profilesReferencedByRBGSet(_ context.Context, obj client.Object) []reconcil
 	if !ok {
 		return nil
 	}
-	flagLabelDrift(rbgs.Labels, roleSpecHasEngineRuntimes(&rbgs.Spec.GroupTemplate.Spec))
 	return profilesReferencedBy(&rbgs.Spec.GroupTemplate.Spec)
 }
 

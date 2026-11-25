@@ -1551,12 +1551,11 @@ unvalidated — retry them once the upgrade has completed.
 
 **The label backfill is one deliberate upgrade-time write.** A pre-existing
 referencing object gets the `has-engine-runtimes` label on the profile
-controller's first reconcile. That merge patch still traverses the mutating
-webhook, so a top-level RoleBasedGroup stored by v0.7.0 or v0.8.0 with an
-empty or `Recreate` `rollingUpdate.type` is normalized to the current enum as
-part of the same write. The one-time normalization can bump
-`metadata.generation` and the revision/role hash; set children already receive
-the equivalent strategy heal from the set controller.
+controller's first reconcile. Before patching, the controller runs the
+mutating defaulter on a copy; if that would also change `spec`, it skips the
+object, emits a Warning event, and leaves the object unlabeled so admission
+keeps the unscoped fallback. A later user write heals the stored spec and
+labels the object through the normal admission path.
 
 **Rollback.** `helm rollback` restores the previous controller and webhook
 configuration but keeps the new CRDs, because the CRD upgrader runs only on

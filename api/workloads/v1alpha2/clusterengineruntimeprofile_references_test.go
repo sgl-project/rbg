@@ -95,3 +95,21 @@ func TestEngineRuntimeLabelStartupScannerDoesNotConvergePreLabelObjects(t *testi
 	assert.False(t, converged,
 		"a referencing object written before the label shipped must keep the startup scan unconverged")
 }
+
+func TestEngineRuntimeLabelStartupScannerMarksDrift(t *testing.T) {
+	SetEngineRuntimeLabelConverged(true)
+	t.Cleanup(func() { SetEngineRuntimeLabelConverged(false) })
+
+	scanner := &engineRuntimeLabelStartupScanner{drift: make(chan struct{}, 1)}
+	rbg := rbgReferencing("grp-old", "ns-old", "ik")
+	delete(rbg.Labels, constants.HasEngineRuntimesLabelKey)
+
+	scanner.markDrift(rbg)
+	assert.False(t, EngineRuntimeLabelConverged(),
+		"an unlabeled referencing object must un-converge every webhook replica")
+	select {
+	case <-scanner.drift:
+	default:
+		t.Fatal("a drift event must wake the startup scanner")
+	}
+}
