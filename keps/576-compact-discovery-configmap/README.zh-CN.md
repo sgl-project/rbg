@@ -320,9 +320,7 @@ metadata:
    存量 RBG 保持 `v1alpha1`，重建对象但省略该键的 `UPDATE` 会保留已
    存储版本。显式空值在 `CREATE` 时按缺失处理。
    含 deprecated stateful role、无法序列化紧凑内容的对象默认为
-   `v1alpha1`；对这些 role，`v1` 仍会被拒绝。上述 webhook 保证仅适用于
-   `v1alpha2` 写入；`v1alpha1` 写入会保持 `v1alpha1` 内容，因为 webhook
-   规则只匹配 `v1alpha2`。
+   `v1alpha1`；对这些 role，`v1` 仍会被拒绝。
 4. 创建时显式设置 `v1alpha1` 是文档化的 opt-out。
 5. 对 RBGSet，webhook 在 `spec.groupTemplate.annotations` 中写默认值。
    child RBG 继承该值；早于该 annotation 的 set 保持历史默认
@@ -794,7 +792,8 @@ Alpha 阶段未识别。
 
 现有 ConfigMap reconcile，以及一次 ConfigMap list/watch。控制器会为每个
 discovery ConfigMap 打上 group-name label，并把 cache 限制在该 label 上，
-因此不会缓存无关 ConfigMap。
+因此不会缓存无关 ConfigMap。稳态 reconcile 不发起 ConfigMap 请求；内容变化时
+执行一次非缓存 ownership 读取，随后执行 server-side apply。
 
 #### 启用该功能是否引入新 API 类型？
 

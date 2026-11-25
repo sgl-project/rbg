@@ -851,24 +851,32 @@ func TestValidateCompactPlaceholders(t *testing.T) {
 }
 
 func TestCompactContentVersionMarker(t *testing.T) {
-	// Consumer contract: missing apiVersion means v1alpha1, apiVersion: v1
-	// means compact, and any other value is rejected.
-	type marker struct {
-		APIVersion string `json:"apiVersion"`
+	legacy, err := decodeDiscoveryVersion([]byte("group:\n  name: demo\n"))
+	require.NoError(t, err)
+	require.Equal(t, "v1alpha1", legacy)
+
+	compact, err := decodeDiscoveryVersion([]byte("apiVersion: v1\ngroup: demo\n"))
+	require.NoError(t, err)
+	require.Equal(t, "v1", compact)
+
+	_, err = decodeDiscoveryVersion([]byte("apiVersion: v2\ngroup: demo\n"))
+	require.ErrorContains(t, err, "unsupported discovery apiVersion")
+}
+
+func decodeDiscoveryVersion(data []byte) (string, error) {
+	var compact CompactConfig
+	if err := yaml.UnmarshalStrict(data, &compact); err == nil && compact.APIVersion != "" {
+		if compact.APIVersion != string(constants.DiscoveryConfigVersionV1) {
+			return "", fmt.Errorf("unsupported discovery apiVersion: %s", compact.APIVersion)
+		}
+		return string(constants.DiscoveryConfigVersionV1), nil
 	}
 
-	var legacy marker
-	require.NoError(t, yaml.Unmarshal([]byte("group: demo\n"), &legacy))
-	require.Empty(t, legacy.APIVersion)
-
-	var compact marker
-	require.NoError(t, yaml.Unmarshal([]byte("apiVersion: v1\ngroup: demo\n"), &compact))
-	require.Equal(t, "v1", compact.APIVersion)
-
-	var unknown marker
-	require.NoError(t, yaml.Unmarshal([]byte("apiVersion: v2\ngroup: demo\n"), &unknown))
-	require.Equal(t, "v2", unknown.APIVersion)
-	require.NotEqual(t, "v1", unknown.APIVersion, "consumers must reject unknown versions")
+	var legacy ClusterConfig
+	if err := yaml.UnmarshalStrict(data, &legacy); err == nil {
+		return string(constants.DiscoveryConfigVersionV1Alpha1), nil
+	}
+	return "", fmt.Errorf("unsupported discovery content")
 }
 
 func TestConfigBuilder_MemberSummaryMatchesMemberOrdinals(t *testing.T) {
@@ -1647,6 +1655,62 @@ func TestConfigBuilderBuildCommittedSparseMembership(t *testing.T) {
 			for i, address := range tc.wantAddresses {
 				require.Equal(t, Instance{Address: address, Ports: map[string]int32{"http": 8080}}, published.Instances[i])
 			}
+		})
+	}
+}
+
+func TestBuildCompactRejectsUnsafeChildOwnership(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		record     string
+		owner      string
+		groupLabel string
+	}{
+		{name: "foreign controller", record: "1,3", owner: "different", groupLabel: "test-cluster"},
+		{name: "sparse orphan", record: "1,3", owner: "missing", groupLabel: "test-cluster"},
+		{name: "dense orphan with mismatched group label", record: "", owner: "missing", groupLabel: "other"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, corev1.AddToScheme(scheme))
+			require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+			role := workloadsv1alpha2.RoleSpec{
+				Name:     "worker",
+				Replicas: ptr.To[int32](3),
+				Annotations: map[string]string{
+					constants.RoleInstancePatternKey:        string(constants.StatefulPattern),
+					constants.ExcludedOrdinalsAnnotationKey: "1,3",
+				},
+			}
+			rbg := &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-cluster", Namespace: "default", UID: "group-uid"},
+				Spec:       workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{role}},
+			}
+			owner := *metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"))
+			if tc.owner == "different" {
+				owner.UID = "different-group-uid"
+			}
+			set := &workloadsv1alpha2.RoleInstanceSet{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "test-cluster-worker",
+					Namespace: rbg.Namespace,
+					Labels:    map[string]string{constants.GroupNameLabelKey: tc.groupLabel},
+					Annotations: map[string]string{
+						constants.CommittedSkipOrdinalsAnnotationKey: tc.record,
+					},
+					OwnerReferences: []metav1.OwnerReference{owner},
+				},
+				Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To[int32](3)},
+			}
+			if tc.owner == "missing" {
+				set.OwnerReferences = nil
+			}
+			c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(set).Build()
+
+			data, err := NewConfigBuilder(c, rbg, &rbg.Spec.Roles[0]).BuildCompact(context.Background())
+			require.ErrorContains(t, err, "has a different controller owner")
+			require.Nil(t, data, "unsafe membership must not produce compact discovery content")
 		})
 	}
 }

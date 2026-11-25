@@ -85,8 +85,6 @@ discovery ConfigMap 是控制器创建的 Pod 发现信息（`config.yaml`），
 
 mutating webhook 会把新建 RBG 默认为 `v1`；没有该注解的存量 RBG 保持 `v1alpha1`。创建时如需退回旧行为，可将注解设为 `v1alpha1`。仍含 deprecated stateful role（StatefulSet、LeaderWorkerSet 或 InstanceSet）的新 RBG 和 RoleBasedGroupSet 模板默认为 `v1alpha1`，因为紧凑格式只支持 RoleInstanceSet；admission 也会拒绝这类 RBG 使用 `v1`。如果在绕过 admission 的情况下写入了同时带 `v1` 和 deprecated stateful role 的对象，控制器会继续发布 v1alpha1 内容。重建对象但省略该注解的 UPDATE 会保留已存储版本；如需回滚，请显式设置 `v1alpha1`。
 
-上述 webhook 保证仅适用于 `v1alpha2` 写入；通过仍会提供服务的 `v1alpha1` 端点写入时，内容保持 `v1alpha1`。
-
 RoleBasedGroupSet 应把注解放在 `spec.groupTemplate.annotations`：子 RBG 会继承该值，直接改子对象注解会被覆盖，省略该键的模板 UPDATE 会保留已存储版本。如需让 set 及其子对象回滚，请把模板注解显式设为 `v1alpha1`。
 
 把注解回滚为 `v1alpha1` 的前提是序列化后的枚举仍能放进 API server 的 1 MiB ConfigMap 限制。控制器会在写入前拒绝超限回滚，保留当前紧凑内容，并重试失败的 reconcile；如果枚举已放不下，请缩减拓扑或继续使用 `v1`。

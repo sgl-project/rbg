@@ -158,6 +158,26 @@ var _ = Describe("RoleBasedGroupSet child discovery config", func() {
 		Expect(after.Generation).To(Equal(before.Generation))
 	})
 
+	It("leaves the discovery ConfigMap owned only by the rbg apply manager", func() {
+		group := wrappers.BuildBasicRoleBasedGroup("owned", namespace).Obj()
+		Expect(testutil.K8sClient.Create(testutil.Ctx, group)).To(Succeed())
+
+		var managers []string
+		Eventually(func(g Gomega) {
+			cm := &corev1.ConfigMap{}
+			g.Expect(testutil.K8sClient.Get(
+				testutil.Ctx, client.ObjectKeyFromObject(group), cm,
+			)).To(Succeed())
+			managers = make([]string, 0, len(cm.ManagedFields))
+			for _, entry := range cm.ManagedFields {
+				managers = append(managers, entry.Manager+"/"+string(entry.Operation))
+			}
+			g.Expect(managers).To(Equal([]string{"rbg/Apply"}))
+		}, timeout, interval).Should(Succeed(), func() string {
+			return fmt.Sprintf("managers %v", managers)
+		})
+	})
+
 	It("keeps a child with pre-KEP metadata current", func() {
 		waitForReconciledChild()
 		var before *workloadsv1alpha2.RoleInstanceSet

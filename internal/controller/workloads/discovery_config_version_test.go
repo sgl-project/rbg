@@ -28,13 +28,17 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	apimeta "k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	coreapplyv1 "k8s.io/client-go/applyconfigurations/core/v1"
+	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -64,9 +68,10 @@ func TestReconcileDiscoveryConfigMap(t *testing.T) {
 	t.Run("v1 with a deprecated stateful role falls back to v1alpha1", testDiscoveryConfigDeprecatedFallback)
 	t.Run("rebuilds after ConfigMap deletion", testDiscoveryConfigRebuild)
 	t.Run("rejects an oversized v1alpha1 rollback", testDiscoveryConfigRejectsOversizedRollback)
+	t.Run("allows fitting large legacy content", testDiscoveryConfigAllowsFittingLargeLegacyContent)
 	t.Run("rejects an unsupported version annotation", testDiscoveryConfigRejectsUnknownVersion)
 	t.Run("rejects an unsupported version annotation on stateless-only RBGs", testDiscoveryConfigRejectsUnknownVersionStatelessOnly)
-	t.Run("rejects an oversized dense role before enumeration", testDiscoveryConfigRejectsOversizedDenseRole)
+	t.Run("rejects an oversized dense role", testDiscoveryConfigRejectsOversizedDenseRole)
 	t.Run("skips stateless-only RBGs", testDiscoveryConfigSkipsStatelessOnly)
 }
 
@@ -202,6 +207,51 @@ func testDiscoveryConfigRejectsOversizedRollback(t *testing.T) {
 	}
 }
 
+func testDiscoveryConfigAllowsFittingLargeLegacyContent(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].Replicas = ptr.To(int32(11300))
+	rbg.Spec.Roles[0].ServicePorts = []corev1.ServicePort{{Name: "http", Port: 8080}}
+	r, c := discoveryTestReconciler(t, rbg)
+
+	upper, err := discovery.NewConfigBuilder(c, rbg, nil).LegacySizeUpperBound(context.Background())
+	require.NoError(t, err)
+	assert.Greater(t, upper, int64(maxDiscoveryConfigMapBytes),
+		"the memory guard should remain deliberately conservative")
+
+	err = r.reconcileDiscoveryConfigMap(context.Background(), rbg)
+	require.NoError(t, err)
+
+	cm := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), cm))
+	assert.NotEmpty(t, cm.Data[discoveryConfigKey])
+}
+
+func TestDiscoveryConfigVersionMigrationRoundTrip(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	r, c := discoveryTestReconciler(t, rbg)
+
+	require.NoError(t, r.reconcileDiscoveryConfigMap(context.Background(), rbg))
+	cm := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), cm))
+	var legacy discovery.ClusterConfig
+	require.NoError(t, yaml.UnmarshalStrict([]byte(cm.Data[discoveryConfigKey]), &legacy))
+	require.Contains(t, legacy.Roles, "test-role")
+
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1)
+	require.NoError(t, r.reconcileDiscoveryConfigMap(context.Background(), rbg))
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), cm))
+	var compact discovery.CompactConfig
+	require.NoError(t, yaml.UnmarshalStrict([]byte(cm.Data[discoveryConfigKey]), &compact))
+	require.Equal(t, string(constants.DiscoveryConfigVersionV1), compact.APIVersion)
+
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+	require.NoError(t, r.reconcileDiscoveryConfigMap(context.Background(), rbg))
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), cm))
+	legacy = discovery.ClusterConfig{}
+	require.NoError(t, yaml.UnmarshalStrict([]byte(cm.Data[discoveryConfigKey]), &legacy))
+	require.Contains(t, legacy.Roles, "test-role")
+}
+
 func testDiscoveryConfigRejectsUnknownVersion(t *testing.T) {
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersion("v2"))
@@ -305,8 +355,8 @@ func TestRBGPredicateDiscoveryConfigVersion(t *testing.T) {
 	}
 }
 
-func TestDiscoveryConfigValueLimitIncludesKey(t *testing.T) {
-	exact := []byte(strings.Repeat("x", maxDiscoveryConfigMapBytes-len(discoveryConfigKey)))
+func TestDiscoveryConfigValueLimit(t *testing.T) {
+	exact := []byte(strings.Repeat("x", maxDiscoveryConfigMapBytes))
 	assert.True(t, discoveryConfigValueWithinLimit(exact))
 
 	over := append(exact, 'x')
@@ -407,6 +457,99 @@ func TestDiscoveryConfigMapAddsGroupLabelOnCreate(t *testing.T) {
 	assert.Equal(t, rbg.Name, got.Labels[constants.GroupNameLabelKey])
 }
 
+func TestDiscoveryConfigMapWritePathSettlesWithoutRequests(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	var gets, creates, patches, applies int
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					gets++
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					creates++
+				}
+				return cl.Create(ctx, obj, opts...)
+			},
+			Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					patches++
+				}
+				return cl.Patch(ctx, obj, patch, opts...)
+			},
+			Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if _, ok := obj.(*coreapplyv1.ConfigMapApplyConfiguration); ok {
+					applies++
+				}
+				return cl.Apply(ctx, obj, opts...)
+			},
+		}).Build()
+	r := &RoleBasedGroupReconciler{
+		client:    c,
+		apiReader: c,
+		scheme:    scheme,
+		recorder:  record.NewFakeRecorder(10),
+	}
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+
+	require.NoError(t, r.reconcileDiscoveryConfigMap(context.Background(), rbg))
+	first := struct{ gets, creates, patches, applies int }{gets, creates, patches, applies}
+
+	require.NoError(t, r.reconcileDiscoveryConfigMap(context.Background(), rbg))
+
+	assert.Equal(t, first.gets+1, gets, "steady state should perform only the cached read")
+	assert.Equal(t, first.creates, creates)
+	assert.Equal(t, first.patches, patches)
+	assert.Equal(t, first.applies, applies)
+}
+
+func TestDiscoveryConfigMapApplyPreservesOtherOwners(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	controller := *metav1.NewControllerRef(
+		rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"),
+	)
+	otherOwner := metav1.OwnerReference{
+		APIVersion: "example.com/v1",
+		Kind:       "Other",
+		Name:       "other",
+		UID:        "other-uid",
+	}
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            rbg.Name,
+			Namespace:       rbg.Namespace,
+			Labels:          map[string]string{constants.GroupNameLabelKey: rbg.Name},
+			OwnerReferences: []metav1.OwnerReference{controller, otherOwner},
+		},
+		Data: map[string]string{discoveryConfigKey: "stale"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build()
+	r := &RoleBasedGroupReconciler{
+		client:    c,
+		apiReader: c,
+		scheme:    scheme,
+		recorder:  record.NewFakeRecorder(10),
+	}
+
+	require.NoError(t, r.applyDiscoveryConfigMap(context.Background(), rbg, []byte("current")))
+
+	got := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), got))
+	assert.Equal(t, "current", got.Data[discoveryConfigKey])
+	assert.Contains(t, got.OwnerReferences, otherOwner)
+	assert.Equal(t, rbg.GetUID(), metav1.GetControllerOf(got).UID)
+}
+
 func TestIsAdoptableDiscoveryConfigMap(t *testing.T) {
 	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
 	validLegacy := &corev1.ConfigMap{
@@ -485,6 +628,128 @@ func TestDiscoveryConfigMapPredicate(t *testing.T) {
 	assert.False(t, predicate.UpdateFunc(event.UpdateEvent{ObjectOld: obj, ObjectNew: obj}))
 	assert.True(t, predicate.DeleteFunc(event.DeleteEvent{Object: obj}))
 	assert.False(t, predicate.GenericFunc(event.GenericEvent{Object: obj}))
+}
+
+func TestDiscoveryFailureStopsRoleRendering(t *testing.T) {
+	tests := []struct {
+		name string
+		objs []client.Object
+	}{
+		{
+			name: "foreign ConfigMap",
+			objs: []client.Object{
+				wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+				&corev1.ConfigMap{
+					ObjectMeta: metav1.ObjectMeta{
+						Name:      "test-rbg",
+						Namespace: "default",
+					},
+					Data: map[string]string{"app.properties": "foreign"},
+				},
+			},
+		},
+		{
+			name: "ConfigMap create failure",
+			objs: []client.Object{
+				wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj(),
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			scheme := runtime.NewScheme()
+			require.NoError(t, clientgoscheme.AddToScheme(scheme))
+			require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+			require.NoError(t, corev1.AddToScheme(scheme))
+
+			builder := fake.NewClientBuilder().
+				WithScheme(scheme).
+				WithObjects(tt.objs...).
+				WithStatusSubresource(
+					&workloadsv1alpha2.RoleBasedGroup{},
+					&workloadsv1alpha2.RoleInstanceSet{},
+				)
+			if tt.name == "ConfigMap create failure" {
+				builder = builder.WithInterceptorFuncs(interceptor.Funcs{
+					Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
+						if _, ok := obj.(*corev1.ConfigMap); ok {
+							return apierrors.NewServiceUnavailable("ConfigMap creation failed")
+						}
+						return cl.Create(ctx, obj, opts...)
+					},
+				})
+			}
+			c := builder.Build()
+			r := &RoleBasedGroupReconciler{
+				client:             c,
+				apiReader:          c,
+				scheme:             scheme,
+				recorder:           record.NewFakeRecorder(10),
+				workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
+			}
+			req := reconcile.Request{
+				NamespacedName: types.NamespacedName{Name: "test-rbg", Namespace: "default"},
+			}
+
+			_, err := r.Reconcile(context.Background(), req)
+			require.Error(t, err)
+
+			ris := &workloadsv1alpha2.RoleInstanceSet{}
+			getErr := c.Get(context.Background(), types.NamespacedName{
+				Name:      "test-rbg-test-role",
+				Namespace: "default",
+			}, ris)
+			assert.True(t, apierrors.IsNotFound(getErr), "role rendering must stop before creating a workload")
+		})
+	}
+}
+
+func TestTransientDiscoveryErrorIsNotInvalidSpec(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(scheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(rbg).
+		WithStatusSubresource(
+			&workloadsv1alpha2.RoleBasedGroup{},
+			&workloadsv1alpha2.RoleInstanceSet{},
+		).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					return apierrors.NewServiceUnavailable("etcd unavailable")
+				}
+				return cl.Get(ctx, key, obj, opts...)
+			},
+		}).Build()
+	r := &RoleBasedGroupReconciler{
+		client:             c,
+		apiReader:          c,
+		scheme:             scheme,
+		recorder:           record.NewFakeRecorder(10),
+		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
+	}
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: "test-rbg", Namespace: "default"},
+	})
+	require.Error(t, err)
+
+	updated := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(context.Background(), types.NamespacedName{
+		Name:      "test-rbg",
+		Namespace: "default",
+	}, updated))
+	condition := apimeta.FindStatusCondition(
+		updated.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing),
+	)
+	require.NotNil(t, condition)
+	assert.NotEqual(t, constants.ProgressingReasonInvalidSpec, condition.Reason)
 }
 
 func TestReconcileContinuesAfterOversizedDiscoveryRollback(t *testing.T) {

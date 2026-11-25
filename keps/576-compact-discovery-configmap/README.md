@@ -343,9 +343,7 @@ Rules:
    and omits the key preserves the stored value. An explicitly empty value is
    treated as missing on `CREATE`. Objects whose deprecated stateful roles
    cannot serialize compact content default to `v1alpha1`; `v1` remains
-   rejected for those roles. These webhook guarantees apply to `v1alpha2`
-   writes; `v1alpha1` writes keep `v1alpha1` content because the webhook rules
-   match `v1alpha2` only.
+   rejected for those roles.
 4. Setting `v1alpha1` at creation is the documented opt-out.
 5. For an RBGSet, the webhook defaults the annotation in
    `spec.groupTemplate.annotations`. Child RBGs inherit that value, including
@@ -834,7 +832,9 @@ No.
 
 The existing ConfigMap reconcile plus one ConfigMap list/watch. The controller
 labels each discovery ConfigMap with the group-name label and restricts its
-cache to that label, so unrelated ConfigMaps are not cached.
+cache to that label, so unrelated ConfigMaps are not cached. Steady-state
+reconciles issue no ConfigMap request; a content change performs one uncached
+ownership read followed by the server-side apply.
 
 #### Does enabling this feature introduce new API types?
 
