@@ -486,8 +486,13 @@ func containersEqual(containers1, containers2 []corev1.Container) (bool, error) 
 	sortedContainers2 := sortContainers(containers2)
 
 	normalizeByApiServerDefaults := func(c corev1.Container) corev1.Container {
-		c.Env = utils.FilterSystemEnvs(c.Env)
-		p := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{c}}}
+		// Deep-copy before defaulting: containersEqual may be called on live informer-cache
+		// objects (e.g. from WorkloadPredicate), and legacyscheme.Scheme.Default mutates
+		// nested maps, slices, and pointers (such as Resources.Requests, Ports, Probes, and
+		// Env[].ValueFrom.FieldRef) in place.
+		copied := *c.DeepCopy()
+		copied.Env = utils.FilterSystemEnvs(copied.Env)
+		p := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{copied}}}
 		legacyscheme.Scheme.Default(p)
 		return p.Spec.Containers[0]
 	}
