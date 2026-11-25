@@ -484,29 +484,20 @@ a `signalLabel` key used by the owning RIS `spec.selector`, whether in
 from template labels. Writing such a `signalLabel` can make an RI stop matching
 the selector, and the stateful RIS instance-reference logic then releases the
 RI's owner reference. Conversely, admission rejects an owning RIS selector that
-uses a controller-reserved runtime key: the hook-state key, or any key currently
-recorded in a governed RI's `signalLabel`-key record. The controller's own
-runtime writes would repeatedly match and unmatch the RI. Stable
+uses the controller-reserved hook-state key: the controller's own
+runtime write would repeatedly match and unmatch the RI. Stable
 controller-written identity keys are explicitly allowed in selectors:
 `rbg.workloads.x-k8s.io/group-name`, `/group-uid`, and `/role-name` are written
-once at creation and never mutated by the lifecycle protocol. The uniqueness
-check also spans configuration generations: a signal key may not be reassigned
-from one hook to another while any RI governed by the configuration still
-records that key, so a retired executor cannot remove a `signalLabel` that now
-belongs to a different hook, such as a pending `postReady` key reassigned to
-`preDelete`.
+once at creation and never mutated by the lifecycle protocol.
 
-The cross-resource admission checks in this section — key reassignment across
-configuration generations, the owning RIS selector rules, and mutual
-exclusion — are fail-closed: the webhook reads the affected objects
-authoritatively through the API server rather than an informer cache, rejects
-a request when a read fails or returns inconsistent data, and re-checks on
-conflict. A stale lookup must not approve reassigning a key that a governed RI
-still records. As a controller-side backstop, the RI controller revalidates
-key ownership before writing a `signalLabel`: if a key in the effective
-configuration is still recorded on any governed RI for a different hook, the
-controller refuses the operation and surfaces the conflict instead of writing
-the `signalLabel`.
+Admission is deliberately static: it validates only the submitted object and
+never reads RoleInstance runtime state. Cross-resource checks would couple set
+writability to webhook-time API availability — every set update would be
+rejected while the API server is unreachable — for a property the executor
+already fences: `signalLabel` removal is a conditional write that tests
+`hook-state` and the resourceVersion, so a retired or delayed executor cannot
+remove a `signalLabel` that now belongs to a different invocation. Reassigning
+or changing signal keys while operations are armed is an operator decision.
 
 The implementation must use the exact hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state` and must not reuse the
@@ -1081,11 +1072,11 @@ lifecycle and distinguish workload backends.
   user-configured RIS lifecycle, and rejects `signalLabel` keys that collide with
   the controller state key or use the reserved
   `rbg.workloads.x-k8s.io/` prefix.
-- Admission rejects an owning RIS selector that uses a controller-reserved
-  runtime key, while allowing the stable reserved identity keys used by
-  RBG-generated selectors, and rejects reassigning a signal key to a different
-  hook while any affected RI still records it, so a retired `postReady`
-  execution cannot remove a `preDelete` `signalLabel`.
+- Admission rejects an owning RIS selector that uses the controller-reserved
+  hook-state key, while allowing the stable reserved identity keys used by
+  RBG-generated selectors. Reassigning a signal key to a different hook while
+  operations are armed is accepted: the executor's conditional removal fences
+  a retired `postReady` execution from removing a `preDelete` `signalLabel`.
 - Admission rejects `signalLabel` keys used by the owning RIS `spec.selector` in
   `matchLabels` or `matchExpressions`, including keys selected only by
   `DoesNotExist`.

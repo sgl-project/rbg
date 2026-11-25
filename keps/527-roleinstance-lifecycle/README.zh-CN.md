@@ -365,22 +365,16 @@ value。controller 不会为了可写而截断、改写或丢弃配置的 `signa
 即使该 key 未出现在 template labels 中。写入这类 `signalLabel` 可能使 RI
 不再匹配 selector，stateful RIS 的实例引用管理随后会释放该 RI 的
 owner reference。反过来，准入也拒绝在所属 RIS selector 中使用
-controller 保留的运行时 key：即 hook-state key，或任一受管 RI 的
-`signalLabel` key 记录中当前记录的 key。controller 自身的运行时写入
+controller 保留的 hook-state key：controller 自身的运行时写入
 会使 RI 反复匹配和不匹配。稳定且由 controller 写入的身份 key 明确允许
 出现在 selector 中：`rbg.workloads.x-k8s.io/group-name`、`/group-uid`
 和 `/role-name` 在创建时写入一次，lifecycle 协议不再改动。
-唯一性校验同样覆盖配置代际：只要受该配置管理的任一 RI 仍记录某个
-信号 key，该 key 不得被重新分配给另一个 hook，避免已退役的 executor
-清掉现在属于其他 hook 的 `signalLabel`，例如把 pending postReady 的 key
-重新分配给 preDelete。
-本节的跨资源准入校验——跨配置代际的 key 重分配、所属 RIS selector 规则和
-互斥规则——都必须 fail-closed：webhook 通过 API server 权威读取受影响对象，
-不使用 informer 缓存；读取失败或数据不一致时拒绝请求，冲突时重新检查。
-过期的读取结果不得批准重分配某个受管 RI 仍记录的 key。作为 controller 侧
-兜底，RI controller 写入 `signalLabel` 前重新校验 key 归属：若生效配置中的
-某个 key 仍被任一受管 RI 记录给其他 hook，controller 拒绝该操作并暴露冲突，
-不写入该 `signalLabel`。
+准入刻意保持静态：只校验提交的对象本身，不读取 RoleInstance 运行时状态。
+跨资源检查会把 set 的可写性与 webhook 读取 API 的可用性耦合——API server
+不可达期间所有 set 更新都会被拒绝——而换来的属性本就由 executor 防护：
+`signalLabel` 的删除是带 `hook-state` 与 resourceVersion 前置条件的条件写，
+已退役或延迟的 executor 无法删除现在属于其他调用的 `signalLabel`。在操作
+处于 armed 状态时重新分配或修改信号 key 属于运维决策。
 
 实现必须使用固定 hook-state label key
 `rbg.workloads.x-k8s.io/role-instance-hook-state`，
@@ -813,10 +807,10 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 准入拒绝新 lifecycle 协议与用户配置的旧 RIS lifecycle 共存，
   以及 `signalLabel` key 与 controller 状态 key 冲突或使用保留的
   `rbg.workloads.x-k8s.io/` 前缀。
-- 准入拒绝所属 RIS selector 使用 controller 保留的运行时 key，同时允许
-  RBG 生成 selector 所用的稳定保留身份 key；并拒绝在受影响 RI 仍记录
-  某个信号 key 时将其重新分配给另一个 hook，使已退役的 `postReady`
-  执行者无法清除 `preDelete` `signalLabel`。
+- 准入拒绝所属 RIS selector 使用 controller 保留的 hook-state key，同时允许
+  RBG 生成 selector 所用的稳定保留身份 key。在操作处于 armed 状态时将
+  信号 key 重新分配给另一个 hook 会被接受：executor 的条件写删除机制
+  使已退役的 `postReady` 执行者无法清除 `preDelete` `signalLabel`。
 - 准入拒绝所属 RIS `spec.selector` 在 `matchLabels` 或 `matchExpressions`
   中使用的 `signalLabel` key，包括仅通过 `DoesNotExist` 选择的 key。
 - 准入拒绝不符合 Kubernetes label 语法的 `signalLabels` key/value，
@@ -858,8 +852,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   `signalLabelB` 并保持阻塞直到 `signalLabelB` 被清除；尚未写入的
   `signalLabel` 不视为已释放。`signalLabelA` 按协议遗留 label 处理：清理
   其 RI label 和 Pod 镜像，并在两份副本确认消失前保持记录。
-- 跨资源准入校验在读失败或数据过期时 fail-closed；某个 key 仍被其他 hook
-  记录在受管 RI 上时，controller 拒绝写入该 `signalLabel`。
+- 准入保持静态：不读取 RoleInstance 运行时状态，不因跨资源读取失败或
+  数据过期拒绝 set 更新。
 - 仅 lifecycle 配置变化不生成 ControllerRevision、不改变 revision 哈希，
   也不滚动成员 Pod。
 - `signalLabel` key 记录与 `signalLabel` 同批写入、跨重启保留，仅在对应 label 及其
