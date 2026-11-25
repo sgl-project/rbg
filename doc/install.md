@@ -22,6 +22,8 @@ To wait for RoleBasedGroup controller to be fully available, run:
 kubectl wait deploy/rbgs-controller-manager -n rbgs-system --for=condition=available --timeout=5m
 ```
 
+The manifests include a PodDisruptionBudget for the controller (`maxUnavailable: 1`). On a single-node cluster, a drain therefore evicts one of the two controller pods and then waits, because its replacement cannot schedule on the cordoned node. To take that node down, drain with `kubectl drain --disable-eviction`, or delete the budget first with `kubectl -n rbgs-system delete pdb rbgs-controller-manager`; applying the manifests again recreates it.
+
 ### Install by Helm
 
 The Helm chart includes a CRD Upgrader Job that automatically installs/upgrades CRDs during installation and upgrade. This is enabled by default.

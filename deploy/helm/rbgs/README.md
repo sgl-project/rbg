@@ -135,7 +135,7 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `controller.tolerations` | Controller pod tolerations | `[]` |
 | `controller.affinity` | Controller pod affinity | `{}` |
 | `controller.topologySpreadConstraints` | Controller pod topology spread constraints. The default prefers one replica per node (`kubernetes.io/hostname`, `ScheduleAnyway`); `[]` removes it | see `values.yaml` |
-| `controller.podDisruptionBudget.enabled` | Create a PodDisruptionBudget for the controller pods (`maxUnavailable: 1`, `unhealthyPodEvictionPolicy: AlwaysAllow`). On a single node, a drain waits on the last Ready controller pod; set `false`, or drain with `kubectl drain --disable-eviction`, to take that node down | `true` |
+| `controller.podDisruptionBudget.enabled` | Create a PodDisruptionBudget for the controller pods (`maxUnavailable: 1`, `unhealthyPodEvictionPolicy: AlwaysAllow`). With `controller.replicaCount` above 1 on a single-node cluster, a drain evicts one pod and then waits, because its replacement cannot schedule on the cordoned node; set `false`, or drain with `kubectl drain --disable-eviction`, to take that node down. With one replica, the budget allows evicting the only pod, so neither is needed | `true` |
 | `controller.podAnnotations` | Controller pod annotations | `{}` |
 | `controller.podSecurityContext` | Controller pod security context | `{}` |
 | `controller.securityContext` | Controller container security context | `{}` |
@@ -194,7 +194,7 @@ patch; keep the grace period at least the sleep plus 30s.
 With `--reuse-values`, Helm keeps the old release's values in place of the new chart's defaults, so
 an upgrade from a chart without `controller.podDisruptionBudget` and
 `controller.topologySpreadConstraints` leaves both off. Upgrade with `--reset-then-reuse-values`
-instead, or set both keys explicitly.
+(Helm 3.14.0 or later) instead, or set both keys explicitly.
 
 ### Breaking change: values regrouped in chart v0.8.0
 
