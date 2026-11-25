@@ -28,6 +28,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/util/intstr"
+	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -158,6 +159,9 @@ func TestStatefulPreDeleteRunsDuringRoleInstanceDeletion(t *testing.T) {
 	}
 	instance := h.instance(0, h.current.Name, true)
 	instance.ResourceVersion = "1"
+	// The RI controller installs the reserved finalizer before deletion
+	// begins; the gate in processCondemned relies on it being present.
+	instance.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
 	scheme := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -208,6 +212,126 @@ func TestStatefulOrderedScaleDownSerializesPreDeleteDrains(t *testing.T) {
 	require.Empty(t, roleinstancelifecycle.HookState(low),
 		"a waiting ordinal must not carry a set-level preDelete hook")
 	require.NotContains(t, low.Labels, "consumer.example/drain")
+}
+
+// Updating is durable authorization: after preUpdate was released, a failed
+// mutation retries without re-entering the hook or reinstalling the signals.
+func TestStatefulPreUpdateResumesUpdatingWithoutReplay(t *testing.T) {
+	h := newRollbackTestHarness(t, "kep527-updating-resume", 1, 0, 0)
+	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+		},
+	}
+	instance := h.instance(0, h.intermediate.Name, true)
+	instance.ResourceVersion = "1"
+	instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(constants.RoleInstanceHookStateUpdating)
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(instance).
+		Build()
+	h.control.hookControl = roleinstancelifecycle.NewHookControl(c)
+	h.control.client = c
+
+	h.reconcile(t, instance)
+	h.assertDeleted(t, instance.Name)
+	require.NotContains(t, instance.Labels, "consumer.example/update",
+		"a retry in Updating must not reinstall preUpdate signal labels")
+	require.Equal(t, constants.RoleInstanceHookStateUpdating, roleinstancelifecycle.HookState(instance))
+}
+
+// Entering preUpdate emits a normal event on the set so a blocked rollout is
+// observable instead of appearing stuck.
+func TestStatefulPreUpdateEmitsLifecycleHookEnteredEvent(t *testing.T) {
+	h := newRollbackTestHarness(t, "kep527-pre-update-event", 1, 0, 0)
+	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+		},
+	}
+	instance := h.instance(0, h.intermediate.Name, true)
+	instance.ResourceVersion = "1"
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      instance.Name,
+			Namespace: instance.Namespace,
+			Labels:    map[string]string{constants.RoleInstanceNameLabelKey: instance.Name},
+		},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(instance, pod).
+		Build()
+	h.control.hookControl = roleinstancelifecycle.NewHookControl(c)
+	h.control.client = c
+
+	h.reconcile(t, instance)
+	fakeRecorder, ok := h.control.recorder.(*record.FakeRecorder)
+	require.True(t, ok, "the harness must use a fake recorder")
+	select {
+	case event := <-fakeRecorder.Events:
+		require.Contains(t, event, "LifecycleHookEntered")
+	default:
+		t.Fatal("entering preUpdate must emit a LifecycleHookEntered event")
+	}
+}
+
+// A condemned instance whose set configures preDelete waits until the reserved
+// finalizer is installed: deleting first would skip the hook entirely.
+func TestStatefulScaleDownWaitsForPreDeleteFinalizer(t *testing.T) {
+	h := newRollbackTestHarness(t, "kep527-finalizer-gate", 1, 0, 0)
+	h.set.Spec.Replicas = ptr.To(int32(0))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/drain": "true"},
+		},
+	}
+	instance := h.instance(0, h.current.Name, true)
+	instance.ResourceVersion = "1"
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(instance).
+		Build()
+	h.control.hookControl = roleinstancelifecycle.NewHookControl(c)
+	h.control.client = c
+
+	h.reconcile(t, instance)
+	h.assertDeleted(t)
+	require.Empty(t, roleinstancelifecycle.HookState(instance),
+		"the set controller must not arm preDelete before the finalizer exists")
+
+	// Once the reserved finalizer is present, deletion starts and the drain
+	// runs inside the finalizer-held deletion.
+	instance.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
+	h.reconcile(t, instance)
+	h.assertDeleted(t, instance.Name)
+}
+
+// Without lifecycle hooks, OrderedReady scale-down keeps main's one-pass
+// pacing: every condemned instance is deleted in a single reconcile.
+func TestStatefulOrderedScaleDownKeepsMainPacingWithoutHooks(t *testing.T) {
+	h := newRollbackTestHarness(t, "kep527-main-pacing", 2, 0, 0)
+	h.set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
+	h.set.Spec.Replicas = ptr.To(int32(0))
+	low := h.instance(0, h.current.Name, true)
+	high := h.instance(1, h.current.Name, true)
+
+	h.reconcile(t, low, high)
+	h.assertDeleted(t, low.Name, high.Name)
 }
 
 func TestStatefulPreDeleteWaitsForFinalizer(t *testing.T) {
@@ -393,10 +517,6 @@ func TestOrderedRolloutProceedsOnceScaleDownDeletionStarts(t *testing.T) {
 			} else {
 				h.assertDeleted(t, surplus.Name)
 			}
-			// The deletion may still be draining preDelete behind its
-			// finalizer, so the target waits one reconcile until the
-			// condemned object is gone.
-			h.reconcile(t, target)
 			require.Equal(t, constants.RoleInstanceLifecycleStatePreparingDelete, readLifecycle(t, c, target))
 		})
 	}
@@ -444,10 +564,7 @@ func TestRemovingPreDeleteHookUnblocksOrderedScaleDown(t *testing.T) {
 
 	h.set.Spec.Lifecycle = nil
 	h.reconcile(t, base, lower, higher)
-	h.assertDeleted(t, higher.Name)
-	// The unhealthy lower ordinal follows once the deleting object is gone.
-	h.reconcile(t, base, lower)
-	h.assertDeleted(t, lower.Name)
+	require.Equal(t, []string{higher.Name, lower.Name}, h.objects.deleted)
 }
 
 func TestRollingUpdateCountsUnavailableDrainOnce(t *testing.T) {

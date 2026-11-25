@@ -66,6 +66,13 @@ func (src *RoleBasedGroup) ConvertTo(dstRaw conversion.Hub) error {
 		return err
 	}
 
+	// The restore mutates the annotation map, and dst.Annotations still aliases
+	// the source legacy view's map; decouple it so the view stays reusable
+	// across repeated conversions.
+	if dst.Annotations != nil {
+		dst.Annotations = copyAnnotations(dst.Annotations)
+	}
+
 	// Restore the v2-only role lifecycle from the conversion annotation.
 	if err := restoreV2RoleLifecycle(&dst.Spec, dst.Annotations); err != nil {
 		return err

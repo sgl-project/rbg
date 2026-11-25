@@ -1276,17 +1276,26 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 		// the object is gone, replacing the set-level hook wait.
 		return monotonic && controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer), nil
 	}
+	if set.Spec.RoleInstanceTemplate.Lifecycle != nil &&
+		set.Spec.RoleInstanceTemplate.Lifecycle.PreDelete != nil &&
+		!controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
+		// The reserved finalizer is the preDelete enablement window. Deletion
+		// cannot start before the RoleInstance controller installs it, or the
+		// hook is skipped entirely.
+		return monotonic, nil
+	}
 
 	klog.V(2).InfoS("InstanceSet terminating condemned Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance))
-	_, _, err := ssc.deleteInstance(set, instance)
+	_, deleting, err := ssc.deleteInstance(set, instance)
 	if err != nil {
 		return monotonic, err
 	}
 
-	// A deletion that just started may still be draining preDelete behind the
-	// reserved finalizer, and a pending legacy hook has not started deleting.
-	// Either way at most one drain is in flight: hold the next ordinal.
-	return monotonic, nil
+	// Hold the next ordinal only while a preDelete drain can be in flight
+	// behind the reserved finalizer; a plain deletion keeps main's one-pass
+	// pacing for workloads that never opted into lifecycle hooks.
+	return monotonic && (!deleting ||
+		controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer)), nil
 }
 
 // restoreRetainedInstances cancels a drain when the desired topology again
@@ -1447,6 +1456,11 @@ func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleUpdate(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instance *workloadsv1alpha2.RoleInstance,
 ) (bool, error) {
+	// Updating is durable authorization: preUpdate was already released, so a
+	// mutation retry proceeds without a second acknowledgement.
+	if roleinstancelifecycle.HookState(instance) == constants.RoleInstanceHookStateUpdating {
+		return false, nil
+	}
 	var hook *workloadsv1alpha2.RoleInstanceLifecycleHook
 	if set.Spec.RoleInstanceTemplate.Lifecycle != nil {
 		hook = set.Spec.RoleInstanceTemplate.Lifecycle.PreUpdate
@@ -1479,6 +1493,10 @@ func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleHook(
 	if roleinstancelifecycle.HookState(instance) != state {
 		if err := ssc.hookControl.EnterHook(ctx, instance, state, hook, pods); err != nil {
 			return true, err
+		}
+		if ssc.recorder != nil {
+			ssc.recorder.Eventf(set, corev1.EventTypeNormal, "LifecycleHookEntered",
+				"%s lifecycle hook entered; waiting for signal labels to be removed", state)
 		}
 		return true, nil
 	}

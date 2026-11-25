@@ -18,6 +18,7 @@ package sync
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	apps "k8s.io/api/apps/v1"
@@ -180,6 +181,129 @@ func TestUpdateInstanceWaitsForPreUpdateLifecycleHook(t *testing.T) {
 	}
 	if got := stored.Labels[constants.RoleInstanceLifecycleHookStateKey]; got != string(constants.RoleInstanceHookStatePreUpdate) {
 		t.Fatalf("hook state = %q, want %q", got, constants.RoleInstanceHookStatePreUpdate)
+	}
+}
+
+// Updating is durable authorization: after preUpdate was released, a failed
+// mutation retries without re-entering the hook or reinstalling the signals.
+func TestUpdateInstanceResumesUpdatingWithoutReplay(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "inst-0",
+			Namespace: "default",
+			UID:       types.UID("uid-0"),
+			Labels: map[string]string{
+				apps.ControllerRevisionHashLabelKey:         "old-rev",
+				constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStateUpdating),
+			},
+		},
+	}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-set", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			UpdateStrategy: workloadsv1alpha2.RoleInstanceSetUpdateStrategy{
+				Type: workloadsv1alpha2.RecreatePodUpdateStrategyType,
+			},
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
+	rc := &realControl{
+		Client:         fakeClient,
+		inplaceControl: &fakeStatelessInplaceControl{},
+		hookControl:    roleinstancelifecycle.NewHookControl(fakeClient),
+		recorder:       record.NewFakeRecorder(10),
+	}
+
+	_, err := rc.updateInstance(context.Background(), set, &fakeStatelessCoreControl{},
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "new-rev"}},
+		[]*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: "old-rev"}}}, instance)
+	if err != nil {
+		t.Fatalf("updateInstance() error = %v", err)
+	}
+
+	stored := &workloadsv1alpha2.RoleInstance{}
+	if err := fakeClient.Get(context.Background(), types.NamespacedName{Name: instance.Name, Namespace: instance.Namespace}, stored); err != nil {
+		t.Fatalf("failed to get instance: %v", err)
+	}
+	if _, ok := stored.Labels["consumer.example/update"]; ok {
+		t.Fatal("a retry in Updating must not reinstall preUpdate signal labels")
+	}
+	if got := stored.Labels[constants.RoleInstanceLifecycleHookStateKey]; got != string(constants.RoleInstanceHookStateUpdating) {
+		t.Fatalf("hook state = %q, want Updating", got)
+	}
+}
+
+// Entering preUpdate emits a normal event on the set so a blocked rollout is
+// observable instead of appearing stuck.
+func TestUpdateInstanceEmitsPreUpdateEvent(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+	_ = corev1.AddToScheme(scheme)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "inst-0",
+			Namespace: "default",
+			UID:       types.UID("uid-0"),
+			Labels: map[string]string{
+				apps.ControllerRevisionHashLabelKey: "old-rev",
+			},
+		},
+	}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-set", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			UpdateStrategy: workloadsv1alpha2.RoleInstanceSetUpdateStrategy{
+				Type: workloadsv1alpha2.RecreatePodUpdateStrategyType,
+			},
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
+	recorder := record.NewFakeRecorder(10)
+	rc := &realControl{
+		Client:         fakeClient,
+		inplaceControl: &fakeStatelessInplaceControl{},
+		hookControl:    roleinstancelifecycle.NewHookControl(fakeClient),
+		recorder:       recorder,
+	}
+
+	_, err := rc.updateInstance(context.Background(), set, &fakeStatelessCoreControl{},
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "new-rev"}},
+		[]*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: "old-rev"}}}, instance)
+	if err != nil {
+		t.Fatalf("updateInstance() error = %v", err)
+	}
+	select {
+	case event := <-recorder.Events:
+		if !strings.Contains(event, "LifecycleHookEntered") {
+			t.Fatalf("event = %q, want LifecycleHookEntered", event)
+		}
+	default:
+		t.Fatal("entering preUpdate must emit a LifecycleHookEntered event")
 	}
 }
 

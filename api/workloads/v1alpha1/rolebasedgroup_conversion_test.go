@@ -735,6 +735,37 @@ func TestRoleBasedGroup_RoundTrip_PreservesRoleLifecycle(t *testing.T) {
 	assert.Nil(t, withoutStash.Spec.Roles[0].Lifecycle)
 }
 
+// The lifecycle stash must survive repeated conversions of the same legacy
+// view: restoreV2RoleLifecycle mutates the annotation map, which must not
+// alias the source view's map.
+func TestRoleBasedGroup_DoubleConvertPreservesRoleLifecycle(t *testing.T) {
+	lifecycle := &v2.RoleInstanceLifecycle{
+		PreDelete: &v2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/drain": "true"},
+		},
+	}
+	hub := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{
+			Roles: []v2.RoleSpec{
+				{Name: "worker", Replicas: ptr.To(int32(1)), Lifecycle: lifecycle},
+			},
+		},
+	}
+
+	legacy := &RoleBasedGroup{}
+	require.NoError(t, legacy.ConvertFrom(hub))
+	require.NotEmpty(t, legacy.Annotations[constants.ConversionV1alpha2RoleLifecycleAnnotationKey])
+
+	for i := 0; i < 2; i++ {
+		converted := &v2.RoleBasedGroup{}
+		require.NoError(t, legacy.ConvertTo(converted))
+		require.Len(t, converted.Spec.Roles, 1)
+		assert.Equal(t, lifecycle, converted.Spec.Roles[0].Lifecycle,
+			"conversion %d must preserve the lifecycle", i+1)
+	}
+}
+
 // TestRoleBasedGroup_EngineRuntimeRoundTrip verifies that every EngineRuntime
 // field survives a v1alpha1 → v1alpha2 → v1alpha1 round-trip through the
 // Hub conversion: component, targetContainers (including each entry's

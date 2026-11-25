@@ -145,7 +145,10 @@ func (c *HookControl) EnsurePreDeleteFinalizer(
 	}
 	base := instance.DeepCopy()
 	controllerutil.AddFinalizer(instance, constants.RoleInstancePreDeleteFinalizer)
-	if err := c.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
+	// The optimistic lock keeps a plain merge patch from replacing the whole
+	// finalizer array when another writer adds a finalizer concurrently.
+	if err := c.Patch(ctx, instance,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -162,7 +165,10 @@ func (c *HookControl) RemovePreDeleteFinalizer(
 	}
 	base := instance.DeepCopy()
 	controllerutil.RemoveFinalizer(instance, constants.RoleInstancePreDeleteFinalizer)
-	if err := c.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
+	// The optimistic lock keeps a plain merge patch from replacing the whole
+	// finalizer array when another writer adds a finalizer concurrently.
+	if err := c.Patch(ctx, instance,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return false, err
 	}
 	return true, nil

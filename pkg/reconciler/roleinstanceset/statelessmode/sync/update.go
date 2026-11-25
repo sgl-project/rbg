@@ -289,11 +289,19 @@ func (rc *realControl) prepareLifecycleUpdate(
 	if err != nil {
 		return true, err
 	}
-	if roleinstancelifecycle.HookState(instance) != constants.RoleInstanceHookStatePreUpdate {
+	hookState := roleinstancelifecycle.HookState(instance)
+	if hookState == constants.RoleInstanceHookStateUpdating {
+		// Updating is durable authorization: preUpdate was already released,
+		// so a mutation retry proceeds without a second acknowledgement.
+		return false, nil
+	}
+	if hookState != constants.RoleInstanceHookStatePreUpdate {
 		if err := rc.hookControl.EnterHook(
 			ctx, instance, constants.RoleInstanceHookStatePreUpdate, hook, pods); err != nil {
 			return true, err
 		}
+		rc.recorder.Eventf(set, v1.EventTypeNormal, "LifecycleHookEntered",
+			"preUpdate lifecycle hook entered; waiting for signal labels to be removed")
 		return true, nil
 	}
 	if !roleinstancelifecycle.HookReleased(instance, hook) {

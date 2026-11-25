@@ -513,3 +513,132 @@ func TestCleanupStaleInstances(t *testing.T) {
 		})
 	}
 }
+
+// A stale-pattern instance whose set configures preDelete waits until the
+// reserved finalizer is installed: deleting first would skip the hook.
+func TestCleanupStaleInstancesWaitsForPreDeleteFinalizer(t *testing.T) {
+	setUID := types.UID("gate-set-uid")
+	matchLabels := map[string]string{"app": "gate-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "gate-set",
+			Namespace:   "default",
+			UID:         setUID,
+			Annotations: map[string]string{constants.RoleInstancePatternKey: string(constants.StatelessPattern)},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			Replicas: ptr.To(int32(1)),
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/drain": "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+	stale := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "stale-stateful-0",
+			Namespace: "default",
+			Labels:    matchLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+	}
+	ready := stale.DeepCopy()
+	ready.Name = "stale-stateful-1"
+	ready.UID = types.UID("stale-stateful-1-uid")
+	ready.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(set, stale, ready).Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	requeue, err := r.cleanupStaleInstances(context.Background(), set)
+	if err != nil {
+		t.Fatalf("cleanupStaleInstances() error = %v", err)
+	}
+	if !requeue {
+		t.Fatal("deleting the finalizer-bearing instance must report a requeue")
+	}
+
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(stale), live); err != nil {
+		t.Fatalf("the instance without the finalizer must survive: %v", err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(ready), live); err != nil {
+		t.Fatalf("the finalizer-bearing instance must still be visible: %v", err)
+	}
+	if live.DeletionTimestamp == nil {
+		t.Fatal("the instance with the finalizer must start deleting")
+	}
+}
+
+// A lifecycle snapshot change latches the generation as phase-complete in any
+// phase, so a change during recovery does not reclassify the instance as a
+// spec-driven update and bypass preRecover.
+func TestSyncRoleInstanceLifecycleSnapshotsLatchesAnyPhase(t *testing.T) {
+	setUID := types.UID("latch-set-uid")
+	matchLabels := map[string]string{"app": "latch-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "latch-set",
+			Namespace: "default",
+			UID:       setUID,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/recover": "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "recovering-0",
+			Namespace:  "default",
+			UID:        types.UID("recovering-0-uid"),
+			Generation: 2,
+			Labels:     matchLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			Phase:                       workloadsv1alpha2.RoleInstancePhaseRecovering,
+			ObservedGeneration:          1,
+			LastPhaseCompleteGeneration: 1,
+		},
+	}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithRuntimeObjects(set, instance).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	if err := r.syncRoleInstanceLifecycleSnapshots(context.Background(), set); err != nil {
+		t.Fatalf("syncRoleInstanceLifecycleSnapshots() error = %v", err)
+	}
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Status.LastPhaseCompleteGeneration != 2 {
+		t.Fatalf("LastPhaseCompleteGeneration = %d, want 2 (latched regardless of phase)",
+			live.Status.LastPhaseCompleteGeneration)
+	}
+}

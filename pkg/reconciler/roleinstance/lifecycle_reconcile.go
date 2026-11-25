@@ -22,6 +22,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
@@ -112,7 +113,13 @@ func (r *reconciler) reconcileLifecycleDeletion(
 		if pod == nil {
 			continue
 		}
-		if err := r.Delete(ctx, pod); err != nil && !apierrors.IsNotFound(err) {
+		// A cached Pod can be stale: deleting by name alone would remove a
+		// same-name replacement, so pin the observed UID.
+		deleteOptions := &client.DeleteOptions{}
+		if pod.UID != "" {
+			deleteOptions.Preconditions = &metav1.Preconditions{UID: &pod.UID}
+		}
+		if err := r.Delete(ctx, pod, deleteOptions); err != nil && !apierrors.IsNotFound(err) {
 			return true, err
 		}
 	}

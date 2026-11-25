@@ -415,6 +415,40 @@ func TestRoleBasedGroupSet_RoundTrip_PreservesRoleLifecycle(t *testing.T) {
 		"the stash must not leak into storage")
 }
 
+// The lifecycle stash must survive repeated conversions of the same legacy view.
+func TestRoleBasedGroupSet_DoubleConvertPreservesRoleLifecycle(t *testing.T) {
+	lifecycle := &v2.RoleInstanceLifecycle{
+		PreUpdate: &v2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+		},
+	}
+	hub := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+				Spec: v2.RoleBasedGroupSpec{
+					Roles: []v2.RoleSpec{
+						{Name: "worker", Replicas: ptr.To(int32(1)), Lifecycle: lifecycle},
+					},
+				},
+			},
+		},
+	}
+
+	legacy := &RoleBasedGroupSet{}
+	require.NoError(t, legacy.ConvertFrom(hub))
+	require.NotEmpty(t, legacy.Annotations[constants.ConversionV1alpha2RoleLifecycleAnnotationKey])
+
+	for i := 0; i < 2; i++ {
+		converted := &v2.RoleBasedGroupSet{}
+		require.NoError(t, legacy.ConvertTo(converted))
+		require.Len(t, converted.Spec.GroupTemplate.Spec.Roles, 1)
+		assert.Equal(t, lifecycle, converted.Spec.GroupTemplate.Spec.Roles[0].Lifecycle,
+			"conversion %d must preserve the lifecycle", i+1)
+	}
+}
+
 // TestRoleBasedGroupSet_ConvertTo_NativeV1alpha1HasNoStrategy covers the opposite direction: an
 // object that only ever existed as v1alpha1 carries no stash, and conversion must leave the
 // strategy unset so the set stays on the legacy path.

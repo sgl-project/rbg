@@ -33,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -91,6 +92,12 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		return reconcile.Result{}, err
 	}
 
+	// Sync lifecycle snapshots before any cleanup or pattern dispatch can
+	// delete instances: the snapshot is what lets the RoleInstance controller
+	// install the reserved preDelete finalizer before deletion starts.
+	if err := r.syncRoleInstanceLifecycleSnapshots(ctx, set); err != nil {
+		return reconcile.Result{}, err
+	}
 	// Clean up RoleInstances that belong to a different pattern than the current one.
 	// This handles the case where the pattern annotation is changed (stateful ↔ stateless),
 	// leaving behind instances from the old pattern that the new reconciler won't manage.
@@ -98,9 +105,6 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		return reconcile.Result{}, err
 	} else if requeue {
 		return reconcile.Result{RequeueAfter: time.Second}, nil
-	}
-	if err := r.syncRoleInstanceLifecycleSnapshots(ctx, set); err != nil {
-		return reconcile.Result{}, err
 	}
 
 	// Dispatch based on the role instance pattern annotation
@@ -120,8 +124,9 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 
 // syncRoleInstanceLifecycleSnapshots propagates the desired KEP-527 lifecycle
 // configuration to existing RoleInstances without changing the workload
-// revision. A lifecycle-only generation is latched as phase-complete when the
-// instance is already Running, so it does not enter preUpdate or roll Pods.
+// revision. A lifecycle-only generation is latched as phase-complete in any
+// phase, so a lifecycle change never reclassifies the instance as mid-update
+// and never bypasses preRecover.
 func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx context.Context, set *v1alpha2.RoleInstanceSet) error {
 	if set.DeletionTimestamp != nil {
 		return nil
@@ -143,6 +148,9 @@ func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx conte
 		if !metav1.IsControlledBy(instance, set) {
 			continue
 		}
+		if instance.DeletionTimestamp != nil {
+			continue
+		}
 		if equality.Semantic.DeepEqual(instance.Spec.Lifecycle, desired) {
 			continue
 		}
@@ -151,8 +159,7 @@ func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx conte
 		if err := r.client.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
 			return err
 		}
-		if instance.Status.Phase != v1alpha2.RoleInstancePhaseRunning ||
-			instance.Status.LastPhaseCompleteGeneration >= instance.Generation {
+		if instance.Status.LastPhaseCompleteGeneration >= instance.Generation {
 			continue
 		}
 		statusBase := instance.DeepCopy()
@@ -265,6 +272,14 @@ func (r *RoleInstanceSetReconciler) cleanupStaleInstances(ctx context.Context, s
 			continue
 		}
 		if instanceBelongsToPattern(instance, set, pattern) {
+			continue
+		}
+		if set.Spec.RoleInstanceTemplate.Lifecycle != nil &&
+			set.Spec.RoleInstanceTemplate.Lifecycle.PreDelete != nil &&
+			!controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
+			// Deletion beginning before the reserved finalizer is installed
+			// would skip the preDelete hook entirely. Wait for the RoleInstance
+			// controller to install it before this instance is deleted.
 			continue
 		}
 		klog.InfoS("Deleting stale RoleInstance from different pattern", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance), "currentPattern", pattern)

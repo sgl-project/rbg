@@ -23,10 +23,12 @@ import (
 	"github.com/stretchr/testify/require"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -112,6 +114,61 @@ func TestReconcileLifecycleDeletionResumesTerminatingWithoutReplay(t *testing.T)
 	require.Equal(t, workloadsv1alpha2.RoleInstancePhaseTerminating, live.Status.Phase)
 	err = c.Get(ctx, client.ObjectKeyFromObject(pod), &v1.Pod{})
 	require.Error(t, err, "member Pod must be deleted")
+}
+
+// Member Pods are deleted with a UID precondition so a stale cached object
+// cannot remove a same-name replacement.
+func TestReconcileLifecycleDeletionDeletesPodsWithUIDPrecondition(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/drain": "true"},
+		},
+	}
+	instance.Labels = map[string]string{
+		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStateTerminating),
+	}
+	instance.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer, "test.rbg.io/hold"}
+	instance.DeletionTimestamp = ptr.To(metav1.Now())
+	pod := lifecycleTestPod(instance)
+	pod.UID = "pod-uid-42"
+
+	var deletedPreconditions []*metav1.Preconditions
+	c := fake.NewClientBuilder().
+		WithScheme(readinessTestScheme(t)).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(instance, pod).
+		WithIndex(&v1.Pod{}, fieldindex.IndexNameForOwnerRefUID, func(obj client.Object) []string {
+			keys := make([]string, 0, len(obj.GetOwnerReferences()))
+			for _, ref := range obj.GetOwnerReferences() {
+				keys = append(keys, string(ref.UID))
+			}
+			return keys
+		}).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deleteOptions := &client.DeleteOptions{}
+				deleteOptions.ApplyOptions(opts)
+				deletedPreconditions = append(deletedPreconditions, deleteOptions.Preconditions)
+				return c.Delete(ctx, obj, opts...)
+			},
+		}).
+		Build()
+	r := &reconciler{
+		Client:      c,
+		hookControl: roleinstancelifecycle.NewHookControl(c),
+		recorder:    record.NewFakeRecorder(20),
+	}
+
+	blocked, err := r.reconcileLifecycleDeletion(ctx, instance)
+	require.NoError(t, err)
+	require.False(t, blocked)
+	require.Len(t, deletedPreconditions, 1)
+	require.NotNil(t, deletedPreconditions[0], "Pod deletion must carry a UID precondition")
+	require.NotNil(t, deletedPreconditions[0].UID)
+	require.Equal(t, types.UID("pod-uid-42"), *deletedPreconditions[0].UID)
 }
 
 // Removing every hook must not leave the reserved
