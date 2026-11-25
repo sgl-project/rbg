@@ -971,7 +971,9 @@ RoleBasedGroupSet admission defaulters maintain the label on every write
 backfills it onto referencing objects written before the label existed. Until
 that backfill converges after an upgrade or restart, the webhook falls back
 to the unscoped lookup, so pre-label references still block writes; once a
-clean scan converges, the scoped lookup takes over. Objects written with the
+clean scan converges, the scoped lookup takes over, and a zero-result scoped
+lookup is confirmed with the unscoped live lookup before a profile write is
+admitted. Objects written with the
 webhooks disabled (`--enable-webhooks=none`, a debugging mode) can drift from
 the label; that mode has no admission to protect anyway. With leader election
 enabled, non-leader replicas serve webhooks but never run the controller.

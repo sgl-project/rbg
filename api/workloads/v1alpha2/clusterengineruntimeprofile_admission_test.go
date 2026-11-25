@@ -167,8 +167,8 @@ func TestClusterEngineRuntimeProfileValidator(t *testing.T) {
 		defer SetEngineRuntimeLabelConverged(false)
 		v = admissionHarness(t, unlabeled)
 		_, err = v.ValidateDelete(ctx, profileFor("ik"))
-		require.NoError(t, err,
-			"once converged, only labeled references are visible; the window is documented in KEP-531")
+		require.Error(t, err,
+			"a zero-result scoped lookup must be confirmed with the unscoped live lookup")
 	})
 
 	t.Run("a spec edit is admitted again once the last reference leaves", func(t *testing.T) {

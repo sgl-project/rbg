@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -71,6 +73,21 @@ func controllerRBG(name, namespace, profileName string) *workloadsv1alpha2.RoleB
 			Name:           "worker",
 			EngineRuntimes: []workloadsv1alpha2.EngineRuntime{{ProfileName: profileName}},
 		}}},
+	}
+}
+
+func controllerRBGSet(name, namespace, profileName string) *workloadsv1alpha2.RoleBasedGroupSet {
+	return &workloadsv1alpha2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+			GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:           "worker",
+					EngineRuntimes: []workloadsv1alpha2.EngineRuntime{{ProfileName: profileName}},
+				}}},
+			},
+			RolloutStrategy: &workloadsv1alpha2.GroupSetRolloutStrategy{},
+		},
 	}
 }
 
@@ -247,6 +264,29 @@ func TestProfilesReferencedBy(t *testing.T) {
 	assert.Nil(t, profilesReferencedByRBGSet(context.Background(), &workloadsv1alpha2.RoleBasedGroup{}))
 }
 
+func TestEngineRuntimeLabelDriftRequeuesReferencedProfiles(t *testing.T) {
+	ctx := context.Background()
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+
+	unlabeled := controllerRBG("grp-old", "ns-a", "ik")
+	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+	requests := profilesReferencedByRBG(ctx, unlabeled)
+	require.Len(t, requests, 1)
+	assert.Equal(t, "ik", requests[0].Name)
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"a label-only bypassed write must un-converge the gate before the queued reconcile runs")
+
+	old := controllerRBG("grp", "ns-a", "ik")
+	old.Labels = map[string]string{constants.HasEngineRuntimesLabelKey: constants.HasEngineRuntimesLabelValue}
+	newObj := old.DeepCopy()
+	delete(newObj.Labels, constants.HasEngineRuntimesLabelKey)
+	assert.True(t, engineRuntimeLabelOrGenerationChanged().Update(event.UpdateEvent{
+		ObjectOld: old,
+		ObjectNew: newObj,
+	}), "a label-only update must pass the watch predicate")
+}
+
 // TestClusterEngineRuntimeProfileLabelBackfill pins the upgrade path of the
 // webhook's label-scoped reference lookup (#597): objects written before the
 // has-engine-runtimes label shipped — or past the admission defaulters —
@@ -394,4 +434,80 @@ func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategyObjects(t *t
 	events := drainControllerEvents(recorder)
 	assert.Len(t, events, 1)
 	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillSkipped)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategySets(t *testing.T) {
+	ctx := context.Background()
+	legacy := controllerRBGSet("set-legacy", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	patches := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(legacy).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				patches++
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	require.NoError(t, r.backfillHasEngineRuntimesLabels(ctx))
+	assert.Equal(t, 0, patches,
+		"the backfill must not patch a set whose stored strategy the mutating webhook would heal")
+	got := &workloadsv1alpha2.RoleBasedGroupSet{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "set-legacy"}, got))
+	assert.NotContains(t, got.Labels, constants.HasEngineRuntimesLabelKey,
+		"a skipped set must stay unlabeled so admission keeps the unscoped lookup")
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"the gate must not converge past a skipped referencing set")
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1)
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillSkipped)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillWarningIsConcurrencySafe(t *testing.T) {
+	ctx := context.Background()
+	profiles := []*workloadsv1alpha2.ClusterEngineRuntimeProfile{cerpFor("ik-a"), cerpFor("ik-b")}
+	legacy := controllerRBG("grp-legacy", "ns-a", "ik-a")
+	legacy.Spec.Roles[0].EngineRuntimes[0].ProfileName = "ik-b"
+	legacy.Spec.Roles[0].RolloutStrategy = &workloadsv1alpha2.RolloutStrategy{
+		Type:          workloadsv1alpha2.RollingUpdateStrategyType,
+		RollingUpdate: &workloadsv1alpha2.RollingUpdate{},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.ClusterEngineRuntimeProfile{}).
+		WithObjects(profiles[0], profiles[1], legacy).Build()
+	recorder := record.NewFakeRecorder(64)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	const workers = 2
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: profiles[i%len(profiles)].Name}})
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, 1, len(drainControllerEvents(recorder)),
+		"concurrent profile reconciles must emit one warning for the skipped object")
 }

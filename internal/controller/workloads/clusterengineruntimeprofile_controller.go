@@ -19,6 +19,7 @@ package workloads
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
@@ -32,6 +33,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -66,14 +68,13 @@ const (
 type ClusterEngineRuntimeProfileReconciler struct {
 	client.Client
 	Recorder                         record.EventRecorder
-	warnedEngineRuntimeLabelBackfill map[types.NamespacedName]struct{}
+	warnedEngineRuntimeLabelBackfill sync.Map
 }
 
 func NewClusterEngineRuntimeProfileReconciler(mgr ctrl.Manager) *ClusterEngineRuntimeProfileReconciler {
 	return &ClusterEngineRuntimeProfileReconciler{
-		Client:                           mgr.GetClient(),
-		Recorder:                         mgr.GetEventRecorderFor("clusterengineruntimeprofile-controller"),
-		warnedEngineRuntimeLabelBackfill: make(map[types.NamespacedName]struct{}),
+		Client:   mgr.GetClient(),
+		Recorder: mgr.GetEventRecorderFor("clusterengineruntimeprofile-controller"),
 	}
 }
 
@@ -286,13 +287,9 @@ func (r *ClusterEngineRuntimeProfileReconciler) warnEngineRuntimeLabelBackfillSk
 		return
 	}
 	key := types.NamespacedName{Namespace: obj.GetNamespace(), Name: obj.GetName()}
-	if r.warnedEngineRuntimeLabelBackfill == nil {
-		r.warnedEngineRuntimeLabelBackfill = make(map[types.NamespacedName]struct{})
-	}
-	if _, warned := r.warnedEngineRuntimeLabelBackfill[key]; warned {
+	if _, warned := r.warnedEngineRuntimeLabelBackfill.LoadOrStore(key, struct{}{}); warned {
 		return
 	}
-	r.warnedEngineRuntimeLabelBackfill[key] = struct{}{}
 	r.Recorder.Event(obj, corev1.EventTypeWarning, ReasonEngineRuntimeLabelBackfillSkipped,
 		"the engine runtime label backfill skipped this object because the mutating webhook would also normalize its stored spec; touch the object to let the webhook label it")
 }
@@ -306,19 +303,19 @@ func engineRuntimeLabelMatches(labels map[string]string, references bool) bool {
 }
 
 // SetupWithManager registers the controller. The CERP watch carries the
-// tracking; the RBG and RBGSet watches (spec generation only, so status
-// writes never loop) enqueue the profiles each object's roles reference,
-// so a reference added or removed recomputes the count.
+// tracking; the RBG and RBGSet watches enqueue the profiles each object's
+// roles reference. Spec-generation changes recompute the count, while
+// engine-runtime label changes requeue the backfill after a bypassed write.
 func (r *ClusterEngineRuntimeProfileReconciler) SetupWithManager(mgr ctrl.Manager, options controller.Options) error {
 	return ctrl.NewControllerManagedBy(mgr).
 		WithOptions(options).
 		For(&workloadsv1alpha2.ClusterEngineRuntimeProfile{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&workloadsv1alpha2.RoleBasedGroup{},
 			handler.EnqueueRequestsFromMapFunc(profilesReferencedByRBG),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			builder.WithPredicates(engineRuntimeLabelOrGenerationChanged())).
 		Watches(&workloadsv1alpha2.RoleBasedGroupSet{},
 			handler.EnqueueRequestsFromMapFunc(profilesReferencedByRBGSet),
-			builder.WithPredicates(predicate.GenerationChangedPredicate{})).
+			builder.WithPredicates(engineRuntimeLabelOrGenerationChanged())).
 		Named("clusterengineruntimeprofile-controller").
 		Complete(r)
 }
@@ -330,6 +327,7 @@ func profilesReferencedByRBG(_ context.Context, obj client.Object) []reconcile.R
 	if !ok {
 		return nil
 	}
+	markEngineRuntimeLabelDrift(rbg.Labels, roleSpecHasEngineRuntimes(&rbg.Spec))
 	return profilesReferencedBy(&rbg.Spec)
 }
 
@@ -344,10 +342,6 @@ func roleSpecHasEngineRuntimes(spec *workloadsv1alpha2.RoleBasedGroupSpec) bool 
 	return false
 }
 
-// flagLabelDrift un-converges the label scan when a referencing object
-// arrives without the has-engine-runtimes label — a write that bypassed the
-// admission defaulters. The next profile reconcile then re-runs the
-// backfill, so a converged process does not stay blind to bypassed writes.
 // profilesReferencedByRBGSet maps a RoleBasedGroupSet to the profiles named
 // by its group template's roles — a set's group template counts as a live
 // reference even at zero replicas, no child RoleBasedGroup required.
@@ -356,7 +350,29 @@ func profilesReferencedByRBGSet(_ context.Context, obj client.Object) []reconcil
 	if !ok {
 		return nil
 	}
+	markEngineRuntimeLabelDrift(rbgs.Labels, roleSpecHasEngineRuntimes(&rbgs.Spec.GroupTemplate.Spec))
 	return profilesReferencedBy(&rbgs.Spec.GroupTemplate.Spec)
+}
+
+// markEngineRuntimeLabelDrift un-converges the gate before the queued
+// profile reconcile runs, so a bypassed label-only write cannot hide behind
+// an already-converged gate.
+func markEngineRuntimeLabelDrift(labels map[string]string, references bool) {
+	if references && labels[constants.HasEngineRuntimesLabelKey] != constants.HasEngineRuntimesLabelValue {
+		workloadsv1alpha2.MarkEngineRuntimeLabelDrift()
+	}
+}
+
+func engineRuntimeLabelOrGenerationChanged() predicate.Predicate {
+	return predicate.Or(
+		predicate.GenerationChangedPredicate{},
+		predicate.Funcs{
+			UpdateFunc: func(e event.UpdateEvent) bool {
+				return e.ObjectOld.GetLabels()[constants.HasEngineRuntimesLabelKey] !=
+					e.ObjectNew.GetLabels()[constants.HasEngineRuntimesLabelKey]
+			},
+		},
+	)
 }
 
 func profilesReferencedBy(spec *workloadsv1alpha2.RoleBasedGroupSpec) []reconcile.Request {
