@@ -100,22 +100,22 @@ func copyRestartBudgetStatus(to, from *workloadsv1alpha2.RoleInstance) {
 	to.Status.RestartBudgetExhausted = from.Status.RestartBudgetExhausted
 }
 
-// hasExhaustedProgressingCondition reports whether the persisted Progressing
-// condition still carries the exhausted-budget blocker.
-func hasExhaustedProgressingCondition(instance *workloadsv1alpha2.RoleInstance) bool {
+// hasExhaustedBudgetConditions reports whether persisted conditions still carry
+// budget-owned facts after a reset.
+func hasExhaustedBudgetConditions(instance *workloadsv1alpha2.RoleInstance) bool {
 	return slices.ContainsFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
-		return cond.Type == workloadsv1alpha2.RoleInstanceProgressing &&
-			cond.Status == v1.ConditionTrue &&
+		return (cond.Type == workloadsv1alpha2.RoleInstanceReady ||
+			cond.Type == workloadsv1alpha2.RoleInstanceProgressing) &&
 			cond.Reason == GroupRestartBudgetExceeded
 	})
 }
 
-// removeExhaustedProgressingCondition drops only the budget-owned Progressing
-// fact; other Progressing conditions are recomputed by the generic status writer.
-func removeExhaustedProgressingCondition(instance *workloadsv1alpha2.RoleInstance) {
+// removeExhaustedBudgetConditions drops the budget-owned Ready and Progressing
+// facts; the generic status writer recomputes both from live Pod state.
+func removeExhaustedBudgetConditions(instance *workloadsv1alpha2.RoleInstance) {
 	instance.Status.Conditions = slices.DeleteFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
-		return cond.Type == workloadsv1alpha2.RoleInstanceProgressing &&
-			cond.Status == v1.ConditionTrue &&
+		return (cond.Type == workloadsv1alpha2.RoleInstanceReady ||
+			cond.Type == workloadsv1alpha2.RoleInstanceProgressing) &&
 			cond.Reason == GroupRestartBudgetExceeded
 	})
 }
@@ -138,10 +138,12 @@ func setBudgetCondition(instance *workloadsv1alpha2.RoleInstance, typ workloadsv
 
 // EnforceRestartBudgetConditions is also used by the generic status writer after
 // merging the LIVE budget state, so a stale readiness calculation cannot unfreeze
-// an exhausted RI or reclassify it as repair activity. The budget controller is
-// the sole owner of Degraded.
+// an exhausted RI or reclassify it as repair activity. After a reset, it drops the
+// budget-owned Ready and Progressing facts so a stale snapshot cannot resurrect
+// them. The budget controller is the sole owner of Degraded.
 func EnforceRestartBudgetConditions(instance *workloadsv1alpha2.RoleInstance) {
 	if !instance.Status.RestartBudgetExhausted {
+		removeExhaustedBudgetConditions(instance)
 		return
 	}
 	// Keep a more specific drain-progress message written by the budget
@@ -183,9 +185,9 @@ func prepareGroupRestartBudget(instance *workloadsv1alpha2.RoleInstance, selecte
 // finishBudgetMetadataCleanup finishes a committed reset, including legacy
 // cleanup owners acquired before the first exhaustion.
 func (c *realControl) finishBudgetMetadataCleanup(ctx context.Context, instance, fresh *workloadsv1alpha2.RoleInstance) (bool, error) {
-	if hasExhaustedProgressingCondition(fresh) {
+	if hasExhaustedBudgetConditions(fresh) {
 		base := fresh.DeepCopy()
-		removeExhaustedProgressingCondition(fresh)
+		removeExhaustedBudgetConditions(fresh)
 		if err := c.patchBudgetStatus(ctx, fresh, base); err != nil {
 			return true, err
 		}
@@ -459,14 +461,12 @@ func (c *realControl) resetRestartBudget(ctx context.Context, instance, fresh *w
 	fresh.Status.GroupRestartRevision = groupRestartRevision(fresh, selectedRevision)
 	fresh.Status.GroupRestartCount = 0
 	fresh.Status.RestartBudgetExhausted = false
+	removeExhaustedBudgetConditions(fresh)
 	fresh.Status.Conditions = slices.DeleteFunc(fresh.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
 		// Degraded and an exhausted Restarting wave belong to the budget lifecycle.
 		return cond.Type == workloadsv1alpha2.RoleInstanceDegraded ||
 			(wasExhausted && cond.Type == workloadsv1alpha2.RoleInstanceRestarting)
 	})
-	// Clear the exhausted Progressing fact in the same transaction so RIS and RBG
-	// do not retain a stale blocker after recovery or a new revision.
-	removeExhaustedProgressingCondition(fresh)
 	// Preserve the old accepted wave and backoff on a non-exhausted revision
 	// change; #573 absorbs the controller's own Terminating-member triggers.
 	if wasExhausted {

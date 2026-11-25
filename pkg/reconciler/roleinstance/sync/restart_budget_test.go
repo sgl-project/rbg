@@ -123,6 +123,30 @@ func TestEnforceRestartBudgetConditionsIncludesProgressing(t *testing.T) {
 	require.EqualValues(t, 3, progressing.ObservedGeneration)
 }
 
+func TestEnforceRestartBudgetConditionsClearsAfterReset(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Generation: 3},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+				{
+					Type:   workloadsv1alpha2.RoleInstanceReady,
+					Status: v1.ConditionFalse,
+					Reason: workloadsv1alpha2.ReasonGroupRestartBudgetExceeded,
+				},
+				{
+					Type:   workloadsv1alpha2.RoleInstanceProgressing,
+					Status: v1.ConditionTrue,
+					Reason: workloadsv1alpha2.ReasonGroupRestartBudgetExceeded,
+				},
+			},
+		},
+	}
+	EnforceRestartBudgetConditions(instance)
+	require.False(t, slices.ContainsFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+		return cond.Reason == workloadsv1alpha2.ReasonGroupRestartBudgetExceeded
+	}), "a live reset must clear budget-owned Ready and Progressing facts")
+}
+
 func TestRestartBudgetUnsetAndHealthyZero(t *testing.T) {
 	ctx := context.Background()
 	t.Run("unset needs no reader and does not block scale", func(t *testing.T) {
@@ -433,6 +457,10 @@ func TestRestartBudgetOwnerReleasedAfterReset(t *testing.T) {
 					cond.Status == v1.ConditionTrue &&
 					cond.Reason == workloadsv1alpha2.ReasonGroupRestartBudgetExceeded
 			}), "recovery must clear the exhausted Progressing fact")
+			require.False(t, slices.ContainsFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+				return cond.Type == workloadsv1alpha2.RoleInstanceReady &&
+					cond.Reason == workloadsv1alpha2.ReasonGroupRestartBudgetExceeded
+			}), "recovery must clear the budget-owned Ready fact")
 		})
 	}
 }

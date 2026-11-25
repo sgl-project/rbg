@@ -1441,6 +1441,10 @@ func TestStaleStatusPreservesLiveRestartBudget(t *testing.T) {
 			cond.Status == v1.ConditionTrue &&
 			cond.Reason == synccontrol.GroupRestartBudgetExceeded
 	}), "a live reset must clear the budget-owned Progressing blocker")
+	require.False(t, slices.ContainsFunc(live.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+		return cond.Type == workloadsv1alpha2.RoleInstanceReady &&
+			cond.Reason == synccontrol.GroupRestartBudgetExceeded
+	}), "a live reset must clear the budget-owned Ready fact")
 	for _, cond := range live.Status.Conditions {
 		require.NotEqual(t, workloadsv1alpha2.RoleInstanceDegraded, cond.Type)
 	}
