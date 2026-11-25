@@ -375,6 +375,46 @@ func TestRoleBasedGroupSet_RoundTrip_PreservesRolloutStrategy(t *testing.T) {
 	}
 }
 
+// TestRoleBasedGroupSet_RoundTrip_PreservesRoleLifecycle pins the deprecated-API
+// round trip: a v1alpha2 RBGSet whose group template has role lifecycle is read
+// through v1alpha1 and written back with a full-object update, and the
+// lifecycle must survive via the conversion annotation.
+func TestRoleBasedGroupSet_RoundTrip_PreservesRoleLifecycle(t *testing.T) {
+	lifecycle := &v2.RoleInstanceLifecycle{
+		PreUpdate: &v2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+		},
+	}
+	hub := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+				Spec: v2.RoleBasedGroupSpec{
+					Roles: []v2.RoleSpec{
+						{Name: "worker", Replicas: ptr.To(int32(1)), Lifecycle: lifecycle},
+					},
+				},
+			},
+		},
+	}
+
+	legacy := &RoleBasedGroupSet{}
+	require.NoError(t, legacy.ConvertFrom(hub))
+	require.Len(t, legacy.Spec.Template.Roles, 1)
+	require.NotEmpty(t, legacy.Annotations[constants.ConversionV1alpha2RoleLifecycleAnnotationKey],
+		"the v1alpha1 view must carry the lifecycle stash")
+	require.Empty(t, hub.Annotations,
+		"stashing must not write into the hub object's metadata")
+
+	roundTripped := &v2.RoleBasedGroupSet{}
+	require.NoError(t, legacy.ConvertTo(roundTripped))
+	require.Len(t, roundTripped.Spec.GroupTemplate.Spec.Roles, 1)
+	assert.Equal(t, lifecycle, roundTripped.Spec.GroupTemplate.Spec.Roles[0].Lifecycle)
+	assert.NotContains(t, roundTripped.Annotations, constants.ConversionV1alpha2RoleLifecycleAnnotationKey,
+		"the stash must not leak into storage")
+}
+
 // TestRoleBasedGroupSet_ConvertTo_NativeV1alpha1HasNoStrategy covers the opposite direction: an
 // object that only ever existed as v1alpha1 carries no stash, and conversion must leave the
 // strategy unset so the set stays on the legacy path.

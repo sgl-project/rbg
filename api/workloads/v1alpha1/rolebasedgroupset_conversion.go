@@ -127,6 +127,10 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 		dst.Status.CurrentRevision = extras.CurrentRevision
 		dst.Status.UpdateRevision = extras.UpdateRevision
 	}
+	// Restore the v2-only role lifecycle from the conversion annotation.
+	if err := restoreV2RoleLifecycle(&dst.Spec.GroupTemplate.Spec, dst.Annotations); err != nil {
+		return err
+	}
 	// The stash exists only on the v1alpha1 view; the hub object keeps these values in their
 	// native fields, so the conversion-only keys must not leak into storage.
 	delete(dst.Annotations, annotationV1alpha2RolloutStrategy)
@@ -140,6 +144,7 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 		dst.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey] = raw
 	}
 	delete(dst.Annotations, constants.ConversionV1alpha2DiscoveryConfigVersionAnnotationKey)
+	delete(dst.Annotations, annotationV1alpha2RoleLifecycle)
 
 	return nil
 }
@@ -217,6 +222,14 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 		}
 		dst.Annotations[annotationV1alpha2RolloutStatus] = string(data)
 	}
+
+	// Stash the v2-only role lifecycle so a full-object write through v1alpha1
+	// round-trips it instead of dropping it.
+	annotations, err := stashV2RoleLifecycle(&src.Spec.GroupTemplate.Spec, dst.Annotations)
+	if err != nil {
+		return err
+	}
+	dst.Annotations = annotations
 
 	return nil
 }

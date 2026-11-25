@@ -173,6 +173,12 @@ const (
 	// discovery-config-version on the v1alpha1 view of RoleBasedGroupSet, whose
 	// schema has no spec.groupTemplate.annotations field.
 	ConversionV1alpha2DiscoveryConfigVersionAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-discovery-config-version"
+
+	// ConversionV1alpha2RoleLifecycleAnnotationKey stores the serialized v1alpha2
+	// RoleSpec.Lifecycle map, keyed by role name, on the v1alpha1 view during
+	// conversion. A full-object write through the deprecated v1alpha1 API
+	// round-trips lifecycle configuration instead of silently dropping it.
+	ConversionV1alpha2RoleLifecycleAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-role-lifecycle"
 )
 
 // Lifecycle management annotations

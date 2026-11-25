@@ -36,6 +36,11 @@ const (
 
 	// annotationV1alpha1Coordination stores the serialized v1alpha1 CoordinationRequirements.
 	annotationV1alpha1Coordination = constants.ConversionV1alpha1CoordinationAnnotationKey
+
+	// annotationV1alpha2RoleLifecycle stores the serialized v2 RoleSpec.Lifecycle
+	// map, keyed by role name, on the v1alpha1 view so a read-modify-write
+	// through the deprecated version round-trips it back to the hub object.
+	annotationV1alpha2RoleLifecycle = constants.ConversionV1alpha2RoleLifecycleAnnotationKey
 )
 
 // ConvertTo converts this RoleBasedGroup (v1alpha1) to the Hub version (v1alpha2).
@@ -58,6 +63,11 @@ func (src *RoleBasedGroup) ConvertTo(dstRaw conversion.Hub) error {
 
 	// Preserve lossy fields in annotations on the hub object.
 	if err := preserveV1alpha1Fields(src, dst); err != nil {
+		return err
+	}
+
+	// Restore the v2-only role lifecycle from the conversion annotation.
+	if err := restoreV2RoleLifecycle(&dst.Spec, dst.Annotations); err != nil {
 		return err
 	}
 
@@ -87,8 +97,20 @@ func (dst *RoleBasedGroup) ConvertFrom(srcRaw conversion.Hub) error {
 		return err
 	}
 
+	// Annotation cleanup and stashing below must not mutate the hub's metadata.
+	if dst.Annotations != nil {
+		dst.Annotations = copyAnnotations(dst.Annotations)
+	}
+
 	// Remove conversion-only annotations from the v1alpha1 object.
 	removeConversionAnnotations(dst.Annotations)
+
+	// Stash the v2-only role lifecycle on the v1alpha1 view.
+	annotations, err := stashV2RoleLifecycle(&src.Spec, dst.Annotations)
+	if err != nil {
+		return err
+	}
+	dst.Annotations = annotations
 
 	return nil
 }
@@ -693,4 +715,54 @@ func copyAnnotations(src map[string]string) map[string]string {
 		dst[k] = v
 	}
 	return dst
+}
+
+// stashV2RoleLifecycle serializes the v2-only RoleSpec.Lifecycle values into
+// the conversion annotation, keyed by role name. The stash lives only on the
+// v1alpha1 view: the hub object keeps lifecycle in native fields, so the
+// annotation must not leak into storage. The returned map never aliases the
+// input when it is modified.
+func stashV2RoleLifecycle(spec *v2.RoleBasedGroupSpec, annotations map[string]string) (map[string]string, error) {
+	lifecycles := map[string]*v2.RoleInstanceLifecycle{}
+	for i := range spec.Roles {
+		if role := &spec.Roles[i]; role.Lifecycle != nil {
+			lifecycles[role.Name] = role.Lifecycle
+		}
+	}
+	if len(lifecycles) == 0 {
+		if _, exists := annotations[annotationV1alpha2RoleLifecycle]; exists {
+			annotations = copyAnnotations(annotations)
+			delete(annotations, annotationV1alpha2RoleLifecycle)
+		}
+		return annotations, nil
+	}
+	data, err := json.Marshal(lifecycles)
+	if err != nil {
+		return annotations, fmt.Errorf("marshalling role lifecycle: %w", err)
+	}
+	annotations = copyAnnotations(annotations)
+	annotations[annotationV1alpha2RoleLifecycle] = string(data)
+	return annotations, nil
+}
+
+// restoreV2RoleLifecycle reads the conversion annotation and restores the
+// v2-only RoleSpec.Lifecycle values into the converted spec by role name. The
+// annotation exists only on the v1alpha1 view, so it is removed from the
+// annotations that will be written to storage.
+func restoreV2RoleLifecycle(spec *v2.RoleBasedGroupSpec, annotations map[string]string) error {
+	raw, ok := annotations[annotationV1alpha2RoleLifecycle]
+	if !ok || raw == "" {
+		return nil
+	}
+	lifecycles := map[string]*v2.RoleInstanceLifecycle{}
+	if err := json.Unmarshal([]byte(raw), &lifecycles); err != nil {
+		return fmt.Errorf("annotation %s: %w", annotationV1alpha2RoleLifecycle, err)
+	}
+	for i := range spec.Roles {
+		if lifecycle, found := lifecycles[spec.Roles[i].Name]; found {
+			spec.Roles[i].Lifecycle = lifecycle
+		}
+	}
+	delete(annotations, annotationV1alpha2RoleLifecycle)
+	return nil
 }
