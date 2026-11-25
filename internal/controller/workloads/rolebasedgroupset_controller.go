@@ -101,7 +101,7 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	}
 	// The set and its children come from separate informers, so the cached set can predate the
 	// deletion that released an orphan in this listing.
-	if err := r.recheckGroupSetBeforeAdoptingOrphans(ctx, rbgset, rbglist.Items); err != nil {
+	if err := r.recheckGroupSetForListedOrphans(ctx, rbgset, rbglist.Items); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -262,6 +262,22 @@ func (r *RoleBasedGroupSetReconciler) filterOwnedItems(
 		}
 	}
 	rbglist.Items = rbglist.Items[:n]
+}
+
+// recheckGroupSetForListedOrphans runs recheckGroupSetForAdoption once if the listing holds an
+// orphan of this set, so a listing without one costs no extra read. Unlike the rolling path, which
+// only claims orphans that are not terminating, Reconcile writes to every such orphan: it adopts
+// one that has an ordinal label, terminating or not, and deletes one whose label is missing or
+// invalid.
+func (r *RoleBasedGroupSetReconciler) recheckGroupSetForListedOrphans(
+	ctx context.Context, rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbgs []workloadsv1alpha2.RoleBasedGroup,
+) error {
+	for i := range rbgs {
+		if metav1.GetControllerOfNoCopy(&rbgs[i]) == nil && r.isOwnedOrAdoptable(rbgset, &rbgs[i]) {
+			return r.recheckGroupSetForAdoption(ctx, rbgset, "RoleBasedGroups")
+		}
+	}
+	return nil
 }
 
 // scaleUp concurrently creates a given set of RoleBasedGroup instances.
