@@ -84,8 +84,8 @@ executor 负责业务重试、退避和幂等恢复。hook `signalLabel` 不参�
 - 前置 hooks 的未清除 `signalLabel` 阻塞实际负载操作，controller 不执行业务动作或调度业务重试。
 - `postReady` 统一覆盖创建、恢复和更新后的实例验收与业务注册，但不阻塞 phase、RI Ready 或后续操作。
 - 保留旧 RIS lifecycle 协议，并新增 RoleInstance lifecycle 协议。
-- 未配置 lifecycle hooks 的负载保持现有行为，唯一例外是 feature gate
-  开启期间集群级拒绝 Foreground 删除。
+- 未配置 lifecycle hooks 的负载保持现有行为，唯一例外是集群级拒绝
+  Foreground 删除。
 
 ### 非目标
 
@@ -231,7 +231,6 @@ Update 内的原地更新或 Pod 重建只触发 `preUpdate`，其内部 Pod 删
 | phase 取值 | `Terminating` |
 | preDelete finalizer | `rbg.workloads.x-k8s.io/role-instance-pre-delete` |
 | 旧协议 state key | `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` |
-| feature gate | `RoleInstanceLifecycleHooks` |
 | state key Go 常量 | `RoleInstanceLifecycleHookStateKey` |
 | finalizer Go 常量 | `RoleInstancePreDeleteFinalizer` |
 
@@ -823,7 +822,7 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   并拒绝三个新 hook 字段。
 - controller 持久化并暴露 KEP-502 的 RI `status.phase`，executor 同时观察
   该 phase 和 lifecycle `signalLabel` labels。
-- 实现使用固定的 hook-state key、finalizer、feature gate 和取值集合；
+- 实现使用固定的 hook-state key、finalizer 和取值集合；
   未知 hook-state 不被推进或执行。
 - controller 在进入前置 hook 阶段时只写入一次 `signalLabel`，等待期间不重复补回；
   postReady 支持幂等写入已有 `signalLabel`。
@@ -874,7 +873,7 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 前置 executor 延迟启动时 `signalLabel` 保持匹配，controller 持续等待；executor 不需要首次登记。
 - 前置业务多次失败后自行退避成功，期间 controller 不推进受阻操作。
 - controller／executor 重启、watch 重连、PATCH 冲突和业务成功但 `signalLabel` 清除失败。
-- feature gate 开启期间，RBGSet、RBG、RIS 和 RI 的 foreground 删除均被拒绝，
+- RBGSet、RBG、RIS 和 RI 的 foreground 删除均被拒绝，
   包括与 RI 创建或 preDelete 启用并发的请求。
 - RIS metadata 同步不覆盖运行时 `signalLabel`，controller 不在同一前置阶段重复写入。
 - RI 信号标签变化在不修改 revision 的情况下到达成员 Pod；RI 上清除
@@ -925,7 +924,7 @@ controller 写入与 executor 清除的信号标签协作，完成核心测试�
 
 ### 升级与降级策略
 
-未配置 lifecycle hooks 时保持行为不变，唯一例外是 feature gate 开启期间
+未配置 lifecycle hooks 时保持行为不变，唯一例外是
 Foreground 删除被拒绝。存量 RI 启用功能不会仅因当前
 Ready 或历史更新而重放 postReady／preUpdate；这些 hooks 只由受控操作触发。
 启用 preDelete 时，controller 按前述规则为存量稳定 RI 补充保留 finalizer。
@@ -957,28 +956,26 @@ controller 与 executor 必须约定阶段位置、阶段值和 `signalLabel` �
 
 ### 功能启用与回退
 
-feature gate 为 `RoleInstanceLifecycleHooks`。先部署支持该阶段协议的
-executor 并授予必要权限，再开启该 gate。该 gate 默认关闭；
-关闭期间拒绝新协议字段，旧 RIS lifecycle 协议保持现有行为。
-gate 边界：开启 gate 不会回溯校验存量对象，但互斥规则作用于后续每次
+不设 feature gate：协议随版本直接启用，启用方式就是在对象上写入
+`lifecycle` 配置——未配置 hooks 的对象不进入任何新代码路径。先部署
+支持该阶段协议的 executor 并授予必要权限，再配置 hooks。
+配置边界：配置 hooks 不会回溯校验存量对象，但互斥规则作用于后续每次
 写入，已同时携带新旧配置的对象必须在下一次更新前修正。修正之前，
 RI controller 必须 fail safe：拒绝在该对象上执行新协议并报告互斥违规，
-因此新协议不会与旧 RIS 协议在同一对象上并发执行。gate 关闭期间，
-controller 不写入也不匹配新协议运行时 labels；存量 `hook-state`、
-`signalLabel` 和 `signalLabel` key 记录保留给兼容 controller 收尾，
-且该 controller 在没有在途状态后于正常收敛中移除保留 preDelete
-finalizer，因此受支持的禁用不会把 RI 删除楔死在 finalizer 之后。旧 `inPlaceUpdate`
+因此新协议不会与旧 RIS 协议在同一对象上并发执行。移除全部 hooks
+配置后，controller 在正常收敛中清理 `hook-state` label、运行时
+`signalLabel`、`signalLabel` key 记录和保留的 preDelete finalizer，
+因此受支持的禁用不会把 RI 删除楔死在 finalizer 之后。旧 `inPlaceUpdate`
 hook 在公布弃用版本前继续支持 standalone RIS 用户。
-关闭或重新启用功能时，执行中的 `signalLabel` 和未完成阶段保持不变；
 不理解当前协议的版本不接管未完成操作。
 preDelete 需要确认 executor 在业务 Pod 删除前可用，并验证所支持删除路径的屏障。
-foreground 级联删除不是受支持路径。gate 开启期间，RBGSet、RBG、RIS 和
+foreground 级联删除不是受支持路径。RBGSet、RBG、RIS 和
 RI 删除入口的 Foreground 传播一律被准入拒绝。
-执行不兼容回滚时，应先禁用 hook 配置，再移除兼容 controller。
+执行不兼容回滚时，应先移除 hook 配置，再移除兼容 controller。
 只有 RI 已稳定且兼容 controller 已清理全部保留的 preDelete RI finalizer 后，
-禁用才算完成；feature gate 或配置删除不能替代该收敛过程。
+禁用才算完成；配置删除启动该收敛过程，但不能替代等待其完成。
 
-KEP metadata 中的 `disable-supported` 描述 feature gate 回退，
+KEP metadata 中的 `disable-supported` 描述配置回退，
 不是稳定边界上删除单个 hook 配置的语义。
 
 ### 发布、升级与回滚规划

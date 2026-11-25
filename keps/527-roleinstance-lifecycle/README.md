@@ -111,8 +111,7 @@ RBG does not need to embed application logic or create a Job for every hook.
 - Preserve the legacy RIS lifecycle protocol while adding the new RoleInstance
   lifecycle protocol.
 - Preserve existing behavior for workloads that do not configure lifecycle
-  hooks, except that Foreground deletion is rejected cluster-wide while the
-  feature gate is enabled.
+  hooks, except that Foreground deletion is rejected cluster-wide.
 
 ### Non-Goals
 
@@ -311,7 +310,6 @@ The following names and values are normative:
 | Phase value | `Terminating` |
 | preDelete finalizer | `rbg.workloads.x-k8s.io/role-instance-pre-delete` |
 | Legacy state key | `rbg.workloads.x-k8s.io/role-instance-lifecycle-state` |
-| Feature gate | `RoleInstanceLifecycleHooks` |
 | State-key Go constant | `RoleInstanceLifecycleHookStateKey` |
 | Finalizer Go constant | `RoleInstancePreDeleteFinalizer` |
 
@@ -1094,8 +1092,8 @@ lifecycle and distinguish workload backends.
   fields.
 - The controller persists and exposes the KEP-502 RI `status.phase`, and the
   executor observes it together with the lifecycle `signalLabel` labels.
-- The implementation uses the exact hook-state key, finalizer, feature gate,
-  and value set; an unknown hook-state is not advanced or executed.
+- The implementation uses the exact hook-state key, finalizer, and value
+  set; an unknown hook-state is not advanced or executed.
 - The controller writes a pre-operation `signalLabel` only when entering the phase
   and does not restore it while waiting; `postReady` supports idempotent
   writes to an existing `signalLabel`.
@@ -1173,9 +1171,8 @@ lifecycle and distinguish workload backends.
   operation.
 - Controller and executor restarts, watch reconnections, PATCH conflicts,
   and successful application actions followed by `signalLabel`-removal failures.
-- Foreground deletion is rejected for RBGSet, RBG, RIS, and RI while the
-  feature gate is enabled, including requests that race RI creation or
-  `preDelete` enablement.
+- Foreground deletion is rejected for RBGSet, RBG, RIS, and RI, including
+  requests that race RI creation or `preDelete` enablement.
 - RIS metadata synchronization preserves runtime `signalLabels`, and the controller
   does not rewrite a `signalLabel` during the same pre-operation phase.
 - RI `signalLabel` changes reach member Pods without revision changes, and
@@ -1193,7 +1190,7 @@ lifecycle and distinguish workload backends.
   continues without `preDelete`.
 - Default background deletion retains member Pods until `preDelete` is
   released, admission rejects Foreground and Orphan deletion at every RBGSet,
-  RBG, RIS, and RI entry while the feature gate is enabled and rejects deletion
+  RBG, RIS, and RI entry and rejects deletion
   while the webhook is unavailable (`failurePolicy=Fail`), and namespace
   teardown follows the documented operator procedure outside the live-engine
   guarantee.
@@ -1302,43 +1299,38 @@ readiness review has not yet been completed.
 
 ### Feature Enablement and Rollback
 
-The feature gate is `RoleInstanceLifecycleHooks`. Deploy an executor that
-supports the phase protocol and grant its required permissions before enabling
-the gate. The gate defaults to false. While it is disabled, the new protocol
-fields are rejected and the legacy RIS lifecycle protocol retains its existing
-behavior.
+There is no feature gate. The protocol ships enabled, and enabling it is the
+per-object opt-in of writing the `lifecycle` configuration: objects without
+hooks take no new code path. Deploy an executor that supports the phase
+protocol and grant its required permissions before configuring hooks.
 
-Gate edges: enabling the gate does not retroactively validate existing objects,
+Configuration edges: configuring hooks does not retroactively validate existing objects,
 but the mutual-exclusion rule applies to every subsequent write, so an object
 that already carries both the legacy and new configurations must be corrected
 before its next update. Until it is corrected, the RI controller must fail safe:
 it refuses to execute the new protocol on such an object and reports a
 mutual-exclusion violation, so the new protocol never runs concurrently with the
-legacy RIS protocol on one object. With the gate disabled, the controller
-neither writes nor matches new-protocol runtime labels; existing `hook-state`,
-`signalLabels`, and the `signalLabel`-key record remain for a compatible
-controller to finish, and that controller removes the reserved `preDelete`
-finalizer during normal convergence once no in-flight state remains, so a
+legacy RIS protocol on one object. Removing every hook from the configuration
+cleans the `hook-state` label, runtime `signalLabels`, the `signalLabel`-key
+record, and the reserved `preDelete` finalizer during normal convergence, so a
 supported disable never wedges RI deletion behind the finalizer. The legacy
 `inPlaceUpdate` hook remains supported for standalone RIS users until a
 deprecation release is announced.
 
-Disabling or re-enabling the feature leaves in-flight `signalLabels` and unfinished
-phases intact. A version that does not understand the current protocol does
-not take over an unfinished operation. `preDelete` requires an
-executor that is available before application Pod deletion and validation of
-the barrier across all supported deletion paths.
-Foreground cascading deletion is not a supported path. While the feature gate
-is enabled, admission rejects `Foreground` propagation at every RBGSet, RBG,
-RIS, and RI deletion entry.
+A version that does not understand the current protocol does not take over an
+unfinished operation. `preDelete` requires an executor that is available
+before application Pod deletion and validation of the barrier across all
+supported deletion paths.
+Foreground cascading deletion is not a supported path. Admission rejects
+`Foreground` propagation at every RBGSet, RBG, RIS, and RI deletion entry.
 
-The `disable-supported` metadata field describes feature-gate rollback, not
+The `disable-supported` metadata field describes configuration rollback, not
 stable-boundary removal of individual hook configuration.
 
-For an incompatible rollback, disable the hook configuration before removing
+For an incompatible rollback, remove the hook configuration before removing
 the compatible controller. The disablement is complete only after the RIs are
-stable and no reserved `preDelete` RI finalizer remains. A feature-gate change
-or configuration deletion is not a substitute for that convergence.
+stable and no reserved `preDelete` RI finalizer remains; configuration
+deletion starts that convergence but is not a substitute for waiting for it.
 
 ### Rollout, Upgrade, and Rollback Planning
 
