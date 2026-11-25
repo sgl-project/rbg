@@ -1,6 +1,6 @@
 # /stress-test — RBG Controller Stress Test Skill
 
-A Claude Code skill for stress testing the RBG (RoleBasedGroup) controller at scale using in-cluster KWOK simulation.
+An agent skill for stress testing the RBG (RoleBasedGroup) controller at scale using in-cluster KWOK simulation. The skill itself is in [.agents/skills/stress-test](../../.agents/skills/stress-test/SKILL.md); this directory holds the stress client and its scripts.
 
 ## What It Does
 
@@ -74,9 +74,9 @@ The stress client generates files in the output directory (default: `/tmp/rbg-st
 | `goroutine-{phase}.prof` | Goroutine profile |
 | `*-top.txt` | Human-readable pprof top-N reports |
 
-## AI Analysis
+## Analysis
 
-After generating the report, the skill uses Claude to analyze:
+After generating the report, the agent analyzes:
 
 - **Performance**: actual vs target QPS, latency trends, bottleneck identification
 - **Tuning**: specific `max-concurrent-reconciles`, `kube-api-qps`, `kube-api-burst` recommendations
@@ -98,7 +98,8 @@ After generating the report, the skill uses Claude to analyze:
 |-----------|------|---------|-------------|
 | Total RBGs | `--total-rbgs` | 10 | Number of RBG instances |
 | Roles per RBG | `--roles-per-rbg` | 2 | Roles in each RBG |
-| LWS roles | `--lws-roles` | 0 | Roles using LeaderWorkerSet |
+| Leader/worker roles | `--lws-roles` | 0 | Roles using `leaderWorkerPattern` (on RoleInstanceSet) |
+| Leader/worker size | `--lws-size` | 4 | Pods per leader/worker instance |
 | Create/Update/Delete QPS | `--{op}-qps` | 5 | Submission rate per phase |
 | In-place update | `--in-place-update` | false | Use InPlaceIfPossible strategy |
 | KWOK nodes | `--use-kwok-nodes` | true | Schedule to fake nodes |

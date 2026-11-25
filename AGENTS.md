@@ -33,16 +33,21 @@ The details are in the skill's `references/review-playbook.md`.
 
 ## Verifying on a cluster
 
-The skill ships kubectl checks in `.agents/skills/rbg-conventions/scripts/`, described in its
-`references/verification-cases.md`. Clusters are often shared:
+Changes to runtime behavior (controller, rendering, webhooks, chart, upgrade) are verified on the
+remote cluster in your kubeconfig with kubectl before anyone calls them ready to merge; don't set
+up a local cluster for this. The skill ships kubectl checks in
+`.agents/skills/rbg-conventions/scripts/`, described in its `references/verification-cases.md`.
+Clusters are often shared, with other people and with other agent sessions:
 
-- Work in your own namespace and clean it up.
-- Never start a second RBG controller next to one that is already running.
+- Run `.agents/skills/rbg-conventions/scripts/cluster-preflight.sh` first. If it finds anything,
+  stop and agree with its owner.
+- Work in your own namespace, and clean it up while your controller still runs.
+- Scope any controller you run to your namespace, and never start one next to an unscoped one.
 - Never delete the CRDs, and never run `make test-e2e-upgrade` on a shared cluster.
 
 ## Other skills
 
-- `.claude/skills/stress-test/`: controller stress tests with KWOK.
+- `.agents/skills/stress-test/`: controller load tests with KWOK, pprof and an analysis report.
 
 ## Basics
 
