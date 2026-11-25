@@ -74,7 +74,8 @@ more.
    read an unset `sharedServiceSelection` as `All`, while later releases resolve it to `LeaderOnly`
    and patch the shared Service selector in place. No Pod restarts, but traffic does change.
 5. **Templates get stamped.** The controller adds labels, annotations or env vars to existing pod or
-   RoleInstanceSet templates. Stamp Pods at creation time instead, never the template (#530, KEP-284).
+   RoleInstanceSet templates. Stamp Pods at creation time instead, never the template (#530). The
+   Pod cache filter's `managed` label is stamped this way (KEP-284, #635).
 6. **Rendering reads a live referenced object.** A profile or policy that is neither watched nor part
    of the hash is re-rendered on a later reconcile or controller restart, so every referencing RBG
    rolls at an unpredictable time (#548, ClusterEngineRuntimeProfile).
@@ -189,9 +190,9 @@ more.
    - So must the RoleInstanceSet revisions and the Pods' `controller-revision-hash` labels.
      Metadata-only template changes are applied in place, and UIDs alone would miss them (VC-3).
    - `scripts/rbg-fixtures.sh`, `scripts/rbg-snapshot.sh` and `scripts/rbg-compare.sh` automate
-     this for the RoleInstanceSet paths. The deprecated workload types need their own fixtures or
-     `make test-e2e-upgrade`. See [verification-cases.md](verification-cases.md) for the procedure
-     and its safety rules.
+     this. `rbg-fixtures.sh --with-deprecated` adds StatefulSet and Deployment roles; LeaderWorkerSet
+     roles need `make test-e2e-upgrade`. See [verification-cases.md](verification-cases.md) for the
+     procedure and its safety rules.
 4. **`make test-e2e-upgrade`.** This standalone suite needs a cluster with no rbgs install; it
    installs the from-release itself and deletes the CRDs on teardown.
    - `RBGS_FROM_GIT_TAG` picks the hop: `v0.7.0` (default) or `v0.8.0`.
@@ -200,11 +201,16 @@ more.
      - If the CRDs or the CRD upgrader changed, also set `RBGS_CRD_UPGRADE_REPO`. It does not fall
        back to `RBGS_TO_REPO`. Set `RBGS_CRD_UPGRADE_TAG` too if its tag differs; otherwise it falls
        back to `RBGS_TO_TAG`.
+   - `RBGS_POD_CACHE_SCOPE=filtered`, `RBGS_WATCH_LIST_CLIENT=true` and
+     `RBGS_POD_LABEL_MIGRATION=true` also exercise the Pod cache filter (KEP-284) and its label
+     migration.
    - `PodFacts` in `snapshot.go` lists what must survive the upgrade.
    - An intentional rewrite is recorded per hop in `profile.go`. Never loosen a detector to make a
      finding go away.
-5. **`/release-test`.** A maintainer comment runs the same suite in CI against the chart's default
-   images. It validates a release, not unreleased controller code.
+5. **`/release-test`.** A maintainer comment runs `main`'s workflow on the PR head. Its published
+   legs upgrade to the chart's default images, so they validate a release, not unreleased
+   controller code. Only its `pod-cache` leg builds the PR's images, and upgrades from v0.8.0 with
+   the Pod cache settings above.
 6. **Know what the suite does not prove** (see the package doc in `preflight.go`):
    - downgrade, or the old controller reading objects after the new CRDs land
    - releases older than v0.7.0, and multi-hop upgrades

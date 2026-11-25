@@ -70,7 +70,8 @@
 - **Every requeue needs a logged reason and a bounded backoff** (#508).
 - **Show that the load is unchanged versus `main`.** Compare reconcile counts and API calls at the
   defaults (`--kube-api-qps=20`, `--max-concurrent-reconciles=10`). Back scale claims with
-  `test/stress`; the stress-test skill in `.claude/skills/stress-test/` automates that.
+  `test/stress`; the stress-test skill in `.agents/skills/stress-test/` runs it on a cluster, once
+  per build for an A/B comparison.
 
 ## Events
 
@@ -103,9 +104,10 @@
   later, unrelated reconcile or controller restart (#548). Reuse the shared informers, keep
   predicates narrow, and map events back to RBGs through the `rbg.workloads.x-k8s.io/group-name`
   label.
-- **`RBGPredicate` only enqueues an RBG update when its `spec` changes**
-  (`internal/controller/workloads/rolebasedgroup_controller.go`). As a result:
-  - Edits to RBG metadata such as annotations don't trigger a reconcile.
+- **`RBGPredicate` enqueues an RBG update only when its `spec`, labels or annotations change**
+  (`internal/controller/workloads/rolebasedgroup_controller.go`; labels and annotations since #474).
+  As a result:
+  - Status-only and finalizer-only writes don't trigger a reconcile.
   - Setting `deletionTimestamp` doesn't trigger one either.
   - Adding a finalizer therefore also needs predicate changes and explicit deletion handling (#528).
 
@@ -115,13 +117,27 @@
   `cmd/rbgs/main.go` caches Services, StatefulSets and Deployments only if they carry the
   `rbg.workloads.x-k8s.io/group-name` label. A child created without that label is invisible to the
   controller, which then keeps trying to create it.
-- **If you add a filter for a new type (KEP-284 proposes one for Pods, #530):**
+- **Know the opt-in Pod cache filter (KEP-284, #635).** With `--pod-cache-scope=filtered` (the
+  default is `all`), the cache keeps full objects only for admitted Pods (`Admitted` in
+  `pkg/podcache/transform.go`): Pods with an RBG label (group name, RoleInstance name, warmup name,
+  or the v0.6 group label), with `rbg.workloads.x-k8s.io/managed=true`, or with an owner reference
+  in `workloads.x-k8s.io`. Every other Pod becomes a metadata-only stub.
+  - A new code path that creates Pods must make them admitted. RoleInstance and warmup Pods are
+    also stamped `managed=true` at creation: stamp the Pod, never a template.
+  - A cached read of any other Pod has no spec or status. Read it live (API reader) if you need them.
+- **If you add a filter for a new type:**
   - Audit every cached read, including `new(v1.Pod)`-style reads.
   - Don't treat a DELETE event from a filtered watch as proof of deletion; the object may only have
     left the filter.
   - Use a live read (API reader) before acting on absence.
-- **Don't type-assert informers.** `statefulmode` asserts that the RoleInstanceSet and RoleInstance
-  informers are `SharedIndexInformer`s. With a namespace-restricted cache (`DefaultNamespaces`)
-  controller-runtime returns a `multiNamespaceInformer`, and the manager panics at startup
-  (observed while running VC-2, tracked in #581). A "watch only these namespaces" option needs
-  that fixed first. Field selectors keep plain informers.
+- **Cache-wide restrictions also reach cluster-scoped kinds.** A `DefaultFieldSelector` on
+  `metadata.namespace` applies to the Node, CRD and ClusterEngineRuntimeProfile informers too. The
+  API server rejects it for Nodes and profiles, so their caches never sync (#619), and it matches no
+  CRD. Restrict per type, and exempt cluster-scoped kinds (see the scoping patch in
+  [verification-cases.md](verification-cases.md)).
+- **Don't type-assert informers.** `statefulmode` builds its listers on single
+  `SharedIndexInformer`s for RoleInstanceSets and RoleInstances. With a namespace-restricted cache
+  (`DefaultNamespaces`), controller-runtime returns a `multiNamespaceInformer` instead. Since #615,
+  setup then fails with an error that describes a per-type opt-out; before, the manager panicked at
+  startup (#581). A "watch only these namespaces" option needs listers that work with a
+  `multiNamespaceInformer`. Field selectors keep plain informers.

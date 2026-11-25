@@ -6,13 +6,27 @@ Rerun a case when you touch the code it covers, and update "Last verified".
 
 ## Safety rules for shared clusters
 
-Clusters used for this are often shared with other people's tests.
+Clusters used for this are often shared with other people's tests and with other agent sessions,
+which often run on the same machine.
 
+- **Run `scripts/cluster-preflight.sh` first,** and again before every controller start or swap,
+  after you stop your own controller. Name each namespace that this session created with
+  `-n <ns>`. It changes nothing. It looks for RBG controller Pods, a recently renewed
+  leader-election Lease, admission webhooks for `workloads.x-k8s.io`, verification namespaces and
+  RoleBasedGroups of other runs, kwok fake nodes, RBG controller processes on this machine, and Helm
+  releases of the chart.
+  - Other runs include your other sessions on this machine. They share the local ownership
+    records, so only the namespaces you name with `-n` count as yours.
+  - Exit status 1 means someone else uses RBG on the cluster, even when some checks couldn't run.
+    Stop, find out who, and agree with them before you start a controller, apply CRDs or install
+    anything.
+  - Exit status 2 means nothing was found but a check couldn't run, so the result is incomplete.
 - **Use your own namespace.** `rbg-fixtures.sh apply` creates it with a random owner token.
   - The token and the namespace UID are recorded in `~/.rbg-conventions/` (override with
     `RBG_VERIFY_STATE_DIR`).
   - Scripts that write refuse any namespace whose token and UID don't match that record. They will
-    not touch another tester's verification namespace either.
+    not touch another tester's verification namespace either. The record belongs to your user on
+    this machine, not to one session, so pass the scripts only namespaces this session created.
   - Namespaces and the throwaway CRD are deleted with their UID as a delete precondition, so an
     object recreated under the same name is never deleted.
   - `kc` retries a write only when it provably never reached the API server, so a write is never
@@ -21,36 +35,130 @@ Clusters used for this are often shared with other people's tests.
     the create again, three attempts in all. A duplicate create is refused as AlreadyExists, so it
     changes nothing. If the outcome is still unknown after that, the script fails and names the
     namespace's owner token; the CRD is looked up again by its unique name on exit.
-- **Never run a second controller next to one that is already running.** The RBG controller
-  watches every namespace and has no namespace flag, so two of them fight over every
-  RoleBasedGroup.
-  - Check for other controllers first, and ask whoever runs them.
-  - On a shared cluster, scope your controller with a local, uncommitted patch. In `cacheOptions()`
-    in `cmd/rbgs/main.go`, set
-    `DefaultFieldSelector: fields.OneTermEqualSelector("metadata.namespace", "<ns>")`.
-  - Don't use `DefaultNamespaces` for this: it hands `statefulmode` a `multiNamespaceInformer`, and
-    its `SharedIndexInformer` type assertion panics at startup (#581).
+- **Scope every controller you run to your namespace,** with the patch in
+  [Scoping the controller to one namespace](#scoping-the-controller-to-one-namespace). The RBG
+  controller watches every namespace and has no namespace flag, so an unscoped controller fights
+  every other controller over every RoleBasedGroup and rewrites objects it doesn't own. Controllers
+  scoped to different namespaces can share a cluster; never start one next to an unscoped one.
 - **Never delete the RBG CRDs on a shared cluster.** Other sessions can start depending on them at
   any moment; that happened during the first run of these cases.
   - If the CRDs are missing, install them only with the cluster owner's agreement, and leave them
     installed.
+  - If the build under test adds fields to a CRD, the API server prunes them until that CRD is
+    installed. Back up the installed CRDs, apply the new ones additively with server-side apply,
+    never downgrade them, and tell the other users of the cluster: CRDs are cluster-wide.
   - Install and remove CRDs freely only on a dedicated, disposable cluster.
 - **Never run `make test-e2e-upgrade` on a shared cluster.** It requires a cluster with no RBG
   install and deletes the CRDs on teardown.
+- **Tear down while your controller still runs.** Run `rbg-fixtures.sh delete` before you stop the
+  controller: it adds finalizers, such as `rbg.workloads.x-k8s.io/group-restart-budget-cleanup` on
+  RoleInstances and Pods, that only a running controller removes. Then stop it, and check with the
+  preflight that none of your processes is left.
 
 ## Running the controller under test
 
-Run each build locally against the cluster's kubeconfig. No image or registry is needed:
+Run each build as a local process against the cluster's kubeconfig, with the scoping patch below.
+No image or registry is needed:
 
 ```sh
-go run ./cmd/rbgs --enable-webhooks=none --leader-elect=false --health-probe-bind-address=:18183
+go run ./cmd/rbgs --review-scope-namespace=<ns> --enable-webhooks=none --leader-elect=false \
+  --health-probe-bind-address=:18183
 ```
 
-- To swap builds, stop the process and start the other checkout the same way.
-- `--enable-webhooks=none` also disables conversion, so v1alpha1 requests only work where the
-  cluster's CRDs already convert through a webhook (VC-5).
-- The fixtures need any image with `sh` and `sleep` that the nodes can pull. Pass it with
-  `--image`.
+- `--enable-webhooks=none` skips the certificate bootstrap and the caBundle patching and starts no
+  webhook server, so the run changes no CRD or webhook configuration. It also disables conversion,
+  so v1alpha1 requests only work where the cluster's CRDs already convert through a webhook (VC-5).
+- Only the health probe binds a port (`:8082` by default). Give each local controller its own port;
+  a bind error means another local controller already runs.
+- Before you apply anything, check the log: the scoping patch logs `REVIEW-ONLY: the cache is
+  scoped to one namespace` with your namespace, every controller logs `Starting workers` (seven on
+  `main`), and nothing logs `Failed to watch`. A failed watch stalls every controller at cache sync,
+  and the manager exits after `--cache-sync-timeout` (120s by default).
+- If kubectl reaches the API server but the controller can't (a managed machine may block other
+  binaries, for example with `connect: bad file descriptor`), run `kubectl proxy --port=<port>` and
+  point the controller at a kubeconfig whose server is `http://127.0.0.1:<port>`. Started with
+  `-v=6`, the proxy also logs every request the controller sends, which helps to count API calls.
+- To swap builds, stop the process, check with `cluster-preflight.sh -n <ns>` that it is gone, and
+  start the other checkout, patched the same way.
+- Admission and conversion webhooks run only in an in-cluster install, and they apply to the whole
+  cluster. Test them only on a dedicated cluster or with the agreement of everyone who uses it, and
+  remove the install afterwards.
+- The fixtures need an image with `sh` and `sleep` that the nodes can pull; pass it with `--image`.
+  Some clusters pull only from a private registry: reuse an image the nodes already have
+  (`kubectl get nodes -o json` lists them under `.status.images`).
+
+### Scoping the controller to one namespace
+
+Apply this local patch to `cmd/rbgs/main.go` in every checkout you run, and never commit it. Declare
+the flag next to `cacheOptions()`:
+
+```go
+// REVIEW-ONLY, never commit. A build without this patch rejects the flag and exits, so it
+// can't run unscoped by mistake.
+var reviewScopeNamespace = flag.String("review-scope-namespace", "", "REVIEW-ONLY: cache only this namespace")
+```
+
+In `cacheOptions()`, turn `return cache.Options{...}` into `opts := cache.Options{...}`, add the
+following at the end of the function, and import `k8s.io/apimachinery/pkg/fields`:
+
+```go
+    // REVIEW-ONLY, never commit: scope this controller to one namespace on a shared cluster.
+    ns := *reviewScopeNamespace
+    if ns == "" {
+        panic("--review-scope-namespace is not set")
+    }
+    setupLog.Info("REVIEW-ONLY: the cache is scoped to one namespace", "namespace", ns)
+    opts.DefaultFieldSelector = fields.OneTermEqualSelector("metadata.namespace", ns)
+    // The API server rejects that selector for Nodes and ClusterEngineRuntimeProfiles, and it
+    // matches no CRD. Cache all Nodes and CRDs, which the controller only reads, but only the
+    // profiles labeled for this run: the controller rewrites the status of every profile it sees.
+    opts.ByObject[&corev1.Node{}] = cache.ByObject{Field: fields.Everything()}
+    opts.ByObject[&apiextv1.CustomResourceDefinition{}] = cache.ByObject{Field: fields.Everything()}
+    opts.ByObject[&workloadsv1alpha2.ClusterEngineRuntimeProfile{}] = cache.ByObject{
+        Field: fields.Everything(),
+        Label: labels.SelectorFromSet(labels.Set{"rbg-conventions/scope": ns}),
+    }
+    return opts
+```
+
+- **Why each part is there:**
+  - The namespace comes from a flag that only the patch defines. A checkout without the patch
+    rejects `--review-scope-namespace` with `flag provided but not defined` and exits, and the
+    patched build panics when the flag is missing. So a swap to a checkout you forgot to patch
+    can't start an unscoped controller, as it could with an environment variable that the
+    unpatched build ignores. The log line shows which namespace the cache holds.
+  - `DefaultFieldSelector` also applies to cluster-scoped kinds. The API server rejects it for Nodes
+    and ClusterEngineRuntimeProfiles (`field label not supported: metadata.namespace`). The profile
+    informer then never syncs, so no controller starts its workers and the manager exits after the
+    cache sync timeout (#619). The Node informer fails the same way once a warmup selects nodes by
+    label. For CRDs the selector returns an empty list, so the LeaderWorkerSet CRD looks absent.
+  - The ClusterEngineRuntimeProfile controller counts a profile's references through the cache,
+    which holds only your namespace. Without the label, the scoped controller rewrites the status of
+    every profile that RoleBasedGroups in other namespaces reference: `referenceCount` and
+    `referencedGeneration` to 0, and the `Frozen` condition removed (VC-6).
+  - Roles resolve their `engineRuntimes` through the same cache, so to the scoped controller an
+    unlabeled profile doesn't exist. Create the profiles your fixtures use under unique names, label
+    them `rbg-conventions/scope=<ns>`, and delete them by UID afterwards. Never label a profile that
+    others use: the scoped controller would rewrite its status too.
+- **Every cluster-scoped kind the controller reads through its cache needs an entry here.** The
+  ClusterEngineRuntimeProfile controller (#571) broke the previous recipe that way; rerun VC-6 when
+  the controller starts to read a new one.
+- **The patch limits what the controller caches, not the permissions it needs.** Every namespaced
+  list and watch goes to your namespace (`/namespaces/<ns>/...`), so namespaced RBAC covers those.
+  It still needs cluster-scoped access:
+  - `get` on CRDs at startup, through the API reader;
+  - `list` and `watch` on CRDs once it reconciles a RoleBasedGroup with deprecated workload types
+    enabled, because the LeaderWorkerSet CRD is then read through the cache;
+  - `list`, `watch` and status updates on ClusterEngineRuntimeProfiles;
+  - `list` and `watch` on Nodes once a warmup selects nodes by label.
+
+  A tester's kubeconfig usually allows all of that; a ServiceAccount bound only to the namespace
+  doesn't.
+- **Don't use `DefaultNamespaces`.** It gives `statefulmode` a `multiNamespaceInformer`, which has no
+  single indexer. Since #615 that fails setup with an error; before, it panicked at startup (#581).
+  The remedy that error describes also covers only one namespace. Field selectors keep plain
+  informers, so this patch avoids the problem.
+- The patch also works with `--pod-cache-scope=filtered` (VC-2).
 
 ## What the snapshot covers
 
@@ -67,17 +175,23 @@ Each output starts with a header line that carries the format version (currently
 `rbg-compare.sh` refuses empty files, snapshots of different namespaces and older formats, so two
 failed snapshot runs can never compare as identical.
 
-The fixtures cover the RoleInstanceSet paths only (standalone, leader/worker, custom components,
-roleTemplate). Deprecated Deployment, StatefulSet and LeaderWorkerSet roles need their own
-fixtures, or `make test-e2e-upgrade` on a disposable cluster. When webhooks are enabled, the 0.9.0
-gate rejects new uses of those deprecated types.
+`fixtures/rbg-fixtures.yaml` covers the RoleInstanceSet paths (standalone, leader/worker, custom
+components, roleTemplate). `rbg-fixtures.sh apply --with-deprecated` adds a StatefulSet role and a
+Deployment role from `fixtures/rbg-deprecated-fixtures.yaml`.
+
+- Creating them needs a controller with `--enable-deprecated-workload-types` (the default) and no
+  RBG admission webhook on the cluster: with webhooks enabled, the 0.9.0 gate rejects every new use
+  of a deprecated type.
+- LeaderWorkerSet roles also need the LWS controller. Cover them with `make test-e2e-upgrade` on a
+  disposable cluster.
 
 ## Testing the scripts
 
 `scripts/selftest.sh` runs the scripts against a fake kubectl and needs only bash and jq. It
 covers the retry rules of `kc`, the UID-checked deletes, the recovery of lost create responses,
-the waits and probes that must fail closed, and the snapshot/compare pair. Run it after changing
-any script, and check that a new test fails on the old script.
+the waits and probes that must fail closed, the snapshot/compare pair, the fixture sets, and the
+preflight's findings. Run it after changing any script, and check that a new test fails on the old
+script.
 
 ## Cases
 
@@ -98,25 +212,34 @@ any script, and check that a new test fails on the old script.
 
 - **Proves:** golden rule 1 for the build under test.
 - **Run:**
-  1. `scripts/rbg-fixtures.sh apply -n <ns> --image <image> --wait 420` with the old build running.
+  1. `scripts/rbg-fixtures.sh apply -n <ns> --image <image> --with-deprecated --wait 420` with the
+     old build running. Leave out `--with-deprecated` when the cluster has an RBG admission webhook.
   2. `scripts/rbg-snapshot.sh -n <ns> --settle 20 > before.txt`. Exit status 3 means the state
      didn't settle: stdout stays empty and stderr shows what kept changing. Find out why before
      comparing.
-  3. Stop the old build and start the new one (or the same build again, for a restart).
+  3. Stop the old build, run the preflight with `-n <ns>`, and start the new one with the same
+     scoping patch (or the same build again, for a restart).
   4. `scripts/rbg-snapshot.sh -n <ns> --settle 20 > after.txt`.
   5. `scripts/rbg-compare.sh before.txt after.txt`.
-  6. `scripts/rbg-fixtures.sh delete -n <ns>` when done.
+  6. `scripts/rbg-fixtures.sh delete -n <ns>` when done, while a controller still runs.
 - **Pass:** `PASS: nothing changed`. A diff in any revision, label, annotation, UID, image, restart
   count, Service field or endpoint is a finding.
-- **Last verified:** 2026-11-13, `main` (ea5e82ae, after #538 and #556) restarted cold on envtest
-  with the production webhooks: PASS, 373 records, snapshot format v2. Earlier, 2026-11-11, `main`
-  (fd160cc9) restarted cold:
-  - Kubernetes 1.37 cluster with running Pods, controller scoped with the field-selector patch:
-    PASS, 352 records.
-  - envtest with the production webhooks: PASS, 302 records.
+- **Last verified:** 2026-11-25, `main` (c037ec67) on a Kubernetes 1.37 cluster, controller scoped
+  with the patch above, fixtures with `--with-deprecated` (8 RoleBasedGroups, 14 running Pods):
+  - a cold restart: PASS, 422 records
+  - a restart with `--pod-cache-scope=filtered`: PASS, 422 records
 
-  The 2026-11-11 runs used snapshot format v1. Format v2 only adds init-container fields, and the
-  fixtures have no init containers, so the results of VC-2 to VC-4 are unaffected.
+  The fixtures as committed, with `fx-template-ref`'s empty patch, were applied again in a fresh
+  namespace through `kubectl proxy` after the controller lost direct access to the API server: all
+  Ready.
+
+  Earlier runs, without the deprecated fixtures:
+  - 2026-11-13, `main` (ea5e82ae, after #538 and #556) restarted cold on envtest with the
+    production webhooks: PASS, 373 records, snapshot format v2.
+  - 2026-11-11, `main` (fd160cc9) restarted cold on a Kubernetes 1.37 cluster with running Pods
+    (PASS, 352 records) and on envtest with the production webhooks (PASS, 302 records). These runs
+    used snapshot format v1. Format v2 only adds init-container fields, and the fixtures have no
+    init containers, so the results of VC-2 to VC-4 are unaffected.
 
 ### VC-3: The detector catches template stamping (negative control)
 
@@ -194,13 +317,66 @@ any script, and check that a new test fails on the old script.
     the field, so the API server would reject that object (strict field validation), and
     `rbg-fixtures.sh apply` would fail against them.
 
+### VC-6: A scoped controller starts and stays in its namespace
+
+- **Proves:** the patch in [Scoping the controller to one namespace](#scoping-the-controller-to-one-namespace)
+  works on `main`: every controller starts, and the controller leaves the profiles of other runs
+  alone. Rerun it when `cacheOptions()` changes, or when the controller starts to read a new
+  cluster-scoped kind.
+- **Run:**
+  1. `scripts/cluster-preflight.sh`.
+  2. Create two ClusterEngineRuntimeProfiles with unique names, one labeled
+     `rbg-conventions/scope=<ns>` and one not. Give both the status of a profile that
+     RoleBasedGroups elsewhere reference: with `kubectl patch --subresource=status`, set
+     `referenceCount: 3`, `referencedGeneration: 1` and a `Frozen` condition.
+  3. Start the patched controller, then apply the fixtures with `--with-deprecated` and wait until
+     they are Ready.
+  4. Compare both profiles' status and `resourceVersion` with step 2. Delete them by UID
+     (`delete_with_uid` in `scripts/common.sh`) and the fixtures while the controller still runs.
+- **Pass:**
+  - The scoping log line names your namespace, seven `Starting workers` lines, and no
+    `Failed to watch`; every fixture Ready.
+  - The labeled profile's status is rewritten, because the controller counts references only in
+    your namespace; the unlabeled one keeps its `resourceVersion`.
+- **Negative controls:**
+  - With `DefaultFieldSelector` alone (the previous recipe), the ClusterEngineRuntimeProfile
+    informer fails with `field label not supported: metadata.namespace`, no controller starts its
+    workers, and the manager exits 1 after the cache sync timeout (#619).
+  - Without the label, the unlabeled profile is rewritten as well.
+- **Last verified:** 2026-11-25, `main` (c037ec67), Kubernetes 1.37 cluster: PASS, and both negative
+  controls behaved as described. The labeled profile went from `referenceCount: 3` and a `Frozen`
+  condition to an empty status.
+
+  Later that day, the namespace moved from an environment variable to `--review-scope-namespace`.
+  `main` without the patch exited with `flag provided but not defined`, and the patched build
+  panicked without the flag. With the flag, it logged the namespace and started all seven
+  controllers. `kubectl proxy -v=6` showed only GETs: every namespaced list and watch had the
+  namespace field selector, and profiles were listed by the scope label.
+
 ## What the runs changed in the skill
 
 - Rollout checks look at RoleInstanceSet revisions and `controller-revision-hash` labels, not only
   at Pod UIDs (VC-3).
 - The v1alpha1 conversion claims are now measured, not inferred (VC-5).
-- Running a scoped controller on a shared cluster needs the field-selector patch above
-  (`DefaultNamespaces` panics, #581).
+- A scoped controller needs an exemption for every cluster-scoped kind it caches, and must see
+  only the ClusterEngineRuntimeProfiles of its own run. Since #571, a field selector alone stalled
+  every controller at cache sync, and without the label the controller rewrote other runs' profile
+  status (VC-6, #619). `DefaultNamespaces` fails setup (#615; it panicked before, #581).
+- The scoping patch reads its namespace from a flag that only the patch defines. With an
+  environment variable, a swap to a checkout without the patch would start an unscoped controller;
+  `main` now exits with `flag provided but not defined` (VC-6).
+- Reviews hand-wrote StatefulSet and Deployment fixtures to check that an upgrade leaves those
+  roles alone; `--with-deprecated` now provides them (VC-2).
+- `fx-template-ref` sets `templateRef.patch: {}`. v0.8.0's controller and webhook reject a
+  templateRef without a patch, so an upgrade test from v0.8.0 had to drop the fixture (#601).
+- Other agent sessions shared the cluster and the machine during reviews, so the preflight looks
+  for them first, and counts as yours only the namespaces you name with `-n`. On the cluster it
+  first reported a shell whose command line only mentioned `cmd/rbgs` as a controller. It now
+  matches the `go` tool running `cmd/rbgs` and binaries named `rbgs`. A process called `main` or
+  `manager`, or an IDE debug build, counts when its executable contains the controller's code,
+  whatever its flags: `make build` gives `bin/manager`, and the development guide starts it with no
+  RBG-specific flag (#651). With such a build and another program called `manager` running, it
+  reported only the controller.
 - The scripts guard ownership with per-run tokens, delete only by UID precondition, retry a write
   only when it provably never reached the server, read a create with an unknown outcome back
   before trusting or repeating it, and fail instead of printing a partial snapshot.
