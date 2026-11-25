@@ -1436,6 +1436,11 @@ func TestStaleStatusPreservesLiveRestartBudget(t *testing.T) {
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(instance), live))
 	require.False(t, live.Status.RestartBudgetExhausted)
 	require.Zero(t, live.Status.GroupRestartCount)
+	require.False(t, slices.ContainsFunc(live.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+		return cond.Type == workloadsv1alpha2.RoleInstanceProgressing &&
+			cond.Status == v1.ConditionTrue &&
+			cond.Reason == synccontrol.GroupRestartBudgetExceeded
+	}), "a live reset must clear the budget-owned Progressing blocker")
 	for _, cond := range live.Status.Conditions {
 		require.NotEqual(t, workloadsv1alpha2.RoleInstanceDegraded, cond.Type)
 	}

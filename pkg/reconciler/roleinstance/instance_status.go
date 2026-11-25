@@ -559,54 +559,13 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// live value — so the double-check below correctly identifies that case as
 		// "not changed" and preserves the live (potentially reset) count.
 		restartTrackingModified := restartTrackingChanged(newStatus.LastRestartTime, instance.Status.LastRestartTime, liveLastRestartTime)
-		clone.Status = *newStatus
-		if budgetManaged {
-			clone.Status = *newStatus.DeepCopy()
-			// Degraded is owned by the budget lifecycle. Preserve its live message
-			// while exhausted (including drain progress), but discard stale copies
-			// after recovery has committed.
-			clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
-				return cond.Type == workloadsv1alpha2.RoleInstanceDegraded
-			})
-			if liveBudget.RestartBudgetExhausted {
-				for _, cond := range liveBudget.Conditions {
-					if cond.Type == workloadsv1alpha2.RoleInstanceDegraded && cond.Status == v1.ConditionTrue && cond.Reason == synccontrol.GroupRestartBudgetExceeded {
-						clone.Status.Conditions = append(clone.Status.Conditions, cond)
-						break
-					}
-				}
-			}
-			if liveBudget.GroupRestartRevision != "" {
-				// Budget acceptance and completion persist Restarting in their own
-				// status transaction. Even if its response was lost, computed status
-				// must not erase that guard or resurrect an already completed wave.
-				ready := slices.ContainsFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
-					return cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue
-				})
-				clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
-					return cond.Type == workloadsv1alpha2.RoleInstanceRestarting
-				})
-				for _, cond := range liveBudget.Conditions {
-					if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && (cond.Status == v1.ConditionTrue || !ready) {
-						clone.Status.Conditions = append(clone.Status.Conditions, cond)
-					}
-				}
-			}
-		}
-		// These fields belong only to the budget lifecycle, including when the
-		// informer snapshot does not know that budgeting has been enabled yet.
-		clone.Status.GroupRestartCount = liveBudget.GroupRestartCount
-		clone.Status.GroupRestartRevision = liveBudget.GroupRestartRevision
-		clone.Status.RestartBudgetExhausted = liveBudget.RestartBudgetExhausted
+		mergeBudgetStatus(clone, newStatus, liveBudget, budgetManaged)
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
 		// The latch only advances. A stale informer snapshot must not move it back, and
 		// a generation already latched is never lost just because this reconcile did not
 		// re-observe the Ready condition.
 		if liveLastReadyGeneration > clone.Status.LastReadyGeneration {
 			clone.Status.LastReadyGeneration = liveLastReadyGeneration
-		}
-		if budgetManaged {
-			synccontrol.EnforceRestartBudgetConditions(clone)
 		}
 		if liveLastPhaseCompleteGeneration > clone.Status.LastPhaseCompleteGeneration {
 			clone.Status.LastPhaseCompleteGeneration = liveLastPhaseCompleteGeneration
@@ -625,6 +584,65 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		}
 		return r.Status().Update(ctx, clone)
 	})
+}
+
+// mergeBudgetStatus merges the live restart-budget lifecycle state into a computed
+// status write. The informer snapshot can predate exhaustion or recovery, so the
+// live API object is authoritative for budget-owned fields and conditions.
+func mergeBudgetStatus(clone *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
+	liveBudget workloadsv1alpha2.RoleInstanceStatus, budgetManaged bool) {
+	clone.Status = *newStatus
+	if budgetManaged {
+		clone.Status = *newStatus.DeepCopy()
+		// Degraded is owned by the budget lifecycle. Preserve its live message
+		// while exhausted (including drain progress), but discard stale copies
+		// after recovery has committed.
+		clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+			return cond.Type == workloadsv1alpha2.RoleInstanceDegraded
+		})
+		if liveBudget.RestartBudgetExhausted {
+			for _, cond := range liveBudget.Conditions {
+				if cond.Type == workloadsv1alpha2.RoleInstanceDegraded && cond.Status == v1.ConditionTrue && cond.Reason == synccontrol.GroupRestartBudgetExceeded {
+					clone.Status.Conditions = append(clone.Status.Conditions, cond)
+					break
+				}
+			}
+		}
+		if liveBudget.GroupRestartRevision != "" {
+			// Budget acceptance and completion persist Restarting in their own
+			// status transaction. Even if its response was lost, computed status
+			// must not erase that guard or resurrect an already completed wave.
+			ready := slices.ContainsFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+				return cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue
+			})
+			clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+				return cond.Type == workloadsv1alpha2.RoleInstanceRestarting
+			})
+			for _, cond := range liveBudget.Conditions {
+				if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && (cond.Status == v1.ConditionTrue || !ready) {
+					clone.Status.Conditions = append(clone.Status.Conditions, cond)
+				}
+			}
+		}
+	}
+	// These fields belong only to the budget lifecycle, including when the
+	// informer snapshot does not know that budgeting has been enabled yet.
+	clone.Status.GroupRestartCount = liveBudget.GroupRestartCount
+	clone.Status.GroupRestartRevision = liveBudget.GroupRestartRevision
+	clone.Status.RestartBudgetExhausted = liveBudget.RestartBudgetExhausted
+	if budgetManaged && !liveBudget.RestartBudgetExhausted {
+		// A stale informer snapshot may still have computed the exhausted
+		// Progressing condition. The live reset is authoritative, so drop that
+		// budget-owned fact instead of propagating it to RIS and RBG.
+		clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+			return cond.Type == workloadsv1alpha2.RoleInstanceProgressing &&
+				cond.Status == v1.ConditionTrue &&
+				cond.Reason == synccontrol.GroupRestartBudgetExceeded
+		})
+	}
+	if budgetManaged {
+		synccontrol.EnforceRestartBudgetConditions(clone)
+	}
 }
 
 func (r *realStatusUpdater) updatePodsLifeCycle(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pods []*v1.Pod) error {

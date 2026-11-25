@@ -298,9 +298,10 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				set := newTestSet(3)
 				set.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(2))
 				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
-					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
-					Status: corev1.ConditionTrue,
-					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status:             corev1.ConditionTrue,
+					Reason:             workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					ObservedGeneration: set.Generation,
 				}}
 				return set
 			}(),
@@ -325,9 +326,10 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			set: func() *workloadsv1alpha2.RoleInstanceSet {
 				set := newTestSet(3)
 				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
-					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
-					Status: corev1.ConditionTrue,
-					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status:             corev1.ConditionTrue,
+					Reason:             workloadconstants.ProgressingReasonRoleInstanceUpdated,
+					ObservedGeneration: set.Generation,
 				}}
 				return set
 			}(),

@@ -183,10 +183,14 @@ func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newSta
 // such intermediate observations.
 func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {
 	if !setEstablished(set, instances) {
-		// Still establishing, or no durable evidence yet. setEstablished reads
-		// the persisted status, so a Progressing reason about to be replaced by
-		// this write is still visible here and is captured before the erasure.
-		return
+		effectiveSet := set.DeepCopy()
+		effectiveSet.Status = *newStatus
+		if !setEstablished(effectiveSet, instances) {
+			// Still establishing, or no durable evidence yet. setEstablished reads
+			// the persisted status, so a Progressing reason about to be replaced by
+			// this write is still visible here and is captured before the erasure.
+			return
+		}
 	}
 	var persisted *workloadsv1alpha2.RoleInstanceSetCondition
 	for i := range set.Status.Conditions {
@@ -254,6 +258,12 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	// KEP-502 holds the activity reason until newly added instances complete
 	// startup, instead of collapsing to InstancesNotReady once the objects exist.
 	starting := anyInstanceStarting(instances)
+	neverWroteStatus := anyInstanceNeverWroteStatus(instances)
+	neverWroteStarting := neverWroteStatus &&
+		(!setEstablished(set, instances) ||
+			observedReplicas < target ||
+			persistedProgressingReason(set) == workloadconstants.ProgressingReasonScalingUp ||
+			persistedProgressingReason(set) == workloadconstants.ProgressingReasonCreating)
 
 	updatePending := updateActive(set, newStatus, instances, observedReplicas, target)
 
@@ -262,7 +272,7 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 	// reconcile, so a non-empty revision is not evidence of establishment; only a
 	// previous convergence is. A zero-replica target is structurally complete at
 	// creation and never reports Creating.
-	if !setEstablished(set, instances) && (observedReplicas < target || starting) {
+	if !setEstablished(set, instances) && (observedReplicas < target || starting || neverWroteStarting) {
 		condition.Reason = workloadconstants.ProgressingReasonCreating
 		return condition
 	}
@@ -315,16 +325,6 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 		return condition
 	}
 
-	if instancesBehindGeneration(instances) {
-		// The set dispatched a new spec to at least one RI, but that RI's
-		// persisted status still describes the old generation: its revision label
-		// already moved, and its Ready condition and phase predate the update.
-		// Status written for an older generation must not count toward
-		// completion, or the set briefly reports Converged before the RI has even
-		// started updating.
-		condition.Reason = workloadconstants.ProgressingReasonRoleInstanceUpdated
-		return condition
-	}
 	if newStatus.ReadyReplicas < newStatus.Replicas {
 		condition.Reason = workloadconstants.ProgressingReasonInstancesNotReady
 		return condition
@@ -396,16 +396,22 @@ func persistedProgressingReason(set *workloadsv1alpha2.RoleInstanceSet) string {
 // instance keeps the workflow that created it active until it completes startup.
 func anyInstanceStarting(instances []*workloadsv1alpha2.RoleInstance) bool {
 	for _, instance := range instances {
+		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseCreating ||
+			instanceProgressingReason(instance) == workloadsv1alpha2.ReasonInstanceCreating {
+			return true
+		}
+	}
+	return false
+}
+
+// anyInstanceNeverWroteStatus reports whether an observed RoleInstance object
+// exists but has not yet recorded status for its current generation.
+func anyInstanceNeverWroteStatus(instances []*workloadsv1alpha2.RoleInstance) bool {
+	for _, instance := range instances {
 		if instance == nil {
 			continue
 		}
-		// A newly created object that has never written status is still starting;
-		// otherwise one status write can briefly report the workflow as complete.
 		if instance.Generation > 0 && instance.Status.ObservedGeneration == 0 {
-			return true
-		}
-		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseCreating ||
-			instanceProgressingReason(instance) == workloadsv1alpha2.ReasonInstanceCreating {
 			return true
 		}
 	}
@@ -689,7 +695,7 @@ func updateActive(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1
 	// that the missing instances belong to the rollout rather than to recovery or
 	// scale-up.
 	if persistedProgressingReason(set) == workloadconstants.ProgressingReasonRoleInstanceUpdated &&
-		(observedReplicas < target || anyInstanceStarting(instances)) {
+		(observedReplicas < target || anyInstanceStarting(instances) || instancesBehindGeneration(instances)) {
 		return true
 	}
 	return false
