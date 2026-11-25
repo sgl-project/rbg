@@ -103,6 +103,11 @@ const (
 	// ProgressingReasonSchedulerUnsupported reports a missing scheduler capability.
 	ProgressingReasonSchedulerUnsupported = "SchedulerUnsupported"
 
+	// ProgressingReasonRestartBudgetExceeded reports that a RoleInstance's restart
+	// budget is exhausted and creation or updates are suppressed until explicit
+	// recovery or a new target revision.
+	ProgressingReasonRestartBudgetExceeded = "RestartBudgetExceeded"
+
 	// ProgressingReasonIncompatibleGangConfig reports an unsatisfiable gang combination.
 	ProgressingReasonIncompatibleGangConfig = "IncompatibleGangConfig"
 

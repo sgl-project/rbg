@@ -40,7 +40,7 @@ import (
 
 // GroupRestartBudgetExceeded is the reason reported by the RI circuit breaker.
 const (
-	GroupRestartBudgetExceeded = "GroupRestartBudgetExceeded"
+	GroupRestartBudgetExceeded = workloadsv1alpha2.ReasonGroupRestartBudgetExceeded
 	// GroupRestartBudgetMessage is shared by computed and persisted conditions.
 	GroupRestartBudgetMessage = "Automatic group recovery exhausted; annotate this RoleInstance with rbg.workloads.x-k8s.io/recover=true to recover"
 	// GroupRestartBudgetRecovered is emitted after an exhausted budget is reset.
@@ -100,9 +100,30 @@ func copyRestartBudgetStatus(to, from *workloadsv1alpha2.RoleInstance) {
 	to.Status.RestartBudgetExhausted = from.Status.RestartBudgetExhausted
 }
 
+// hasExhaustedProgressingCondition reports whether the persisted Progressing
+// condition still carries the exhausted-budget blocker.
+func hasExhaustedProgressingCondition(instance *workloadsv1alpha2.RoleInstance) bool {
+	return slices.ContainsFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+		return cond.Type == workloadsv1alpha2.RoleInstanceProgressing &&
+			cond.Status == v1.ConditionTrue &&
+			cond.Reason == GroupRestartBudgetExceeded
+	})
+}
+
+// removeExhaustedProgressingCondition drops only the budget-owned Progressing
+// fact; other Progressing conditions are recomputed by the generic status writer.
+func removeExhaustedProgressingCondition(instance *workloadsv1alpha2.RoleInstance) {
+	instance.Status.Conditions = slices.DeleteFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+		return cond.Type == workloadsv1alpha2.RoleInstanceProgressing &&
+			cond.Status == v1.ConditionTrue &&
+			cond.Reason == GroupRestartBudgetExceeded
+	})
+}
+
 func setBudgetCondition(instance *workloadsv1alpha2.RoleInstance, typ workloadsv1alpha2.RoleInstanceConditionType, status v1.ConditionStatus) {
 	condition := workloadsv1alpha2.RoleInstanceCondition{Type: typ, Status: status,
-		Reason: GroupRestartBudgetExceeded, Message: GroupRestartBudgetMessage, LastTransitionTime: metav1.Now()}
+		Reason: GroupRestartBudgetExceeded, Message: GroupRestartBudgetMessage, LastTransitionTime: metav1.Now(),
+		ObservedGeneration: instance.Generation}
 	for i := range instance.Status.Conditions {
 		if instance.Status.Conditions[i].Type == typ {
 			if instance.Status.Conditions[i].Status == status {
@@ -117,7 +138,8 @@ func setBudgetCondition(instance *workloadsv1alpha2.RoleInstance, typ workloadsv
 
 // EnforceRestartBudgetConditions is also used by the generic status writer after
 // merging the LIVE budget state, so a stale readiness calculation cannot unfreeze
-// an exhausted RI. The budget controller is the sole owner of Degraded.
+// an exhausted RI or reclassify it as repair activity. The budget controller is
+// the sole owner of Degraded.
 func EnforceRestartBudgetConditions(instance *workloadsv1alpha2.RoleInstance) {
 	if !instance.Status.RestartBudgetExhausted {
 		return
@@ -130,6 +152,7 @@ func EnforceRestartBudgetConditions(instance *workloadsv1alpha2.RoleInstance) {
 		setBudgetCondition(instance, workloadsv1alpha2.RoleInstanceDegraded, v1.ConditionTrue)
 	}
 	setBudgetCondition(instance, workloadsv1alpha2.RoleInstanceReady, v1.ConditionFalse)
+	setBudgetCondition(instance, workloadsv1alpha2.RoleInstanceProgressing, v1.ConditionTrue)
 }
 
 // prepareGroupRestartBudget is the pure mutation seam for the accepted-restart
@@ -155,6 +178,23 @@ func prepareGroupRestartBudget(instance *workloadsv1alpha2.RoleInstance, selecte
 		instance.Status.GroupRestartCount++
 	}
 	return true
+}
+
+// finishBudgetMetadataCleanup finishes a committed reset, including legacy
+// cleanup owners acquired before the first exhaustion.
+func (c *realControl) finishBudgetMetadataCleanup(ctx context.Context, instance, fresh *workloadsv1alpha2.RoleInstance) (bool, error) {
+	if hasExhaustedProgressingCondition(fresh) {
+		base := fresh.DeepCopy()
+		removeExhaustedProgressingCondition(fresh)
+		if err := c.patchBudgetStatus(ctx, fresh, base); err != nil {
+			return true, err
+		}
+	}
+	syncRestartingConditionFromFresh(instance, fresh)
+	if err := c.releaseBudgetOwner(ctx, fresh); err != nil {
+		return true, err
+	}
+	return true, c.clearRecoveryAnnotation(ctx, fresh)
 }
 
 func (c *realControl) readBudgetInstance(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
@@ -316,13 +356,7 @@ func (c *realControl) reconcileRestartBudget(ctx context.Context, instance *work
 	}
 	if !fresh.Status.RestartBudgetExhausted && (fresh.Annotations[constants.RoleInstanceRecoverAnnotationKey] == recoveryAnnotationValue ||
 		slices.Contains(fresh.Finalizers, constants.GroupRestartBudgetCleanupFinalizer)) {
-		// Finish metadata cleanup after a committed reset, including legacy
-		// cleanup owners acquired before the first exhaustion.
-		syncRestartingConditionFromFresh(instance, fresh)
-		if err := c.releaseBudgetOwner(ctx, fresh); err != nil {
-			return true, err
-		}
-		return true, c.clearRecoveryAnnotation(ctx, fresh)
+		return c.finishBudgetMetadataCleanup(ctx, instance, fresh)
 	}
 	if selectedRevision == "" {
 		return true, fmt.Errorf("restart budget requires a selected ControllerRevision")
@@ -426,8 +460,13 @@ func (c *realControl) resetRestartBudget(ctx context.Context, instance, fresh *w
 	fresh.Status.GroupRestartCount = 0
 	fresh.Status.RestartBudgetExhausted = false
 	fresh.Status.Conditions = slices.DeleteFunc(fresh.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
-		return cond.Type == workloadsv1alpha2.RoleInstanceDegraded || (wasExhausted && cond.Type == workloadsv1alpha2.RoleInstanceRestarting)
+		// Degraded and an exhausted Restarting wave belong to the budget lifecycle.
+		return cond.Type == workloadsv1alpha2.RoleInstanceDegraded ||
+			(wasExhausted && cond.Type == workloadsv1alpha2.RoleInstanceRestarting)
 	})
+	// Clear the exhausted Progressing fact in the same transaction so RIS and RBG
+	// do not retain a stale blocker after recovery or a new revision.
+	removeExhaustedProgressingCondition(fresh)
 	// Preserve the old accepted wave and backoff on a non-exhausted revision
 	// change; #573 absorbs the controller's own Terminating-member triggers.
 	if wasExhausted {

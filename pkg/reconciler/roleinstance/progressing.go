@@ -332,6 +332,20 @@ func instanceProgressingActivityReason(phase workloadsv1alpha2.RoleInstancePhase
 // resourcesMessage is non-empty when a required Pod is confirmed unschedulable.
 func computeInstanceProgressingCondition(instance *workloadsv1alpha2.RoleInstance, phase workloadsv1alpha2.RoleInstancePhase,
 	instanceReady bool, newInnerConditions []workloadsv1alpha2.RoleInstanceCondition, resourcesMessage string) workloadsv1alpha2.RoleInstanceCondition {
+	if instance.Status.RestartBudgetExhausted {
+		// Exhaustion is not repair activity: the controller suppresses creation
+		// and updates until explicit recovery or a new target revision.
+		progressing := workloadsv1alpha2.RoleInstanceCondition{
+			Type:               workloadsv1alpha2.RoleInstanceProgressing,
+			Status:             v1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             workloadsv1alpha2.ReasonGroupRestartBudgetExceeded,
+			Message:            synccontrol.GroupRestartBudgetMessage,
+			ObservedGeneration: instance.Generation,
+		}
+		return progressing
+	}
+
 	if blocker := instanceProgressingBlocker(newInnerConditions); blocker != nil {
 		// A confirmed blocker family is never replaced by an unclassifiable error.
 		// Unschedulable Pods confirm the resources family, which outranks

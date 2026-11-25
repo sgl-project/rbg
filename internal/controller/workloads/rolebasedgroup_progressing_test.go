@@ -167,6 +167,26 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 			wantStatus: metav1.ConditionTrue,
 		},
 		{
+			name: "ris restart budget exhaustion aggregates at rbg",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonRestartBudgetExceeded, corev1.ConditionTrue, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonWaitingForQuota, corev1.ConditionTrue, "hash"),
+			},
+			wantReason: workloadconstants.ProgressingReasonRestartBudgetExceeded,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
+			name: "configuration blockers outrank restart budget exhaustion",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonInvalidSpec, corev1.ConditionTrue, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonRestartBudgetExceeded, corev1.ConditionTrue, "hash"),
+			},
+			wantReason: workloadconstants.ProgressingReasonInvalidSpec,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
 			name: "family blocker outranks dependencies",
 			rbg:  newProgressingRBG(),
 			observations: map[string]risObservation{

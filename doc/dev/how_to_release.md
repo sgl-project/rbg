@@ -178,6 +178,13 @@ Before cutting a release that serves a deprecated API version:
 For `0.9.0`, also verify that the chart/documentation slice (#552) and the removal of the v1alpha1
 deprecation webhooks (#556) are both in the release before tagging.
 
+### KEP-502 status release notes
+
+The release notes for the first release containing the KEP-502 status model must explicitly state
+that `FailedScale` and `FailedUpdate` have a zero compatibility window: the controller stops writing
+both conditions and drops persisted entries on the first status write. Clients must migrate to the
+edge-triggered Warning Events and the `Progressing` blocker reason.
+
 ### CI Validation
 
 The `e2e-test-manifest` workflow validates manifests by:

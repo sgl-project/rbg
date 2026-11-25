@@ -39,11 +39,13 @@ import (
 
 // rbgBlockerFamilyPriority is the RBG reporting order from KEP-502. Configuration-family
 // blockers rank first because a human must change the spec, referenced configuration, or
-// environment. The order affects reporting only, not controller execution order.
+// environment. Restart-budget exhaustion follows configuration because it also needs an
+// explicit operator decision. The order affects reporting only, not controller execution order.
 var rbgBlockerFamilyPriority = []string{
 	constants.ProgressingReasonInvalidSpec,
 	constants.ProgressingReasonIncompatibleGangConfig,
 	constants.ProgressingReasonSchedulerUnsupported,
+	constants.ProgressingReasonRestartBudgetExceeded,
 	constants.ProgressingReasonPermissionDenied,
 	constants.ProgressingReasonAdmissionDenied,
 	constants.ProgressingReasonWaitingForQuota,
@@ -62,18 +64,19 @@ var rbgActivityPriority = []string{
 
 // risReasonToRBG maps RIS Progressing reasons to their RBG aggregates.
 var risReasonToRBG = map[string]string{
-	constants.ProgressingReasonCreating:            constants.ProgressingReasonCreating,
-	constants.ProgressingReasonRecovering:          constants.ProgressingReasonRecovering,
-	constants.ProgressingReasonInvalidSpec:         constants.ProgressingReasonInvalidSpec,
-	constants.ProgressingReasonRoleInstanceUpdated: constants.ProgressingReasonRoleInstanceSetUpdated,
-	constants.ProgressingReasonScalingUp:           constants.ProgressingReasonRoleInstanceSetUpdated,
-	constants.ProgressingReasonScalingDown:         constants.ProgressingReasonRoleInstanceSetUpdated,
-	constants.ProgressingReasonPermissionDenied:    constants.ProgressingReasonPermissionDenied,
-	constants.ProgressingReasonAdmissionDenied:     constants.ProgressingReasonAdmissionDenied,
-	constants.ProgressingReasonWaitingForQuota:     constants.ProgressingReasonWaitingForQuota,
-	constants.ProgressingReasonWaitingForResources: constants.ProgressingReasonWaitingForResources,
-	constants.ProgressingReasonUnclassifiedBlocker: constants.ProgressingReasonUnclassifiedBlocker,
-	constants.ProgressingReasonInstancesNotReady:   constants.ProgressingReasonRolesNotReady,
+	constants.ProgressingReasonCreating:              constants.ProgressingReasonCreating,
+	constants.ProgressingReasonRecovering:            constants.ProgressingReasonRecovering,
+	constants.ProgressingReasonInvalidSpec:           constants.ProgressingReasonInvalidSpec,
+	constants.ProgressingReasonRoleInstanceUpdated:   constants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonRestartBudgetExceeded: constants.ProgressingReasonRestartBudgetExceeded,
+	constants.ProgressingReasonScalingUp:             constants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonScalingDown:           constants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonPermissionDenied:      constants.ProgressingReasonPermissionDenied,
+	constants.ProgressingReasonAdmissionDenied:       constants.ProgressingReasonAdmissionDenied,
+	constants.ProgressingReasonWaitingForQuota:       constants.ProgressingReasonWaitingForQuota,
+	constants.ProgressingReasonWaitingForResources:   constants.ProgressingReasonWaitingForResources,
+	constants.ProgressingReasonUnclassifiedBlocker:   constants.ProgressingReasonUnclassifiedBlocker,
+	constants.ProgressingReasonInstancesNotReady:     constants.ProgressingReasonRolesNotReady,
 }
 
 // allRolesUseRoleInstanceSet reports whether the RBG qualifies for the new condition
@@ -651,6 +654,7 @@ func rbgCurrentBlocker(
 		}
 		switch mapped {
 		case constants.ProgressingReasonInvalidSpec,
+			constants.ProgressingReasonRestartBudgetExceeded,
 			constants.ProgressingReasonPermissionDenied,
 			constants.ProgressingReasonAdmissionDenied,
 			constants.ProgressingReasonWaitingForQuota,

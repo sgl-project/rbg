@@ -60,7 +60,7 @@ The scope is limited to condition fields and values, RI phase, compatibility mig
 The current status model has the following limitations:
 
 - RBG and RIS lack a durable progress condition, requiring users to infer the lifecycle of the group and instance set from counters and child resources. RI lacks a persisted lifecycle phase even though its controller already reconciles from a state machine.
-- RBG declares `Progressing` and `RollingUpdateInProgress`, but the built-in controllers on the main branch do not currently write them.
+- RBG declares `Progressing` and `RollingUpdateInProgress`, and the controller now writes both. The remaining limitation is migration order: RoleBasedGroupSet rollouts consume `RollingUpdateInProgress` through `groupSetChildReady` together with the legacy `Ready` condition, so `Ready` cannot stop being written until that gate moves to `Progressing` or the readiness counters.
 - RBG's existing `Ready` condition summarizes all-replica readiness at the orchestration layer, but that verdict is not well-defined: serving availability depends on consumer policy, and partial RoleInstance availability can be usable. Deployment and StatefulSet define no `Ready` condition for the same reason. Rollout completion needs a separate representation, and readiness needs per-role and per-instance facts.
 - RIS / RI `FailedScale` and `FailedUpdate` record individual operation failures, making it easy to confuse transient events with facts that remain true.
 - Status does not clearly distinguish current blockers that require a spec, configuration, or environment change from runtime waits that may clear on their own.
@@ -151,6 +151,7 @@ External blocker families use stable, machine-readable categories. RI may report
 | Reason family | RI example reason | RIS reason | RBG reason |
 | --- | --- | --- | --- |
 | Configuration | Not owned by RI | Not owned by RIS | `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported` |
+| Restart budget | `GroupRestartBudgetExceeded` | `RestartBudgetExceeded` | `RestartBudgetExceeded` |
 | Permission | `PodCreateForbidden`, `PodUpdateForbidden` | `PermissionDenied` | `PermissionDenied` |
 | Admission | `PodAdmissionRejected` | `AdmissionDenied` | `AdmissionDenied` |
 | Quota | `PodCreateQuotaExceeded`, `PodUpdateQuotaExceeded` | `WaitingForQuota` | `WaitingForQuota` |
@@ -165,6 +166,7 @@ Not every RBG reason comes from RIS. Each fact has one lowest layer that can obs
 | --- | --- | --- |
 | `Creating`, `RolesNotReady` | RBG | Computed from required-child existence and `roleStatuses` |
 | `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported` | RBG | Computed from the expanded target, role combination, and scheduler capability probes |
+| `RestartBudgetExceeded` | RI | RI `Progressing` reason, mapped to a family by RIS, then aggregated by RBG |
 | `WaitingForDependencies` | RBG | Role dependencies are declared in the RBG spec and cross roles; RIS cannot observe them |
 | `WaitingForGang` | RBG | Observed from runtime gang-scheduling state, such as the PodGroup phase and member scheduling status |
 | `RoleInstanceSetUpdated`, `Recovering` | RIS | RIS `Progressing` reason, aggregated by family |
@@ -562,9 +564,9 @@ Specific release versions and feedback periods will be added when the release ta
 | RBG `Ready` | Deprecated and removed after the compatibility window: legacy writes continue with existing all-replicas-ready semantics, then stop and clean up controller-owned entries; new consumers use `roleStatuses`, RIS counters, and RI `RoleInstanceReady` |
 | Progressing | RBG summarizes updates and scaling as `RoleInstanceSetUpdated`; validate compatibility for release waits, dependency-based startup, and upper-level replica counts |
 | Legacy backend applicability | RBGs containing legacy backends retain existing status without enabling the new overall condition model; new status on RIS / RI themselves is unaffected |
-| RollingUpdateInProgress | Not a new implementation goal; deprecate before handling constants and persisted legacy values |
+| RollingUpdateInProgress | Written by the RBG controller and consumed by RoleBasedGroupSet child readiness together with legacy `Ready`; retain both during migration. `Ready` cannot stop being written until `groupSetChildReady` moves to `Progressing` or the readiness counters, after which `RollingUpdateInProgress` can be deprecated |
 | GangConfigured | Retain existing semantics and absence when gang is not enabled during the compatibility window; new and legacy conditions must not contradict each other |
-| FailedScale / FailedUpdate | The v1alpha2 window is deliberately zero: the first status write under this model stops writing both conditions and drops persisted entries, replacing them with the edge-triggered Warning Events and the `Progressing` blocker reason. Clients alerting on these conditions must migrate with the upgrade, and the release notes must say so |
+| FailedScale / FailedUpdate | The v1alpha2 window is deliberately zero: the first status write under this model stops writing both conditions and drops persisted entries, replacing them with the edge-triggered Warning Events and the `Progressing` blocker reason. Clients alerting on these conditions must migrate with the upgrade; release notes must explicitly state that the compatibility window is zero and that the conditions are no longer written |
 | Condition schema | RIS / RI retain custom types for now, adding optional observedGeneration; do not tighten existing required-field constraints or change the list schema; absence does not confirm the current generation |
 | Recovery fields and external conditions | Upgrades, downgrades, and legacy writers must not inadvertently overwrite or delete them |
 | RI transition timestamps | Today the RI controller rebuilds `RoleInstanceReady` / `RoleInstanceAllPodsReady` with the current time and replaces the condition list, so every status write resets `lastTransitionTime`. Preserving it is a behavior change: stateless RIS uses these timestamps for `minReadySeconds`, so availability timing changes after upgrade. Migration must preserve timestamps deliberately and regression-test `minReadySeconds` behavior before and after upgrade |

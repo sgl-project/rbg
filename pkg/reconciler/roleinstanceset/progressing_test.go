@@ -18,6 +18,7 @@ package roleinstanceset
 
 import (
 	stderrors "errors"
+	"slices"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -317,6 +318,49 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 			wantStatus: corev1.ConditionTrue,
 		},
 		{
+			name: "stale RI status outranks not-ready counters",
+			// The last in-place update can lower ReadyReplicas in the same status
+			// write in which the RI still reports the old generation. The workflow
+			// must not transiently collapse to InstancesNotReady.
+			set: func() *workloadsv1alpha2.RoleInstanceSet {
+				set := newTestSet(3)
+				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+				}}
+				return set
+			}(),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, ReadyReplicas: 2, AvailableReplicas: 2,
+				CurrentRevision: "rev", UpdateRevision: "rev", UpdatedReplicas: 3, ExpectedUpdatedReplicas: 3,
+			},
+			instances: []*workloadsv1alpha2.RoleInstance{
+				{},
+				{},
+				{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Status: workloadsv1alpha2.RoleInstanceStatus{ObservedGeneration: 1}},
+			},
+			wantReason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "never-written RI keeps initial creation active",
+			// Object existence alone is not startup completion; the first RI
+			// status write can lag object creation.
+			set: newTestSet(3),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 3, ReadyReplicas: 3, AvailableReplicas: 3,
+				CurrentRevision: "rev", UpdateRevision: "rev", UpdatedReplicas: 3, ExpectedUpdatedReplicas: 3,
+			},
+			instances: []*workloadsv1alpha2.RoleInstance{
+				{ObjectMeta: metav1.ObjectMeta{Generation: 2}},
+				{ObjectMeta: metav1.ObjectMeta{Generation: 2}},
+				{ObjectMeta: metav1.ObjectMeta{Generation: 2}},
+			},
+			wantReason: workloadconstants.ProgressingReasonCreating,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
 			name: "degraded set upgraded without conditions is established by RI latches",
 			// A set degraded at upgrade time never fully converged under the new
 			// model, but its instances carry the readiness latches written by the
@@ -429,6 +473,18 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				instanceWithProgressing(workloadsv1alpha2.ReasonPodCreateQuotaExceeded, workloadsv1alpha2.RoleInstancePhaseCreating),
 			},
 			wantReason: workloadconstants.ProgressingReasonWaitingForQuota,
+			wantStatus: corev1.ConditionTrue,
+		},
+		{
+			name: "ri restart budget exhaustion maps to its blocker family",
+			set:  newTestSet(3),
+			newStatus: &workloadsv1alpha2.RoleInstanceSetStatus{
+				Replicas: 2, CurrentRevision: "old", UpdateRevision: "new", UpdatedReplicas: 1, ExpectedUpdatedReplicas: 3,
+			},
+			instances: []*workloadsv1alpha2.RoleInstance{
+				instanceWithProgressing(workloadsv1alpha2.ReasonGroupRestartBudgetExceeded, workloadsv1alpha2.RoleInstancePhaseRecovering),
+			},
+			wantReason: workloadconstants.ProgressingReasonRestartBudgetExceeded,
 			wantStatus: corev1.ConditionTrue,
 		},
 		{
@@ -680,6 +736,14 @@ func TestCurrentSetBlockerPriority(t *testing.T) {
 	if message != "rbac denied" {
 		t.Fatalf("own message must be preserved, got %s", message)
 	}
+
+	instances = []*workloadsv1alpha2.RoleInstance{
+		instanceWithProgressing(workloadsv1alpha2.ReasonGroupRestartBudgetExceeded, workloadsv1alpha2.RoleInstancePhaseRecovering),
+	}
+	reason, _ = currentSetBlocker(own, nil, instances)
+	if reason != workloadconstants.ProgressingReasonRestartBudgetExceeded {
+		t.Fatalf("restart budget exhaustion must outrank permission, got %s", reason)
+	}
 }
 
 func TestCurrentSetBlockerRetainsPriorFamily(t *testing.T) {
@@ -815,6 +879,45 @@ func TestEstablishmentSurvivesDominantBlocker(t *testing.T) {
 	}
 	if resumed == nil || resumed.Reason != workloadconstants.ProgressingReasonScalingUp {
 		t.Fatalf("a blocked scale-up must resume as ScalingUp, got %+v", resumed)
+	}
+}
+
+func TestFreshBlockedSetDoesNotUseEstablishmentFallback(t *testing.T) {
+	set := newTestSet(3)
+	set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+		Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+		Status: corev1.ConditionTrue,
+		Reason: workloadconstants.ProgressingReasonCreating,
+	}}
+	blockedStatus := &workloadsv1alpha2.RoleInstanceSetStatus{
+		Replicas: 1, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+		Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{
+			Type:    workloadsv1alpha2.RoleInstanceSetProgressing,
+			Status:  corev1.ConditionTrue,
+			Reason:  workloadconstants.ProgressingReasonWaitingForQuota,
+			Message: "exceeded quota",
+		}},
+	}
+	instances := append([]*workloadsv1alpha2.RoleInstance{
+		{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Status: workloadsv1alpha2.RoleInstanceStatus{LastReadyGeneration: 2}},
+	}, bareInstances(2)...)
+	ApplySetProgressingCondition(set, blockedStatus, instances)
+	if slices.ContainsFunc(blockedStatus.Conditions, func(condition workloadsv1alpha2.RoleInstanceSetCondition) bool {
+		return condition.Type == workloadsv1alpha2.RoleInstanceSetEstablished
+	}) {
+		t.Fatalf("a fresh set blocked by quota must not become established, got %+v", blockedStatus.Conditions)
+	}
+
+	// Once quota is removed, the persisted blocker proves the set has never
+	// completed initial establishment; the remaining replicas report Creating.
+	persisted := set.DeepCopy()
+	persisted.Status = *blockedStatus.DeepCopy()
+	resumedStatus := &workloadsv1alpha2.RoleInstanceSetStatus{
+		Replicas: 3, CurrentRevision: "rev", UpdateRevision: "rev", ExpectedUpdatedReplicas: 3,
+	}
+	got := ComputeSetProgressingCondition(persisted, resumedStatus, instances, nil, nil)
+	if got.Status != corev1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonCreating {
+		t.Fatalf("got status=%s reason=%s, want Creating", got.Status, got.Reason)
 	}
 }
 

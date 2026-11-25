@@ -365,6 +365,10 @@ const (
 	// ReasonInstanceInsufficientResources reports insufficient resources for Pod scheduling.
 	ReasonInstanceInsufficientResources = "InsufficientResources"
 
+	// ReasonGroupRestartBudgetExceeded reports that the group restart budget is
+	// exhausted and automatic recovery is suppressed.
+	ReasonGroupRestartBudgetExceeded = "GroupRestartBudgetExceeded"
+
 	// ReasonPodOperationUnclassified reports an operation failure whose family cannot be
 	// determined yet.
 	ReasonPodOperationUnclassified = "PodOperationUnclassified"

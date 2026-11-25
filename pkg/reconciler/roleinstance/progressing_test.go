@@ -29,6 +29,7 @@ import (
 
 	workloadconstants "sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 )
 
 func TestNextRoleInstancePhase(t *testing.T) {
@@ -181,6 +182,27 @@ func TestComputeInstanceProgressingCondition(t *testing.T) {
 		got := computeInstanceProgressingCondition(instance, workloadsv1alpha2.RoleInstancePhaseUpdating, true, conditions, "")
 		if got.Status != corev1.ConditionTrue || got.Reason != workloadsv1alpha2.ReasonPodCreateQuotaExceeded {
 			t.Fatalf("got %+v", got)
+		}
+		if got.ObservedGeneration != 3 {
+			t.Fatalf("observedGeneration = %d", got.ObservedGeneration)
+		}
+	})
+
+	t.Run("restart budget exhaustion outranks activity and blockers", func(t *testing.T) {
+		exhausted := instance.DeepCopy()
+		exhausted.Status.RestartBudgetExhausted = true
+		conditions := []workloadsv1alpha2.RoleInstanceCondition{{
+			Type:    workloadsv1alpha2.RoleInstanceProgressing,
+			Status:  corev1.ConditionTrue,
+			Reason:  workloadsv1alpha2.ReasonPodCreateQuotaExceeded,
+			Message: "exceeded quota",
+		}}
+		got := computeInstanceProgressingCondition(exhausted, workloadsv1alpha2.RoleInstancePhaseRecovering, false, conditions, "")
+		if got.Status != corev1.ConditionTrue || got.Reason != workloadsv1alpha2.ReasonGroupRestartBudgetExceeded {
+			t.Fatalf("got %+v", got)
+		}
+		if got.Message != synccontrol.GroupRestartBudgetMessage {
+			t.Fatalf("message = %q, want %q", got.Message, synccontrol.GroupRestartBudgetMessage)
 		}
 		if got.ObservedGeneration != 3 {
 			t.Fatalf("observedGeneration = %d", got.ObservedGeneration)

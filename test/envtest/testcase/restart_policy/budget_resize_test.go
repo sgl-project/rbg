@@ -167,6 +167,77 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 				}
 				return live.Status.GroupRestartCount == 1
 			}, timeout, interval).Should(BeTrue())
+			if exhausted {
+				instanceProgressingReason := func() string {
+					live := &v2.RoleInstance{}
+					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
+						return ""
+					}
+					for _, condition := range live.Status.Conditions {
+						if condition.Type == v2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue {
+							return condition.Reason
+						}
+					}
+					return ""
+				}
+				setProgressingReason := func() string {
+					list := &v2.RoleInstanceSetList{}
+					if err := cli.List(ctx, list, client.InNamespace(namespace)); err != nil || len(list.Items) != 1 {
+						return ""
+					}
+					for _, condition := range list.Items[0].Status.Conditions {
+						if condition.Type == v2.RoleInstanceSetProgressing && condition.Status == v1.ConditionTrue {
+							return condition.Reason
+						}
+					}
+					return ""
+				}
+				groupProgressingReason := func() string {
+					live := &v2.RoleBasedGroup{}
+					if err := cli.Get(ctx, client.ObjectKeyFromObject(group), live); err != nil {
+						return ""
+					}
+					for _, condition := range live.Status.Conditions {
+						if condition.Type == string(v2.RoleBasedGroupProgressing) && condition.Status == metav1.ConditionTrue {
+							return condition.Reason
+						}
+					}
+					return ""
+				}
+				Eventually(instanceProgressingReason, timeout, interval).Should(Equal(v2.ReasonGroupRestartBudgetExceeded))
+				Eventually(setProgressingReason, timeout, interval).Should(Equal(constants.ProgressingReasonRestartBudgetExceeded))
+				Eventually(groupProgressingReason, timeout, interval).Should(Equal(constants.ProgressingReasonRestartBudgetExceeded))
+
+				Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+					live := &v2.RoleInstance{}
+					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
+						return err
+					}
+					if live.Annotations == nil {
+						live.Annotations = map[string]string{}
+					}
+					live.Annotations[constants.RoleInstanceRecoverAnnotationKey] = "true"
+					return cli.Update(ctx, live)
+				})).To(Succeed())
+				Eventually(func() bool {
+					if readyInstances() != 2 {
+						return false
+					}
+					live := &v2.RoleInstance{}
+					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
+						return false
+					}
+					if live.Status.RestartBudgetExhausted ||
+						live.Annotations[constants.RoleInstanceRecoverAnnotationKey] != "" ||
+						instanceProgressingReason() == v2.ReasonGroupRestartBudgetExceeded ||
+						setProgressingReason() == constants.ProgressingReasonRestartBudgetExceeded ||
+						groupProgressingReason() == constants.ProgressingReasonRestartBudgetExceeded {
+						return false
+					}
+					return true
+				}, timeout, interval).Should(BeTrue(), "recover=true must clear budget exhaustion at RI, RIS, and RBG")
+				return
+			}
 			if !exhausted {
 				Eventually(readyInstances, timeout, interval).Should(Equal(2))
 			}
