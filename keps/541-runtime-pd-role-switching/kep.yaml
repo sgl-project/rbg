@@ -1,0 +1,23 @@
+title: Runtime Prefill/Decode Role Switching for PD-Disaggregated Inference
+kep-number: 541
+authors:
+  - "@zhuangzhewei09"
+status: provisional
+creation-date: 2026-11-17
+reviewers:
+  - "@diw-zw"
+  - "@cheyang"
+approvers:
+  - "@cheyang"
+
+stage: alpha
+
+latest-milestone: "v0.10.0"
+
+see-also:
+  - "https://github.com/sgl-project/rbg/issues/541"
+  - "https://github.com/sgl-project/sglang/pull/28403"
+  - "https://github.com/rolebasedgroup/inference-engine-runtime"
+
+milestone:
+  alpha: "v0.10.0"
