@@ -111,9 +111,9 @@ func MarkEngineRuntimeLabelDrift() {
 	engineRuntimeLabelConvergence.converged = false
 }
 
-// Start scans until this replica observes a clean label state, then blocks
-// until the manager shuts down. Failed or mismatching scans retry instead of
-// failing the manager.
+// Start scans this replica's cache and then waits for RBG/RBGSet events.
+// A scan error retries after a delay; a mismatch does not poll. The leader's
+// backfill (or any later write) emits a label event that wakes this scanner.
 func (s *engineRuntimeLabelStartupScanner) Start(ctx context.Context) error {
 	if s.drift == nil {
 		s.drift = make(chan struct{}, 1)
@@ -134,8 +134,10 @@ func (s *engineRuntimeLabelStartupScanner) Start(ctx context.Context) error {
 		}
 		epoch := BeginEngineRuntimeLabelScan()
 		converged, err := scanEngineRuntimeLabelState(ctx, s.reader)
-		if err == nil && converged {
-			CompleteEngineRuntimeLabelScan(epoch)
+		if err == nil {
+			if converged {
+				CompleteEngineRuntimeLabelScan(epoch)
+			}
 			select {
 			case <-ctx.Done():
 				return nil
@@ -173,9 +175,14 @@ func (s *engineRuntimeLabelStartupScanner) watch(ctx context.Context) error {
 
 func (s *engineRuntimeLabelStartupScanner) eventHandler() toolscache.ResourceEventHandler {
 	return toolscache.ResourceEventHandlerFuncs{
-		AddFunc:    func(obj interface{}) { s.markDrift(obj) },
-		UpdateFunc: func(_, newObj interface{}) { s.markDrift(newObj) },
+		AddFunc:    func(obj interface{}) { s.observe(obj) },
+		UpdateFunc: func(_, newObj interface{}) { s.observe(newObj) },
 	}
+}
+
+func (s *engineRuntimeLabelStartupScanner) observe(obj interface{}) {
+	s.markDrift(obj)
+	s.wake()
 }
 
 func (s *engineRuntimeLabelStartupScanner) markDrift(obj interface{}) {
@@ -183,12 +190,10 @@ func (s *engineRuntimeLabelStartupScanner) markDrift(obj interface{}) {
 	case *RoleBasedGroup:
 		if !engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec) {
 			MarkEngineRuntimeLabelDrift()
-			s.wake()
 		}
 	case *RoleBasedGroupSet:
 		if !engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec.GroupTemplate.Spec) {
 			MarkEngineRuntimeLabelDrift()
-			s.wake()
 		}
 	}
 }

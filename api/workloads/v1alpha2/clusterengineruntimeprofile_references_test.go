@@ -18,12 +18,14 @@ package v1alpha2
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -104,7 +106,7 @@ func TestEngineRuntimeLabelStartupScannerMarksDrift(t *testing.T) {
 	rbg := rbgReferencing("grp-old", "ns-old", "ik")
 	delete(rbg.Labels, constants.HasEngineRuntimesLabelKey)
 
-	scanner.markDrift(rbg)
+	scanner.observe(rbg)
 	assert.False(t, EngineRuntimeLabelConverged(),
 		"an unlabeled referencing object must un-converge every webhook replica")
 	select {
@@ -112,4 +114,85 @@ func TestEngineRuntimeLabelStartupScannerMarksDrift(t *testing.T) {
 	default:
 		t.Fatal("a drift event must wake the startup scanner")
 	}
+}
+
+func TestEngineRuntimeLabelStartupScannerWaitsForLabelRepair(t *testing.T) {
+	SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { SetEngineRuntimeLabelConverged(false) })
+
+	unlabeled := rbgReferencing("grp-old", "ns-old", "ik")
+	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+	reader := &engineRuntimeLabelScannerTestReader{rbg: unlabeled}
+	scanner := &engineRuntimeLabelStartupScanner{
+		reader:     reader,
+		retryAfter: time.Millisecond,
+		drift:      make(chan struct{}, 1),
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- scanner.Start(ctx) }()
+
+	require.Eventually(t, func() bool {
+		return reader.listCount() >= 1
+	}, time.Second, 5*time.Millisecond)
+	time.Sleep(50 * time.Millisecond)
+	assert.Equal(t, 1, reader.listCount(),
+		"an unresolved mismatch must not be polled every retry interval")
+
+	fixed := rbgReferencing("grp-old", "ns-old", "ik")
+	reader.setRBG(fixed)
+	scanner.observe(fixed)
+
+	require.Eventually(t, func() bool {
+		return EngineRuntimeLabelConverged()
+	}, time.Second, 5*time.Millisecond, "a label repair event must wake the scanner")
+
+	cancel()
+	select {
+	case err := <-done:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("scanner did not stop after the manager context was canceled")
+	}
+}
+
+type engineRuntimeLabelScannerTestReader struct {
+	mu    sync.Mutex
+	rbg   *RoleBasedGroup
+	lists int
+}
+
+func (r *engineRuntimeLabelScannerTestReader) Get(
+	context.Context, client.ObjectKey, client.Object, ...client.GetOption,
+) error {
+	return nil
+}
+
+func (r *engineRuntimeLabelScannerTestReader) List(
+	_ context.Context, list client.ObjectList, _ ...client.ListOption,
+) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.lists++
+	switch typed := list.(type) {
+	case *RoleBasedGroupList:
+		typed.Items = []RoleBasedGroup{*r.rbg.DeepCopy()}
+	case *RoleBasedGroupSetList:
+		typed.Items = nil
+	}
+	return nil
+}
+
+func (r *engineRuntimeLabelScannerTestReader) setRBG(rbg *RoleBasedGroup) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.rbg = rbg.DeepCopy()
+}
+
+func (r *engineRuntimeLabelScannerTestReader) listCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.lists
 }

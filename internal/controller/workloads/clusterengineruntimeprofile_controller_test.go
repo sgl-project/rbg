@@ -368,6 +368,7 @@ func TestClusterEngineRuntimeProfileLabelBackfillContinuesAfterPatchFailure(t *t
 	ctx := context.Background()
 	bad := controllerRBG("grp-bad", "ns-a", "ik")
 	good := controllerRBG("grp-good", "ns-a", "ik")
+	recorder := record.NewFakeRecorder(32)
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
@@ -383,11 +384,16 @@ func TestClusterEngineRuntimeProfileLabelBackfillContinuesAfterPatchFailure(t *t
 		}).Build()
 	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
 	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
-	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: record.NewFakeRecorder(32)}
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
 
 	err := r.backfillHasEngineRuntimesLabels(ctx)
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "grp-bad")
+	err = r.backfillHasEngineRuntimesLabels(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "grp-bad")
+	require.NoError(t, r.backfillHasEngineRuntimesLabels(ctx),
+		"a permanently failing object must stop failing profile reconciles after bounded retries")
 
 	got := &workloadsv1alpha2.RoleBasedGroup{}
 	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-good"}, got))
@@ -395,6 +401,64 @@ func TestClusterEngineRuntimeProfileLabelBackfillContinuesAfterPatchFailure(t *t
 		"a patch failure on one object must not stop the rest of the backfill scan")
 	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
 		"convergence must wait until every mismatching object is patched")
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1)
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillReturnsListErrors(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				return errors.New("simulated list error")
+			},
+		}).Build()
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c}
+
+	err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "listing rolebasedgroups")
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillFailureStateIsConcurrencySafe(t *testing.T) {
+	ctx := context.Background()
+	bad := controllerRBG("grp-bad", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(bad).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				return errors.New("webhook rejected the patch")
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	const workers = 4
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_ = r.backfillHasEngineRuntimesLabels(ctx)
+		}()
+	}
+	wg.Wait()
+	require.NoError(t, r.backfillHasEngineRuntimesLabels(ctx))
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1)
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
 }
 
 func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategyObjects(t *testing.T) {
