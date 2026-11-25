@@ -18,6 +18,7 @@ package workloads
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -44,6 +45,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/pkg/reconciler"
+	"sigs.k8s.io/rbgs/pkg/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 	"sigs.k8s.io/yaml"
 )
@@ -250,6 +252,26 @@ func TestDiscoveryConfigVersionMigrationRoundTrip(t *testing.T) {
 	legacy = discovery.ClusterConfig{}
 	require.NoError(t, yaml.UnmarshalStrict([]byte(cm.Data[discoveryConfigKey]), &legacy))
 	require.Contains(t, legacy.Roles, "test-role")
+}
+
+func TestDiscoveryConfigTwoThousandMemberCompactReconcile(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].Replicas = ptr.To(int32(2000))
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1)
+	r, c := discoveryTestReconciler(t, rbg)
+
+	require.NoError(t, r.reconcileDiscoveryConfigMap(context.Background(), rbg))
+
+	cm := &corev1.ConfigMap{}
+	require.NoError(t, c.Get(context.Background(), clientKey(rbg), cm))
+	require.Less(t, len(cm.Data[discoveryConfigKey]), 1<<20,
+		"2,000 compact members must stay below the ConfigMap limit")
+
+	var config discovery.CompactConfig
+	require.NoError(t, yaml.UnmarshalStrict([]byte(cm.Data[discoveryConfigKey]), &config))
+	require.Equal(t, string(constants.DiscoveryConfigVersionV1), config.APIVersion)
+	require.Len(t, config.Roles, 1)
+	require.Equal(t, 2000, config.Roles[0].Members)
 }
 
 func testDiscoveryConfigRejectsUnknownVersion(t *testing.T) {
@@ -466,10 +488,23 @@ func TestDiscoveryConfigMapWritePathSettlesWithoutRequests(t *testing.T) {
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithInterceptorFuncs(interceptor.Funcs{
 			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
-				if _, ok := obj.(*corev1.ConfigMap); ok {
-					gets++
+				if err := cl.Get(ctx, key, obj, opts...); err != nil {
+					return err
 				}
-				return cl.Get(ctx, key, obj, opts...)
+				if cm, ok := obj.(*corev1.ConfigMap); ok {
+					gets++
+					// The fake client does not preserve managed fields. After the
+					// controller creates the object, seed the Apply ownership that a
+					// real API server records for its field manager.
+					cm.ManagedFields = []metav1.ManagedFieldsEntry{{
+						Manager:    utils.FieldManager,
+						APIVersion: "v1",
+						Operation:  metav1.ManagedFieldsOperationApply,
+						FieldsType: "FieldsV1",
+						FieldsV1:   &metav1.FieldsV1{Raw: []byte(`{"f:data":{}}`)},
+					}}
+				}
+				return nil
 			},
 			Create: func(ctx context.Context, cl client.WithWatch, obj client.Object, opts ...client.CreateOption) error {
 				if _, ok := obj.(*corev1.ConfigMap); ok {
@@ -548,6 +583,74 @@ func TestDiscoveryConfigMapApplyPreservesOtherOwners(t *testing.T) {
 	assert.Equal(t, "current", got.Data[discoveryConfigKey])
 	assert.Contains(t, got.OwnerReferences, otherOwner)
 	assert.Equal(t, rbg.GetUID(), metav1.GetControllerOf(got).UID)
+}
+
+func TestDiscoveryConfigMapRetriesOwnershipHandoff(t *testing.T) {
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	controller := *metav1.NewControllerRef(
+		rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup"),
+	)
+	existing := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            rbg.Name,
+			Namespace:       rbg.Namespace,
+			UID:             "cm-uid",
+			Labels:          map[string]string{constants.GroupNameLabelKey: rbg.Name},
+			OwnerReferences: []metav1.OwnerReference{controller},
+			ManagedFields: []metav1.ManagedFieldsEntry{{
+				Manager:    utils.FieldManager,
+				APIVersion: "v1",
+				Operation:  metav1.ManagedFieldsOperationUpdate,
+				FieldsType: "FieldsV1",
+				FieldsV1:   &metav1.FieldsV1{Raw: []byte(`{"f:data":{}}`)},
+			}},
+		},
+		Data: map[string]string{discoveryConfigKey: "current"},
+	}
+	var patches int
+	var applies int
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cl client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if err := cl.Get(ctx, key, obj, opts...); err != nil {
+					return err
+				}
+				// The fake client does not preserve managed fields, so restore the
+				// seeded Update ownership before the ownership migration runs.
+				if cm, ok := obj.(*corev1.ConfigMap); ok {
+					cm.ManagedFields = existing.ManagedFields
+				}
+				return nil
+			},
+			Apply: func(ctx context.Context, cl client.WithWatch, obj runtime.ApplyConfiguration, opts ...client.ApplyOption) error {
+				if _, ok := obj.(*coreapplyv1.ConfigMapApplyConfiguration); ok {
+					applies++
+				}
+				return cl.Apply(ctx, obj, opts...)
+			},
+			Patch: func(ctx context.Context, cl client.WithWatch, obj client.Object, patch client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*corev1.ConfigMap); ok {
+					patches++
+				}
+				return cl.Patch(ctx, obj, patch, opts...)
+			},
+		}).Build()
+	r := &RoleBasedGroupReconciler{
+		client:    c,
+		apiReader: c,
+		scheme:    scheme,
+		recorder:  record.NewFakeRecorder(10),
+	}
+
+	require.NoError(t, r.applyDiscoveryConfigMap(context.Background(), rbg, []byte("current")))
+
+	assert.Equal(t, 1, patches,
+		"current data must retry the CSA-to-SSA ownership handoff")
+	assert.Zero(t, applies, "the data is current, so no content apply is needed")
 }
 
 func TestIsAdoptableDiscoveryConfigMap(t *testing.T) {
@@ -705,6 +808,37 @@ func TestDiscoveryFailureStopsRoleRendering(t *testing.T) {
 	}
 }
 
+func TestOversizedLegacyScaleUpStopsRoleRendering(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].Replicas = ptr.To(int32(25000))
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+	legacy := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.Name,
+			Namespace: rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
+			},
+		},
+		Data: map[string]string{discoveryConfigKey: "group:\n  name: test-rbg\n"},
+	}
+	r, c := discoveryTestReconciler(t, rbg, legacy)
+	r.apiReader = c
+	r.workloadReconciler = make(map[string]reconciler.WorkloadReconciler)
+
+	_, err := r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace},
+	})
+	require.ErrorContains(t, err, "exceeding")
+
+	getErr := c.Get(context.Background(), types.NamespacedName{
+		Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+		Namespace: rbg.Namespace,
+	}, &workloadsv1alpha2.RoleInstanceSet{})
+	assert.True(t, apierrors.IsNotFound(getErr),
+		"an owned legacy ConfigMap is not a recoverable rollback snapshot")
+}
+
 func TestTransientDiscoveryErrorIsNotInvalidSpec(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, clientgoscheme.AddToScheme(scheme))
@@ -760,6 +894,20 @@ func TestReconcileContinuesAfterOversizedDiscoveryRollback(t *testing.T) {
 	}
 	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
 
+	compactData, err := yaml.Marshal(discovery.CompactConfig{
+		APIVersion: string(constants.DiscoveryConfigVersionV1),
+		Group:      rbg.Name,
+		Roles: []discovery.CompactRole{{
+			Name:    rbg.Spec.Roles[0].Name,
+			Members: 100,
+			Components: []discovery.CompactComponent{{
+				Name: rbg.Spec.Roles[0].Name,
+				Size: 1,
+				Base: fmt.Sprintf("%s-{roleIndex}.s-%s", rbg.GetWorkloadName(&rbg.Spec.Roles[0]), rbg.GetWorkloadName(&rbg.Spec.Roles[0])),
+			}},
+		}},
+	})
+	require.NoError(t, err)
 	compact := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      rbg.Name,
@@ -768,7 +916,7 @@ func TestReconcileContinuesAfterOversizedDiscoveryRollback(t *testing.T) {
 				*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
 			},
 		},
-		Data: map[string]string{discoveryConfigKey: "apiVersion: v1\n"},
+		Data: map[string]string{discoveryConfigKey: string(compactData)},
 	}
 	role := &rbg.Spec.Roles[0]
 	ris := &workloadsv1alpha2.RoleInstanceSet{
@@ -792,7 +940,7 @@ func TestReconcileContinuesAfterOversizedDiscoveryRollback(t *testing.T) {
 	r.apiReader = c
 	r.workloadReconciler = make(map[string]reconciler.WorkloadReconciler)
 
-	_, err := r.Reconcile(context.Background(), reconcile.Request{
+	_, err = r.Reconcile(context.Background(), reconcile.Request{
 		NamespacedName: types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace},
 	})
 	require.Error(t, err)

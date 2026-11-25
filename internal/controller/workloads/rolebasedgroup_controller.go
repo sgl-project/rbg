@@ -248,7 +248,7 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		// Every other failure leaves the volume missing, foreign, or unsafe to
 		// render stateful roles against.
 		if !stderrors.Is(discoveryConfigErr, errOversizedDiscoveryConfig) ||
-			!r.hasOwnedDiscoveryConfigMap(ctx, rbg) {
+			!r.isRecoverableDiscoveryRollback(ctx, rbg) {
 			reason := setprogressing.ClassifySetOperationError(discoveryConfigErr)
 			if stderrors.Is(discoveryConfigErr, errInvalidDiscoverySpec) ||
 				stderrors.Is(discoveryConfigErr, errOversizedDiscoveryConfig) {
@@ -559,10 +559,12 @@ func discoveryConfigValueWithinLimit(value []byte) bool {
 	return len(value) <= maxDiscoveryConfigMapBytes
 }
 
-// hasOwnedDiscoveryConfigMap reports whether an existing ConfigMap with the
-// RBG's name is still controlled by this RBG incarnation. It is the safety
-// gate for continuing reconciliation after a discovery write is rejected.
-func (r *RoleBasedGroupReconciler) hasOwnedDiscoveryConfigMap(
+// isRecoverableDiscoveryRollback reports whether the RBG can continue to
+// reconcile roles after an oversized v1alpha1 build. The retained ConfigMap
+// must be this RBG's compact v1 snapshot and the target membership must not
+// grow beyond that snapshot; otherwise the mounted discovery data would be
+// stale while roles scale up.
+func (r *RoleBasedGroupReconciler) isRecoverableDiscoveryRollback(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
 ) bool {
@@ -575,7 +577,37 @@ func (r *RoleBasedGroupReconciler) hasOwnedDiscoveryConfigMap(
 		return false
 	}
 	owner := metav1.GetControllerOf(cm)
-	return owner != nil && owner.UID == rbg.GetUID()
+	if owner == nil || owner.UID != rbg.GetUID() {
+		return false
+	}
+
+	var compact discovery.CompactConfig
+	if err := yaml.UnmarshalStrict([]byte(cm.Data[discoveryConfigKey]), &compact); err != nil {
+		return false
+	}
+	if compact.APIVersion != string(constants.DiscoveryConfigVersionV1) || compact.Group != rbg.Name {
+		return false
+	}
+
+	compactRoles := make(map[string]discovery.CompactRole, len(compact.Roles))
+	for _, role := range compact.Roles {
+		compactRoles[role.Name] = role
+	}
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		if !workloadsv1alpha2.IsStatefulRole(role) {
+			continue
+		}
+		compactRole, ok := compactRoles[role.Name]
+		if !ok {
+			return false
+		}
+		targetMembers := int64(ptr.Deref(role.Replicas, 1))
+		if targetMembers > int64(compactRole.Members) {
+			return false
+		}
+	}
+	return true
 }
 
 func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
@@ -671,7 +703,8 @@ func (r *RoleBasedGroupReconciler) applyDiscoveryConfigMap(
 	key := client.ObjectKeyFromObject(rbg)
 	cached := &corev1.ConfigMap{}
 	if err := r.client.Get(ctx, key, cached); err == nil {
-		if discoveryConfigMapCurrent(cached, rbg, configData) {
+		if discoveryConfigMapCurrent(cached, rbg, configData) &&
+			hasDiscoveryConfigApplyOwnership(cached) {
 			return nil
 		}
 	} else if !apierrors.IsNotFound(err) {
@@ -721,6 +754,9 @@ func (r *RoleBasedGroupReconciler) applyDiscoveryConfigMap(
 		)
 	}
 	if discoveryConfigMapCurrent(existing, rbg, configData) {
+		if !hasDiscoveryConfigApplyOwnership(existing) {
+			return upgradeDiscoveryConfigMapOwnership(ctx, r.client, existing)
+		}
 		// The cache was behind.
 		return nil
 	}
@@ -749,6 +785,18 @@ func discoveryConfigMapCurrent(cm *corev1.ConfigMap, rbg *workloadsv1alpha2.Role
 	return owner != nil && owner.UID == rbg.GetUID() &&
 		cm.Labels[constants.GroupNameLabelKey] == rbg.Name &&
 		cm.Data[discoveryConfigKey] == string(configData)
+}
+
+// hasDiscoveryConfigApplyOwnership reports whether the ConfigMap has already
+// been migrated to the controller's server-side-apply manager.
+func hasDiscoveryConfigApplyOwnership(cm *corev1.ConfigMap) bool {
+	for _, field := range cm.ManagedFields {
+		if field.Manager == utils.FieldManager &&
+			field.Operation == metav1.ManagedFieldsOperationApply {
+			return true
+		}
+	}
+	return false
 }
 
 // upgradeDiscoveryConfigMapOwnership moves the create's Update ownership to
