@@ -166,12 +166,12 @@ func TestStatefulLifecycleHooksDisabledWithGateOff(t *testing.T) {
 	h.assertDeleted(t, instance.Name)
 }
 
-// Terminating is durable authorization: a scale-down retry after preDelete
-// was released must delete the instance without reinstalling the signals and
-// asking for a second acknowledgement.
-func TestStatefulPreDeleteTerminatingResumesWithoutReplay(t *testing.T) {
+// KEP-527 preDelete is not a set-level barrier: the set controller deletes
+// the RoleInstance, and the drain runs inside the finalizer-held deletion.
+// The set controller must not write hook state or signal labels itself.
+func TestStatefulPreDeleteRunsDuringRoleInstanceDeletion(t *testing.T) {
 	enableLifecycleHooksForTest(t)
-	h := newRollbackTestHarness(t, "kep527-terminating", 1, 0, 0)
+	h := newRollbackTestHarness(t, "kep527-delete-then-hook", 1, 0, 0)
 	h.set.Spec.Replicas = ptr.To(int32(0))
 	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
 		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
@@ -180,10 +180,6 @@ func TestStatefulPreDeleteTerminatingResumesWithoutReplay(t *testing.T) {
 	}
 	instance := h.instance(0, h.current.Name, true)
 	instance.ResourceVersion = "1"
-	instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(constants.RoleInstanceHookStateTerminating)
-	instance.Annotations = map[string]string{
-		constants.RoleInstanceLifecycleHookSignalLabelKeys: "consumer.example/drain",
-	}
 	scheme := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
 	require.NoError(t, corev1.AddToScheme(scheme))
@@ -197,9 +193,44 @@ func TestStatefulPreDeleteTerminatingResumesWithoutReplay(t *testing.T) {
 
 	h.reconcile(t, instance)
 	h.assertDeleted(t, instance.Name)
-	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(instance), instance))
-	require.NotContains(t, instance.Labels, "consumer.example/drain",
-		"Terminating must not reinstall released preDelete signals")
+	require.Empty(t, roleinstancelifecycle.HookState(instance),
+		"the set controller must not arm preDelete itself")
+	require.NotContains(t, instance.Labels, "consumer.example/drain")
+}
+
+// While a finalizer-held deletion is still draining its preDelete hook, the
+// next condemned ordinal must wait in OrderedReady mode, and the waiting
+// instance must not have a set-level hook armed on it.
+func TestStatefulOrderedScaleDownSerializesPreDeleteDrains(t *testing.T) {
+	enableLifecycleHooksForTest(t)
+	h := newRollbackTestHarness(t, "kep527-ordered-drain", 2, 0, 0)
+	h.set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
+	h.set.Spec.Replicas = ptr.To(int32(0))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/drain": "true"},
+		},
+	}
+	low := h.instance(0, h.current.Name, true)
+	high := h.instance(1, h.current.Name, true)
+	high.DeletionTimestamp = ptr.To(metav1.Now())
+	high.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(low, high).
+		Build()
+	h.control.hookControl = roleinstancelifecycle.NewHookControl(c)
+	h.control.client = c
+
+	h.reconcile(t, low, high)
+	h.assertDeleted(t)
+	require.Empty(t, roleinstancelifecycle.HookState(low),
+		"a waiting ordinal must not carry a set-level preDelete hook")
+	require.NotContains(t, low.Labels, "consumer.example/drain")
 }
 
 func enableLifecycleHooksForTest(t *testing.T) {
@@ -391,6 +422,10 @@ func TestOrderedRolloutProceedsOnceScaleDownDeletionStarts(t *testing.T) {
 			} else {
 				h.assertDeleted(t, surplus.Name)
 			}
+			// The deletion may still be draining preDelete behind its
+			// finalizer, so the target waits one reconcile until the
+			// condemned object is gone.
+			h.reconcile(t, target)
 			require.Equal(t, constants.RoleInstanceLifecycleStatePreparingDelete, readLifecycle(t, c, target))
 		})
 	}
@@ -438,7 +473,10 @@ func TestRemovingPreDeleteHookUnblocksOrderedScaleDown(t *testing.T) {
 
 	h.set.Spec.Lifecycle = nil
 	h.reconcile(t, base, lower, higher)
-	require.Equal(t, []string{higher.Name, lower.Name}, h.objects.deleted)
+	h.assertDeleted(t, higher.Name)
+	// The unhealthy lower ordinal follows once the deleting object is gone.
+	h.reconcile(t, base, lower)
+	h.assertDeleted(t, lower.Name)
 }
 
 func TestRollingUpdateCountsUnavailableDrainOnce(t *testing.T) {

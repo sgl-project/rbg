@@ -37,6 +37,7 @@ import (
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
 	sigsclient "sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/features"
@@ -985,7 +986,7 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 	}
 	transitioned := inplacing
 	if !inplacing {
-		_, actualDeleting, err := ssc.deleteInstance(ctx, set, target, false)
+		_, actualDeleting, err := ssc.deleteInstance(set, target)
 		if err != nil {
 			return false, err
 		}
@@ -1271,17 +1272,22 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 		return true, nil
 	}
 	if isTerminating(instance) {
-		return false, nil
+		// A KEP-527 preDelete drain runs while the reserved finalizer holds
+		// the deleting RoleInstance. Keep OrderedReady serialization until
+		// the object is gone, replacing the set-level hook wait.
+		return monotonic && controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer), nil
 	}
 
 	klog.V(2).InfoS("InstanceSet terminating condemned Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance))
-	_, deleting, err := ssc.deleteInstance(ctx, set, instance, true)
+	_, _, err := ssc.deleteInstance(set, instance)
 	if err != nil {
 		return monotonic, err
 	}
 
-	// Only a pending hook holds the next ordinal. Once deletion starts, rollout can proceed.
-	return monotonic && !deleting, nil
+	// A deletion that just started may still be draining preDelete behind the
+	// reserved finalizer, and a pending legacy hook has not started deleting.
+	// Either way at most one drain is in flight: hold the next ordinal.
+	return monotonic, nil
 }
 
 // restoreRetainedInstances cancels a drain when the desired topology again
@@ -1414,20 +1420,16 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 	return result.InPlaceUpdate, nil
 }
 
-// deleteInstance deletes an instance and returns if it was actually deleted
+// deleteInstance deletes an instance and returns if it was actually deleted.
+// KEP-527 preDelete is deliberately not gated here: the RoleInstance
+// controller runs the hook while the reserved finalizer holds the deleting
+// object, so the drain follows the deletion intent instead of preceding it.
 func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
-	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instance *workloadsv1alpha2.RoleInstance,
-	finalDeletion bool,
 ) (bool, bool, error) {
 	if isTerminating(instance) {
 		return false, false, nil
-	}
-	if finalDeletion {
-		if blocked, err := ssc.prepareLifecycleDelete(ctx, set, instance); err != nil || blocked {
-			return false, false, err
-		}
 	}
 	if blocked, err := ssc.prepareDelete(set, instance); err != nil || blocked {
 		return false, false, err
@@ -1457,30 +1459,6 @@ func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleUpdate(
 		hook,
 		constants.RoleInstanceHookStatePreUpdate,
 		constants.RoleInstanceHookStateUpdating,
-	)
-}
-
-func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleDelete(
-	ctx context.Context,
-	set *workloadsv1alpha2.RoleInstanceSet,
-	instance *workloadsv1alpha2.RoleInstance,
-) (bool, error) {
-	// Terminating is durable authorization: a retry after the hook was
-	// released must resume deletion without replaying preDelete.
-	if roleinstancelifecycle.HookState(instance) == constants.RoleInstanceHookStateTerminating {
-		return false, nil
-	}
-	var hook *workloadsv1alpha2.RoleInstanceLifecycleHook
-	if set.Spec.RoleInstanceTemplate.Lifecycle != nil {
-		hook = set.Spec.RoleInstanceTemplate.Lifecycle.PreDelete
-	}
-	return ssc.prepareLifecycleHook(
-		ctx,
-		set,
-		instance,
-		hook,
-		constants.RoleInstanceHookStatePreDelete,
-		constants.RoleInstanceHookStateTerminating,
 	)
 }
 
