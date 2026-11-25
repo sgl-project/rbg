@@ -141,6 +141,65 @@ func TestHookControlPreDeleteFinalizer(t *testing.T) {
 	}
 }
 
+func TestPendingSignalsRequiresLabelPresence(t *testing.T) {
+	hook := &workloadsv1alpha2.RoleInstanceLifecycleHook{
+		SignalLabels: map[string]string{"example.com/drain": ""},
+	}
+	released := &workloadsv1alpha2.RoleInstance{}
+	if !HookReleased(released, hook) {
+		t.Fatal("an absent label must release an empty-valued signal")
+	}
+	pending := &workloadsv1alpha2.RoleInstance{}
+	pending.Labels = map[string]string{"example.com/drain": ""}
+	if got := PendingSignals(pending, hook); len(got) != 1 || got[0] != "example.com/drain" {
+		t.Fatalf("PendingSignals() = %v, want [example.com/drain]", got)
+	}
+}
+
+func TestHookControlMirrorsEmptyValuedSignal(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: "default"},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
+				instance, workloadsv1alpha2.GroupVersion.WithKind("RoleInstance"))},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance, pod).Build()
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
+		t.Fatal(err)
+	}
+
+	hook := &workloadsv1alpha2.RoleInstanceLifecycleHook{
+		SignalLabels: map[string]string{"example.com/drain": ""},
+	}
+	control := NewHookControl(c)
+	if err := control.EnterHook(
+		ctx, instance, constants.RoleInstanceHookStatePreUpdate, hook, []*corev1.Pod{pod}); err != nil {
+		t.Fatalf("EnterHook() error = %v", err)
+	}
+
+	storedPod := &corev1.Pod{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(pod), storedPod); err != nil {
+		t.Fatal(err)
+	}
+	if value, exists := storedPod.Labels["example.com/drain"]; !exists || value != "" {
+		t.Fatalf("Pod mirror = (%q, %v), want a present label with an empty value", value, exists)
+	}
+}
+
 func contains(obj metav1.Object, finalizer string) bool {
 	for _, candidate := range obj.GetFinalizers() {
 		if candidate == finalizer {

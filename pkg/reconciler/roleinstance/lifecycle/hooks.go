@@ -55,7 +55,10 @@ func PendingSignals(instance *workloadsv1alpha2.RoleInstance, hook *workloadsv1a
 	}
 	var pending []string
 	for key, value := range hook.SignalLabels {
-		if instance.Labels[key] == value {
+		// A missing label and a label set to "" both read as "". Require the
+		// key to exist so an empty-valued signal is released by label removal
+		// instead of blocking the operation forever.
+		if got, exists := instance.Labels[key]; exists && got == value {
 			pending = append(pending, key)
 		}
 	}
@@ -225,7 +228,11 @@ func (c *HookControl) mirrorSignalLabels(
 				if pod.Labels == nil {
 					pod.Labels = make(map[string]string)
 				}
-				if pod.Labels[key] != value {
+				// A missing Pod label also reads as "", so mirror presence as
+				// well as value: an empty-valued signal must appear as a
+				// present label on the Pod.
+				_, podHas := pod.Labels[key]
+				if !podHas || pod.Labels[key] != value {
 					pod.Labels[key] = value
 					podChanged = true
 				}
