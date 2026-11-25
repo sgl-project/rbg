@@ -24,6 +24,10 @@ spec:
         {{- toYaml . | nindent 8 }}
       {{- end }}
       serviceAccountName: rbgs-controller-sa
+      # The preStop sleep delays SIGTERM by 5s, so the webhooks keep serving
+      # while the Pod leaves the webhook Service's endpoints. The grace period
+      # covers that sleep plus the manager's 30s graceful shutdown (5 + 30).
+      terminationGracePeriodSeconds: 35
       securityContext:
         {{- toYaml .Values.controller.podSecurityContext | nindent 8 }}
       containers:
@@ -79,6 +83,12 @@ spec:
               containerPort: {{ $pprof.containerPort | default 6060 }}
               protocol: TCP
           {{- end }}
+          lifecycle:
+            # Needs /bin/sleep in the image. Switch to preStop.sleep once
+            # Kubernetes 1.30 is the minimum.
+            preStop:
+              exec:
+                command: ["/bin/sleep", "5"]
           livenessProbe:
             httpGet:
               path: /healthz

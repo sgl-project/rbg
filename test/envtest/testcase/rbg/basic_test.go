@@ -31,9 +31,11 @@ import (
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
+	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
 var _ = Describe("RoleBasedGroup Controller", func() {
@@ -53,6 +55,59 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 
 	AfterEach(func() {
 		testutil.DeleteNamespace(testNs)
+	})
+
+	It("rewrites RoleInstanceSet affinity when only the exclusive topology annotation changes", func() {
+		rbg := wrappersv2.BuildBasicRoleBasedGroup("exclusive-toggle", testNs).
+			WithRoles([]workloadsv1alpha2.RoleSpec{wrappersv2.BuildStandaloneRole("worker").WithReplicas(0).Obj()}).Obj()
+		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
+		rbgKey := client.ObjectKeyFromObject(rbg)
+		risKey := types.NamespacedName{Namespace: testNs, Name: rbg.GetWorkloadName(&rbg.Spec.Roles[0])}
+		readRIS := func(g Gomega) *workloadsv1alpha2.RoleInstanceSet {
+			ris := &workloadsv1alpha2.RoleInstanceSet{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx, risKey, ris)).To(Succeed())
+			g.Expect(ris.Spec.RoleInstanceTemplate.Components).To(HaveLen(1))
+			g.Expect(ris.Status.ObservedGeneration).To(Equal(ris.Generation))
+			return ris
+		}
+		affinity := func(g Gomega) *corev1.Affinity {
+			return readRIS(g).Spec.RoleInstanceTemplate.Components[0].Template.Spec.Affinity
+		}
+		Eventually(affinity, timeout, interval).Should(BeNil())
+		// Drain the initial child events before testing the annotation-only watch.
+		initialVersion := readRIS(Default).ResourceVersion
+		Consistently(func(g Gomega) string {
+			return readRIS(g).ResourceVersion
+		}, 2*time.Second, interval).Should(Equal(initialVersion))
+		setTopology := func(topologyKey string) {
+			latest := &workloadsv1alpha2.RoleBasedGroup{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx, rbgKey, latest)).To(Succeed())
+			before := latest.DeepCopy()
+			if topologyKey == "" {
+				delete(latest.Annotations, constants.GroupExclusiveTopologyKey)
+			} else {
+				if latest.Annotations == nil {
+					latest.Annotations = make(map[string]string)
+				}
+				latest.Annotations[constants.GroupExclusiveTopologyKey] = topologyKey
+			}
+			Expect(testutil.K8sClient.Patch(testutil.Ctx, latest, client.MergeFrom(before))).To(Succeed())
+			Expect(latest.Generation).To(Equal(rbg.Generation))
+		}
+		setTopology(corev1.LabelHostname)
+		Eventually(func(g Gomega) {
+			rules := affinity(g)
+			g.Expect(rules).NotTo(BeNil())
+			g.Expect(rules.PodAffinity).NotTo(BeNil())
+			g.Expect(rules.PodAffinity.RequiredDuringSchedulingIgnoredDuringExecution).To(Equal([]corev1.PodAffinityTerm{{
+				TopologyKey: corev1.LabelHostname,
+				LabelSelector: &metav1.LabelSelector{MatchExpressions: []metav1.LabelSelectorRequirement{{
+					Key: constants.GroupUIDLabelKey, Operator: metav1.LabelSelectorOpIn, Values: []string{rbg.GenGroupUniqueKey()},
+				}}},
+			}}))
+		}, timeout, interval).Should(Succeed())
+		setTopology("")
+		Eventually(affinity, timeout, interval).Should(BeNil())
 	})
 
 	Context("When creating a RoleBasedGroup", func() {

@@ -27,8 +27,9 @@ NOTE: compatibility for existing deprecated workload types is ENABLED
 Existing Deployment, StatefulSet, and LeaderWorkerSet roles keep their own
 deprecated workload type and continue to reconcile, while new uses — including
 switching between deprecated types — are rejected. v1alpha1 InstanceSet roles
-are not covered by compatibility mode; migrate them to RoleInstanceSet before
-upgrading.
+are not covered by compatibility mode; migrate them to RoleInstanceSet. When
+coming from v0.6.0 or earlier, do this right after the upgrade:
+RoleInstanceSet first ships in v0.7.0.
 Every v1alpha1 request returns a deprecation warning; v1alpha1
 will be removed in 0.10.0.
 {{- if .Release.IsInstall }}

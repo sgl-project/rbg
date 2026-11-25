@@ -96,6 +96,11 @@ func TestE2E(t *testing.T) {
 			testcasev1alpha2.RunRBACAndWebhookBootstrapTestCases(f)
 			testcasev1alpha2.RunGangSchedulingTestCases(f)
 			testcasev1alpha2.RunDiscoveryConfigMapTestCases(f)
+			testcasev1alpha2.RunEngineRuntimeTestCases(f)
+			// Registers nothing unless RBGS_E2E_ECOSYSTEM=1: the ecosystem
+			// scenarios pull private-registry images no kind CI cluster can
+			// reach.
+			testcasev1alpha2.RunEngineRuntimeEcosystemTestCases(f)
 		},
 	)
 

@@ -163,6 +163,21 @@ When releasing a new version, use `update-release.sh` script:
 
 ---
 
+### API deprecation release checklist
+
+Before cutting a release that serves a deprecated API version:
+
+1. Confirm the CRD `deprecationWarning` names the replacement API and the removal release.
+2. Confirm the Helm README, chart NOTES, and root READMEs describe the compatibility gate and lead
+   to the migration guides: each root README links the guide in its own language, and the chart
+   README links the guides or the NOTES points to the chart README, which links them.
+3. Confirm the migration guides cover role inventory, type-exact compatibility, per-role rollout,
+   RoleBasedGroupSet template ordering, legacy workload cleanup, and storage-version rewriting.
+4. Run `helm lint deploy/helm/rbgs`, `make test-chart`, and the Markdown checks that CI runs.
+
+For `0.9.0`, also verify that the chart/documentation slice (#552) and the removal of the v1alpha1
+deprecation webhooks (#556) are both in the release before tagging.
+
 ### CI Validation
 
 The `e2e-test-manifest` workflow validates manifests by:

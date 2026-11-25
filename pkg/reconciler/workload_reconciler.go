@@ -25,6 +25,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -49,6 +50,12 @@ type WorkloadReconciler interface {
 // that support injecting a GangScheduler for gang-scheduling label injection.
 type GangSchedulerSetter interface {
 	SetGangScheduler(m scheduler.GangScheduler)
+}
+
+// RecorderSetter is an optional interface implemented by WorkloadReconcilers
+// that support wiring an event recorder for render-time warning events.
+type RecorderSetter interface {
+	SetRecorder(record.EventRecorder)
 }
 
 func NewWorkloadReconciler(

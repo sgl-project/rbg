@@ -39,8 +39,14 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.ClusterEngineRuntimeProfileApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileSpec"):
 		return &workloadsv1alpha1.ClusterEngineRuntimeProfileSpecApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileStatus"):
+		return &workloadsv1alpha1.ClusterEngineRuntimeProfileStatusApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("ComponentStatus"):
 		return &workloadsv1alpha1.ComponentStatusApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ContainerJSONPatch"):
+		return &workloadsv1alpha1.ContainerJSONPatchApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("ContainerPatch"):
+		return &workloadsv1alpha1.ContainerPatchApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("Coordination"):
 		return &workloadsv1alpha1.CoordinationApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("CoordinationRollingUpdate"):
@@ -51,6 +57,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha1.CoordinationStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("EngineRuntime"):
 		return &workloadsv1alpha1.EngineRuntimeApplyConfiguration{}
+	case v1alpha1.SchemeGroupVersion.WithKind("EngineRuntimeTargetContainer"):
+		return &workloadsv1alpha1.EngineRuntimeTargetContainerApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("InPlaceUpdateStrategy"):
 		return &workloadsv1alpha1.InPlaceUpdateStrategyApplyConfiguration{}
 	case v1alpha1.SchemeGroupVersion.WithKind("Instance"):
@@ -137,6 +145,12 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.ClusterEngineRuntimeProfileApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileSpec"):
 		return &workloadsv1alpha2.ClusterEngineRuntimeProfileSpecApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ClusterEngineRuntimeProfileStatus"):
+		return &workloadsv1alpha2.ClusterEngineRuntimeProfileStatusApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ContainerJSONPatch"):
+		return &workloadsv1alpha2.ContainerJSONPatchApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("ContainerPatch"):
+		return &workloadsv1alpha2.ContainerPatchApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("ContainerUpdateBaseline"):
 		return &workloadsv1alpha2.ContainerUpdateBaselineApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("CoordinatedPolicy"):
@@ -153,6 +167,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.CustomComponentsPatternApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("EngineRuntime"):
 		return &workloadsv1alpha2.EngineRuntimeApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("EngineRuntimeTargetContainer"):
+		return &workloadsv1alpha2.EngineRuntimeTargetContainerApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("GangSchedulingStrategy"):
 		return &workloadsv1alpha2.GangSchedulingStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("InPlaceUpdateStrategy"):

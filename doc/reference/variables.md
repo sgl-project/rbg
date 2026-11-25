@@ -7,9 +7,9 @@
 | Key | Description |
 |-----|-------------|
 | `rbg.workloads.x-k8s.io/group-name` | The name of the RoleBasedGroup to which these resources belong. |
-| `rbg.workloads.x-k8s.io/group-uid` | A short hash identifying all Pods belonging to the same RoleBasedGroup instance. Used for topology affinity. |
+| `rbg.workloads.x-k8s.io/group-uid` | A hash of the RoleBasedGroup's namespace and name, used for exclusive-topology affinity. It is not the Kubernetes object UID. |
 | `rbg.workloads.x-k8s.io/group-revision` | The revision hash of the RoleBasedGroup, used to determine whether the RBG object has changed. |
-| `rbg.workloads.x-k8s.io/group-unique-hash` | Used for pod affinity rules in exclusive topology. |
+| `rbg.workloads.x-k8s.io/group-unique-hash` | Legacy exclusive-topology selector key. The constant and user-supplied labels are retained; new rules use `group-uid`. |
 
 ### Role Level Labels
 
@@ -68,7 +68,7 @@ scheduler.
 | `rbg.workloads.x-k8s.io/role-size` | The size of the role (managed by controller). |
 | `rbg.workloads.x-k8s.io/role-disable-exclusive` | Set to `"true"` to skip exclusive-topology affinity injection for that role. |
 | `rbg.workloads.x-k8s.io/excluded-ordinals` | Optional Stateful RIS scaling reference: prefer these ordinals on scale-down and skip them on scale-up. [Usage and scope](../features/selective-scale-down.md). |
-| `rbg.workloads.x-k8s.io/role-workload-type` | Specifies the workload type (primarily for v1alpha1 conversion). |
+| `rbg.workloads.x-k8s.io/role-workload-type` | Deprecated workload-type compatibility annotation. New uses are rejected in 0.9.0; review and migrate it manually using the [v1alpha1 migration guide](../migration-v1alpha1-to-v1alpha2.md). |
 
 ### RoleInstanceSet Internal Annotations
 

@@ -71,6 +71,9 @@ func (v *RoleBasedGroupValidator) ValidateCreate(ctx context.Context, obj runtim
 	if err := ValidateRoleDependencies(rbg); err != nil {
 		allErrs = append(allErrs, err)
 	}
+	if err := validateNoNewEngineRuntimeViolations(rbg.Spec.Roles, nil); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if v.EnableDeprecatedWorkloadTypes {
 		// A RoleBasedGroupSet controller replaces deleted children by re-creating
 		// them from its own template. Those children are not new user-facing uses:
@@ -129,7 +132,7 @@ func (v *RoleBasedGroupValidator) legacySetTemplateRoles(
 	}
 
 	owner := metav1.GetControllerOfNoCopy(rbg)
-	if owner == nil || owner.Kind != "RoleBasedGroupSet" || owner.APIVersion != GroupVersion.String() {
+	if owner == nil || owner.Kind != roleBasedGroupSetKind || owner.APIVersion != GroupVersion.String() {
 		return nil, nil
 	}
 
@@ -209,6 +212,9 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		allErrs = append(allErrs, err)
 	}
 	if err := ValidateScalingAdapterReplicas(ctx, v.Client, oldRBG, rbg); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := validateNoNewEngineRuntimeViolations(rbg.Spec.Roles, oldRBG.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {

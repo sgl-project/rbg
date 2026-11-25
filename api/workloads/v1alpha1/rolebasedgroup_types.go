@@ -67,6 +67,7 @@ type TemplateSource struct {
 
 // RoleBasedGroupSpec defines the desired state of RoleBasedGroup.
 type RoleBasedGroupSpec struct {
+	// Roles is the set of role specifications.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:MinItems=1
 	// +kubebuilder:validation:Required
@@ -298,6 +299,15 @@ type RollingUpdate struct {
 // +kubebuilder:validation:XValidation:rule="(has(self.template) != has(self.templateRef)) || (has(self.workload) && self.workload.kind == 'InstanceSet')",message="template or templateRef must be set for non-InstanceSet workloads"
 // Note: "templatePatch is only valid when templateRef is set" validation is done in controller
 // because templatePatch is runtime.RawExtension (x-kubernetes-preserve-unknown-fields) which CEL cannot inspect
+// The targetContainers-requires-component rule is enforced in the admission webhook's
+// shared validation (ValidateEngineRuntimes), not CEL: a comprehension over the
+// uncapped engineRuntimes list at roles[].scope yields an O(n^2) cost estimate
+// (uncapped inner list x uncapped roles), which the apiserver's CEL budget
+// rejects by more than 100x on every supported version — the KEP-531
+// cost-budget remedy (verified empirically: the doubly-nested roles in the
+// RBGSet CRD cannot carry the rule at all). v1alpha1 writes reach the
+// v1alpha2 webhook through Equivalent matchPolicy, where the conversion has
+// already normalized the pattern to standalonePattern.
 type RoleSpec struct {
 	// Unique identifier for the role
 	// +kubebuilder:validation:Required
@@ -396,16 +406,168 @@ func (w *WorkloadSpec) String() string {
 	return fmt.Sprintf("%s/%s", w.APIVersion, w.Kind)
 }
 
+// EngineRuntime references one ClusterEngineRuntimeProfile, carrying the
+// role's targeting: where its pod-level fragments apply (component) and
+// the reference's container surface, organized per container
+// (targetContainers) — each entry the consent to the profile's
+// containerPatches at that container and the carrier of the role's own
+// extraPatches for it.
 type EngineRuntime struct {
-	// ProfileName specifies the name of the engine runtime profile to be used
+	// ProfileName specifies the name of the ClusterEngineRuntimeProfile
+	// applied to this role, resolved at render time. The field keeps the
+	// published schema: required, no minLength.
 	ProfileName string `json:"profileName"`
 
-	// InjectContainers specifies the containers to be injected with the engine runtime
+	// Component names the one component of the role's pattern this
+	// reference operates on — `leader`/`worker` under
+	// leaderWorkerPattern, a declared component name under
+	// customComponentsPattern, the role's own name under
+	// standalonePattern; under standalonePattern any other name is a
+	// render error. Absent, the reference keeps the pattern's default
+	// component set: the leader only under leaderWorkerPattern, every
+	// declared component under customComponentsPattern, the single
+	// role-named component under standalonePattern. A role consumes the
+	// same profile in several components through several references with
+	// the same profileName. targetContainers requires this field, except
+	// under standalonePattern where the pattern's one component is the
+	// only possible target, so the patch dimensions always operate on the
+	// one named component.
+	// Deliberately unmarked beyond MinLength: the source vocabulary
+	// (RoleSpec.Name, InstanceComponent.Name) is unmarked, so a bound
+	// here stricter than the fields it references would refuse writable
+	// values; the render-time position gate resolves the name.
+	//
+	// +optional
+	// +kubebuilder:validation:MinLength=1
+	Component string `json:"component,omitempty"`
+
+	// TargetContainers organizes the reference's container surface per
+	// container: one entry per container the reference touches, keyed
+	// by name — role-declared or profile-declared. Listing a name is
+	// the consent: at a role-declared container the profile's
+	// containerPatches fire, and the entry's extraPatches carry the
+	// role's own rules for it, landing after the profile's; at a
+	// profile-declared container the entry fires just its own
+	// extraPatches — a publisher's rules never land around its own
+	// sidecar's command. Absent, the profile's
+	// patches fire nowhere — a warning event is emitted when the
+	// profile declares containerPatches, including when the entries
+	// name only profile-declared containers. The map list rejects a
+	// container listed twice. Requires component, except under
+	// standalonePattern.
+	//
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=map
+	// +listMapKey=name
+	TargetContainers []EngineRuntimeTargetContainer `json:"targetContainers,omitempty"`
+
+	// Containers is the legacy role-customization channel: env and args
+	// from full corev1.Container objects appended into profile-declared
+	// containers within the reference's component, every other field
+	// silently ignored. Superseded by containerPatches and
+	// targetContainers[].extraPatches; retained for compatibility, same
+	// merge and same call sites.
+	// +optional
+	Containers []corev1.Container `json:"containers,omitempty"`
+
+	// Retained exactly as published on main: optional and inert. No
+	// semantics are attached; removed at the next API version boundary.
+	//
 	// +optional
 	InjectContainers []string `json:"injectContainers,omitempty"`
+}
 
-	// Containers specifies the engine runtime containers to be overridden, only support command,args overridden
-	Containers []corev1.Container `json:"containers,omitempty"`
+// EngineRuntimeTargetContainer is one entry of an EngineRuntime's
+// targetContainers list: the consent to the profile's containerPatches at
+// the named container and the carrier of the role's own patches for it,
+// which land after the profile's (D8).
+type EngineRuntimeTargetContainer struct {
+	// Name is the rendered container this entry addresses —
+	// role-declared or profile-declared, containers and init containers
+	// alike. A name the role's own template also declares resolves to
+	// the role-owned container; a name injected only by a different
+	// reference or profile is a render error.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z0-9]([-a-z0-9]*[a-z0-9])?$`
+	// +kubebuilder:validation:Required
+	Name string `json:"name"`
+
+	// ExtraPatches are the role's RFC 6902 patch rules for the entry's
+	// container, applied in list order after the profile's
+	// containerPatches — what the role writes lands where it is written
+	// (D10). See ContainerPatch.
+	// +optional
+	// +kubebuilder:validation:MinItems=1
+	// +kubebuilder:validation:MaxItems=32
+	// +listType=atomic
+	ExtraPatches []ContainerPatch `json:"extraPatches,omitempty"`
+}
+
+// ContainerPatch is one ordered patch entry — the format-selection
+// shell shared by both sides. Exactly one patch-format field is set,
+// selected by optional sibling fields — the same variant-selection
+// idiom as Pattern in RoleSpec and TemplateSource. Today `jsonPatch`
+// is the only format and is required; a future format joins as a
+// sibling field, `jsonPatch` relaxes to optional and a oneOf rule
+// takes over — relaxing a required field is a compatible change.
+type ContainerPatch struct {
+	// JSONPatch carries the RFC 6902 format: `add`-only operations
+	// with container-relative paths. See ContainerJSONPatch for its
+	// grammar.
+	// +kubebuilder:validation:Required
+	JSONPatch *ContainerJSONPatch `json:"jsonPatch"`
+}
+
+// ContainerJSONPatch is a single JSON Patch (RFC 6902) operation
+// applied to a container at render time. `value` is deliberately
+// schemaless at write time — loose at write, exact at consumption:
+// the render pass unmarshals it strictly into the concrete corev1
+// type the path implies. The path allowlist is enforced twice — the
+// CEL prefix rule below for immediate write-time feedback, and a
+// grammar re-check at render (segment boundaries, element-pointer
+// shape) that a CEL string match cannot guarantee. Two deliberate
+// deviations from strict RFC 6902 accommodate the common nil-field
+// container shape: a missing target list is treated as empty where
+// insertion is allowed, and intermediate struct members along an
+// allowlisted path are created when absent — except `command` and
+// `args`, where creating the list can silently discard image-defined
+// process definitions, so render errors instead: creating `args` is
+// an error only when the container sets neither command nor args;
+// creating `command` is always an error.
+// +kubebuilder:validation:XValidation:rule="self.path.startsWith('/command/') || self.path.startsWith('/args/') || self.path.startsWith('/env/') || self.path.startsWith('/volumeMounts/') || self.path.startsWith('/securityContext/capabilities/add/')",message="path must be an element pointer under /command, /args, /env, /volumeMounts or /securityContext/capabilities/add"
+type ContainerJSONPatch struct {
+	// Op is the patch operation. Only `add` is accepted today;
+	// `replace` is reserved as a future enum value and rejected.
+	// +kubebuilder:validation:Enum=add
+	// +kubebuilder:validation:Required
+	Op string `json:"op"`
+
+	// Path is an RFC 6901 pointer relative to the rendered target
+	// container: `/command/0` prepends an argv element, `/env/0`
+	// inserts an env var at the head, `/volumeMounts/-` appends a
+	// mount, `/securityContext/capabilities/add/-` appends a
+	// capability. Whole-list paths are forbidden: `add` onto an
+	// existing location replaces it, which would overwrite user
+	// values.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:Required
+	Path string `json:"path"`
+
+	// Value is the JSON value the operation adds, in the shape of
+	// the path's element: a string for /command, /args and
+	// /securityContext/capabilities/add elements; a corev1.EnvVar
+	// object for /env; a corev1.VolumeMount object for
+	// /volumeMounts. Accepted as arbitrary JSON at write time and
+	// unmarshaled into the element's concrete corev1 type at render
+	// time; a mismatched shape is a render error attributed to the
+	// patch author's object.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:Schemaless
+	// +kubebuilder:validation:Required
+	Value runtime.RawExtension `json:"value"`
 }
 
 type LeaderWorkerTemplate struct {

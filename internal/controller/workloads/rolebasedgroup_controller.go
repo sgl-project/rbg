@@ -275,6 +275,10 @@ func (r *RoleBasedGroupReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	// Step 8: Reconcile roles. Even a failed role must not prevent cleanup of
 	// workloads removed from the spec.
+	// KEP-531: render outcomes are warning events only, never conditions
+	// (a status condition is future work); the resolver and the render
+	// passes emit their events at the failure site, so the error simply
+	// fails the reconcile.
 	roleErr := r.reconcileRoles(ctx, rbg, expectedRolesRevisionHash, scalingTargets, rollingUpdateStrategies)
 	// Step 9: Cleanup orphaned resources.
 	if err := stderrors.Join(roleErr, r.cleanup(ctx, rbg)); err != nil {
@@ -687,6 +691,12 @@ func (r *RoleBasedGroupReconciler) getOrCreateWorkloadReconciler(
 
 	if ris, ok := rec.(*reconciler.RoleInstanceSetReconciler); ok {
 		ris.SetAPIReader(r.apiReader)
+	}
+
+	// Inject the event recorder if the reconciler supports it (RecorderSetter),
+	// for render-time warning events (unaimed container patches, render errors).
+	if rs, ok := rec.(reconciler.RecorderSetter); ok {
+		rs.SetRecorder(r.recorder)
 	}
 
 	// Cache the reconciler
@@ -1732,7 +1742,10 @@ func RBGPredicate() predicate.Funcs {
 			oldRbg, ok1 := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroup)
 			newRbg, ok2 := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroup)
 			if ok1 && ok2 {
-				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) {
+				oldTopology, oldHasTopology := oldRbg.Annotations[constants.GroupExclusiveTopologyKey]
+				newTopology, newHasTopology := newRbg.Annotations[constants.GroupExclusiveTopologyKey]
+				if !reflect.DeepEqual(oldRbg.Spec, newRbg.Spec) ||
+					oldHasTopology != newHasTopology || oldTopology != newTopology {
 					ctrl.Log.Info("enqueue: rbg update event", "rbg", klog.KObj(e.ObjectOld))
 					return true
 				}
