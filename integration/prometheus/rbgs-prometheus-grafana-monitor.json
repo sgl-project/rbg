@@ -624,7 +624,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (controller) (rate(workqueue_retries_total{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
+          "expr": "sum by (controller) (rate(workqueue_retries_total{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval]))",
           "legendFormat": "{{controller}}",
           "range": true,
           "refId": "A"
@@ -706,7 +706,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (name) (workqueue_depth{namespace=~\"$namespace\", controller=~\"$controller\"})",
+          "expr": "max by (name) (workqueue_depth{namespace=~\"$namespace\", name=~\"$controller\"})",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -775,7 +775,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (name) (rate(workqueue_adds_total{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
+          "expr": "sum by (name) (rate(workqueue_adds_total{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval]))",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -844,7 +844,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (name, le) (rate(workqueue_queue_duration_seconds_bucket{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (name, le) (rate(workqueue_queue_duration_seconds_bucket{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval])))",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -913,7 +913,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (name, le) (rate(workqueue_work_duration_seconds_bucket{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (name, le) (rate(workqueue_work_duration_seconds_bucket{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval])))",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -986,7 +986,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (name) (workqueue_unfinished_work_seconds{namespace=~\"$namespace\", controller=~\"$controller\"})",
+          "expr": "max by (name) (workqueue_unfinished_work_seconds{namespace=~\"$namespace\", name=~\"$controller\"})",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -1056,7 +1056,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (name) (workqueue_longest_running_processor_seconds{namespace=~\"$namespace\", controller=~\"$controller\"})",
+          "expr": "max by (name) (workqueue_longest_running_processor_seconds{namespace=~\"$namespace\", name=~\"$controller\"})",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"

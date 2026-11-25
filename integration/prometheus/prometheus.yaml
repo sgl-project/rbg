@@ -15,6 +15,9 @@ data:
       # authenticated (TokenReview) and authorized (SubjectAccessReview)
       # by the controller, so Prometheus must present its own service
       # account token. See rbac.yaml for the required ClusterRole.
+      # If the controller runs with --metrics-secure=false or
+      # --enable-webhooks=none, metrics are served over plain HTTP;
+      # change scheme to http in that case (see README.md).
       scheme: https
       metrics_path: /metrics
       authorization:

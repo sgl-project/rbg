@@ -29,6 +29,13 @@ rbgs-controller` label, adds `namespace` and `pod` labels to every series, and
 rebuilds the scrape address as `pod-ip:8443` because the metrics port is not
 declared as a container port in the chart.
 
+The config assumes the default secure metrics serving. Controllers started
+with `--metrics-secure=false`, or with `--enable-webhooks=none` (which forces
+`Metrics.SecureServing=false`), serve the same port over plain HTTP. For those
+installations, change `scheme: https` to `scheme: http` in the scrape config;
+the bearer token then becomes unnecessary, but leaving it configured is
+harmless.
+
 ## Usage
 
 1. Adjust `rbac.yaml` to bind the service account your Prometheus runs as
