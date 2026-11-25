@@ -60,14 +60,15 @@ func HasRoleInstanceLifecycleHooks(lifecycle *RoleInstanceLifecycle) bool {
 }
 
 // ValidateRoleInstanceLifecycle validates the static KEP-527 configuration.
-// selectorKeys and declarativeLabels may be nil. selectorKeys rejects a signal
-// key that can cause membership to flap. declarativeLabels rejects a key that
-// is also copied by ordinary metadata synchronization.
+// selector may be nil. It rejects a signal key that can cause membership to
+// flap or that collides with controller-owned state. Collisions with labels
+// the user declares elsewhere are deliberately not checked: both sides are
+// user configuration, and the check could not see TemplateRef-resolved labels
+// without cross-resource admission reads.
 func ValidateRoleInstanceLifecycle(
 	path string,
 	lifecycle *RoleInstanceLifecycle,
 	selector *metav1.LabelSelector,
-	declarativeLabels ...map[string]string,
 ) error {
 	if !HasRoleInstanceLifecycleHooks(lifecycle) {
 		return nil
@@ -126,14 +127,6 @@ func ValidateRoleInstanceLifecycle(
 					}
 				}
 			}
-			for _, labels := range declarativeLabels {
-				if _, found := labels[key]; found {
-					errs = append(errs, fmt.Sprintf(
-						"%s.%s.signalLabels[%s] collides with a declarative label",
-						path, hookName, key))
-					break
-				}
-			}
 		}
 	}
 
@@ -175,15 +168,6 @@ func ValidateRoleInstanceSetLifecycle(set *RoleInstanceSet) error {
 			"RoleInstanceSet.spec.roleInstanceTemplate.lifecycle and legacy spec.lifecycle cannot both be non-empty")
 	}
 
-	declarativeLabels := make(map[string]string)
-	for i := range set.Spec.RoleInstanceTemplate.Components {
-		for key, value := range set.Spec.RoleInstanceTemplate.Components[i].Labels {
-			declarativeLabels[key] = value
-		}
-		for key, value := range set.Spec.RoleInstanceTemplate.Components[i].Template.Labels {
-			declarativeLabels[key] = value
-		}
-	}
 	return ValidateRoleInstanceLifecycle(
-		"spec.roleInstanceTemplate.lifecycle", lifecycle, set.Spec.Selector, declarativeLabels)
+		"spec.roleInstanceTemplate.lifecycle", lifecycle, set.Spec.Selector)
 }

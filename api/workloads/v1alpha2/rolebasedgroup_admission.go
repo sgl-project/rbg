@@ -96,50 +96,12 @@ func validateRoleInstanceLifecycleList(path string, roles []RoleSpec) error {
 		if !HasRoleInstanceLifecycleHooks(role.Lifecycle) {
 			continue
 		}
-		declarativeLabels := map[string]string{}
-		for key, value := range role.Labels {
-			declarativeLabels[key] = value
-		}
-		collectRoleTemplateLabels(role, declarativeLabels)
 		if err := ValidateRoleInstanceLifecycle(
-			fmt.Sprintf("%s[%d].lifecycle", path, i), role.Lifecycle, nil, declarativeLabels); err != nil {
+			fmt.Sprintf("%s[%d].lifecycle", path, i), role.Lifecycle, nil); err != nil {
 			return err
 		}
 	}
 	return nil
-}
-
-func collectRoleTemplateLabels(role *RoleSpec, out map[string]string) {
-	if role == nil {
-		return
-	}
-	var sources []*TemplateSource
-	if role.StandalonePattern != nil {
-		sources = append(sources, &role.StandalonePattern.TemplateSource)
-	}
-	if role.LeaderWorkerPattern != nil {
-		sources = append(sources, &role.LeaderWorkerPattern.TemplateSource)
-	}
-	for _, source := range sources {
-		if source == nil || source.Template == nil {
-			continue
-		}
-		for key, value := range source.Template.Labels {
-			out[key] = value
-		}
-	}
-	if role.CustomComponentsPattern == nil {
-		return
-	}
-	for i := range role.CustomComponentsPattern.Components {
-		component := &role.CustomComponentsPattern.Components[i]
-		for key, value := range component.Labels {
-			out[key] = value
-		}
-		for key, value := range component.Template.Labels {
-			out[key] = value
-		}
-	}
 }
 
 // ValidateCreate validates a RoleBasedGroup on creation.

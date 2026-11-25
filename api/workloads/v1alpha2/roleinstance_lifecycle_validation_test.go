@@ -39,7 +39,6 @@ func TestValidateRoleInstanceLifecycle(t *testing.T) {
 		name      string
 		lifecycle *RoleInstanceLifecycle
 		selector  *metav1.LabelSelector
-		labels    map[string]string
 		wantErr   string
 	}{
 		{
@@ -80,19 +79,11 @@ func TestValidateRoleInstanceLifecycle(t *testing.T) {
 			},
 			wantErr: "collides with the owning selector",
 		},
-		{
-			name: "declarative label collision",
-			lifecycle: &RoleInstanceLifecycle{
-				PreUpdate: &RoleInstanceLifecycleHook{SignalLabels: map[string]string{"example.com/signal": "true"}},
-			},
-			labels:  map[string]string{"example.com/signal": "user"},
-			wantErr: "collides with a declarative label",
-		},
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			err := ValidateRoleInstanceLifecycle("spec.lifecycle", test.lifecycle, test.selector, test.labels)
+			err := ValidateRoleInstanceLifecycle("spec.lifecycle", test.lifecycle, test.selector)
 			if test.wantErr == "" {
 				if err != nil {
 					t.Fatalf("unexpected error: %v", err)
