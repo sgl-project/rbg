@@ -95,10 +95,7 @@ func (r *RoleBasedGroupSet) SetupWebhookWithManager(mgr ctrl.Manager, enableDepr
 func (r *RoleInstanceSet) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
-		WithValidator(&RoleInstanceSetValidator{
-			Client:    mgr.GetClient(),
-			APIReader: mgr.GetAPIReader(),
-		}).
+		WithValidator(&RoleInstanceSetValidator{}).
 		WithDefaulter(&RoleInstanceSetDefaulter{}).
 		Complete()
 }

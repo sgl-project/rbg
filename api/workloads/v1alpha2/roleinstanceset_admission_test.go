@@ -18,25 +18,20 @@ package v1alpha2
 
 import (
 	"context"
-	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/runtime"
-	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
-	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/pkg/features"
 )
 
-func TestRoleInstanceSetValidatorRejectsSignalKeyReassignment(t *testing.T) {
+// Lifecycle reconfiguration is validated statically. The webhook must not
+// cross-check live RoleInstance runtime state, so reassigning a signal key
+// between hooks is accepted without any API reader.
+func TestRoleInstanceSetValidatorAcceptsLifecycleReconfiguration(t *testing.T) {
 	features.SetRoleInstanceLifecycleHooks(true)
 	t.Cleanup(func() { features.SetRoleInstanceLifecycleHooks(false) })
 
-	scheme := runtime.NewScheme()
-	if err := AddToScheme(scheme); err != nil {
-		t.Fatal(err)
-	}
 	oldSet := &RoleInstanceSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "set", Namespace: "default", UID: "set-uid"},
 		Spec: RoleInstanceSetSpec{
@@ -52,19 +47,6 @@ func TestRoleInstanceSetValidatorRejectsSignalKeyReassignment(t *testing.T) {
 			},
 		},
 	}
-	instance := &RoleInstance{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "instance",
-			Namespace: "default",
-			UID:       "instance-uid",
-			Labels:    map[string]string{"app": "rbg"},
-			Annotations: map[string]string{
-				constants.RoleInstanceLifecycleHookSignalLabelKeys: "example.com/signal",
-			},
-			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
-				oldSet, GroupVersion.WithKind("RoleInstanceSet"))},
-		},
-	}
 	newSet := oldSet.DeepCopy()
 	newSet.Spec.RoleInstanceTemplate.Lifecycle = &RoleInstanceLifecycle{
 		PreDelete: &RoleInstanceLifecycleHook{
@@ -72,10 +54,8 @@ func TestRoleInstanceSetValidatorRejectsSignalKeyReassignment(t *testing.T) {
 		},
 	}
 
-	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
-	validator := &RoleInstanceSetValidator{Client: c}
-	_, err := validator.ValidateUpdate(context.Background(), oldSet, newSet)
-	if err == nil || !strings.Contains(err.Error(), "cannot be reassigned") {
-		t.Fatalf("ValidateUpdate() error = %v, want signal-key reassignment rejection", err)
+	validator := &RoleInstanceSetValidator{}
+	if _, err := validator.ValidateUpdate(context.Background(), oldSet, newSet); err != nil {
+		t.Fatalf("ValidateUpdate() error = %v, want static validation only", err)
 	}
 }
