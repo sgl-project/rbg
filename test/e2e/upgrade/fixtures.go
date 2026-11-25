@@ -139,7 +139,6 @@ func buildFixtures(ns string) []*workloadsv1alpha2.RoleBasedGroup {
 		buildCustomComponentsFixture(ns),
 		buildMidRolloutFixture(ns),
 		buildLegacyStrategyFixture(ns),
-		buildLegacyDiscoveryFixture(ns),
 	}
 }
 
@@ -148,12 +147,12 @@ func buildFixtures(ns string) []*workloadsv1alpha2.RoleBasedGroup {
 // KEP-576 promises for every pre-existing legacy RBG.
 func buildLegacyDiscoveryFixture(ns string) *workloadsv1alpha2.RoleBasedGroup {
 	return wrappersv2.BuildBasicRoleBasedGroup(fxLegacyDiscovery, ns).
+		WithAnnotations(map[string]string{
+			constants.DiscoveryConfigModeAnnotationKey: "legacy",
+		}).
 		WithRoles([]workloadsv1alpha2.RoleSpec{
 			wrappersv2.BuildStandaloneRole(legacyDiscoveryRole).
 				WithReplicas(1).
-				WithAnnotations(map[string]string{
-					constants.DiscoveryConfigModeAnnotationKey: "legacy",
-				}).
 				Obj(),
 		}).Obj()
 }

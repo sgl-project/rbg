@@ -118,6 +118,89 @@ func TestSummarize(t *testing.T) {
 	}
 }
 
+func TestSelectionSubset(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		desiredReplicas  int
+		desiredExcluded  string
+		retainedReplicas int
+		retainedExcluded string
+		want             bool
+	}{
+		{
+			name:             "dense selection shrinks",
+			desiredReplicas:  1,
+			retainedReplicas: 3,
+			want:             true,
+		},
+		{
+			name:             "dense selection grows",
+			desiredReplicas:  4,
+			retainedReplicas: 3,
+			want:             false,
+		},
+		{
+			name:             "same count with different holes",
+			desiredReplicas:  2,
+			retainedReplicas: 2,
+			retainedExcluded: "1",
+			want:             false,
+		},
+		{
+			name:             "holes can shrink while the count stays the same",
+			desiredReplicas:  2,
+			desiredExcluded:  "1",
+			retainedReplicas: 2,
+			retainedExcluded: "1",
+			want:             true,
+		},
+		{
+			name:             "a smaller count can still select a new ordinal",
+			desiredReplicas:  1,
+			desiredExcluded:  "0",
+			retainedReplicas: 2,
+			retainedExcluded: "1",
+			want:             false,
+		},
+		{
+			name:             "several desired intervals fit in one retained interval",
+			desiredReplicas:  4,
+			desiredExcluded:  "1,3",
+			retainedReplicas: 6,
+			retainedExcluded: "6",
+			want:             true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			desired, err := Parse(tc.desiredExcluded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retained, err := Parse(tc.retainedExcluded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := SelectionSubset(
+				tc.desiredReplicas, desired,
+				tc.retainedReplicas, retained,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("SelectionSubset() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	if _, err := SelectionSubset(-1, Ranges{}, 1, Ranges{}); err == nil {
+		t.Fatal("SelectionSubset accepted a negative desired replica count")
+	}
+	if _, err := SelectionSubset(1, Ranges{}, -1, Ranges{}); err == nil {
+		t.Fatal("SelectionSubset accepted a negative retained replica count")
+	}
+}
+
 // TestSummarizeMatchesMembersAndRecord cross-checks the range-only summary
 // against the expanded representation it replaces.
 func TestSummarizeMatchesMembersAndRecord(t *testing.T) {

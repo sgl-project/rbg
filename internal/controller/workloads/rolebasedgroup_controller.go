@@ -24,6 +24,7 @@ import (
 	"maps"
 	"math"
 	"reflect"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -59,6 +60,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	"sigs.k8s.io/rbgs/api/workloads/ordinals"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	applyconfiguration "sigs.k8s.io/rbgs/client-go/applyconfiguration/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/coordination/coordinationscaling"
@@ -553,17 +555,17 @@ const maxDiscoveryConfigMapBytes = 1 << 20
 // exactly after Build.
 const legacyMemorySafetyFactor int64 = 16
 
-// discoveryConfigValueWithinLimit reports whether the serialized value fits the
-// Kubernetes ConfigMap limit.
+// discoveryConfigValueWithinLimit reports whether the single data entry fits the
+// Kubernetes ConfigMap limit. The API server counts both the key and the value.
 func discoveryConfigValueWithinLimit(value []byte) bool {
-	return len(value) <= maxDiscoveryConfigMapBytes
+	return len(value)+len(discoveryConfigKey) <= maxDiscoveryConfigMapBytes
 }
 
 // isRecoverableDiscoveryRollback reports whether the RBG can continue to
 // reconcile roles after an oversized v1alpha1 build. The retained ConfigMap
-// must be this RBG's compact v1 snapshot and the target membership must not
-// grow beyond that snapshot; otherwise the mounted discovery data would be
-// stale while roles scale up.
+// must be this RBG's compact v1 snapshot, its non-membership content must still
+// match the current spec, and every effective target ordinal set must be a
+// subset of the snapshot; otherwise the mounted discovery data would be stale.
 func (r *RoleBasedGroupReconciler) isRecoverableDiscoveryRollback(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup,
@@ -589,25 +591,176 @@ func (r *RoleBasedGroupReconciler) isRecoverableDiscoveryRollback(
 		return false
 	}
 
-	compactRoles := make(map[string]discovery.CompactRole, len(compact.Roles))
+	statefulOnly := statefulOnlyDiscoveryRBG(rbg)
+	builder := discovery.NewConfigBuilder(r.client, statefulOnly, nil)
+	if !builder.SupportsCompactContent() {
+		return false
+	}
+	freshData, err := builder.BuildCompact(ctx)
+	if err != nil {
+		return false
+	}
+	var fresh discovery.CompactConfig
+	if err := yaml.UnmarshalStrict(freshData, &fresh); err != nil {
+		return false
+	}
+	if !compactDiscoveryNonMembershipEqual(compact, fresh) {
+		return false
+	}
+
+	pacedRoles, gangMinimums, ok := r.discoveryRollbackTargetConstraints(ctx, reader, rbg)
+	if !ok {
+		return false
+	}
+
+	freshRoles := make(map[string]discovery.CompactRole, len(fresh.Roles))
+	for _, role := range fresh.Roles {
+		freshRoles[role.Name] = role
+	}
+	retainedRoles := make(map[string]discovery.CompactRole, len(compact.Roles))
 	for _, role := range compact.Roles {
-		compactRoles[role.Name] = role
+		retainedRoles[role.Name] = role
 	}
 	for i := range rbg.Spec.Roles {
 		role := &rbg.Spec.Roles[i]
 		if !workloadsv1alpha2.IsStatefulRole(role) {
 			continue
 		}
-		compactRole, ok := compactRoles[role.Name]
+		if _, ok := freshRoles[role.Name]; !ok {
+			return false
+		}
+		retained, ok := retainedRoles[role.Name]
 		if !ok {
 			return false
 		}
-		targetMembers := int64(ptr.Deref(role.Replicas, 1))
-		if targetMembers > int64(compactRole.Members) {
+
+		targetReplicas := int(ptr.Deref(role.Replicas, 1))
+		if !compactMembershipSubset(targetReplicas, role.Annotations[constants.ExcludedOrdinalsAnnotationKey], retained) {
+			return false
+		}
+		if minimum, covered := gangMinimums[role.Name]; covered &&
+			int(minimum) > targetReplicas &&
+			!compactMembershipSubset(int(minimum), role.Annotations[constants.ExcludedOrdinalsAnnotationKey], retained) {
+			return false
+		}
+		if pacedRoles[role.Name] &&
+			!committedMembershipSubset(ctx, reader, rbg, role, retained) {
 			return false
 		}
 	}
 	return true
+}
+
+func statefulOnlyDiscoveryRBG(rbg *workloadsv1alpha2.RoleBasedGroup) *workloadsv1alpha2.RoleBasedGroup {
+	statefulOnly := rbg.DeepCopy()
+	statefulOnly.Spec.Roles = nil
+	for i := range rbg.Spec.Roles {
+		role := rbg.Spec.Roles[i]
+		if workloadsv1alpha2.IsStatefulRole(&role) {
+			statefulOnly.Spec.Roles = append(statefulOnly.Spec.Roles, role)
+		}
+	}
+	return statefulOnly
+}
+
+// compactDiscoveryNonMembershipEqual compares everything that determines a
+// compact address except membership. Membership is handled separately so a
+// verified shrink can continue after an oversized rollback.
+func compactDiscoveryNonMembershipEqual(retained, fresh discovery.CompactConfig) bool {
+	if retained.APIVersion != fresh.APIVersion || retained.Group != fresh.Group ||
+		len(retained.Roles) != len(fresh.Roles) {
+		return false
+	}
+
+	freshRoles := make(map[string]discovery.CompactRole, len(fresh.Roles))
+	for _, role := range fresh.Roles {
+		freshRoles[role.Name] = role
+	}
+	for _, retainedRole := range retained.Roles {
+		freshRole, ok := freshRoles[retainedRole.Name]
+		if !ok ||
+			!maps.Equal(retainedRole.Ports, freshRole.Ports) ||
+			!slices.Equal(retainedRole.Components, freshRole.Components) {
+			return false
+		}
+	}
+	return true
+}
+
+func compactMembershipSubset(replicas int, excluded string, retained discovery.CompactRole) bool {
+	desired, err := ordinals.Parse(excluded)
+	if err != nil {
+		return false
+	}
+	retainedExcluded, err := ordinals.Parse(retained.ExcludedOrdinals)
+	if err != nil {
+		return false
+	}
+	subset, err := ordinals.SelectionSubset(
+		replicas, desired,
+		retained.Members, retainedExcluded,
+	)
+	return err == nil && subset
+}
+
+func (r *RoleBasedGroupReconciler) discoveryRollbackTargetConstraints(
+	ctx context.Context,
+	reader client.Reader,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+) (pacedRoles map[string]bool, gangMinimums map[string]int32, ok bool) {
+	policy := &workloadsv1alpha2.CoordinatedPolicy{}
+	err := reader.Get(ctx, client.ObjectKeyFromObject(rbg), policy)
+	if err != nil {
+		if !apierrors.IsNotFound(err) {
+			return nil, nil, false
+		}
+		policy = nil
+	}
+	if policy != nil {
+		pacedRoles = make(map[string]bool)
+		for _, rule := range policy.Spec.Policies {
+			if rule.Strategy.Scaling == nil {
+				continue
+			}
+			for _, roleName := range rule.Roles {
+				pacedRoles[roleName] = true
+			}
+		}
+	}
+
+	_, gangStrategy, err := gangcommon.ResolveGangStrategy(ctx, reader, rbg)
+	if err != nil {
+		return nil, nil, false
+	}
+	return pacedRoles, gangcommon.GangMinimumReplicas(rbg, gangStrategy), true
+}
+
+func committedMembershipSubset(
+	ctx context.Context,
+	reader client.Reader,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+	retained discovery.CompactRole,
+) bool {
+	set := &workloadsv1alpha2.RoleInstanceSet{}
+	err := reader.Get(ctx, types.NamespacedName{
+		Namespace: rbg.Namespace,
+		Name:      rbg.GetWorkloadName(role),
+	}, set)
+	if apierrors.IsNotFound(err) {
+		return true
+	}
+	if err != nil {
+		return false
+	}
+	owner := metav1.GetControllerOf(set)
+	if owner == nil || owner.UID != rbg.GetUID() {
+		return false
+	}
+
+	replicas := int(ptr.Deref(set.Spec.Replicas, 0))
+	skips := set.Annotations[constants.CommittedSkipOrdinalsAnnotationKey]
+	return compactMembershipSubset(replicas, skips, retained)
 }
 
 func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
@@ -631,16 +784,7 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 		return nil
 	}
 
-	statefulOnlyRBG := rbg.DeepCopy()
-	statefulOnlyRBG.Spec.Roles = nil
-	for i := range rbg.Spec.Roles {
-		role := rbg.Spec.Roles[i]
-		if workloadsv1alpha2.IsStatefulRole(&role) {
-			statefulOnlyRBG.Spec.Roles = append(statefulOnlyRBG.Spec.Roles, role)
-		}
-	}
-
-	builder := discovery.NewConfigBuilder(r.client, statefulOnlyRBG, nil)
+	builder := discovery.NewConfigBuilder(r.client, statefulOnlyDiscoveryRBG(rbg), nil)
 
 	// Select the content version. Existing objects without the annotation keep
 	// v1alpha1. Objects that requested v1 but still carry a deprecated stateful

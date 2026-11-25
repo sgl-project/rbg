@@ -379,7 +379,13 @@ func TestRBGPredicateDiscoveryConfigVersion(t *testing.T) {
 
 func TestDiscoveryConfigValueLimit(t *testing.T) {
 	exact := []byte(strings.Repeat("x", maxDiscoveryConfigMapBytes))
-	assert.True(t, discoveryConfigValueWithinLimit(exact))
+	assert.False(t, discoveryConfigValueWithinLimit(exact),
+		"the config.yaml key is part of the ConfigMap data limit")
+
+	fits := []byte(strings.Repeat(
+		"x", maxDiscoveryConfigMapBytes-len(discoveryConfigKey),
+	))
+	assert.True(t, discoveryConfigValueWithinLimit(fits))
 
 	over := append(exact, 'x')
 	assert.False(t, discoveryConfigValueWithinLimit(over))
@@ -837,6 +843,197 @@ func TestOversizedLegacyScaleUpStopsRoleRendering(t *testing.T) {
 	}, &workloadsv1alpha2.RoleInstanceSet{})
 	assert.True(t, apierrors.IsNotFound(getErr),
 		"an owned legacy ConfigMap is not a recoverable rollback snapshot")
+}
+
+func TestOversizedRollbackWithChangedMembershipStopsRoleRendering(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].Replicas = ptr.To(int32(25000))
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+
+	role := &rbg.Spec.Roles[0]
+	workloadName := rbg.GetWorkloadName(role)
+	compactData, err := yaml.Marshal(discovery.CompactConfig{
+		APIVersion: string(constants.DiscoveryConfigVersionV1),
+		Group:      rbg.Name,
+		Roles: []discovery.CompactRole{{
+			Name:             role.Name,
+			Members:          25000,
+			ExcludedOrdinals: "1",
+			Components: []discovery.CompactComponent{{
+				Name: role.Name,
+				Size: 1,
+				Base: fmt.Sprintf("%s-{roleIndex}.s-%s", workloadName, workloadName),
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	compact := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.Name,
+			Namespace: rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
+			},
+		},
+		Data: map[string]string{discoveryConfigKey: string(compactData)},
+	}
+	r, c := discoveryTestReconciler(t, rbg, compact)
+	r.apiReader = c
+	r.workloadReconciler = make(map[string]reconciler.WorkloadReconciler)
+
+	_, err = r.Reconcile(context.Background(), reconcile.Request{
+		NamespacedName: types.NamespacedName{Name: rbg.Name, Namespace: rbg.Namespace},
+	})
+	require.ErrorContains(t, err, "exceeding")
+
+	getErr := c.Get(context.Background(), types.NamespacedName{
+		Name:      workloadName,
+		Namespace: rbg.Namespace,
+	}, &workloadsv1alpha2.RoleInstanceSet{})
+	assert.True(t, apierrors.IsNotFound(getErr),
+		"the target ordinal set must be a subset of the retained snapshot")
+}
+
+func TestOversizedRollbackRejectsChangedCompactContent(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].Replicas = ptr.To(int32(25000))
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+
+	role := &rbg.Spec.Roles[0]
+	workloadName := rbg.GetWorkloadName(role)
+	compactData, err := yaml.Marshal(discovery.CompactConfig{
+		APIVersion: string(constants.DiscoveryConfigVersionV1),
+		Group:      rbg.Name,
+		Roles: []discovery.CompactRole{{
+			Name:    role.Name,
+			Members: 25000,
+			Components: []discovery.CompactComponent{{
+				Name: role.Name,
+				Size: 1,
+				Base: fmt.Sprintf("wrong-%s-{roleIndex}.s-%s", workloadName, workloadName),
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	compact := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.Name,
+			Namespace: rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
+			},
+		},
+		Data: map[string]string{discoveryConfigKey: string(compactData)},
+	}
+	r, c := discoveryTestReconciler(t, rbg, compact)
+	r.apiReader = c
+
+	assert.False(t, r.isRecoverableDiscoveryRollback(context.Background(), rbg),
+		"component address templates must match the current spec")
+}
+
+func TestOversizedRollbackRejectsGangRaisedTarget(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].Replicas = ptr.To(int32(1))
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+	role := &rbg.Spec.Roles[0]
+	compact := compactDiscoverySnapshot(t, rbg, role, 1, "")
+	policy := &workloadsv1alpha2.CoordinatedPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+			Policies: []workloadsv1alpha2.CoordinatedPolicyRule{{
+				Name:  "gang",
+				Roles: []string{role.Name},
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+					Scheduling: &workloadsv1alpha2.SchedulingCoordinationStrategy{
+						Gang: &workloadsv1alpha2.GangSchedulingStrategy{
+							MinReplicas: map[string]int32{role.Name: 2},
+						},
+					},
+				},
+			}},
+		},
+	}
+	r, c := discoveryTestReconciler(t, rbg, compact, policy)
+	r.apiReader = c
+
+	assert.False(t, r.isRecoverableDiscoveryRollback(context.Background(), rbg),
+		"a gang minimum above the retained snapshot must not continue")
+}
+
+func TestOversizedRollbackRejectsCoordinationCurrentTarget(t *testing.T) {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	rbg.Spec.Roles[0].Replicas = ptr.To(int32(1))
+	rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+	role := &rbg.Spec.Roles[0]
+	compact := compactDiscoverySnapshot(t, rbg, role, 1, "")
+	policy := &workloadsv1alpha2.CoordinatedPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+			Policies: []workloadsv1alpha2.CoordinatedPolicyRule{{
+				Name:  "scaling",
+				Roles: []string{role.Name},
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+					Scaling: &workloadsv1alpha2.ScalingCoordinationStrategy{},
+				},
+			}},
+		},
+	}
+	ris := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.GetWorkloadName(role),
+			Namespace: rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
+			},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Replicas: ptr.To(int32(2)),
+			Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "test"}},
+		},
+	}
+	r, c := discoveryTestReconciler(t, rbg, compact, policy, ris)
+	r.apiReader = c
+
+	assert.False(t, r.isRecoverableDiscoveryRollback(context.Background(), rbg),
+		"coordination may hold the current membership above the retained snapshot")
+}
+
+func compactDiscoverySnapshot(
+	t *testing.T,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+	members int,
+	excludedOrdinals string,
+) *corev1.ConfigMap {
+	t.Helper()
+
+	workloadName := rbg.GetWorkloadName(role)
+	data, err := yaml.Marshal(discovery.CompactConfig{
+		APIVersion: string(constants.DiscoveryConfigVersionV1),
+		Group:      rbg.Name,
+		Roles: []discovery.CompactRole{{
+			Name:             role.Name,
+			Members:          members,
+			ExcludedOrdinals: excludedOrdinals,
+			Components: []discovery.CompactComponent{{
+				Name: role.Name,
+				Size: 1,
+				Base: fmt.Sprintf("%s-{roleIndex}.s-%s", workloadName, workloadName),
+			}},
+		}},
+	})
+	require.NoError(t, err)
+	return &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.Name,
+			Namespace: rbg.Namespace,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
+			},
+		},
+		Data: map[string]string{discoveryConfigKey: string(data)},
+	}
 }
 
 func TestTransientDiscoveryErrorIsNotInvalidSpec(t *testing.T) {

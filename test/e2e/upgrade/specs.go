@@ -72,6 +72,10 @@ func RunUpgradeSpecs(f *framework.Framework) {
 		// neither of these is a plain ready-by-the-end RoleBasedGroup.
 		pending   *workloadsv1alpha2.RoleBasedGroup
 		legacySet *workloadsv1alpha1.RoleBasedGroupSet
+		// legacyDiscovery is also deliberately not a ready-by-the-end fixture: the
+		// from-release honors its legacy mode by leaving the ConfigMap absent, so its
+		// stateful role cannot start until the upgraded controller creates it.
+		legacyDiscovery *workloadsv1alpha2.RoleBasedGroup
 		// legacySetV2 is the v1alpha2 RoleBasedGroupSet whose GroupTemplate carries the
 		// legacy "Recreate" spelling. It is kept separate from legacySet (a v1alpha1
 		// set) because the two prove different things: the v1alpha1 fixture covers the
@@ -110,6 +114,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			rbgSet = buildSetFixture(f.Namespace)
 			legacy = buildV1alpha1Fixture(f.Namespace)
 			pending = buildPendingFixture(f.Namespace)
+			legacyDiscovery = buildLegacyDiscoveryFixture(f.Namespace)
 			legacySet = buildV1alpha1SetFixture(f.Namespace)
 			legacySetV2 = buildLegacySetFixture(f.Namespace)
 			exclusiveGroup = createExclusiveTopologyFixture(f, fromProfile().exclusiveTopologyFromLabel)
@@ -181,6 +186,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			gomega.Expect(f.Client.Create(f.Ctx, legacySet)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, legacySetV2)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, pending)).To(gomega.Succeed())
+			gomega.Expect(f.Client.Create(f.Ctx, legacyDiscovery)).To(gomega.Succeed())
 
 			for _, rbg := range rbgs {
 				ginkgo.By("waiting for " + rbg.Name + " to be ready")
@@ -196,19 +202,21 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			// so without this the snapshot could be taken while a child's pods are still
 			// starting -- and a baseline of a half-started world proves nothing.
 			ginkgo.By("waiting for every RoleBasedGroup in the namespace to be ready")
-			waitAllRBGsReady(f, fxPending)
+			waitAllRBGsReady(f, fxPending, fxLegacyDiscovery)
 
 			// And the gate above is not enough on its own, because an RBG's Ready
 			// condition is only as good as the workload status it is derived from. This
 			// waits on the pods themselves: all of them present, all of them Running.
 			ginkgo.By("waiting for every pod the snapshot will record to be Running")
-			waitAllPodsRunning(f, fxPending)
+			waitAllPodsRunning(f, fxPending, fxLegacyDiscovery)
 
 			// The never-ready fixture is still required to have got as far as a Pending
 			// pod. Without that it would contribute nothing to compare, and "the upgrade
 			// left the Pending pod alone" would be a claim about an empty set.
 			ginkgo.By("waiting for " + fxPending + " to have a Pending pod")
 			waitForPendingPod(f, pending)
+			ginkgo.By("waiting for " + fxLegacyDiscovery + " to have a Pending pod")
+			waitForPendingPod(f, legacyDiscovery)
 		},
 	)
 
@@ -316,6 +324,12 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			} else {
 				gomega.Expect(listPodLabelMigrationJobs(f)).To(gomega.BeEmpty(), "the default upgrade must not run Pod label migration")
 			}
+
+			// Creating the missing discovery ConfigMap intentionally moves this
+			// fixture's pod from Pending to Running. Keep it out of the
+			// nothing-else-changed comparison; its own phase 3 spec asserts the
+			// ConfigMap migration directly.
+			mutated = append(mutated, fxLegacyDiscovery)
 
 			// Asserted rather than reported: the partition holds the fixture here for as
 			// long as it takes, so the upgrade cannot have missed the half-rolled state.
@@ -1304,7 +1318,7 @@ func waitAllRBGsReady(f *framework.Framework, except ...string) {
 func baselineProblems(snapshots map[string]RBGSnapshot) []string {
 	var problems []string
 	for name, snap := range snapshots {
-		if name == fxPending {
+		if name == fxPending || name == fxLegacyDiscovery {
 			continue
 		}
 		if snap.Kind == kindRBG && !snap.RBGReady {
