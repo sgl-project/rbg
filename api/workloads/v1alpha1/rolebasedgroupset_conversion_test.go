@@ -18,10 +18,12 @@ package v1alpha1
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	apimachineryvalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
@@ -571,7 +573,9 @@ func TestRoleBasedGroupSet_PodGroupPolicyAnnotations(t *testing.T) {
 					assert.Equal(t, before, inputHub, "ConvertFrom must not mutate its input")
 					assert.Equal(t, tc.policy, view.Spec.Template.PodGroupPolicy)
 					assert.Equal(t, coordination, view.Spec.Template.CoordinationRequirements)
-					assert.Equal(t, original.Annotations, view.Annotations, "derived annotations must not survive in the v1alpha1 view")
+					viewAnnotations := copyAnnotations(view.Annotations)
+					delete(viewAnnotations, annotationV2RoleProvenance)
+					assert.Equal(t, original.Annotations, viewAnnotations, "derived annotations must not survive in the v1alpha1 view")
 
 					view.Spec.Template.PodGroupPolicy = next.policy
 					beforeView := view.DeepCopy()
@@ -588,4 +592,196 @@ func TestRoleBasedGroupSet_PodGroupPolicyAnnotations(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestRoleBasedGroupSet_RoundTripAddedRoleConvertsLikeFreshWrite ensures a
+// template role added after a GET has no provenance and converts like the same
+// manifest written fresh.
+func TestRoleBasedGroupSet_RoundTripAddedRoleConvertsLikeFreshWrite(t *testing.T) {
+	stored := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSetSpec{GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+			Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+				Name: "engine", Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+					TemplateSource: v2.TemplateSource{Template: podTemplate("main")},
+				}},
+			}}},
+		}},
+	}
+
+	live := &RoleBasedGroupSet{}
+	require.NoError(t, live.ConvertFrom(stored))
+	live.Spec.Template.Roles = append(live.Spec.Template.Roles, manifestRole("worker"))
+	roundTrip := &v2.RoleBasedGroupSet{}
+	require.NoError(t, live.ConvertTo(roundTrip))
+
+	fresh := &v2.RoleBasedGroupSet{}
+	require.NoError(t, (&RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: RoleBasedGroupSetSpec{Template: RoleBasedGroupSpec{
+			Roles: []RoleSpec{manifestRole("worker")},
+		}},
+	}).ConvertTo(fresh))
+	require.Len(t, roundTrip.Spec.GroupTemplate.Spec.Roles, 2)
+	assert.Equal(t, fresh.Spec.GroupTemplate.Spec.Roles[0], roundTrip.Spec.GroupTemplate.Spec.Roles[1],
+		"an added set template role must convert like the same role written fresh")
+}
+
+func TestRoleBasedGroupSet_V2OnlyRoleFieldsRoundTrip(t *testing.T) {
+	stored := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSetSpec{
+			GroupTemplate:   v2.RoleBasedGroupTemplateSpec{Spec: storedV2OnlyRoleFields().Spec},
+			RolloutStrategy: &v2.GroupSetRolloutStrategy{Type: v2.RecreateStrategyType},
+		},
+	}
+	live := &RoleBasedGroupSet{}
+	require.NoError(t, live.ConvertFrom(stored))
+	written := &v2.RoleBasedGroupSet{}
+	require.NoError(t, live.ConvertTo(written))
+	assert.Equal(t, stored.Spec, written.Spec)
+}
+
+func TestRoleBasedGroupSet_GroupTemplateMetadataRoundTrip(t *testing.T) {
+	stored := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSetSpec{
+			GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+				Labels: map[string]string{"team": "inference"},
+				Annotations: map[string]string{
+					"example.org/owner":                           "ai",
+					constants.DiscoveryConfigVersionAnnotationKey: "refine",
+				},
+				Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+					Name: "engine", Replicas: ptr.To(int32(1)),
+					Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+						TemplateSource: v2.TemplateSource{Template: podTemplate("main")},
+					}},
+				}}},
+			},
+		},
+	}
+
+	live := &RoleBasedGroupSet{}
+	require.NoError(t, live.ConvertFrom(stored))
+	require.Contains(t, live.Annotations, annotationV1alpha2GroupTemplateMetadata)
+
+	written := &v2.RoleBasedGroupSet{}
+	require.NoError(t, live.ConvertTo(written))
+	assert.Equal(t, stored.Spec, written.Spec)
+	assert.NotContains(t, written.Annotations, annotationV1alpha2GroupTemplateMetadata)
+}
+
+func TestRoleBasedGroupSet_FreshWriteDoesNotRestoreGroupTemplateMetadata(t *testing.T) {
+	src := &RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "rbgs", Namespace: "ns",
+			Annotations: map[string]string{
+				annotationV1alpha2GroupTemplateMetadata: `{"labels":{"team":"inference"},"annotations":{"example.org/owner":"ai"}}`,
+			},
+		},
+		Spec: RoleBasedGroupSetSpec{
+			Template: RoleBasedGroupSpec{Roles: []RoleSpec{{
+				Name:           "engine",
+				Replicas:       ptr.To(int32(1)),
+				TemplateSource: TemplateSource{Template: podTemplate("main")},
+			}}},
+		},
+	}
+
+	dst := &v2.RoleBasedGroupSet{}
+	require.NoError(t, src.ConvertTo(dst))
+	assert.Empty(t, dst.Spec.GroupTemplate.Labels)
+	assert.Empty(t, dst.Spec.GroupTemplate.Annotations)
+	assert.NotContains(t, dst.Annotations, annotationV1alpha2GroupTemplateMetadata)
+}
+
+// TestRoleBasedGroupSet_MergePatchedManifestKeepsStoredShape models a
+// client-side kubectl apply that replaces the template roles while leaving the
+// object-level marker in place.
+func TestRoleBasedGroupSet_MergePatchedManifestKeepsStoredShape(t *testing.T) {
+	stored := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbgs", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSetSpec{GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+			Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+				Name: "engine", Replicas: ptr.To(int32(1)),
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: constants.RoleInstanceSetWorkloadType,
+				},
+				Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+					Size: ptr.To(int32(2)),
+					RestartPolicyConfig: &v2.RestartPolicyConfig{
+						BaseDelaySeconds: ptr.To(int32(30)), MaxDelaySeconds: ptr.To(int32(600)),
+					},
+					TemplateSource: v2.TemplateSource{Template: podTemplate("main")},
+				}},
+			}}},
+		}},
+	}
+
+	live := &RoleBasedGroupSet{}
+	require.NoError(t, live.ConvertFrom(stored))
+	live.Spec.Template.Roles = []RoleSpec{manifestRole("engine")}
+
+	written := &v2.RoleBasedGroupSet{}
+	require.NoError(t, live.ConvertTo(written))
+	assert.Equal(t, stored.Spec, written.Spec,
+		"an unchanged set manifest applied as a merge patch must not rewrite the stored template")
+}
+
+func TestRoleBasedGroupSet_OversizedProvenanceMarkerIsRejected(t *testing.T) {
+	stored := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "rbgs", Namespace: "ns",
+			Annotations: map[string]string{"example.org/user": strings.Repeat("u", 250_000)},
+		},
+		Spec: v2.RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+				Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+					Name: "engine", Replicas: ptr.To(int32(1)),
+					Pattern: v2.Pattern{CustomComponentsPattern: &v2.CustomComponentsPattern{
+						Components: oversizedProvenanceComponents(),
+					}},
+				}}},
+			},
+		},
+	}
+
+	live := &RoleBasedGroupSet{}
+	require.NoError(t, live.ConvertFrom(stored))
+	require.Equal(t, oversizedProvenanceMarker, live.Annotations[annotationV2RoleProvenance])
+
+	converted := &v2.RoleBasedGroupSet{}
+	err := live.ConvertTo(converted)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "do not fit in a v1alpha1 round trip")
+}
+
+func TestRoleBasedGroupSet_OversizedProvenanceMarkerFailsClosedWhenSentinelDoesNotFit(t *testing.T) {
+	userKey := "example.org/user"
+	userValueLen := apimachineryvalidation.TotalAnnotationSizeLimitB - len(userKey) - 1
+	stored := &v2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "rbgs", Namespace: "ns",
+			Annotations: map[string]string{userKey: strings.Repeat("u", userValueLen)},
+		},
+		Spec: v2.RoleBasedGroupSetSpec{
+			Replicas: ptr.To(int32(1)),
+			GroupTemplate: v2.RoleBasedGroupTemplateSpec{
+				Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+					Name: "engine", Replicas: ptr.To(int32(1)),
+					Pattern: v2.Pattern{CustomComponentsPattern: &v2.CustomComponentsPattern{
+						Components: oversizedProvenanceComponents(),
+					}},
+				}}},
+			},
+		},
+	}
+
+	live := &RoleBasedGroupSet{}
+	err := live.ConvertFrom(stored)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be represented in a v1alpha1 round trip")
 }

@@ -61,22 +61,168 @@ func ValidateRollingUpdate(rbg *RoleBasedGroup) error {
 }
 
 // ValidateRestartPolicyWorkloadCompatibility rejects policies that the backing
-// workload cannot implement faithfully.
-func ValidateRestartPolicyWorkloadCompatibility(fieldPath string, roles []RoleSpec) error {
+// workload cannot implement faithfully. oldRoles provides a violation-level
+// update ratchet: an incompatibility already present in the old role stays
+// writable and repairable; only a violation the update introduces is rejected.
+func ValidateRestartPolicyWorkloadCompatibility(fieldPath string, roles, oldRoles []RoleSpec) error {
+	oldByName := make(map[string]RoleSpec, len(oldRoles))
+	for i := range oldRoles {
+		oldByName[oldRoles[i].Name] = oldRoles[i]
+	}
+
 	var allErrs []error
 	for i := range roles {
 		role := &roles[i]
-		cfg := role.GetRawRestartPolicyConfig()
-		if cfg != nil && cfg.MaxGroupRestarts != nil {
-			if *cfg.MaxGroupRestarts < 0 || cfg.Type != RecreateRoleInstanceOnPodRestart {
-				allErrs = append(allErrs, fmt.Errorf("%s[%d] (role %q): maxGroupRestarts must be non-negative and requires a whole-RoleInstance recreate policy", fieldPath, i, role.Name))
+		oldViolations := make(map[string]struct{})
+		if old, exists := oldByName[role.Name]; exists {
+			for _, err := range restartPolicyWorkloadViolations(&old) {
+				oldViolations[err.Error()] = struct{}{}
 			}
-			if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
-				allErrs = append(allErrs, fmt.Errorf("%s[%d] (role %q): maxGroupRestarts is only supported by native RoleInstanceSet workloads", fieldPath, i, role.Name))
+		}
+		for _, violation := range restartPolicyWorkloadViolations(role) {
+			if _, existed := oldViolations[violation.Error()]; existed {
+				continue
 			}
+			allErrs = append(allErrs, fmt.Errorf("%s[%d] (role %q): %w", fieldPath, i, role.Name, violation))
 		}
 	}
 	return utilerrors.NewAggregate(allErrs)
+}
+
+func restartPolicyWorkloadViolations(role *RoleSpec) []error {
+	cfg := role.GetRawRestartPolicyConfig()
+	if cfg == nil || cfg.MaxGroupRestarts == nil {
+		return nil
+	}
+	var errs []error
+	if *cfg.MaxGroupRestarts < 0 || cfg.Type != RecreateRoleInstanceOnPodRestart {
+		errs = append(errs, fmt.Errorf("maxGroupRestarts must be non-negative and requires a whole-RoleInstance recreate policy"))
+	}
+	if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+		errs = append(errs, fmt.Errorf("maxGroupRestarts is only supported by native RoleInstanceSet workloads"))
+	}
+	return errs
+}
+
+// maxRoleProvenanceValidationErrors caps how many role-provenance validation
+// errors are reported before the aggregate grows quadratically while rendering.
+const maxRoleProvenanceValidationErrors = 20
+
+// ValidateRoleProvenance validates the v1alpha2-only role fields that can be
+// restored by a v1alpha1 conversion round trip. v1alpha1 requests are validated
+// against the v1alpha1 schema, so the v1alpha2 webhook must check the final
+// converted object. oldRoles provides a violation-level update ratchet: an
+// invalid value already present in the old role stays writable and fixable;
+// only a violation that the update introduces is rejected.
+func ValidateRoleProvenance(fieldPath string, roles, oldRoles []RoleSpec) error {
+	oldByName := make(map[string]RoleSpec, len(oldRoles))
+	for i := range oldRoles {
+		oldByName[oldRoles[i].Name] = oldRoles[i]
+	}
+
+	var allErrs []error
+	for i := range roles {
+		role := &roles[i]
+		oldViolations := make(map[string]struct{})
+		if old, exists := oldByName[role.Name]; exists {
+			for _, err := range roleProvenanceViolations(&old) {
+				oldViolations[err.Error()] = struct{}{}
+			}
+		}
+		for _, err := range roleProvenanceViolations(role) {
+			if _, existed := oldViolations[err.Error()]; existed {
+				continue
+			}
+			allErrs = append(allErrs, fmt.Errorf("%s[%d] (role %q): %w", fieldPath, i, role.Name, err))
+		}
+	}
+	if len(allErrs) > maxRoleProvenanceValidationErrors {
+		excess := len(allErrs) - maxRoleProvenanceValidationErrors
+		allErrs = append(allErrs[:maxRoleProvenanceValidationErrors:maxRoleProvenanceValidationErrors],
+			fmt.Errorf("and %d more role provenance validation errors", excess))
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
+func roleProvenanceViolations(role *RoleSpec) []error {
+	var errs []error
+	switch role.PodManagementPolicy {
+	case "", constants.ParallelPodManagement, constants.OrderedReadyPodManagement:
+	default:
+		errs = append(errs, fmt.Errorf("podManagementPolicy %q is not supported", role.PodManagementPolicy))
+	}
+	if selection := sharedServiceSelection(*role); selection != nil {
+		switch *selection {
+		case SharedServiceSelectionAll, SharedServiceSelectionLeaderOnly:
+		default:
+			errs = append(errs, fmt.Errorf("sharedServiceSelection %q is not supported", *selection))
+		}
+		if *selection == SharedServiceSelectionLeaderOnly {
+			workloadType, present := role.Annotations[constants.RoleWorkloadTypeAnnotationKey]
+			if present && workloadType != constants.RoleInstanceSetWorkloadType {
+				errs = append(errs, fmt.Errorf(
+					"sharedServiceSelection LeaderOnly is only supported for RoleInstanceSet workloads, got workload type %q",
+					workloadType,
+				))
+			}
+		}
+	}
+	if legacy := rawDeprecatedRestartPolicy(role); !validRestartPolicyType(legacy) {
+		errs = append(errs, fmt.Errorf("restartPolicy %q is not a supported restart policy", legacy))
+	}
+	cfg := role.GetRawRestartPolicyConfig()
+	if cfg == nil {
+		return errs
+	}
+	if !validRestartPolicyType(cfg.Type) {
+		errs = append(errs, fmt.Errorf("restartPolicyConfig.type %q is not a supported restart policy", cfg.Type))
+	}
+	switch cfg.ActivateAfter {
+	case "", RestartPolicyActivateAfterReady, RestartPolicyActivateAfterCreated:
+	default:
+		errs = append(errs, fmt.Errorf("restartPolicyConfig.activateAfter %q is not supported", cfg.ActivateAfter))
+	}
+	if cfg.BaseDelaySeconds != nil && *cfg.BaseDelaySeconds < 0 {
+		errs = append(errs, fmt.Errorf("restartPolicyConfig.baseDelaySeconds %d is negative", *cfg.BaseDelaySeconds))
+	}
+	if cfg.MaxDelaySeconds != nil && *cfg.MaxDelaySeconds < 0 {
+		errs = append(errs, fmt.Errorf("restartPolicyConfig.maxDelaySeconds %d is negative", *cfg.MaxDelaySeconds))
+	}
+	if cfg.BaseDelaySeconds != nil && cfg.MaxDelaySeconds != nil && *cfg.MaxDelaySeconds < *cfg.BaseDelaySeconds {
+		errs = append(errs, fmt.Errorf(
+			"restartPolicyConfig.maxDelaySeconds %d is less than baseDelaySeconds %d",
+			*cfg.MaxDelaySeconds, *cfg.BaseDelaySeconds))
+	}
+	return errs
+}
+
+func validRestartPolicyType(value RestartPolicyType) bool {
+	switch value {
+	case "", RestartPolicyNone, RecreateRoleInstanceOnPodRestart:
+		return true
+	default:
+		return false
+	}
+}
+
+func sharedServiceSelection(role RoleSpec) *SharedServiceSelectionPolicy {
+	if role.LeaderWorkerPattern == nil {
+		return nil
+	}
+	return role.LeaderWorkerPattern.SharedServiceSelection
+}
+
+func rawDeprecatedRestartPolicy(role *RoleSpec) RestartPolicyType {
+	if role == nil {
+		return ""
+	}
+	if role.LeaderWorkerPattern != nil {
+		return role.LeaderWorkerPattern.RestartPolicy
+	}
+	if role.CustomComponentsPattern != nil {
+		return role.CustomComponentsPattern.RestartPolicy
+	}
+	return ""
 }
 
 // ValidateRoleDependencies validates that every role dependency references an

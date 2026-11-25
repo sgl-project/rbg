@@ -312,6 +312,48 @@ func TestRoleBasedGroupSetValidator_RolloutStrategyOnBothVerbs(t *testing.T) {
 	}
 }
 
+func TestRoleBasedGroupSetValidator_RoleProvenance(t *testing.T) {
+	validator := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
+	build := func(mutate func(*RoleSpec)) *RoleBasedGroupSet {
+		role := RoleSpec{
+			Name: "worker", Replicas: ptr.To(int32(1)),
+			Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{
+				RestartPolicyConfig: &RestartPolicyConfig{
+					Type:             RecreateRoleInstanceOnPodRestart,
+					BaseDelaySeconds: ptr.To(int32(30)),
+					MaxDelaySeconds:  ptr.To(int32(600)),
+				},
+			}},
+		}
+		if mutate != nil {
+			mutate(&role)
+		}
+		return &RoleBasedGroupSet{
+			ObjectMeta: metav1.ObjectMeta{Name: "test-rbgs", Namespace: "default"},
+			Spec: RoleBasedGroupSetSpec{
+				Replicas: ptr.To(int32(1)),
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Spec: RoleBasedGroupSpec{Roles: []RoleSpec{role}},
+				},
+			},
+		}
+	}
+	invalid := func(r *RoleSpec) {
+		r.LeaderWorkerPattern.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(-5))
+	}
+	valid := build(nil)
+	invalidSet := build(invalid)
+
+	_, err := validator.ValidateCreate(context.Background(), invalidSet)
+	assert.Error(t, err, "create")
+
+	_, err = validator.ValidateUpdate(context.Background(), valid, invalidSet)
+	assert.Error(t, err, "update introduces the violation")
+
+	_, err = validator.ValidateUpdate(context.Background(), invalidSet, invalidSet)
+	assert.NoError(t, err, "the same stored violation stays writable")
+}
+
 func TestRoleBasedGroupSetValidator_RolloutStrategyTransitions(t *testing.T) {
 	validator := &RoleBasedGroupSetValidator{EnableDeprecatedWorkloadTypes: true}
 	for _, surge := range []intstr.IntOrString{intstr.FromInt32(1), intstr.FromString("1%")} {

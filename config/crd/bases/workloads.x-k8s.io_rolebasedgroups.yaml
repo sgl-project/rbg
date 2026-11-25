@@ -7482,8 +7482,7 @@ spec:
                 items:
                   description: |-
                     RoleSpec defines the specification for a role in the group
-                    Note: "templatePatch is only valid when templateRef is set" validation is done in controller
-                    because templatePatch is runtime.
+                    Note: templatePatch is applied only when templateRef is set.
                   properties:
                     annotations:
                       additionalProperties:
@@ -16538,10 +16537,13 @@ spec:
                   - message: templateRef is not supported for LeaderWorkerSet workloads
                     rule: '!has(self.templateRef) || !has(self.workload) || self.workload.kind
                       != ''LeaderWorkerSet'''
-                  - message: template or templateRef must be set for non-InstanceSet
-                      workloads
+                  - message: template or templateRef must be set unless the workload
+                      is InstanceSet or a RoleInstanceSet role with non-empty components
                     rule: (has(self.template) != has(self.templateRef)) || (has(self.workload)
-                      && self.workload.kind == 'InstanceSet')
+                      && (self.workload.kind == 'InstanceSet' || (self.workload.kind
+                      == 'RoleInstanceSet' && self.workload.apiVersion == 'workloads.x-k8s.io/v1alpha2'
+                      && !has(self.leaderWorkerSet) && has(self.components) && size(self.components)
+                      > 0)))
                   - message: template and templateRef are mutually exclusive
                     rule: '!(has(self.template) && has(self.templateRef))'
                 minItems: 1

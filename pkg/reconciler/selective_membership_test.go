@@ -52,6 +52,21 @@ func selectiveTestObjects(t *testing.T, replicas int32, e string) (*workloadsv1a
 	return group, child, scheme
 }
 
+func TestFilteredRoleAnnotationsStripOperationalMetadata(t *testing.T) {
+	annotations := map[string]string{
+		"example.org/user":                           "keep",
+		constants.RoleWorkloadTypeAnnotationKey:      "workloads.x-k8s.io/v1alpha2/RoleInstanceSet",
+		constants.RoleInstanceRecoverAnnotationKey:   "request",
+		constants.ExcludedOrdinalsAnnotationKey:      "1",
+		constants.CommittedSkipOrdinalsAnnotationKey: "2",
+	}
+
+	require.Equal(t, map[string]string{
+		"example.org/user":                      "keep",
+		constants.RoleWorkloadTypeAnnotationKey: "workloads.x-k8s.io/v1alpha2/RoleInstanceSet",
+	}, filteredRoleAnnotations(annotations))
+}
+
 // Record real conditional patches, not only their successful fake responses.
 // A rejected patch must leave both count and record at their previous values.
 type membershipPatchClient struct {

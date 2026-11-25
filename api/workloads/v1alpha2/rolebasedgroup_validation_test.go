@@ -1757,7 +1757,7 @@ func TestRestartBudgetWorkloadCompatibilityRawConfig(t *testing.T) {
 					if tt.workload != "" {
 						role.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: tt.workload}
 					}
-					err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{role})
+					err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{role}, nil)
 					if tt.errContains == "" {
 						require.NoError(t, err)
 					} else {
@@ -1775,7 +1775,7 @@ func TestRestartBudgetWorkloadCompatibility(t *testing.T) {
 		for _, policy := range []RestartPolicyType{RestartPolicyNone, RecreateRoleInstanceOnPodRestart} {
 			for _, limit := range []int32{-1, 0, 2} {
 				role := RoleSpec{Name: "worker", Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: workload}, Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{RestartPolicyConfig: &RestartPolicyConfig{Type: policy, MaxGroupRestarts: ptr.To(limit)}}}}
-				err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{role})
+				err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{role}, nil)
 				if workload == constants.RoleInstanceSetWorkloadType && policy == RecreateRoleInstanceOnPodRestart && limit >= 0 {
 					require.NoError(t, err)
 				} else {
@@ -1784,6 +1784,40 @@ func TestRestartBudgetWorkloadCompatibility(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestRestartPolicyWorkloadCompatibilityUpdateRatchet(t *testing.T) {
+	old := RoleSpec{
+		Name:        "worker",
+		Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType},
+		Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{
+			RestartPolicyConfig: &RestartPolicyConfig{
+				Type:             RecreateRoleInstanceOnPodRestart,
+				MaxGroupRestarts: ptr.To[int32](2),
+			},
+		}},
+	}
+
+	t.Run("an unrelated edit keeps an old incompatibility writable", func(t *testing.T) {
+		edited := old.DeepCopy()
+		edited.Replicas = ptr.To[int32](3)
+		assert.NoError(t, ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{*edited}, []RoleSpec{old}))
+	})
+
+	t.Run("a newly introduced incompatibility is rejected", func(t *testing.T) {
+		oldCompatible := RoleSpec{Name: "worker"}
+		newInvalid := RoleSpec{
+			Name:        "worker",
+			Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType},
+			Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{
+				RestartPolicyConfig: &RestartPolicyConfig{
+					Type:             RecreateRoleInstanceOnPodRestart,
+					MaxGroupRestarts: ptr.To[int32](2),
+				},
+			}},
+		}
+		assert.Error(t, ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{newInvalid}, []RoleSpec{oldCompatible}))
+	})
 }
 
 func TestValidateDiscoveryConfigVersion(t *testing.T) {
@@ -1888,5 +1922,120 @@ func TestValidateRBGSetDiscoveryConfigVersion(t *testing.T) {
 			},
 		}
 		require.Error(t, validateRBGSetDiscoveryConfigVersion(rbgs))
+	})
+}
+
+func TestValidateRoleProvenanceCapsLargeErrorSets(t *testing.T) {
+	roles := make([]RoleSpec, 30)
+	for i := range roles {
+		roles[i] = RoleSpec{
+			Name:                fmt.Sprintf("role-%d", i),
+			PodManagementPolicy: "Bogus",
+		}
+	}
+
+	err := ValidateRoleProvenance("spec.roles", roles, nil)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "and 10 more role provenance validation errors")
+	assert.NotContains(t, err.Error(), "role-29", "the cap should omit the tail of a large error set")
+}
+
+func TestValidateRoleProvenance(t *testing.T) {
+	role := func(mutate func(*RoleSpec)) RoleSpec {
+		result := RoleSpec{Name: "engine", Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{
+			SharedServiceSelection: ptr.To(SharedServiceSelectionAll),
+			RestartPolicyConfig: &RestartPolicyConfig{
+				Type:             RecreateRoleInstanceOnPodRestart,
+				ActivateAfter:    RestartPolicyActivateAfterCreated,
+				BaseDelaySeconds: ptr.To(int32(30)),
+				MaxDelaySeconds:  ptr.To(int32(600)),
+			},
+		}}}
+		if mutate != nil {
+			mutate(&result)
+		}
+		return result
+	}
+	valid := role(nil)
+	require.NoError(t, ValidateRoleProvenance("spec.roles", []RoleSpec{valid}, nil))
+
+	for name, mutate := range map[string]func(*RoleSpec){
+		"negative base delay": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(-5))
+		},
+		"negative max delay": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(-1))
+		},
+		"max below base": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(100))
+			r.LeaderWorkerPattern.RestartPolicyConfig.MaxDelaySeconds = ptr.To(int32(10))
+		},
+		"unknown activateAfter": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.ActivateAfter = "Sometimes"
+		},
+		"unknown type": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.Type = "Bogus"
+		},
+		"unknown legacy string": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicy = "Bogus"
+			r.LeaderWorkerPattern.RestartPolicyConfig = nil
+		},
+		"unknown legacy string masked by a valid config type": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicy = "Bogus"
+		},
+		"unknown pod management policy": func(r *RoleSpec) {
+			r.PodManagementPolicy = "Bogus"
+		},
+		"unknown shared service selection": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.SharedServiceSelection = ptr.To(SharedServiceSelectionPolicy("Bogus"))
+		},
+		"LeaderOnly with an explicitly empty workload annotation": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.SharedServiceSelection = ptr.To(SharedServiceSelectionLeaderOnly)
+			r.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: ""}
+		},
+		"LeaderOnly with a deprecated workload annotation": func(r *RoleSpec) {
+			r.LeaderWorkerPattern.SharedServiceSelection = ptr.To(SharedServiceSelectionLeaderOnly)
+			r.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			invalid := role(mutate)
+			assert.Error(t, ValidateRoleProvenance("spec.roles", []RoleSpec{invalid}, nil), "create")
+			assert.Error(t, ValidateRoleProvenance("spec.roles", []RoleSpec{invalid}, []RoleSpec{valid}), "update introduces it")
+			assert.NoError(t, ValidateRoleProvenance("spec.roles", []RoleSpec{invalid}, []RoleSpec{invalid}), "update leaves stored state unchanged")
+		})
+	}
+
+	t.Run("a partial repair keeps the remaining old violation writable", func(t *testing.T) {
+		old := role(func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(-5))
+			r.PodManagementPolicy = "Bogus"
+		})
+		partiallyRepaired := role(func(r *RoleSpec) {
+			r.PodManagementPolicy = "Bogus"
+		})
+		assert.NoError(t, ValidateRoleProvenance("spec.roles", []RoleSpec{partiallyRepaired}, []RoleSpec{old}))
+	})
+
+	t.Run("an unrelated edit keeps an old violation writable", func(t *testing.T) {
+		old := role(func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(-5))
+		})
+		edited := role(func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(-5))
+			r.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.RoleInstanceSetWorkloadType}
+			r.ScalingAdapter = &ScalingAdapter{Labels: map[string]string{"team": "a"}}
+		})
+		assert.NoError(t, ValidateRoleProvenance("spec.roles", []RoleSpec{edited}, []RoleSpec{old}))
+	})
+
+	t.Run("changing an invalid value is a newly introduced violation", func(t *testing.T) {
+		old := role(func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(-5))
+		})
+		changed := role(func(r *RoleSpec) {
+			r.LeaderWorkerPattern.RestartPolicyConfig.BaseDelaySeconds = ptr.To(int32(-10))
+		})
+		assert.Error(t, ValidateRoleProvenance("spec.roles", []RoleSpec{changed}, []RoleSpec{old}))
 	})
 }

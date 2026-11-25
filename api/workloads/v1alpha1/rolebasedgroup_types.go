@@ -296,9 +296,10 @@ type RollingUpdate struct {
 // RoleSpec defines the specification for a role in the group
 // +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'InstanceSet'",message="templateRef is not supported for InstanceSet workloads"
 // +kubebuilder:validation:XValidation:rule="!has(self.templateRef) || !has(self.workload) || self.workload.kind != 'LeaderWorkerSet'",message="templateRef is not supported for LeaderWorkerSet workloads"
-// +kubebuilder:validation:XValidation:rule="(has(self.template) != has(self.templateRef)) || (has(self.workload) && self.workload.kind == 'InstanceSet')",message="template or templateRef must be set for non-InstanceSet workloads"
-// Note: "templatePatch is only valid when templateRef is set" validation is done in controller
-// because templatePatch is runtime.RawExtension (x-kubernetes-preserve-unknown-fields) which CEL cannot inspect
+// +kubebuilder:validation:XValidation:rule="(has(self.template) != has(self.templateRef)) || (has(self.workload) && (self.workload.kind == 'InstanceSet' || (self.workload.kind == 'RoleInstanceSet' && self.workload.apiVersion == 'workloads.x-k8s.io/v1alpha2' && !has(self.leaderWorkerSet) && has(self.components) && size(self.components) > 0)))",message="template or templateRef must be set unless the workload is InstanceSet or a RoleInstanceSet role with non-empty components"
+// Note: templatePatch is applied only when templateRef is set. When components
+// are present, a role-level templatePatch is ignored to preserve the historical
+// v1alpha1 compatibility behavior; CEL cannot inspect the schemaless field.
 // The targetContainers-requires-component rule is enforced in the admission webhook's
 // shared validation (ValidateEngineRuntimes), not CEL: a comprehension over the
 // uncapped engineRuntimes list at roles[].scope yields an O(n^2) cost estimate
@@ -306,8 +307,9 @@ type RollingUpdate struct {
 // rejects by more than 100x on every supported version — the KEP-531
 // cost-budget remedy (verified empirically: the doubly-nested roles in the
 // RBGSet CRD cannot carry the rule at all). v1alpha1 writes reach the
-// v1alpha2 webhook through Equivalent matchPolicy, where the conversion has
-// already normalized the pattern to standalonePattern.
+// v1alpha2 webhook through Equivalent matchPolicy; by then conversion has
+// selected leaderWorkerPattern, customComponentsPattern, or standalonePattern
+// from the v1alpha1 role shape.
 type RoleSpec struct {
 	// Unique identifier for the role
 	// +kubebuilder:validation:Required

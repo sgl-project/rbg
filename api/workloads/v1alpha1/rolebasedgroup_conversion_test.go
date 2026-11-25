@@ -19,11 +19,13 @@ package v1alpha1
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	apimachineryvalidation "k8s.io/apimachinery/pkg/api/validation"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
@@ -1112,6 +1114,9 @@ func TestRoleBasedGroup_ConvertTo_WorkloadAnnotationPreserved(t *testing.T) {
 
 		require.Len(t, dst.Spec.Roles, 1)
 		role := dst.Spec.Roles[0]
+		// A fresh v1alpha1 write keeps the annotation every release since
+		// v0.8.0 stored; only a round trip of a role read without it omits it
+		// (TestRoleBasedGroup_NoOpV1alpha1RoundTripIsLossless).
 		assert.Equal(t, constants.RoleInstanceSetWorkloadType, role.Annotations[constants.RoleWorkloadTypeAnnotationKey])
 		assert.Equal(t, constants.RoleInstanceSetWorkloadType, role.GetWorkloadType())
 	})
@@ -1216,8 +1221,12 @@ func TestRoleBasedGroup_ConvertTo_RestartPolicyEmptyPreserved(t *testing.T) {
 
 	role := dst.Spec.Roles[0]
 	require.NotNil(t, role.LeaderWorkerPattern)
+	// A fresh v1alpha1 write keeps the mapping every release since #424
+	// stored: changing it would rewrite, and roll, the objects those releases
+	// stored the next time their manifest is applied. Only a round trip of a
+	// role read without a config leaves it unset (#580).
 	require.NotNil(t, role.LeaderWorkerPattern.RestartPolicyConfig,
-		"conversion must materialize RestartPolicyConfig even when v1alpha1 policy is empty")
+		"a fresh v1alpha1 write must materialize RestartPolicyConfig even when the policy is empty")
 	assert.Equal(t, v2.RestartPolicyType(""),
 		role.LeaderWorkerPattern.RestartPolicyConfig.Type,
 		"empty v1alpha1 RestartPolicy must preserve as empty Type, not None")
@@ -1449,8 +1458,11 @@ func TestContainerJSONPatchConversionPreservesObjectBackedValue(t *testing.T) {
 }
 
 // TestRestartBudgetV2OnlyConversion models a v1alpha1 GET followed by an
-// unrelated spec update. Reading must leave the hub budget intact, but writing
-// through v1alpha1 intentionally drops v1alpha2-only restart configuration.
+// unrelated spec update. Reading must leave the hub budget intact. Writing
+// through v1alpha1 restores the restart configuration the round-trip marker
+// preserves — activation, backoff, and the budget itself, which v1alpha1 has
+// no public field for and which therefore travels only inside the conversion
+// marker.
 func TestRestartBudgetV2OnlyConversion(t *testing.T) {
 	for _, set := range []bool{false, true} {
 		for _, pattern := range []string{"leaderWorker", "components"} {
@@ -1509,15 +1521,742 @@ func TestRestartBudgetV2OnlyConversion(t *testing.T) {
 					}
 					require.Len(t, spokeSpec.Roles, 1)
 					assert.Equal(t, RecreateRoleInstanceOnPodRestart, spokeSpec.Roles[0].RestartPolicy)
-					assert.NotContains(t, string(spokeJSON), "maxGroupRestarts", "the v1alpha1 wire representation must omit the budget, including explicit zero")
-					assert.NotContains(t, string(spokeJSON), "restartPolicyConfig", "v1alpha1 only exposes the legacy restartPolicy type")
+					assert.NotContains(t, spokeSpec.Roles[0].Annotations, constants.RoleWorkloadTypeAnnotationKey,
+						"a role read without the workload annotation keeps it absent on the round trip")
+					if budget != nil {
+						assert.Contains(t, string(spokeJSON), "maxGroupRestarts",
+							"the budget travels inside the conversion marker, the only v1alpha1 representation it has")
+					} else {
+						assert.NotContains(t, string(spokeJSON), "maxGroupRestarts",
+							"an unset budget stays unset on the wire")
+					}
 					require.Len(t, roundTripped.Roles, 1)
 					assert.Equal(t, ptr.To(int32(3)), roundTripped.Roles[0].Replicas)
-					assert.Equal(t, &v2.RestartPolicyConfig{Type: cfg.Type}, roundTripped.Roles[0].GetRawRestartPolicyConfig(),
-						"a v1alpha1 spec write keeps Type but drops budget, activation and backoff")
-					assert.Equal(t, budget, role.GetRawRestartPolicyConfig().MaxGroupRestarts, "the original v2 budget must remain intact")
+					assert.Equal(t, cfg, roundTripped.Roles[0].GetRawRestartPolicyConfig(),
+						"a v1alpha1 spec write keeps Type, activation, backoff and the budget")
+					assert.Equal(t, budget, roundTripped.Roles[0].GetRawRestartPolicyConfig().MaxGroupRestarts,
+						"the original v2 budget must round trip intact")
 				})
 			}
 		}
 	}
+}
+
+// TestRoleBasedGroup_NoOpV1alpha1RoundTripIsLossless pins #580: reading a
+// stored v1alpha2 RoleBasedGroup through v1alpha1 and writing it back
+// unchanged must not rewrite the stored object — no annotation added, no
+// restart settings dropped or defaulted, and a customComponentsPattern role
+// must survive the CEL rule at all.
+func TestRoleBasedGroup_NoOpV1alpha1RoundTripIsLossless(t *testing.T) {
+	podTmpl := func(name string) *corev1.PodTemplateSpec {
+		return &corev1.PodTemplateSpec{
+			Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: name, Image: "nginx:latest"}}},
+		}
+	}
+
+	tests := []struct {
+		name string
+		role v2.RoleSpec
+	}{
+		{
+			name: "standalone role with a template gains no annotation",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+		{
+			name: "standalone role with a templateRef gains no annotation",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+					TemplateSource: v2.TemplateSource{TemplateRef: &v2.TemplateRef{Name: "base"}},
+				}},
+			},
+		},
+		{
+			name: "leaderWorker role without restart settings stays unset",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+					Size:           ptr.To(int32(2)),
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+		{
+			name: "leaderWorker role keeps its defaulted restart config",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+					Size: ptr.To(int32(2)),
+					RestartPolicyConfig: &v2.RestartPolicyConfig{
+						Type:             v2.RecreateRoleInstanceOnPodRestart,
+						BaseDelaySeconds: ptr.To(int32(30)),
+						MaxDelaySeconds:  ptr.To(int32(600)),
+					},
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+		{
+			name: "leaderWorker role keeps non-default backoff settings and activateAfter",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+					Size: ptr.To(int32(2)),
+					RestartPolicyConfig: &v2.RestartPolicyConfig{
+						Type:             v2.RecreateRoleInstanceOnPodRestart,
+						ActivateAfter:    v2.RestartPolicyActivateAfterCreated,
+						BaseDelaySeconds: ptr.To(int32(10)),
+						MaxDelaySeconds:  ptr.To(int32(300)),
+						MaxGroupRestarts: ptr.To(int32(2)),
+					},
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+		{
+			name: "customComponents role survives the round trip",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{CustomComponentsPattern: &v2.CustomComponentsPattern{
+					Components: []v2.InstanceComponent{
+						{Name: "prefill", Size: ptr.To(int32(1)), Template: *podTmpl("prefill")},
+						{Name: "decode", Size: ptr.To(int32(1)), Template: *podTmpl("decode")},
+					},
+				}},
+			},
+		},
+		{
+			name: "customComponents role keeps its restart config",
+			role: v2.RoleSpec{
+				Name:     "engine",
+				Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{CustomComponentsPattern: &v2.CustomComponentsPattern{
+					Components: []v2.InstanceComponent{
+						{Name: "prefill", Size: ptr.To(int32(1)), Template: *podTmpl("prefill")},
+					},
+					RestartPolicyConfig: &v2.RestartPolicyConfig{
+						Type:             v2.RestartPolicyNone,
+						BaseDelaySeconds: ptr.To(int32(10)),
+					},
+				}},
+			},
+		},
+		{
+			// The shape a fresh v1alpha1 write stored on v0.8.0 through v0.9.0.
+			name: "leaderWorker role stored by a fresh v1alpha1 write keeps its annotation and config",
+			role: v2.RoleSpec{
+				Name:        "engine",
+				Replicas:    ptr.To(int32(1)),
+				Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.RoleInstanceSetWorkloadType},
+				Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+					Size: ptr.To(int32(2)),
+					RestartPolicyConfig: &v2.RestartPolicyConfig{
+						BaseDelaySeconds: ptr.To(int32(30)),
+						MaxDelaySeconds:  ptr.To(int32(600)),
+					},
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+		{
+			name: "standalone role of a deprecated workload type keeps its annotation",
+			role: v2.RoleSpec{
+				Name:        "engine",
+				Replicas:    ptr.To(int32(1)),
+				Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType},
+				Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+					TemplateSource: v2.TemplateSource{Template: podTmpl("engine")},
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			stored := &v2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+				Spec:       v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{tt.role}},
+			}
+			before := stored.Spec.DeepCopy()
+
+			// Read through v1alpha1: conversion must not mutate the stored
+			// object (the hub source is shared).
+			v1 := &RoleBasedGroup{}
+			require.NoError(t, v1.ConvertFrom(stored))
+			assert.Equal(t, *before, stored.Spec,
+				"ConvertFrom must not write conversion annotations into the hub source")
+
+			// The v1alpha1 response has one object-level round-trip marker; each
+			// role is represented by a key in its JSON map.
+			require.Contains(t, v1.Annotations, annotationV2RoleProvenance)
+			if tt.role.GetRawRestartPolicyConfig() == nil {
+				assert.NotContains(t, v1.Annotations[annotationV2RoleProvenance], `"config"`)
+			}
+
+			// Write back unchanged: the stored spec must round-trip losslessly.
+			rewritten := &v2.RoleBasedGroup{}
+			require.NoError(t, v1.ConvertTo(rewritten))
+			assert.Equal(t, *before, rewritten.Spec)
+		})
+	}
+}
+
+func manifestRole(name string) RoleSpec {
+	return RoleSpec{
+		Name: name, Replicas: ptr.To(int32(1)),
+		Workload:        WorkloadSpec{APIVersion: "workloads.x-k8s.io/v1alpha2", Kind: "RoleInstanceSet"},
+		LeaderWorkerSet: &LeaderWorkerTemplate{Size: ptr.To(int32(2))},
+		TemplateSource:  TemplateSource{Template: podTemplate("main")},
+	}
+}
+
+// storedV2OnlyRoleFields sets every v1alpha2 role field v1alpha1 has no
+// representation for, on a leaderWorker and a customComponents role.
+func storedV2OnlyRoleFields() *v2.RoleBasedGroup {
+	return &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{
+			{
+				Name: "decode", Replicas: ptr.To(int32(1)),
+				PodManagementPolicy: constants.OrderedReadyPodManagement,
+				ScalingAdapter:      &v2.ScalingAdapter{Enable: true, Labels: map[string]string{"team": "a"}},
+				Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+					Size:                   ptr.To(int32(2)),
+					SharedServiceSelection: ptr.To(v2.SharedServiceSelectionAll),
+					TemplateSource:         v2.TemplateSource{Template: podTemplate("main")},
+				}},
+			},
+			{
+				Name: "prefill", Replicas: ptr.To(int32(1)),
+				Pattern: v2.Pattern{CustomComponentsPattern: &v2.CustomComponentsPattern{
+					Components: []v2.InstanceComponent{{
+						Name: "worker", Size: ptr.To(int32(1)),
+						Labels: map[string]string{"tier": "prefill"},
+						Annotations: map[string]string{
+							"rolebasedgroup.workloads.x-k8s.io/port-allocator": `{"allocations":[]}`,
+						},
+						Template: *podTemplate("worker"),
+					}},
+				}},
+			},
+		}},
+	}
+}
+
+func TestRoleBasedGroup_V2OnlyRoleFieldsRoundTrip(t *testing.T) {
+	read := func(t *testing.T) *RoleBasedGroup {
+		t.Helper()
+		live := &RoleBasedGroup{}
+		require.NoError(t, live.ConvertFrom(storedV2OnlyRoleFields()))
+		return live
+	}
+	t.Run("no-op round trip", func(t *testing.T) {
+		written := &v2.RoleBasedGroup{}
+		require.NoError(t, read(t).ConvertTo(written))
+		assert.Equal(t, storedV2OnlyRoleFields().Spec, written.Spec)
+	})
+	t.Run("removing the v1alpha1-visible scalingAdapter removes its v1alpha2-only labels", func(t *testing.T) {
+		live := read(t)
+		live.Spec.Roles[0].ScalingAdapter = nil
+
+		written := &v2.RoleBasedGroup{}
+		require.NoError(t, live.ConvertTo(written))
+		assert.Nil(t, written.Spec.Roles[0].ScalingAdapter,
+			"deleting the parent scalingAdapter must delete its preserved labels too")
+	})
+	t.Run("invalid marker enums fail final validation", func(t *testing.T) {
+		for _, marker := range []string{
+			`{"decode":{"podManagementPolicy":"Bogus"}}`,
+			`{"decode":{"sharedServiceSelection":"Bogus"}}`,
+		} {
+			live := read(t)
+			live.Annotations[annotationV2RoleProvenance] = marker
+			converted := &v2.RoleBasedGroup{}
+			require.NoError(t, live.ConvertTo(converted), marker)
+			assert.Error(t, v2.ValidateRoleProvenance("spec.roles", converted.Spec.Roles, nil), marker)
+		}
+	})
+}
+
+func TestRoleBasedGroup_EmptyWorkloadAnnotationRoundTrip(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: "",
+			},
+			Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+				TemplateSource: v2.TemplateSource{
+					Template: &corev1.PodTemplateSpec{
+						Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "nginx"}}},
+					},
+				},
+			}},
+		}}},
+	}
+
+	live := &RoleBasedGroup{}
+	require.NoError(t, live.ConvertFrom(stored))
+	back := &v2.RoleBasedGroup{}
+	require.NoError(t, live.ConvertTo(back))
+	assert.Equal(t, stored.Spec.Roles[0].Annotations, back.Spec.Roles[0].Annotations)
+}
+
+// TestRoleBasedGroup_MergePatchedManifestKeepsStoredShape models a client-side
+// kubectl apply: the manifest's roles replace the live roles while the
+// object-level marker survives. Applying an unchanged manifest over the shape
+// v0.8.0 through v0.9.0 stored must leave the object unchanged.
+func TestRoleBasedGroup_MergePatchedManifestKeepsStoredShape(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.RoleInstanceSetWorkloadType},
+			Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+				Size: ptr.To(int32(2)),
+				RestartPolicyConfig: &v2.RestartPolicyConfig{
+					BaseDelaySeconds: ptr.To(int32(30)), MaxDelaySeconds: ptr.To(int32(600)),
+				},
+				TemplateSource: v2.TemplateSource{Template: podTemplate("main")},
+			}},
+		}}},
+	}
+
+	live := &RoleBasedGroup{}
+	require.NoError(t, live.ConvertFrom(stored))
+	live.Spec.Roles = []RoleSpec{manifestRole("engine")}
+
+	written := &v2.RoleBasedGroup{}
+	require.NoError(t, live.ConvertTo(written))
+	assert.Equal(t, stored.Spec, written.Spec,
+		"an unchanged manifest applied as a merge patch must not rewrite the stored roles")
+}
+
+// TestRoleBasedGroup_RoundTripAddedRoleConvertsLikeFreshWrite ensures a role
+// added after a GET has no provenance and therefore uses the fresh-write mapping.
+func TestRoleBasedGroup_RoundTripAddedRoleConvertsLikeFreshWrite(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+				TemplateSource: v2.TemplateSource{Template: podTemplate("main")},
+			}},
+		}}},
+	}
+
+	live := &RoleBasedGroup{}
+	require.NoError(t, live.ConvertFrom(stored))
+	live.Spec.Roles = append(live.Spec.Roles, manifestRole("worker"))
+	roundTrip := &v2.RoleBasedGroup{}
+	require.NoError(t, live.ConvertTo(roundTrip))
+
+	fresh := &v2.RoleBasedGroup{}
+	require.NoError(t, (&RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{manifestRole("worker")}},
+	}).ConvertTo(fresh))
+	require.Len(t, roundTrip.Spec.Roles, 2)
+	assert.Equal(t, fresh.Spec.Roles[0], roundTrip.Spec.Roles[1],
+		"an added role must convert like the same role written fresh")
+}
+
+func TestRoleBasedGroup_ConvertToAllowsComponentsWithTemplatePatch(t *testing.T) {
+	for _, workload := range []WorkloadSpec{
+		{APIVersion: "workloads.x-k8s.io/v1alpha2", Kind: "RoleInstanceSet"},
+		{APIVersion: "workloads.x-k8s.io/v1alpha1", Kind: "InstanceSet"},
+	} {
+		t.Run(workload.Kind, func(t *testing.T) {
+			src := &RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+				Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+					Name: "engine", Replicas: ptr.To(int32(1)), Workload: workload,
+					TemplatePatch: runtime.RawExtension{Raw: []byte(`{"spec":{"containers":[{"name":"engine"}]}}`)},
+					Components: []InstanceComponent{{
+						Name: "worker", Size: ptr.To(int32(2)), Template: *podTemplate("worker"),
+					}},
+				}}},
+			}
+
+			dst := &v2.RoleBasedGroup{}
+			require.NoError(t, src.ConvertTo(dst))
+			require.NotNil(t, dst.Spec.Roles[0].CustomComponentsPattern)
+			require.Len(t, dst.Spec.Roles[0].CustomComponentsPattern.Components, 1)
+		})
+	}
+}
+
+// TestRoleBasedGroup_RoundTrip_LegacyRestartPolicyStringPreserved pins the
+// round trip of the pre-v0.8 shape: a role carrying only the deprecated
+// pattern-level restartPolicy string. The marker preserves the string's
+// provenance, so a no-op write-back keeps the string and does not materialize
+// a config — previously this folded into a type-only config, moving the
+// RoleInstanceSet revision (#580 review).
+func TestRoleBasedGroup_RoundTrip_LegacyRestartPolicyStringPreserved(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+				Size:           ptr.To(int32(2)),
+				RestartPolicy:  v2.RecreateRoleInstanceOnPodRestart, //nolint:staticcheck // the legacy string shape is the subject of this test
+				TemplateSource: v2.TemplateSource{Template: podTemplate("engine")},
+			}},
+		}}},
+	}
+	before := stored.Spec.DeepCopy()
+
+	v1 := &RoleBasedGroup{}
+	require.NoError(t, v1.ConvertFrom(stored))
+	assert.Equal(t, RecreateRoleInstanceOnPodRestart, v1.Spec.Roles[0].RestartPolicy)
+
+	rewritten := &v2.RoleBasedGroup{}
+	require.NoError(t, v1.ConvertTo(rewritten))
+	assert.Equal(t, *before, rewritten.Spec,
+		"the legacy string round trips losslessly: no config is materialized")
+	role := rewritten.Spec.Roles[0]
+	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.LeaderWorkerPattern.RestartPolicy) //nolint:staticcheck // the legacy string shape is the subject of this test
+	assert.Nil(t, role.LeaderWorkerPattern.RestartPolicyConfig)
+	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.GetRestartPolicy(),
+		"the resolved policy is identical before and after")
+}
+
+func TestRoleBasedGroup_ConvertTo_HandCraftedRestartMarker(t *testing.T) {
+	newRole := func(marker string) *RoleBasedGroup {
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "rbg", Namespace: "ns",
+				Annotations: map[string]string{annotationV2RoleProvenance: marker},
+			},
+			Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+				Name: "worker", Replicas: ptr.To(int32(1)),
+				LeaderWorkerSet: &LeaderWorkerTemplate{Size: ptr.To(int32(2))},
+				TemplateSource:  TemplateSource{Template: podTemplate("app")},
+			}}},
+		}
+	}
+
+	t.Run("empty marker is stripped without materializing a config", func(t *testing.T) {
+		dst := &v2.RoleBasedGroup{}
+		require.NoError(t, newRole(`{"worker":{}}`).ConvertTo(dst))
+		assert.Nil(t, dst.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig)
+		assert.Empty(t, dst.Spec.Roles[0].Annotations)
+	})
+
+	t.Run("malformed marker fails the conversion", func(t *testing.T) {
+		for _, garbage := range []string{"not-json", "[1]", `{"worker":{"config":`} {
+			dst := &v2.RoleBasedGroup{}
+			require.Error(t, newRole(garbage).ConvertTo(dst),
+				"marker %q must fail the conversion, not leak", garbage)
+		}
+	})
+
+	t.Run("the emitted type is derived, not trusted from the marker", func(t *testing.T) {
+		// A hand-edited marker can contain an ignored emittedType. The
+		// effective emitted type comes from config.type and then legacyType,
+		// so an explicit Recreate on the wire is an edit of this None config
+		// and must win.
+		src := newRole(`{"worker":{"config":{"type":"None","baseDelaySeconds":5},"legacyType":"","emittedType":"Recreate"}}`)
+		src.Spec.Roles[0].RestartPolicy = RecreateRoleInstanceOnPodRestart
+
+		dst := &v2.RoleBasedGroup{}
+		require.NoError(t, src.ConvertTo(dst))
+		config := dst.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig
+		require.NotNil(t, config)
+		assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, config.Type)
+		assert.Equal(t, int32(5), *config.BaseDelaySeconds)
+	})
+}
+
+// TestRoleBasedGroup_RoundTrip_RestartPolicyTypeChange honors a deliberate
+// v1alpha1 restartPolicy edit: the wire type wins, the preserved delays and
+// activateAfter stay.
+func TestRoleBasedGroup_RoundTrip_RestartPolicyTypeChange(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+				Size: ptr.To(int32(2)),
+				RestartPolicyConfig: &v2.RestartPolicyConfig{
+					Type:             v2.RecreateRoleInstanceOnPodRestart,
+					ActivateAfter:    v2.RestartPolicyActivateAfterCreated,
+					BaseDelaySeconds: ptr.To(int32(10)),
+					MaxDelaySeconds:  ptr.To(int32(300)),
+					MaxGroupRestarts: ptr.To(int32(2)),
+				},
+				TemplateSource: v2.TemplateSource{Template: podTemplate("engine")},
+			}},
+		}}},
+	}
+
+	v1 := &RoleBasedGroup{}
+	require.NoError(t, v1.ConvertFrom(stored))
+	// The v1alpha1 client deliberately changes the policy type.
+	v1.Spec.Roles[0].RestartPolicy = NoneRestartPolicy
+
+	rewritten := &v2.RoleBasedGroup{}
+	require.NoError(t, v1.ConvertTo(rewritten))
+	config := rewritten.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig
+	require.NotNil(t, config)
+	assert.Equal(t, v2.RestartPolicyNone, config.Type, "the wire type change must win")
+	assert.Equal(t, v2.RestartPolicyActivateAfterCreated, config.ActivateAfter)
+	assert.Equal(t, int32(10), *config.BaseDelaySeconds)
+	assert.Equal(t, int32(300), *config.MaxDelaySeconds)
+	assert.Nil(t, config.MaxGroupRestarts, "the None edit cannot keep a budget")
+}
+
+// TestRoleBasedGroup_ConvertTo_FreshWriteKeepsStoredMapping pins that a lossless
+// round trip does not change how a fresh v1alpha1 write converts. A write without
+// the round-trip marker (`kubectl apply` or `kubectl replace -f` of a manifest, or
+// an object a client builds itself) converts exactly as every release since
+// v0.8.0 stored it; otherwise the next apply of an unchanged manifest rewrites
+// those objects and rolls their roles.
+func TestRoleBasedGroup_ConvertTo_FreshWriteKeepsStoredMapping(t *testing.T) {
+	ris := WorkloadSpec{APIVersion: "workloads.x-k8s.io/v1alpha2", Kind: "RoleInstanceSet"}
+	src := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: RoleBasedGroupSpec{Roles: []RoleSpec{
+			{
+				Name: "lws", Replicas: ptr.To(int32(1)), Workload: ris,
+				LeaderWorkerSet: &LeaderWorkerTemplate{Size: ptr.To(int32(2))},
+				TemplateSource:  TemplateSource{Template: podTemplate("app")},
+			},
+			{
+				Name: "components", Replicas: ptr.To(int32(1)), Workload: ris,
+				RestartPolicy: NoneRestartPolicy,
+				Components:    []InstanceComponent{{Name: "c", Size: ptr.To(int32(1)), Template: *podTemplate("c")}},
+			},
+			{
+				Name: "standalone", Replicas: ptr.To(int32(1)), Workload: ris,
+				TemplateSource: TemplateSource{Template: podTemplate("app")},
+			},
+		}},
+	}
+
+	dst := &v2.RoleBasedGroup{}
+	require.NoError(t, src.ConvertTo(dst))
+
+	for _, role := range dst.Spec.Roles {
+		assert.Equal(t,
+			map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.RoleInstanceSetWorkloadType},
+			role.Annotations, "role %s: a fresh write keeps the workload annotation", role.Name)
+	}
+	assert.Equal(t, &v2.RestartPolicyConfig{}, dst.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig,
+		"a fresh write materializes the config for the CRD to default")
+	assert.Equal(t, &v2.RestartPolicyConfig{Type: v2.RestartPolicyNone},
+		dst.Spec.Roles[1].CustomComponentsPattern.RestartPolicyConfig)
+}
+
+// TestRoleBasedGroup_RoundTrip_WorkloadChangeIsHonored pins that the workload
+// field stays authoritative in a round trip: a v1alpha1 edit that moves a
+// deprecated role to RoleInstanceSet is not overridden by the workload-type
+// annotation that ConvertFrom copied onto the wire.
+func TestRoleBasedGroup_RoundTrip_WorkloadChangeIsHonored(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "worker", Replicas: ptr.To(int32(1)),
+			Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType},
+			Pattern: v2.Pattern{StandalonePattern: &v2.StandalonePattern{
+				TemplateSource: v2.TemplateSource{Template: podTemplate("app")},
+			}},
+		}}},
+	}
+
+	v1 := &RoleBasedGroup{}
+	require.NoError(t, v1.ConvertFrom(stored))
+	require.Equal(t, "StatefulSet", v1.Spec.Roles[0].Workload.Kind)
+	v1.Spec.Roles[0].Workload = WorkloadSpec{APIVersion: "workloads.x-k8s.io/v1alpha2", Kind: "RoleInstanceSet"}
+
+	rewritten := &v2.RoleBasedGroup{}
+	require.NoError(t, v1.ConvertTo(rewritten))
+	assert.Equal(t, constants.RoleInstanceSetWorkloadType, rewritten.Spec.Roles[0].GetWorkloadType())
+}
+
+// TestRoleBasedGroup_RoundTrip_RestartPolicyClearIsHonored pins that clearing
+// restartPolicy through v1alpha1 is honored like any other edit of the type,
+// keeping the preserved delays. A budget survives only with an explicit
+// Recreate type, so the pattern's empty-type default is materialized instead
+// of silently removing the untouched limit.
+func TestRoleBasedGroup_RoundTrip_RestartPolicyClearIsHonored(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+				Size: ptr.To(int32(2)),
+				RestartPolicyConfig: &v2.RestartPolicyConfig{
+					Type:             v2.RecreateRoleInstanceOnPodRestart,
+					BaseDelaySeconds: ptr.To(int32(10)),
+					MaxGroupRestarts: ptr.To(int32(2)),
+				},
+				TemplateSource: v2.TemplateSource{Template: podTemplate("engine")},
+			}},
+		}}},
+	}
+
+	v1 := &RoleBasedGroup{}
+	require.NoError(t, v1.ConvertFrom(stored))
+	require.Equal(t, RecreateRoleInstanceOnPodRestart, v1.Spec.Roles[0].RestartPolicy)
+	v1.Spec.Roles[0].RestartPolicy = ""
+
+	rewritten := &v2.RoleBasedGroup{}
+	require.NoError(t, v1.ConvertTo(rewritten))
+	role := rewritten.Spec.Roles[0]
+	config := role.LeaderWorkerPattern.RestartPolicyConfig
+	require.NotNil(t, config)
+	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, config.Type,
+		"the budget requires an explicit Recreate type")
+	assert.Equal(t, int32(10), *config.BaseDelaySeconds)
+	assert.Equal(t, ptr.To(int32(2)), config.MaxGroupRestarts,
+		"clearing the type must not silently remove the untouched budget")
+	assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, role.GetRestartPolicy())
+}
+
+// TestRoleBasedGroup_RoundTrip_RestartPolicyCombinationPreserved pins the
+// round trip of a role carrying the deprecated pattern-level restartPolicy
+// string alongside a restartPolicyConfig: both raw fields are restored, so
+// the stored shape and revision hash do not change (#580 review).
+func TestRoleBasedGroup_RoundTrip_RestartPolicyCombinationPreserved(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Pattern: v2.Pattern{LeaderWorkerPattern: &v2.LeaderWorkerPattern{
+				Size:          ptr.To(int32(2)),
+				RestartPolicy: v2.RecreateRoleInstanceOnPodRestart, //nolint:staticcheck // the combination shape is the subject of this test
+				RestartPolicyConfig: &v2.RestartPolicyConfig{
+					BaseDelaySeconds: ptr.To(int32(10)),
+				},
+				TemplateSource: v2.TemplateSource{Template: podTemplate("engine")},
+			}},
+		}}},
+	}
+	before := stored.Spec.DeepCopy()
+
+	v1 := &RoleBasedGroup{}
+	require.NoError(t, v1.ConvertFrom(stored))
+	// The effective type folds from the combination; the edit comparison
+	// must treat it as unchanged.
+	assert.Equal(t, RecreateRoleInstanceOnPodRestart, v1.Spec.Roles[0].RestartPolicy)
+
+	rewritten := &v2.RoleBasedGroup{}
+	require.NoError(t, v1.ConvertTo(rewritten))
+	assert.Equal(t, *before, rewritten.Spec,
+		"the combination round trips losslessly: string kept, config kept")
+}
+
+// TestRoleBasedGroup_ConvertTo_AllowsCorrectiveEditOfInvalidProvenance keeps
+// conversion focused on translation. Stored state that is already invalid may
+// ride the marker, but a corrective wire edit must still reach the v1alpha2
+// admission layer rather than being blocked by conversion itself.
+func TestRoleBasedGroup_ConvertTo_AllowsCorrectiveEditOfInvalidProvenance(t *testing.T) {
+	newRole := func(marker string) *RoleBasedGroup {
+		return &RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: "rbg", Namespace: "ns",
+				Annotations: map[string]string{annotationV2RoleProvenance: marker},
+			},
+			Spec: RoleBasedGroupSpec{Roles: []RoleSpec{{
+				Name: "worker", Replicas: ptr.To(int32(1)),
+				LeaderWorkerSet: &LeaderWorkerTemplate{Size: ptr.To(int32(2))},
+				TemplateSource:  TemplateSource{Template: podTemplate("app")},
+				RestartPolicy:   RecreateRoleInstanceOnPodRestart,
+			}}},
+		}
+	}
+
+	t.Run("an invalid stored budget can be corrected by a wire type edit", func(t *testing.T) {
+		src := newRole(`{"worker":{"config":{"type":"None","maxGroupRestarts":1}}}`)
+
+		dst := &v2.RoleBasedGroup{}
+		require.NoError(t, src.ConvertTo(dst))
+		config := dst.Spec.Roles[0].LeaderWorkerPattern.RestartPolicyConfig
+		require.NotNil(t, config)
+		assert.Equal(t, v2.RecreateRoleInstanceOnPodRestart, config.Type)
+		assert.Equal(t, ptr.To(int32(1)), config.MaxGroupRestarts)
+	})
+
+	t.Run("markers for deleted roles are ignored", func(t *testing.T) {
+		src := newRole(`{"worker":{"config":{"type":"None","maxGroupRestarts":1}},"deleted":{"config":{"type":"None","maxGroupRestarts":-1}}}`)
+		src.Spec.Roles = nil
+
+		dst := &v2.RoleBasedGroup{}
+		require.NoError(t, src.ConvertTo(dst))
+		assert.Empty(t, dst.Spec.Roles)
+	})
+}
+
+func oversizedProvenanceComponents() []v2.InstanceComponent {
+	components := make([]v2.InstanceComponent, 0, 20)
+	for i := 0; i < 20; i++ {
+		components = append(components, v2.InstanceComponent{
+			Name: fmt.Sprintf("component-%d", i),
+			Size: ptr.To(int32(1)),
+			Annotations: map[string]string{
+				"example.org/payload": strings.Repeat("x", 700),
+			},
+			Template: *podTemplate(fmt.Sprintf("component-%d", i)),
+		})
+	}
+	return components
+}
+
+func TestRoleBasedGroup_OversizedProvenanceMarkerIsRejected(t *testing.T) {
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "rbg", Namespace: "ns",
+			Annotations: map[string]string{"example.org/user": strings.Repeat("u", 250_000)},
+		},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Pattern: v2.Pattern{CustomComponentsPattern: &v2.CustomComponentsPattern{
+				Components: oversizedProvenanceComponents(),
+			}},
+		}}},
+	}
+
+	live := &RoleBasedGroup{}
+	require.NoError(t, live.ConvertFrom(stored))
+	require.Equal(t, oversizedProvenanceMarker, live.Annotations[annotationV2RoleProvenance])
+
+	converted := &v2.RoleBasedGroup{}
+	err := live.ConvertTo(converted)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "do not fit in a v1alpha1 round trip")
+}
+
+func TestRoleBasedGroup_OversizedProvenanceMarkerFailsClosedWhenSentinelDoesNotFit(t *testing.T) {
+	userKey := "example.org/user"
+	userValueLen := apimachineryvalidation.TotalAnnotationSizeLimitB - len(userKey) - 1
+	stored := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "rbg", Namespace: "ns",
+			Annotations: map[string]string{userKey: strings.Repeat("u", userValueLen)},
+		},
+		Spec: v2.RoleBasedGroupSpec{Roles: []v2.RoleSpec{{
+			Name: "engine", Replicas: ptr.To(int32(1)),
+			Pattern: v2.Pattern{CustomComponentsPattern: &v2.CustomComponentsPattern{
+				Components: oversizedProvenanceComponents(),
+			}},
+		}}},
+	}
+
+	live := &RoleBasedGroup{}
+	err := live.ConvertFrom(stored)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "cannot be represented in a v1alpha1 round trip")
 }

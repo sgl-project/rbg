@@ -203,7 +203,7 @@ kubectl replace -f RBG_NAME.storage-rewrite.yaml
 
 Use the equivalent fully qualified `v1alpha2` resource for RoleBasedGroupSets, RoleBasedGroupScalingAdapters, and ClusterEngineRuntimeProfiles; the last one is cluster-scoped, so its commands take no namespace. If the write conflicts because the object changed, fetch a fresh copy, review it, and decide whether to retry.
 
-Do not round-trip the object through `v1alpha1`: that path can reintroduce the `role-workload-type` compatibility annotation and create noise in later checks.
+Prefer the `v1alpha2` endpoint for this storage rewrite. A no-op round trip handled by the current `v1alpha1` conversion no longer reintroduces the `role-workload-type` compatibility annotation, but a full-object `v1alpha1` write whose payload lacks the conversion marker still follows the historical fresh-write mapping. During a mixed-version rollout, an old conversion replica can also preserve the old behavior.
 
 After every object has been rewritten, independently confirm from the migration inventory that the rewrite set was complete. `status.storedVersions` is a CRD-level historical record, not a per-object inventory, and it does not automatically discard `v1alpha1` after objects are rewritten. Repeating object writes cannot remove an old entry from this list.
 

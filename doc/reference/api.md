@@ -135,9 +135,13 @@ Configured under `spec.roles[].leaderWorkerPattern.restartPolicyConfig` or
 `activateAfter`, backoff delays and `maxGroupRestarts` apply to native RoleInstanceSet
 workloads, not backing Deployment, StatefulSet or LeaderWorkerSet workloads.
 
-> **Compatibility:** These settings are v1alpha2-only. Writing a spec through
-> v1alpha1 drops activation, backoff and budget settings; an omitted budget means
-> unlimited recovery. Manage budgeted workloads through v1alpha2.
+> **Compatibility:** These settings are v1alpha2-only. A v1alpha1 round trip,
+> including client-side and server-side `kubectl apply` of an existing object, preserves them, but a
+> full-object write whose payload lacks the marker — for example,
+> `kubectl replace -f` with a fresh manifest — replaces the config with a
+> type-only config and drops activation, backoff and budget settings; an
+> omitted budget means unlimited recovery. Manage budgeted workloads through
+> v1alpha2.
 
 ### RoleInstance budget status
 

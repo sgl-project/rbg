@@ -56,6 +56,18 @@ const (
 	GangSchedulingVolcanoQueueKey = RBGPrefix + "group-gang-scheduling-volcano-queue"
 )
 
+// Conversion annotations
+const (
+	// ConversionV2RoleProvenanceAnnotationKey carries the v1alpha2 role
+	// provenance that v1alpha1 cannot express during a round trip. It is an
+	// object-level, wire-only marker for conversions handled by this release,
+	// carried on the v1alpha1 RoleBasedGroup and RoleBasedGroupSet views and
+	// keyed internally by role name. It is not set on
+	// spec.roles[].annotations. Because metadata annotations are user-writable,
+	// treat this key as a conversion compatibility hint, not a security boundary.
+	ConversionV2RoleProvenanceAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-role-provenance"
+)
+
 // Role level annotations
 const (
 	// RoleSizeAnnotationKey identifies the role replica size
@@ -173,6 +185,11 @@ const (
 	// discovery-config-version on the v1alpha1 view of RoleBasedGroupSet, whose
 	// schema has no spec.groupTemplate.annotations field.
 	ConversionV1alpha2DiscoveryConfigVersionAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-discovery-config-version"
+
+	// ConversionV1alpha2GroupTemplateMetadataAnnotationKey stores RoleBasedGroupSet
+	// groupTemplate labels and annotations on the v1alpha1 view during a round trip.
+	// Values reconstructed from v1alpha1 fields override the stash on write.
+	ConversionV1alpha2GroupTemplateMetadataAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-group-template-metadata"
 )
 
 // Lifecycle management annotations

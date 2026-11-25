@@ -82,9 +82,31 @@ whose failures should not affect the main workload.
 Both served RBG APIs accept the existing restart policy, but **only v1alpha2 expresses
 `activateAfter`**, in the pattern's `restartPolicyConfig`. v1alpha1 has only
 `spec.roles[].restartPolicy`. A GET through v1alpha1 omits `activateAfter` from the response;
-it neither drops the persisted configuration nor changes running behavior. A
-read-modify-write through v1alpha1 drops the setting and resolves to the default `Ready`,
-as it already does for the backoff delays. Use v1alpha2 to preserve these settings.
+it neither drops the persisted configuration nor changes running behavior. A round trip
+restores the persisted setting: `kubectl edit`, a client Get followed by Update,
+client-side `kubectl apply` of an existing object, and server-side apply all preserve the
+conversion marker on the object. That marker is the
+`conversion.workloads.x-k8s.io/v1alpha2-role-provenance` annotation; it is
+intended for conversion use, appears in v1alpha1 GET output, and should not be
+copied into a manifest or hand-edited. Kubernetes metadata annotations are
+user-writable, so the marker is a compatibility hint rather than a security
+boundary. A full-object write whose payload lacks the marker —
+for example, `kubectl replace -f` with a fresh manifest — replaces the config
+with a type-only config and therefore drops `activateAfter` and the backoff
+delays. Replacing a GET response preserves the marker and takes the round-trip
+path. Use v1alpha2 to manage these settings.
+If the provenance marker would push the object's annotations over Kubernetes's 256 KiB limit,
+v1alpha1 reads return a short sentinel instead of the full marker when that fits, and a
+v1alpha1 write carrying the sentinel is rejected. If even the sentinel cannot fit, the
+v1alpha1 read fails closed; update the object through v1alpha2.
+During a rolling controller upgrade, a GET served by an old replica can omit the conversion
+marker, and the following write then uses the fresh-write mapping as it does on the current
+release. A write converted by an old replica can also store the marker in v1alpha2 metadata.
+Until every replica runs this release, a GET served by an old replica can return that stored
+copy, and a write converted by this release then restores what it recorded, reverting
+v1alpha2-only changes made since. Once every replica runs this release, v1alpha1 reads return
+a fresh marker instead of the stored copy, the next v1alpha1 write removes it, and nothing
+else reads it.
 
 ## Configuration
 
@@ -119,7 +141,7 @@ The two fields are resolved at runtime — the controller and the conversion web
 - **Serialized-template compatibility**: `activateAfter` is omitted unless explicitly set; its `Ready` default is resolved at runtime, not by a CRD default. The status-only readiness latch is not hashed. This avoids an upgrade-only template change/default materialization and rollout, **not** runtime behavior changes: the default recreate policy intentionally gains the readiness latch and Terminating-member trigger.
 - **Setting or changing `activateAfter`**: changes the serialized RoleInstance template and can roll the role. With `RecreatePod`, this can delete and recreate every RoleInstance and rebuild all its Pods, even when explicitly setting `Ready` where the field was previously omitted. With `InPlaceIfPossible`, a policy-only change updates RoleInstance specs in place without restarting Pods.
 - **Terminating member at upgrade**: a Ready instance that already has a Terminating desired member when the new controller starts (for example during a node drain) can be rebuilt on the first reconcile. Existing instances stuck NotReady without a readiness latch are not rescued automatically: manually delete the **RoleInstance**, not just one Pod, to recover. `status.lastReadyGeneration` only starts latching after Ready is observed.
-- **Older writers and controller rollback**: a v1alpha1 read-modify-write drops `activateAfter` (as it drops the backoff delays today). A rolled-back controller or another older writer may also drop it when writing the object/template. Merely rolling back the binary does not itself rewrite persisted objects, but losing the serialized field on a subsequent write changes the template and can roll the role again, rebuilding all Pods under `RecreatePod`.
+- **Older writers and controller rollback**: a v1alpha1 round trip (including client-side and server-side `kubectl apply` of an existing object, and replacing a GET response) keeps `activateAfter` and the backoff delays, but a full-object v1alpha1 write whose payload lacks the marker — for example, `kubectl replace -f` with a fresh manifest — drops them. A rolled-back controller or another older writer may also drop them when writing the object/template. Merely rolling back the binary does not itself rewrite persisted objects, but losing the serialized field on a subsequent write changes the template and can roll the role again, rebuilding all Pods under `RecreatePod`.
 
 ```yaml
 apiVersion: workloads.x-k8s.io/v1alpha2
@@ -238,10 +260,15 @@ Run the same query for `rbgs` (RoleBasedGroupSet) with `.spec.groupTemplate.spec
 
 `maxGroupRestarts` is supported only by v1alpha2, like `activateAfter` and the
 backoff delays. Configure the budget through v1alpha2. A GET through v1alpha1
-omits these fields but does not change the persisted object. A v1alpha1
-read-modify-write of the spec drops them: an omitted budget means unlimited
-recovery, not the previous limit. Do not use v1alpha1 spec writes to manage a
-budgeted workload. This compatibility boundary is covered by conversion tests
+omits these fields but does not change the persisted object. A v1alpha1 round
+trip — including client-side and server-side `kubectl apply` of an existing object — restores them.
+A full-object v1alpha1 write whose payload lacks the marker — for example,
+`kubectl replace -f` with a fresh manifest — replaces the config with a
+type-only config: an omitted budget means unlimited recovery, not the previous
+limit. Changing the v1alpha1 `restartPolicy` to `None` drops
+a preserved budget; clearing it keeps the budget and writes the pattern's
+`Recreate` default explicitly. Do not use full-object v1alpha1 writes to manage
+a budgeted workload. This compatibility boundary is covered by conversion tests
 and the real API-server conversion path.
 
 For native RoleInstanceSet workloads, set `restartPolicyConfig.maxGroupRestarts` on

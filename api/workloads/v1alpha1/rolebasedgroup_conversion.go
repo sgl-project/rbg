@@ -22,7 +22,9 @@ import (
 	"strconv"
 	"strings"
 
+	apimachineryvalidation "k8s.io/apimachinery/pkg/api/validation"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/conversion"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -36,7 +38,18 @@ const (
 
 	// annotationV1alpha1Coordination stores the serialized v1alpha1 CoordinationRequirements.
 	annotationV1alpha1Coordination = constants.ConversionV1alpha1CoordinationAnnotationKey
+
+	// annotationV2RoleProvenance carries, in the v1alpha1 object's metadata
+	// annotations, a map keyed by role name. The map preserves v1alpha2 role
+	// provenance that v1alpha1 cannot express. It is not a new API field.
+	annotationV2RoleProvenance = constants.ConversionV2RoleProvenanceAnnotationKey
 )
+
+// oversizedProvenanceMarker replaces a marker that does not fit within the API
+// server's annotation size limit. ConvertTo rejects a write that carries it. A
+// write that strips the annotation follows the fresh-write path, as documented
+// for the conversion marker.
+const oversizedProvenanceMarker = "oversized"
 
 // ConvertTo converts this RoleBasedGroup (v1alpha1) to the Hub version (v1alpha2).
 func (src *RoleBasedGroup) ConvertTo(dstRaw conversion.Hub) error {
@@ -46,10 +59,18 @@ func (src *RoleBasedGroup) ConvertTo(dstRaw conversion.Hub) error {
 	}
 
 	// ObjectMeta
-	dst.ObjectMeta = src.ObjectMeta
+	dst.ObjectMeta = *src.ObjectMeta.DeepCopy()
+
+	markers, roundTrip, err := restoreV2RoleProvenanceMarkers(src.Annotations)
+	if err != nil {
+		return err
+	}
+	if roundTrip {
+		delete(dst.Annotations, annotationV2RoleProvenance)
+	}
 
 	// Convert Spec
-	if err := convertSpecV1alpha1ToV2(&src.Spec, &dst.Spec); err != nil {
+	if err := convertSpecV1alpha1ToV2(&src.Spec, &dst.Spec, markers, roundTrip); err != nil {
 		return err
 	}
 
@@ -72,10 +93,13 @@ func (dst *RoleBasedGroup) ConvertFrom(srcRaw conversion.Hub) error {
 	}
 
 	// ObjectMeta
-	dst.ObjectMeta = src.ObjectMeta
+	dst.ObjectMeta = *src.ObjectMeta.DeepCopy()
 
 	// Convert Spec
 	if err := convertSpecV2ToV1alpha1(&src.Spec, &dst.Spec); err != nil {
+		return err
+	}
+	if err := preserveV2RoleProvenanceMarkers(src, dst); err != nil {
 		return err
 	}
 
@@ -89,7 +113,30 @@ func (dst *RoleBasedGroup) ConvertFrom(srcRaw conversion.Hub) error {
 
 	// Remove conversion-only annotations from the v1alpha1 object.
 	removeConversionAnnotations(dst.Annotations)
+	if err := dropOversizedProvenanceMarker(dst.Annotations); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+// dropOversizedProvenanceMarker replaces the round-trip marker when it would
+// push the object's annotations over the API server's size limit: the API server
+// rejects such a conversion response, which would make the object unreadable
+// through v1alpha1. If even the replacement does not fit, conversion fails
+// closed rather than emitting a markerless object whose next write would
+// silently follow the fresh-write path.
+func dropOversizedProvenanceMarker(annotations map[string]string) error {
+	if _, ok := annotations[annotationV2RoleProvenance]; !ok {
+		return nil
+	}
+	if apimachineryvalidation.ValidateAnnotationsSize(annotations) == nil {
+		return nil
+	}
+	annotations[annotationV2RoleProvenance] = oversizedProvenanceMarker
+	if apimachineryvalidation.ValidateAnnotationsSize(annotations) != nil {
+		return fmt.Errorf("the v1alpha2-only role fields of this object cannot be represented in a v1alpha1 round trip; update it through workloads.x-k8s.io/v1alpha2")
+	}
 	return nil
 }
 
@@ -97,7 +144,7 @@ func (dst *RoleBasedGroup) ConvertFrom(srcRaw conversion.Hub) error {
 // Spec conversion helpers
 // ---------------------------------------------------------------------------
 
-func convertSpecV1alpha1ToV2(src *RoleBasedGroupSpec, dst *v2.RoleBasedGroupSpec) error {
+func convertSpecV1alpha1ToV2(src *RoleBasedGroupSpec, dst *v2.RoleBasedGroupSpec, markers map[string]v2RoleProvenanceMarker, roundTrip bool) error {
 	// RoleTemplates – identical structure
 	if len(src.RoleTemplates) > 0 {
 		dst.RoleTemplates = make([]v2.RoleTemplate, len(src.RoleTemplates))
@@ -112,7 +159,10 @@ func convertSpecV1alpha1ToV2(src *RoleBasedGroupSpec, dst *v2.RoleBasedGroupSpec
 	// Roles
 	dst.Roles = make([]v2.RoleSpec, len(src.Roles))
 	for i, role := range src.Roles {
-		if err := convertRoleV1alpha1ToV2(&role, &dst.Roles[i]); err != nil {
+		// A role the read did not emit (one added by the writer) has no
+		// provenance to restore, so it converts like a fresh write.
+		marker, marked := markers[role.Name]
+		if err := convertRoleV1alpha1ToV2(&role, &dst.Roles[i], marker, roundTrip && marked); err != nil {
 			return err
 		}
 	}
@@ -122,7 +172,7 @@ func convertSpecV1alpha1ToV2(src *RoleBasedGroupSpec, dst *v2.RoleBasedGroupSpec
 	return nil
 }
 
-func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
+func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec, marker v2RoleProvenanceMarker, roundTrip bool) error {
 	dst.Name = src.Name
 	dst.Labels = src.Labels
 	// Deep-copy annotations to avoid mutating the apiserver-provided source object
@@ -135,16 +185,65 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 	dst.ScalingAdapter = convertScalingAdapterV1alpha1ToV2(src.ScalingAdapter)
 	dst.EngineRuntimes = convertEngineRuntimesV1alpha1ToV2(src.EngineRuntimes)
 
+	// ConvertFrom marks every role it emits (see preserveV2RoleProvenanceMarkers),
+	// so the marker tells a read-and-write round trip from a fresh v1alpha1
+	// write: a client-built object, a full-object replace without the marker, or
+	// the first apply of a manifest. A fresh write must keep the mapping that
+	// v0.8.0 and later stored, or re-applying an unchanged manifest rewrites and
+	// rolls every object those releases stored. A round trip restores what
+	// v1alpha1 cannot express, and nothing else (#580).
 	// Workload – preserved via role annotation instead of field in v1alpha2.
-	// This annotation is for conversion compatibility only; it is not propagated
-	// to downstream workloads (filtered out by GetCommonAnnotationsFromRole).
+	// This annotation is for conversion compatibility only. It is filtered from
+	// common child annotations, but the RoleInstanceSet selective-membership path
+	// intentionally retains it on child workload metadata.
 	// New v1alpha2 RBGs should NOT set this annotation.
-	if src.Workload.APIVersion != "" && src.Workload.Kind != "" {
-		if dst.Annotations == nil {
-			dst.Annotations = make(map[string]string)
+	//
+	// The workload field is authoritative. An unchanged workload restores the
+	// annotation exactly as it was read, including an explicitly empty value.
+	restoreRoleWorkloadAnnotation(src, dst, marker, roundTrip)
+	if len(dst.Annotations) == 0 {
+		// A role whose object-level marker entry restores no role
+		// annotations must not round trip to an empty-but-present map.
+		dst.Annotations = nil
+	}
+
+	// Restart policy. A fresh write keeps the mapping every release since
+	// #424 stored. A round trip distinguishes a deliberate type edit from an
+	// unchanged write by comparing the wire value with the type ConvertFrom
+	// emitted: an edit's wire type wins (keeping the preserved delays and
+	// activateAfter, dropping the deprecated string), an unchanged write
+	// restores both raw fields verbatim — config, delays, activateAfter, and
+	// the deprecated pattern-level string — so neither is folded or dropped
+	// (#580).
+	wireRestartPolicy := convertRestartPolicyV1alpha1ToV2(src.RestartPolicy)
+	var restartPolicyConfig *v2.RestartPolicyConfig
+	var legacyRestartPolicy v2.RestartPolicyType
+	switch {
+	case !roundTrip:
+		restartPolicyConfig = &v2.RestartPolicyConfig{Type: wireRestartPolicy}
+	case wireRestartPolicy != emittedRestartPolicyType(marker):
+		// A deliberate edit of the type, including clearing it.
+		restartPolicyConfig = marker.Config
+		if restartPolicyConfig == nil {
+			restartPolicyConfig = &v2.RestartPolicyConfig{}
 		}
-		workloadType := fmt.Sprintf("%s/%s", src.Workload.APIVersion, src.Workload.Kind)
-		dst.Annotations[constants.RoleWorkloadTypeAnnotationKey] = workloadType
+		restartPolicyConfig.Type = wireRestartPolicy
+		if restartPolicyConfig.MaxGroupRestarts != nil {
+			if wireRestartPolicy == v2.RestartPolicyNone {
+				// None cannot carry a budget: dropping it matches the
+				// v1alpha2 admission rule instead of making the edit fail.
+				restartPolicyConfig.MaxGroupRestarts = nil
+			} else if wireRestartPolicy == "" && (src.LeaderWorkerSet != nil || len(src.Components) > 0) {
+				// These patterns resolve an empty type to Recreate. Keep the
+				// untouched budget, but write the type explicitly so it is
+				// valid without relying on defaulting.
+				restartPolicyConfig.Type = v2.RecreateRoleInstanceOnPodRestart
+			}
+		}
+	default:
+		// An unchanged round trip: restore the raw shape.
+		restartPolicyConfig = marker.Config
+		legacyRestartPolicy = marker.LegacyType
 	}
 
 	// RolloutStrategy
@@ -160,9 +259,8 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 			Size:                src.LeaderWorkerSet.Size,
 			LeaderTemplatePatch: src.LeaderWorkerSet.PatchLeaderTemplate,
 			WorkerTemplatePatch: src.LeaderWorkerSet.PatchWorkerTemplate,
-			RestartPolicyConfig: &v2.RestartPolicyConfig{
-				Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
-			},
+			RestartPolicy:       legacyRestartPolicy, //nolint:staticcheck // the deprecated string is preserved verbatim for round-trip losslessness
+			RestartPolicyConfig: restartPolicyConfig,
 		}
 		// Template source
 		if src.Template != nil || src.TemplateRef != nil {
@@ -177,7 +275,9 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 		dst.Pattern = v2.Pattern{LeaderWorkerPattern: lwp}
 
 	case len(src.Components) > 0:
-		// Components → CustomComponentsPattern
+		// Components → CustomComponentsPattern. A role-level templatePatch
+		// with no template or templateRef is ignored here, matching the
+		// pre-existing v1alpha1 compatibility behavior.
 		components := make([]v2.InstanceComponent, len(src.Components))
 		for i, c := range src.Components {
 			components[i] = v2.InstanceComponent{
@@ -190,9 +290,9 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 		dst.Pattern = v2.Pattern{
 			CustomComponentsPattern: &v2.CustomComponentsPattern{
 				Components: components,
-				RestartPolicyConfig: &v2.RestartPolicyConfig{
-					Type: convertRestartPolicyV1alpha1ToV2(src.RestartPolicy),
-				},
+				//nolint:staticcheck // the deprecated string is preserved verbatim for round-trip losslessness
+				RestartPolicy:       legacyRestartPolicy,
+				RestartPolicyConfig: restartPolicyConfig,
 			},
 		}
 
@@ -209,7 +309,62 @@ func convertRoleV1alpha1ToV2(src *RoleSpec, dst *v2.RoleSpec) error {
 		dst.Pattern = v2.Pattern{StandalonePattern: sp}
 	}
 
+	if roundTrip {
+		restoreV2OnlyRoleFields(dst, marker)
+	}
+
 	return nil
+}
+
+func restoreRoleWorkloadAnnotation(src *RoleSpec, dst *v2.RoleSpec, marker v2RoleProvenanceMarker, roundTrip bool) {
+	if src.Workload.APIVersion == "" || src.Workload.Kind == "" {
+		return
+	}
+	workloadType := fmt.Sprintf("%s/%s", src.Workload.APIVersion, src.Workload.Kind)
+	if roundTrip && workloadType == emittedWorkloadType(ptr.Deref(marker.WorkloadType, "")) {
+		// An unchanged workload restores the annotation as it was read. The wire
+		// role's annotations cannot tell: a merge patch (client-side kubectl
+		// apply) replaces the roles with the manifest's.
+		if marker.WorkloadType == nil {
+			delete(dst.Annotations, constants.RoleWorkloadTypeAnnotationKey)
+			return
+		}
+		if dst.Annotations == nil {
+			dst.Annotations = make(map[string]string)
+		}
+		dst.Annotations[constants.RoleWorkloadTypeAnnotationKey] = *marker.WorkloadType
+		return
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = make(map[string]string)
+	}
+	dst.Annotations[constants.RoleWorkloadTypeAnnotationKey] = workloadType
+}
+
+// restoreV2OnlyRoleFields restores, on a round trip of a role the read emitted,
+// the role fields v1alpha1 cannot express. A fresh write cannot see them and
+// leaves them unset, as every release since v0.8.0 did.
+func restoreV2OnlyRoleFields(dst *v2.RoleSpec, marker v2RoleProvenanceMarker) {
+	dst.PodManagementPolicy = marker.PodManagementPolicy
+	if marker.ScalingAdapterLabels != nil && dst.ScalingAdapter != nil {
+		dst.ScalingAdapter.Labels = marker.ScalingAdapterLabels
+	}
+	if lwp := dst.LeaderWorkerPattern; lwp != nil {
+		if marker.SharedServiceSelection != nil {
+			selection := *marker.SharedServiceSelection
+			lwp.SharedServiceSelection = &selection
+		}
+	}
+	if ccp := dst.CustomComponentsPattern; ccp != nil && marker.Components != nil {
+		for i := range ccp.Components {
+			m, ok := marker.Components[ccp.Components[i].Name]
+			if !ok {
+				continue
+			}
+			ccp.Components[i].Labels = m.Labels
+			ccp.Components[i].Annotations = copyAnnotations(m.Annotations)
+		}
+	}
 }
 
 // convertRestartPolicyV1alpha1ToV2 converts a v1alpha1 RestartPolicyType to v1alpha2.
@@ -386,7 +541,9 @@ func convertSpecV2ToV1alpha1(src *v2.RoleBasedGroupSpec, dst *RoleBasedGroupSpec
 func convertRoleV2ToV1alpha1(src *v2.RoleSpec, dst *RoleSpec) error {
 	dst.Name = src.Name
 	dst.Labels = src.Labels
-	dst.Annotations = src.Annotations
+	// Copy instead of aliasing: the conversion below may add compatibility
+	// annotations, and the hub object from the apiserver must never be mutated.
+	dst.Annotations = copyAnnotations(src.Annotations)
 	dst.Replicas = src.Replicas
 	dst.RestartPolicy = RestartPolicyType(src.GetRawRestartPolicyType())
 	dst.Dependencies = src.Dependencies
@@ -686,11 +843,132 @@ func removeConversionAnnotations(annotations map[string]string) {
 	delete(annotations, constants.GroupExclusiveTopologyKey)
 }
 
-// copyAnnotations returns a shallow copy of the given annotation map, never nil.
+// copyAnnotations returns a shallow copy of the given annotation map. An
+// empty (or nil) source maps to nil so a no-op round trip stays lossless
+// in memory as well as on the wire.
 func copyAnnotations(src map[string]string) map[string]string {
+	if len(src) == 0 {
+		return nil
+	}
 	dst := make(map[string]string, len(src))
 	for k, v := range src {
 		dst[k] = v
 	}
 	return dst
+}
+
+// v2RoleProvenanceMarker is the JSON the conversion annotation carries.
+type v2RoleProvenanceMarker struct {
+	// Config is the role's raw v1alpha2 restart policy config, nil when the
+	// role sets none.
+	Config *v2.RestartPolicyConfig `json:"config,omitempty"`
+	// LegacyType is the deprecated pattern-level restartPolicy string the
+	// role carries alongside the config, empty when the role sets none.
+	LegacyType v2.RestartPolicyType `json:"legacyType,omitempty"`
+	// WorkloadType is the role's raw role-workload-type annotation, nil when
+	// the role carries none; an explicitly empty value is preserved.
+	WorkloadType *string `json:"workloadType,omitempty"`
+
+	// The v1alpha2-only role fields v1alpha1 has no representation for. They
+	// cannot be edited through v1alpha1, so a round trip restores them as read.
+	PodManagementPolicy    constants.PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
+	SharedServiceSelection *v2.SharedServiceSelectionPolicy  `json:"sharedServiceSelection,omitempty"`
+	ScalingAdapterLabels   map[string]string                 `json:"scalingAdapterLabels,omitempty"`
+	// Components carries each custom component's labels and annotations,
+	// keyed by component name.
+	Components map[string]v2ComponentMetadata `json:"components,omitempty"`
+}
+
+// v2ComponentMetadata is a custom component's v1alpha2-only metadata.
+type v2ComponentMetadata struct {
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// emittedRestartPolicyType derives the wire RestartPolicy value ConvertFrom
+// emitted from the preserved raw fields. Deriving it prevents a hand-edited
+// marker from claiming an emitted type that disagrees with its config and
+// legacy string.
+func emittedRestartPolicyType(marker v2RoleProvenanceMarker) v2.RestartPolicyType {
+	if marker.Config != nil && marker.Config.Type != "" {
+		return marker.Config.Type
+	}
+	return marker.LegacyType
+}
+
+// emittedWorkloadType returns the workload ConvertFrom emitted for a role whose
+// raw role-workload-type annotation is raw: the annotation when it parses as
+// apiVersion/kind, otherwise the RoleInstanceSet default.
+func emittedWorkloadType(raw string) string {
+	if strings.LastIndex(raw, "/") > 0 {
+		return raw
+	}
+	return constants.RoleInstanceSetWorkloadType
+}
+
+// preserveV2RoleProvenanceMarkers marks the v1alpha1 wire object as read from the
+// hub, so that ConvertTo can tell a read-and-write round trip from a fresh
+// v1alpha1 write, and carries the role's restart policy provenance in the
+// markers: v1alpha1 can express only the policy type, so the config's delays and
+// activateAfter, and the deprecated pattern-level string, would otherwise be
+// dropped or folded by a round trip (#580). Every role is marked.
+func preserveV2RoleProvenanceMarkers(src *v2.RoleBasedGroup, dst *RoleBasedGroup) error {
+	markers := make(map[string]v2RoleProvenanceMarker, len(src.Spec.Roles))
+	for i := range src.Spec.Roles {
+		role := &src.Spec.Roles[i]
+		marker := v2RoleProvenanceMarker{
+			Config:              role.GetRawRestartPolicyConfig(),
+			PodManagementPolicy: role.PodManagementPolicy,
+		}
+		if wt, ok := role.Annotations[constants.RoleWorkloadTypeAnnotationKey]; ok {
+			marker.WorkloadType = &wt
+		}
+		if role.ScalingAdapter != nil {
+			marker.ScalingAdapterLabels = role.ScalingAdapter.Labels
+		}
+		if lwp := role.LeaderWorkerPattern; lwp != nil {
+			marker.LegacyType = lwp.RestartPolicy //nolint:staticcheck // the deprecated string is part of the round-trip provenance
+			marker.SharedServiceSelection = lwp.SharedServiceSelection
+		} else if ccp := role.CustomComponentsPattern; ccp != nil {
+			marker.LegacyType = ccp.RestartPolicy //nolint:staticcheck // the deprecated string is part of the round-trip provenance
+			for _, c := range ccp.Components {
+				if len(c.Labels) == 0 && len(c.Annotations) == 0 {
+					continue
+				}
+				if marker.Components == nil {
+					marker.Components = make(map[string]v2ComponentMetadata)
+				}
+				marker.Components[c.Name] = v2ComponentMetadata{Labels: c.Labels, Annotations: c.Annotations}
+			}
+		}
+		markers[role.Name] = marker
+	}
+
+	data, err := json.Marshal(markers)
+	if err != nil {
+		return fmt.Errorf("marshalling role provenance markers: %w", err)
+	}
+	if dst.Annotations == nil {
+		dst.Annotations = make(map[string]string, 1)
+	}
+	dst.Annotations[annotationV2RoleProvenance] = string(data)
+	return nil
+}
+
+func restoreV2RoleProvenanceMarkers(annotations map[string]string) (map[string]v2RoleProvenanceMarker, bool, error) {
+	var markers map[string]v2RoleProvenanceMarker
+	raw, ok := annotations[annotationV2RoleProvenance]
+	if !ok {
+		return markers, false, nil
+	}
+	if raw == "" {
+		return markers, true, nil
+	}
+	if raw == oversizedProvenanceMarker {
+		return markers, true, fmt.Errorf("the v1alpha2-only role fields of this object do not fit in a v1alpha1 round trip; update it through workloads.x-k8s.io/v1alpha2")
+	}
+	if err := json.Unmarshal([]byte(raw), &markers); err != nil {
+		return markers, true, fmt.Errorf("unmarshalling preserved role provenance markers: %w", err)
+	}
+	return markers, true, nil
 }

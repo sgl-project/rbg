@@ -35,6 +35,10 @@ const (
 	// annotationV1alpha2RolloutStatus stores the v1alpha2-only rollout status fields on the
 	// v1alpha1 object for the same round trip.
 	annotationV1alpha2RolloutStatus = constants.ConversionV1alpha2RolloutStatusAnnotationKey
+
+	// annotationV1alpha2GroupTemplateMetadata stores the v1alpha2 groupTemplate
+	// labels and ordinary annotations that v1alpha1 cannot express.
+	annotationV1alpha2GroupTemplateMetadata = constants.ConversionV1alpha2GroupTemplateMetadataAnnotationKey
 )
 
 // groupSetRolloutStatusFields are the RoleBasedGroupSet status fields that exist only in
@@ -59,6 +63,49 @@ func groupSetRolloutStatusFromV2(status *v2.RoleBasedGroupSetStatus) groupSetRol
 	}
 }
 
+// groupTemplateMetadata carries RoleBasedGroupSet groupTemplate metadata that
+// v1alpha1 cannot express. The values are restored only on a marked round trip.
+type groupTemplateMetadata struct {
+	Labels      map[string]string `json:"labels,omitempty"`
+	Annotations map[string]string `json:"annotations,omitempty"`
+}
+
+// v1alpha1RepresentableGroupTemplateAnnotations are reconstructed from
+// v1alpha1 fields during ConvertTo. They are excluded from the metadata stash so
+// a deliberate v1alpha1 edit remains authoritative and derived annotations do
+// not survive in the v1alpha1 view.
+var v1alpha1RepresentableGroupTemplateAnnotations = map[string]struct{}{
+	annotationV1alpha1Coordination:                          {},
+	constants.ConversionV1alpha1PodGroupPolicyAnnotationKey: {},
+	constants.GangSchedulingAnnotationKey:                   {},
+	constants.GangSchedulingScheduleTimeoutSecondsKey:       {},
+	constants.GangSchedulingVolcanoQueueKey:                 {},
+	constants.GangSchedulingVolcanoPriorityClassKey:         {},
+	constants.DiscoveryConfigVersionAnnotationKey:           {},
+}
+
+// groupTemplateMetadataFromV2 captures ordinary groupTemplate metadata while
+// excluding annotations that v1alpha1 can express through its own fields.
+func groupTemplateMetadataFromV2(src *v2.RoleBasedGroupSet) groupTemplateMetadata {
+	metadata := groupTemplateMetadata{
+		Labels: src.Spec.GroupTemplate.Labels,
+	}
+	if len(src.Spec.GroupTemplate.Annotations) == 0 {
+		return metadata
+	}
+	annotations := make(map[string]string, len(src.Spec.GroupTemplate.Annotations))
+	for key, value := range src.Spec.GroupTemplate.Annotations {
+		if _, representable := v1alpha1RepresentableGroupTemplateAnnotations[key]; representable {
+			continue
+		}
+		annotations[key] = value
+	}
+	if len(annotations) > 0 {
+		metadata.Annotations = annotations
+	}
+	return metadata
+}
+
 // ConvertTo converts this RoleBasedGroupSet (v1alpha1) to the Hub version (v1alpha2).
 func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 	dst, ok := dstRaw.(*v2.RoleBasedGroupSet)
@@ -66,12 +113,34 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 		return fmt.Errorf("expected *v1alpha2.RoleBasedGroupSet, got %T", dstRaw)
 	}
 
-	dst.ObjectMeta = src.ObjectMeta
+	dst.ObjectMeta = *src.ObjectMeta.DeepCopy()
 	dst.Spec.Replicas = src.Spec.Replicas
 
-	if err := convertSpecV1alpha1ToV2(&src.Spec.Template, &dst.Spec.GroupTemplate.Spec); err != nil {
+	markers, roundTrip, err := restoreV2RoleProvenanceMarkers(src.Annotations)
+	if err != nil {
 		return err
 	}
+	if roundTrip {
+		delete(dst.Annotations, annotationV2RoleProvenance)
+	}
+
+	if err := convertSpecV1alpha1ToV2(&src.Spec.Template, &dst.Spec.GroupTemplate.Spec, markers, roundTrip); err != nil {
+		return err
+	}
+
+	// Restore the v1alpha2-only groupTemplate metadata only on a marked round
+	// trip. A markerless fresh write keeps the historical empty metadata.
+	if raw := src.Annotations[annotationV1alpha2GroupTemplateMetadata]; raw != "" {
+		metadata := groupTemplateMetadata{}
+		if err := json.Unmarshal([]byte(raw), &metadata); err != nil {
+			return fmt.Errorf("annotation %s: %w", annotationV1alpha2GroupTemplateMetadata, err)
+		}
+		if roundTrip {
+			dst.Spec.GroupTemplate.Labels = metadata.Labels
+			dst.Spec.GroupTemplate.Annotations = metadata.Annotations
+		}
+	}
+	delete(dst.Annotations, annotationV1alpha2GroupTemplateMetadata)
 
 	// Preserve lossy v1alpha1 fields (PodGroupPolicy, CoordinationRequirements) into
 	// a copy of dst.Annotations so the source metadata is not modified.
@@ -151,7 +220,7 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 		return fmt.Errorf("expected *v1alpha2.RoleBasedGroupSet, got %T", srcRaw)
 	}
 
-	dst.ObjectMeta = src.ObjectMeta
+	dst.ObjectMeta = *src.ObjectMeta.DeepCopy()
 	// Annotation cleanup and stashing below must not mutate the hub's metadata.
 	if dst.Annotations != nil {
 		dst.Annotations = copyAnnotations(dst.Annotations)
@@ -161,6 +230,14 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 	if err := convertSpecV2ToV1alpha1(&src.Spec.GroupTemplate.Spec, &dst.Spec.Template); err != nil {
 		return err
 	}
+
+	syntheticMarkerSrc := &v2.RoleBasedGroup{Spec: src.Spec.GroupTemplate.Spec}
+	syntheticMarkerDst := &RoleBasedGroup{Spec: dst.Spec.Template}
+	syntheticMarkerDst.Annotations = copyAnnotations(dst.Annotations)
+	if err := preserveV2RoleProvenanceMarkers(syntheticMarkerSrc, syntheticMarkerDst); err != nil {
+		return err
+	}
+	dst.Annotations = syntheticMarkerDst.Annotations
 
 	// Restore lossy fields.
 	syntheticSrc := &v2.RoleBasedGroup{Spec: src.Spec.GroupTemplate.Spec}
@@ -183,14 +260,23 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 	}
 
 	// Stash v1alpha2-only fields on the v1alpha1 view. The stash covers the
-	// rollout strategy, rollout status, and discovery-config-version: v1alpha1
-	// has no representation for groupTemplate labels and annotations, so any
-	// other annotation is still dropped on a v1alpha1 write.
-	// removeConversionAnnotations only strips v1alpha1 stash keys, so these must be added
-	// after it; clear any stale copies first.
+	// groupTemplate metadata, rollout strategy, rollout status, and
+	// discovery-config-version. removeConversionAnnotations only strips v1alpha1
+	// stash keys, so these must be added after it; clear any stale copies first.
+	delete(dst.Annotations, annotationV1alpha2GroupTemplateMetadata)
 	delete(dst.Annotations, annotationV1alpha2RolloutStrategy)
 	delete(dst.Annotations, annotationV1alpha2RolloutStatus)
 	delete(dst.Annotations, constants.ConversionV1alpha2DiscoveryConfigVersionAnnotationKey)
+	if metadata := groupTemplateMetadataFromV2(src); len(metadata.Labels) > 0 || len(metadata.Annotations) > 0 {
+		data, err := json.Marshal(metadata)
+		if err != nil {
+			return fmt.Errorf("marshalling groupTemplate metadata: %w", err)
+		}
+		if dst.Annotations == nil {
+			dst.Annotations = make(map[string]string, 1)
+		}
+		dst.Annotations[annotationV1alpha2GroupTemplateMetadata] = string(data)
+	}
 	if version := src.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey]; version != "" {
 		if dst.Annotations == nil {
 			dst.Annotations = make(map[string]string)
@@ -216,6 +302,10 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 			dst.Annotations = make(map[string]string)
 		}
 		dst.Annotations[annotationV1alpha2RolloutStatus] = string(data)
+	}
+
+	if err := dropOversizedProvenanceMarker(dst.Annotations); err != nil {
+		return err
 	}
 
 	return nil

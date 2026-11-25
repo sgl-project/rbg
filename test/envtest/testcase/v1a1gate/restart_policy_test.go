@@ -33,7 +33,7 @@ import (
 )
 
 var _ = Describe("Restart configuration conversion contract", func() {
-	DescribeTable("keeps the v2 budget on GET but drops it on a v1alpha1 spec update", func(budget int32) {
+	DescribeTable("keeps the v2 budget through a v1alpha1 read-modify-write", func(budget int32) {
 		cli, ctx := testutil.K8sClient, testutil.Ctx
 		template := corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "app", Image: "nginx:latest"}}}}
 		original := &v2.RoleBasedGroup{
@@ -83,8 +83,11 @@ var _ = Describe("Restart configuration conversion contract", func() {
 			"v1alpha1 GET must not modify the persisted v2 restart configuration")
 		Expect(stored.ResourceVersion).To(Equal(before.ResourceVersion))
 
-		// A full v1alpha1 read-modify-write is intentionally lossy for v2-only
-		// fields, even when the edit only changes the replica count.
+		// A v1alpha1 read-modify-write is a round trip: the conversion marker
+		// preserves the restart configuration v1alpha1 cannot express,
+		// including the budget, even when the edit only changes the replica
+		// count. The budget never appears as a v1alpha1 spec field — it
+		// travels only inside the marker annotation.
 		Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 			if err := cli.Get(ctx, key, spoke); err != nil {
 				return err
@@ -97,8 +100,11 @@ var _ = Describe("Restart configuration conversion contract", func() {
 		Expect(stored.Spec.Roles[0].Replicas).To(Equal(ptr.To[int32](2)))
 		Expect(stored.Spec.Roles[0].GetRawRestartPolicyConfig()).NotTo(BeNil())
 		Expect(stored.Spec.Roles[0].GetRawRestartPolicyConfig().Type).To(Equal(v2.RecreateRoleInstanceOnPodRestart))
-		Expect(stored.Spec.Roles[0].GetRawRestartPolicyConfig().MaxGroupRestarts).To(BeNil(),
-			"v1alpha1 spec updates drop the unsupported budget, including explicit zero")
+		Expect(stored.Spec.Roles[0].GetRawRestartPolicyConfig().MaxGroupRestarts).To(Equal(ptr.To(budget)),
+			"the budget rides the conversion marker and survives the round trip")
+		Expect(stored.Spec.Roles[0].GetRawRestartPolicyConfig().ActivateAfter).To(Equal(v2.RestartPolicyActivateAfterCreated))
+		Expect(stored.Spec.Roles[0].GetRawRestartPolicyConfig().BaseDelaySeconds).To(Equal(ptr.To[int32](7)))
+		Expect(stored.Spec.Roles[0].GetRawRestartPolicyConfig().MaxDelaySeconds).To(Equal(ptr.To[int32](17)))
 	},
 		Entry("explicit zero", int32(0)),
 		Entry("positive budget", int32(2)),

@@ -201,7 +201,7 @@ kubectl replace -f RBG_NAME.storage-rewrite.yaml
 
 RoleBasedGroupSet、RoleBasedGroupScalingAdapter 和 ClusterEngineRuntimeProfile 使用等价的、完整限定的 `v1alpha2` 资源；最后一类是 cluster-scoped，其命令不使用 namespace。如果写入因对象变化而冲突，重新获取副本、审查后再决定是否重试。
 
-不要通过 `v1alpha1` API 获取和修改对象：该路径可能重新引入 `role-workload-type` 兼容注解，为后续检查制造噪音。
+建议通过 `v1alpha2` 端点执行该存储重写。由当前 `v1alpha1` conversion 处理的 no-op round trip 不再重新引入 `role-workload-type` 兼容注解，但 payload 缺少 conversion marker 的 full-object `v1alpha1` 写入仍会遵循历史 fresh-write 映射。在混合版本升级期间，旧 conversion replica 也可能保留旧行为。
 
 所有对象重写完成后，用 `kubectl patch --subresource=status` 把每个 CRD 的 `status.storedVersions` 替换为 `["v1alpha2"]`（需要 kubectl 1.24 或更新版本）。重写对象不会自动从该列表移除 `v1alpha1`：它是 CRD 级历史记录，只能人工替换：
 
