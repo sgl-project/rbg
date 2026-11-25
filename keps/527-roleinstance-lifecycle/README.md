@@ -235,7 +235,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | Risk | Mitigation or prerequisite |
 | --- | --- |
 | Repeated `signalLabel` writes | Write on phase entry only |
-| Metadata overwrites `signalLabels` | Exclude from declarative labels |
+| Metadata overwrites `signalLabels` | Operator keeps signal keys disjoint from declared labels |
 | Mirrors overwritten externally | RI is authoritative; re-sync per reconcile |
 | Active hook removed mid-operation | Barrier skipped; operator confirms |
 | Stale `signalLabel` cleanup per hook | Consumers coordinate; no generations |
@@ -560,14 +560,15 @@ Propagation rules:
   the RI is the only authoritative source; safety-relevant consumers must
   verify the RI rather than trust a mirror alone.
 - `signalLabel` keys are controller-owned on the RoleInstance and on member
-  Pods. Admission rejects a `signalLabel` key that collides with any
-  declarative label ordinary metadata synchronization writes or propagates to
-  the RoleInstance, including Pod template labels, labels declared on the RBG
-  Role or RIS templates, and common or identity labels copied onto RIs: one
-  key cannot represent both a user label and a controller-owned runtime
-  `signalLabel`. Ordinary RIS metadata synchronization must not overwrite
-  runtime `signalLabels`, which is enforceable only when admission keeps the
-  two key spaces disjoint.
+  Pods while a hook is active. Admission deliberately does not reject a
+  `signalLabel` key that collides with a user-declared label — Pod template
+  labels, RBG Role or RIS template labels, or any label propagated to the
+  RoleInstance: both sides of such a collision are user configuration, and
+  checking TemplateRef-resolved labels would require the cross-resource
+  admission reads this design rejects. If an operator reuses one key for both
+  purposes, ordinary metadata synchronization and the lifecycle protocol
+  become two writers of that key; keeping the key spaces disjoint is the
+  operator's responsibility.
 
 ### Hook Executor Service
 
@@ -1081,8 +1082,9 @@ lifecycle and distinguish workload backends.
   Kubernetes labels, including over-long names or values, invalid prefix
   syntax, invalid leading or trailing characters, and unsupported
   characters.
-- Admission rejects `signalLabel` keys that are declared in the Pod template
-  labels or in any other declarative label propagated to the RoleInstance.
+- A `signalLabel` key that also appears as a user-declared label (Pod template
+  labels, role labels) is accepted: both sides are user configuration, and
+  two writers of one key is the operator's responsibility to avoid.
 - Signal labels propagate from the RI to member Pods: present keys are
   copied, absent keys are removed, and value changes are synced; propagation
   is metadata-only and does not recreate Pods.

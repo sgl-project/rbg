@@ -167,7 +167,7 @@ RI 可以在 postReady 尚未完成时进入 `Running` 和 Ready；
 | 风险 | 缓解措施或实施前必须解决的问题 |
 | --- | --- |
 | 前置 `signalLabel` 被重复写入 | 只在阶段转换时写入，等待期间不补回 |
-| metadata 同步覆盖 `signalLabel` | 运行时 `signalLabel` 不属于声明式 labels |
+| metadata 同步覆盖 `signalLabel` | 由运维保证信号 key 与声明式 label 不重叠 |
 | Pod 镜像被外部覆盖 | 每次 RI reconcile 重新同步；RI 是权威来源 |
 | 操作中删除 hook 配置 | 屏障被跳过；由运维确认删除时机 |
 | 同一 hook 内共享 `signalLabel` 被迟到请求清理 | 明确接受该风险；由消费者协调并保证业务幂等，不增加代次 |
@@ -425,13 +425,13 @@ Pod 级消费者因此无需 watch 或 patch RI，就能观察 hook 信号。
 - 镜像不可信。任何有 Pod 更新权限的对象都能在下一次 reconcile 同步前
   写入或清除这些 key，因此 RI 是唯一权威来源；安全相关的消费者必须
   回验 RI，不能只信镜像。
-- `signalLabel` key 在 RoleInstance 和成员 Pod 上均由 controller 拥有。准入
-  拒绝与任何会被普通 metadata 同步写入或传播到 RoleInstance 的声明式
-  label 冲突的 `signalLabel` key，包括 Pod template labels、RBG Role/RIS
-  模板中声明的 labels 以及复制到 RI 的公共或身份 labels：同一 key 不能
-  同时表示用户 label 与 controller 拥有的运行时 `signalLabel`。普通 RIS
-  metadata 同步不得覆盖运行时 `signalLabel`，这只有在其 key 空间由准入
-  保证不相交时才可执行。
+- `signalLabel` key 在 hook 活跃期间由 controller 拥有于 RoleInstance 和
+  成员 Pod 上。准入刻意不拒绝与用户声明 label（Pod template labels、RBG
+  Role/RIS 模板中声明的 labels 或任何会传播到 RoleInstance 的 label）冲突的
+  `signalLabel` key：冲突双方都是用户配置，而校验 TemplateRef 解析出的
+  labels 需要跨资源准入读取——本设计已明确拒绝。若运维将同一个 key 同时
+  用于两种用途，普通 metadata 同步与 lifecycle 协议会成为该 key 的两个
+  写入方；保持两个 key 空间不重叠是运维的责任。
 
 ### Hook executor 服务
 
@@ -814,8 +814,8 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   中使用的 `signalLabel` key，包括仅通过 `DoesNotExist` 选择的 key。
 - 准入拒绝不符合 Kubernetes label 语法的 `signalLabels` key/value，
   包括 name/value 超长、prefix 语法非法、首尾字符非法或包含不支持字符。
-- 准入拒绝在 Pod template labels 中声明的 `signalLabel` key，以及与其他
-  会传播到 RoleInstance 的声明式 label 冲突的 `signalLabel` key。
+- 与用户声明 label（Pod template labels、role labels）冲突的 `signalLabel`
+  key 会被接受：冲突双方都是用户配置，同一 key 的两个写入方由运维避免。
 - 信号标签从 RI 传递到成员 Pod：存在则复制、不存在则移除、value 变化
   则同步；传递仅修改 metadata，不重建 Pod。
 - 新 API 的每个 hook 只暴露 `signalLabels`；旧 RIS 协议保留原有字段，
