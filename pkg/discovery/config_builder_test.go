@@ -1089,6 +1089,34 @@ func TestConfigBuilder_LegacySizeUpperBound(t *testing.T) {
 		require.GreaterOrEqual(t, upper, int64(len(built)))
 	})
 
+	t.Run("leader worker group size crossing a decimal boundary remains an upper bound", func(t *testing.T) {
+		rbg := &workloadsv1alpha2.RoleBasedGroup{
+			ObjectMeta: metav1.ObjectMeta{Name: "test"},
+			Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+				Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:     "worker",
+					Replicas: ptr.To(int32(1)),
+					Annotations: map[string]string{
+						constants.RoleWorkloadTypeAnnotationKey: constants.LeaderWorkerSetWorkloadType,
+					},
+					Pattern: workloadsv1alpha2.Pattern{
+						LeaderWorkerPattern: &workloadsv1alpha2.LeaderWorkerPattern{
+							Size: ptr.To(int32(2000)),
+						},
+					},
+				}},
+			},
+		}
+		builder := NewConfigBuilder(fake.NewClientBuilder().WithScheme(schema).Build(), rbg, nil)
+
+		upper, err := builder.LegacySizeUpperBound(context.Background())
+		require.NoError(t, err)
+		built, err := builder.Build(context.Background())
+		require.NoError(t, err)
+		require.GreaterOrEqual(t, upper, int64(len(built)),
+			"the estimator must price the final worker ordinal, not only the group start")
+	})
+
 	t.Run("maximum int32 replicas and leader-worker size saturate", func(t *testing.T) {
 		rbg := &workloadsv1alpha2.RoleBasedGroup{
 			ObjectMeta: metav1.ObjectMeta{Name: "test"},

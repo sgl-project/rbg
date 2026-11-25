@@ -456,9 +456,15 @@ func legacyAddressMetrics(
 			size = 1
 		}
 		if role.GetWorkloadType() == constants.LeaderWorkerSetWorkloadType {
-			groupStartDigits := int64(decimalWidth(saturatingMul(maxOrdinal, size)))
+			// Worker ordinals continue through the end of the final group, not
+			// just its start. Pricing the final ordinal keeps the estimate an
+			// upper bound when a group crosses a decimal-width boundary.
+			finalGroupOrdinal := saturatingAdd(
+				saturatingMul(maxOrdinal, size), size-1,
+			)
+			groupOrdinalDigits := int64(decimalWidth(finalGroupOrdinal))
 			return size, saturatingMul(size, saturatingAdd(
-				int64(len(workloadName)+len(serviceName))+groupStartDigits+2+int64(legacyInstanceLineOverhead),
+				int64(len(workloadName)+len(serviceName))+groupOrdinalDigits+2+int64(legacyInstanceLineOverhead),
 				portBytes,
 			))
 		}

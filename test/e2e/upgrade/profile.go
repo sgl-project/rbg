@@ -119,6 +119,7 @@ func v070Profile() *releaseProfile {
 	// here.
 	rewrites.leaderOnlyServices = map[string]bool{sharedServiceName(fxLwp, lwpRole): true}
 	rewrites.discoveryConfigChildren = setChildDiscoveryConfigChildren()
+	rewrites.discoveryConfigRBGs = setDirectDiscoveryConfigRBGs()
 
 	return &releaseProfile{
 		installValues: []string{
@@ -151,6 +152,7 @@ func v070Profile() *releaseProfile {
 func v080Profile() *releaseProfile {
 	rewrites := strategyHealRewrites()
 	rewrites.discoveryConfigChildren = setChildDiscoveryConfigChildren()
+	rewrites.discoveryConfigRBGs = setDirectDiscoveryConfigRBGs()
 
 	return &releaseProfile{
 		installValues: []string{
@@ -236,6 +238,13 @@ func setChildDiscoveryConfigChildren() map[string]bool {
 		legacySetChildName():        true,
 		setChildName(fxV1alpha1Set): true,
 	}
+}
+
+// setDirectDiscoveryConfigRBGs records the direct legacy RBGs whose ConfigMap
+// must be created by the upgraded controller. The suite runs once for every
+// supported from-release, so both hops exercise the same one-hop rewrite.
+func setDirectDiscoveryConfigRBGs() map[string]bool {
+	return map[string]bool{fxLegacyDiscovery: true}
 }
 
 // risStrategyEnumPresent reports whether the RoleInstanceSet CRD constrains

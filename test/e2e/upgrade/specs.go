@@ -28,6 +28,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -211,6 +212,20 @@ func RunUpgradeSpecs(f *framework.Framework) {
 		},
 	)
 
+	ginkgo.It("[phase 1] leaves a direct legacy RBG without a discovery ConfigMap", func() {
+		for _, name := range slices.Sorted(maps.Keys(fromProfile().rewrites.discoveryConfigRBGs)) {
+			cm := &corev1.ConfigMap{}
+			err := f.Client.Get(
+				f.Ctx,
+				client.ObjectKey{Namespace: f.Namespace, Name: name},
+				cm,
+			)
+			gomega.Expect(apierrors.IsNotFound(err)).To(
+				gomega.BeTrue(), "the from-release should not write a ConfigMap for a legacy-mode RBG",
+			)
+		}
+	})
+
 	ginkgo.It(
 		"[phase 1] records the running pods", func() {
 			// Marked before the snapshot, not after, so no removal event can slip
@@ -360,6 +375,12 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			g.Expect(after.pod.Labels[appsv1.ControllerRevisionHashLabelKey]).NotTo(
 				gomega.Equal(exclusiveBefore.pod.Labels[appsv1.ControllerRevisionHashLabelKey]))
 		}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("[phase 3] creates the direct legacy RBG's discovery ConfigMap", func() {
+		for _, name := range slices.Sorted(maps.Keys(fromProfile().rewrites.discoveryConfigRBGs)) {
+			expectDirectRBGDiscoveryConfig(f, name)
+		}
 	})
 
 	ginkgo.It(
@@ -1427,6 +1448,29 @@ func waitForPendingPod(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedG
 			}
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.Succeed())
+}
+
+// expectDirectRBGDiscoveryConfig asserts the one-hop rewrite for a direct
+// legacy RBG: after the upgrade, its ConfigMap exists, carries only the
+// discovery key, is selected by the group-name label, and is controlled by the
+// RBG incarnation that owns it.
+func expectDirectRBGDiscoveryConfig(f *framework.Framework, name string) {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: name}, rbg)).To(gomega.Succeed())
+	gomega.Expect(rbg.Spec.Roles).To(gomega.HaveLen(1))
+
+	cm := &corev1.ConfigMap{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: name}, cm)).To(gomega.Succeed())
+	gomega.Expect(cm.Data).To(gomega.HaveLen(1), "the discovery ConfigMap should contain only config.yaml")
+	gomega.Expect(cm.Labels[constants.GroupNameLabelKey]).To(gomega.Equal(name))
+	owner := metav1.GetControllerOf(cm)
+	gomega.Expect(owner).NotTo(gomega.BeNil())
+	gomega.Expect(owner.UID).To(gomega.Equal(rbg.UID))
+
+	config := discoveryConfig(gomega.Default, f, name)
+	roleName := rbg.Spec.Roles[0].Name
+	gomega.Expect(config.Roles).To(gomega.HaveKey(roleName))
+	gomega.Expect(config.Roles[roleName].Size).To(gomega.Equal(int(*rbg.Spec.Roles[0].Replicas)))
 }
 
 // expectSetChildrenMaintainDiscoveryConfig runs

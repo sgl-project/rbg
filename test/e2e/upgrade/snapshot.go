@@ -947,6 +947,11 @@ type recordedRewrites struct {
 	// metadata rewrite: KEP-576 removes the mode selector and existing children
 	// without the version annotation keep their historical content.
 	discoveryConfigChildren map[string]bool
+
+	// discoveryConfigRBGs are the direct legacy RoleBasedGroups whose ConfigMap
+	// phase 1 and phase 3 observe. The from-release leaves them without a
+	// ConfigMap; the upgraded controller must create, label, and own it.
+	discoveryConfigRBGs map[string]bool
 }
 
 // healStoredStrategyType is the rewrite the mutating webhook performs on a stored

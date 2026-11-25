@@ -22,6 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/utils/ptr"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/utils"
@@ -57,6 +58,10 @@ const (
 	// copies the template verbatim -- so a legacy value reaches the child even though
 	// no RoleBasedGroupSet defaulter ever ran on that child.
 	fxLegacySet = "up-legacy-set"
+	// fxLegacyDiscovery is a direct RoleBasedGroup pinned to the retired legacy
+	// discovery mode. The from-release does not write its ConfigMap; the upgraded
+	// controller must create it, label it for the cache selector, and own it.
+	fxLegacyDiscovery = "up-legacy-disc"
 	// fxPending never becomes ready, and fxMidRoll is half-rolled when the upgrade
 	// lands. Both exist because every other fixture is converged and quiet by the
 	// time the upgrade starts, which is the one cluster state an upgrade is least
@@ -134,7 +139,23 @@ func buildFixtures(ns string) []*workloadsv1alpha2.RoleBasedGroup {
 		buildCustomComponentsFixture(ns),
 		buildMidRolloutFixture(ns),
 		buildLegacyStrategyFixture(ns),
+		buildLegacyDiscoveryFixture(ns),
 	}
+}
+
+// buildLegacyDiscoveryFixture is a direct legacy RBG, not a RoleBasedGroupSet
+// child, so the upgrade suite can observe the one-hop ConfigMap rewrite that
+// KEP-576 promises for every pre-existing legacy RBG.
+func buildLegacyDiscoveryFixture(ns string) *workloadsv1alpha2.RoleBasedGroup {
+	return wrappersv2.BuildBasicRoleBasedGroup(fxLegacyDiscovery, ns).
+		WithRoles([]workloadsv1alpha2.RoleSpec{
+			wrappersv2.BuildStandaloneRole(legacyDiscoveryRole).
+				WithReplicas(1).
+				WithAnnotations(map[string]string{
+					constants.DiscoveryConfigModeAnnotationKey: "legacy",
+				}).
+				Obj(),
+		}).Obj()
 }
 
 // buildStandaloneFixture is the baseline: default RoleInstanceSet workload, an
@@ -324,6 +345,9 @@ func buildMidRolloutFixture(ns string) *workloadsv1alpha2.RoleBasedGroup {
 // legacyStrategyRole is the role of both legacy-strategy fixtures. It is shared so
 // the recorded RoleInstanceSet repair in snapshot.go names the right owner.
 const legacyStrategyRole = "worker"
+
+// legacyDiscoveryRole is the role of the direct legacy discovery fixture.
+const legacyDiscoveryRole = "legacy-disc"
 
 // buildLegacyStrategyFixture stores the v1alpha1 spelling "Recreate" of the update
 // strategy type, which v0.7.0's enum-less CRD accepted and its controller copied
