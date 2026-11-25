@@ -20,6 +20,7 @@ import (
 	"strings"
 	"testing"
 
+	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
 	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/yaml"
 )
@@ -35,6 +36,36 @@ func TestRoleInstanceLifecycleHooksChartToggle(t *testing.T) {
 	if got := lifecycleHooksManagerFlag(t, enabled); got != "true" {
 		t.Errorf("enabled lifecycle flag = %q, want true", got)
 	}
+}
+
+func TestRoleInstanceLifecycleHooksChartRegistersValidationWebhook(t *testing.T) {
+	manifest := renderChart(t)
+	obj, ok := splitObjects(t, manifest)["ValidatingWebhookConfiguration/rbgs-validating-webhook-configuration"]
+	if !ok {
+		t.Fatalf("ValidatingWebhookConfiguration %q not found in rendered chart",
+			"rbgs-validating-webhook-configuration")
+	}
+	var configuration admissionregistrationv1.ValidatingWebhookConfiguration
+	if err := yaml.Unmarshal([]byte(obj.raw), &configuration); err != nil {
+		t.Fatalf("unmarshal ValidatingWebhookConfiguration: %v", err)
+	}
+	for _, webhook := range configuration.Webhooks {
+		if webhook.Name != "vroleinstanceset.kb.io" {
+			continue
+		}
+		if path := webhook.ClientConfig.Service.Path; path == nil || *path != "/validate-workloads-x-k8s-io-v1alpha2-roleinstanceset" {
+			t.Errorf("vroleinstanceset.kb.io path = %v, want /validate-workloads-x-k8s-io-v1alpha2-roleinstanceset", path)
+		}
+		for _, rule := range webhook.Rules {
+			for _, resource := range rule.Resources {
+				if resource == "roleinstancesets" {
+					return
+				}
+			}
+		}
+		t.Fatalf("vroleinstanceset.kb.io does not validate roleinstancesets: %+v", webhook.Rules)
+	}
+	t.Fatal("vroleinstanceset.kb.io webhook not registered")
 }
 
 func lifecycleHooksManagerFlag(t *testing.T, manifest string) string {
