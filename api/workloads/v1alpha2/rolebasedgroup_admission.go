@@ -33,7 +33,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
-	"sigs.k8s.io/rbgs/pkg/features"
 )
 
 // RoleBasedGroupValidator implements admission.CustomValidator for RoleBasedGroup.
@@ -96,9 +95,6 @@ func validateRoleInstanceLifecycleList(path string, roles []RoleSpec) error {
 		role := &roles[i]
 		if !HasRoleInstanceLifecycleHooks(role.Lifecycle) {
 			continue
-		}
-		if !features.RoleInstanceLifecycleHooksEnabled() {
-			return fmt.Errorf("%s[%d].lifecycle requires the RoleInstanceLifecycleHooks feature gate", path, i)
 		}
 		declarativeLabels := map[string]string{}
 		for key, value := range role.Labels {

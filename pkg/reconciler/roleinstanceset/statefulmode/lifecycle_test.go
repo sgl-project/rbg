@@ -34,7 +34,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/features"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/readiness"
 	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
@@ -102,7 +101,6 @@ func TestStatefulRollingUpdateAndScaleDownWaitForPreDeleteHook(t *testing.T) {
 }
 
 func TestStatefulPreUpdateBlocksWorkloadUpdateAndClearsPodMirror(t *testing.T) {
-	enableLifecycleHooksForTest(t)
 	h := newRollbackTestHarness(t, "kep527-pre-update", 1, 0, 0)
 	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
 	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
@@ -147,30 +145,10 @@ func TestStatefulPreUpdateBlocksWorkloadUpdateAndClearsPodMirror(t *testing.T) {
 	require.Empty(t, pod.Labels["patio.workloads.x-k8s.io/pre-update"])
 }
 
-// A disabled feature gate must disable the Stateful barrier too: updates and
-// deletions proceed instead of waiting for hooks the RoleInstance controller
-// no longer honors.
-func TestStatefulLifecycleHooksDisabledWithGateOff(t *testing.T) {
-	features.SetRoleInstanceLifecycleHooks(false)
-	h := newRollbackTestHarness(t, "kep527-gate-off", 1, 0, 0)
-	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
-	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
-		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
-			SignalLabels: map[string]string{"patio.workloads.x-k8s.io/pre-update": "blocked"},
-		},
-	}
-	instance := h.instance(0, h.intermediate.Name, true)
-	instance.ResourceVersion = "1"
-
-	h.reconcile(t, instance)
-	h.assertDeleted(t, instance.Name)
-}
-
 // KEP-527 preDelete is not a set-level barrier: the set controller deletes
 // the RoleInstance, and the drain runs inside the finalizer-held deletion.
 // The set controller must not write hook state or signal labels itself.
 func TestStatefulPreDeleteRunsDuringRoleInstanceDeletion(t *testing.T) {
-	enableLifecycleHooksForTest(t)
 	h := newRollbackTestHarness(t, "kep527-delete-then-hook", 1, 0, 0)
 	h.set.Spec.Replicas = ptr.To(int32(0))
 	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
@@ -202,7 +180,6 @@ func TestStatefulPreDeleteRunsDuringRoleInstanceDeletion(t *testing.T) {
 // next condemned ordinal must wait in OrderedReady mode, and the waiting
 // instance must not have a set-level hook armed on it.
 func TestStatefulOrderedScaleDownSerializesPreDeleteDrains(t *testing.T) {
-	enableLifecycleHooksForTest(t)
 	h := newRollbackTestHarness(t, "kep527-ordered-drain", 2, 0, 0)
 	h.set.Spec.PodManagementPolicy = constants.OrderedReadyPodManagement
 	h.set.Spec.Replicas = ptr.To(int32(0))
@@ -231,12 +208,6 @@ func TestStatefulOrderedScaleDownSerializesPreDeleteDrains(t *testing.T) {
 	require.Empty(t, roleinstancelifecycle.HookState(low),
 		"a waiting ordinal must not carry a set-level preDelete hook")
 	require.NotContains(t, low.Labels, "consumer.example/drain")
-}
-
-func enableLifecycleHooksForTest(t *testing.T) {
-	t.Helper()
-	features.SetRoleInstanceLifecycleHooks(true)
-	t.Cleanup(func() { features.SetRoleInstanceLifecycleHooks(false) })
 }
 
 func TestStatefulPreDeleteWaitsForFinalizer(t *testing.T) {

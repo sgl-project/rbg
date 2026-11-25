@@ -31,7 +31,6 @@ import (
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/features"
 	inplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 )
@@ -117,9 +116,6 @@ func TestUpdateInstanceRecreatePodSkipsInPlace(t *testing.T) {
 // A Stateless update with the KEP-527 preUpdate hook configured must install
 // the signal labels and hold the mutation until the executor removes them.
 func TestUpdateInstanceWaitsForPreUpdateLifecycleHook(t *testing.T) {
-	features.SetRoleInstanceLifecycleHooks(true)
-	t.Cleanup(func() { features.SetRoleInstanceLifecycleHooks(false) })
-
 	scheme := runtime.NewScheme()
 	_ = workloadsv1alpha2.AddToScheme(scheme)
 	_ = corev1.AddToScheme(scheme)

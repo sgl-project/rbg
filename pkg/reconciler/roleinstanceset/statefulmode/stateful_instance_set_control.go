@@ -40,7 +40,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/features"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
@@ -1470,11 +1469,7 @@ func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleHook(
 	state constants.RoleInstanceLifecycleHookStateType,
 	nextState constants.RoleInstanceLifecycleHookStateType,
 ) (bool, error) {
-	// A disabled gate must disable the barrier here too: the RoleInstance
-	// controller skips lifecycle handling when the gate is off, and an
-	// inconsistent set controller would block updates and deletions that the
-	// rest of the controller has already stopped gating.
-	if ssc.hookControl == nil || hook == nil || !features.RoleInstanceLifecycleHooksEnabled() {
+	if ssc.hookControl == nil || hook == nil {
 		return false, nil
 	}
 	pods, err := ssc.lifecyclePods(ctx, instance)

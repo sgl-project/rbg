@@ -17,26 +17,11 @@ limitations under the License.
 package chart
 
 import (
-	"strings"
 	"testing"
 
 	admissionregistrationv1 "k8s.io/api/admissionregistration/v1"
-	appsv1 "k8s.io/api/apps/v1"
 	"sigs.k8s.io/yaml"
 )
-
-const lifecycleHooksFlag = "--feature-role-instance-lifecycle-hooks"
-
-func TestRoleInstanceLifecycleHooksChartToggle(t *testing.T) {
-	disabled := renderChart(t)
-	if got := lifecycleHooksManagerFlag(t, disabled); got != "false" {
-		t.Errorf("default lifecycle flag = %q, want false", got)
-	}
-	enabled := renderChart(t, "--set", "controller.features.roleInstanceLifecycleHooks.enabled=true")
-	if got := lifecycleHooksManagerFlag(t, enabled); got != "true" {
-		t.Errorf("enabled lifecycle flag = %q, want true", got)
-	}
-}
 
 func TestRoleInstanceLifecycleHooksChartRegistersValidationWebhook(t *testing.T) {
 	manifest := renderChart(t)
@@ -66,24 +51,4 @@ func TestRoleInstanceLifecycleHooksChartRegistersValidationWebhook(t *testing.T)
 		t.Fatalf("vroleinstanceset.kb.io does not validate roleinstancesets: %+v", webhook.Rules)
 	}
 	t.Fatal("vroleinstanceset.kb.io webhook not registered")
-}
-
-func lifecycleHooksManagerFlag(t *testing.T, manifest string) string {
-	t.Helper()
-	obj, ok := splitObjects(t, manifest)["Deployment/"+managerDeploymentName]
-	if !ok {
-		t.Fatalf("Deployment %q not found in rendered chart", managerDeploymentName)
-	}
-	var deploy appsv1.Deployment
-	if err := yaml.Unmarshal([]byte(obj.raw), &deploy); err != nil {
-		t.Fatalf("unmarshal Deployment: %v", err)
-	}
-	for _, container := range deploy.Spec.Template.Spec.Containers {
-		for _, arg := range container.Args {
-			if strings.HasPrefix(arg, lifecycleHooksFlag+"=") {
-				return strings.TrimPrefix(arg, lifecycleHooksFlag+"=")
-			}
-		}
-	}
-	return ""
 }

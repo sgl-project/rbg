@@ -30,7 +30,6 @@ import (
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/features"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/specifieddelete"
@@ -276,7 +275,7 @@ func (rc *realControl) prepareLifecycleUpdate(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instance *workloadsv1alpha2.RoleInstance,
 ) (bool, error) {
-	if rc.hookControl == nil || !features.RoleInstanceLifecycleHooksEnabled() {
+	if rc.hookControl == nil {
 		return false, nil
 	}
 	var hook *workloadsv1alpha2.RoleInstanceLifecycleHook

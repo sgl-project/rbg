@@ -21,17 +21,12 @@ import (
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"sigs.k8s.io/rbgs/pkg/features"
 )
 
 // Lifecycle reconfiguration is validated statically. The webhook must not
 // cross-check live RoleInstance runtime state, so reassigning a signal key
 // between hooks is accepted without any API reader.
 func TestRoleInstanceSetValidatorAcceptsLifecycleReconfiguration(t *testing.T) {
-	features.SetRoleInstanceLifecycleHooks(true)
-	t.Cleanup(func() { features.SetRoleInstanceLifecycleHooks(false) })
-
 	oldSet := &RoleInstanceSet{
 		ObjectMeta: metav1.ObjectMeta{Name: "set", Namespace: "default", UID: "set-uid"},
 		Spec: RoleInstanceSetSpec{

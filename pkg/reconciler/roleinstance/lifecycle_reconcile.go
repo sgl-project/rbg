@@ -27,7 +27,6 @@ import (
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/features"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 )
 
@@ -39,8 +38,7 @@ type lifecycleOperationResult struct {
 }
 
 func (r *reconciler) lifecycleEnabled(instance *workloadsv1alpha2.RoleInstance) bool {
-	return features.RoleInstanceLifecycleHooksEnabled() &&
-		instance != nil && workloadsv1alpha2.HasRoleInstanceLifecycleHooks(instance.Spec.Lifecycle)
+	return instance != nil && workloadsv1alpha2.HasRoleInstanceLifecycleHooks(instance.Spec.Lifecycle)
 }
 
 func (r *reconciler) reconcileLifecycleDeletion(
@@ -221,12 +219,10 @@ func (r *reconciler) prepareLifecycleOperation(
 }
 
 // cleanupStaleLifecycle removes protocol state that the current
-// configuration no longer owns. With the gate enabled but no hooks
-// configured, every runtime signal label and the hook-state label are stale.
-// The preDelete finalizer is removed even when the gate is disabled: it must
-// never block deletion of an object whose hook the controller will not run.
-// Every operation here is a no-op when no protocol state is present, so
-// instances that never used the feature stay untouched.
+// configuration no longer owns: every runtime signal label, the hook-state
+// label, and the reserved preDelete finalizer. Every operation here is a
+// no-op when no protocol state is present, so instances that never used the
+// feature stay untouched.
 func (r *reconciler) cleanupStaleLifecycle(
 	ctx context.Context,
 	instance *workloadsv1alpha2.RoleInstance,
@@ -235,15 +231,13 @@ func (r *reconciler) cleanupStaleLifecycle(
 	if instance == nil {
 		return nil
 	}
-	if features.RoleInstanceLifecycleHooksEnabled() {
-		if lifecycle.HookState(instance) != "" {
-			if err := r.hookControl.SetHookState(ctx, instance, "", pods); err != nil {
-				return err
-			}
-		}
-		if err := r.hookControl.SyncRuntimeLabels(ctx, instance, instance.Spec.Lifecycle, pods); err != nil {
+	if lifecycle.HookState(instance) != "" {
+		if err := r.hookControl.SetHookState(ctx, instance, "", pods); err != nil {
 			return err
 		}
+	}
+	if err := r.hookControl.SyncRuntimeLabels(ctx, instance, instance.Spec.Lifecycle, pods); err != nil {
+		return err
 	}
 	_, err := r.hookControl.RemovePreDeleteFinalizer(ctx, instance)
 	return err

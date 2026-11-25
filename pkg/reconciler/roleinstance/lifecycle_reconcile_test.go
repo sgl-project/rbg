@@ -30,7 +30,6 @@ import (
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/features"
 	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/utils/fieldindex"
 )
@@ -55,8 +54,6 @@ func newLifecycleTestClient(t *testing.T, objects ...client.Object) client.WithW
 
 func newLifecycleTestReconciler(t *testing.T, c client.Client) *reconciler {
 	t.Helper()
-	features.SetRoleInstanceLifecycleHooks(true)
-	t.Cleanup(func() { features.SetRoleInstanceLifecycleHooks(false) })
 	return &reconciler{
 		Client:      c,
 		hookControl: roleinstancelifecycle.NewHookControl(c),
@@ -117,7 +114,7 @@ func TestReconcileLifecycleDeletionResumesTerminatingWithoutReplay(t *testing.T)
 	require.Error(t, err, "member Pod must be deleted")
 }
 
-// Removing every hook (or disabling the gate) must not leave the reserved
+// Removing every hook must not leave the reserved
 // preDelete finalizer behind: deletion would hang forever on state the
 // controller no longer owns.
 func TestReconcileLifecycleDeletionRemovesFinalizerWithoutActiveHook(t *testing.T) {
@@ -127,36 +124,15 @@ func TestReconcileLifecycleDeletionRemovesFinalizerWithoutActiveHook(t *testing.
 	removedHooks.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer, "test.rbg.io/hold"}
 	removedHooks.DeletionTimestamp = ptr.To(metav1.Now())
 
-	gateDisabled := newReadinessTestInstance()
-	gateDisabled.Status.ObservedGeneration = 1
-	gateDisabled.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
-		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
-			SignalLabels: map[string]string{"consumer.example/drain": "true"},
-		},
-	}
-	gateDisabled.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer, "test.rbg.io/hold"}
-	gateDisabled.DeletionTimestamp = ptr.To(metav1.Now())
+	c := newLifecycleTestClient(t, removedHooks)
+	r := newLifecycleTestReconciler(t, c)
 
-	for name, test := range map[string]struct {
-		instance *workloadsv1alpha2.RoleInstance
-		gateOn   bool
-	}{
-		"hooks removed": {instance: removedHooks, gateOn: true},
-		"gate disabled": {instance: gateDisabled, gateOn: false},
-	} {
-		t.Run(name, func(t *testing.T) {
-			c := newLifecycleTestClient(t, test.instance)
-			r := newLifecycleTestReconciler(t, c)
-			features.SetRoleInstanceLifecycleHooks(test.gateOn)
+	blocked, err := r.reconcileLifecycleDeletion(ctx, removedHooks)
+	require.NoError(t, err)
+	require.False(t, blocked)
 
-			blocked, err := r.reconcileLifecycleDeletion(ctx, test.instance)
-			require.NoError(t, err)
-			require.False(t, blocked)
-
-			live := requireLifecycleInstance(t, c, test.instance)
-			require.NotContains(t, live.Finalizers, constants.RoleInstancePreDeleteFinalizer)
-		})
-	}
+	live := requireLifecycleInstance(t, c, removedHooks)
+	require.NotContains(t, live.Finalizers, constants.RoleInstancePreDeleteFinalizer)
 }
 
 // A genuinely new instance must not enter preRecover before its first Pod
@@ -256,37 +232,4 @@ func TestPrepareLifecycleOperationCleansStaleLifecycleState(t *testing.T) {
 	storedPod := &v1.Pod{}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), storedPod))
 	require.NotContains(t, storedPod.Labels, "consumer.example/update")
-}
-
-// With the gate disabled, the finalizer must still be removed while the
-// configured signal labels are left for a controller restart that re-enables
-// the feature.
-func TestPrepareLifecycleOperationRemovesFinalizerWhenGateDisabled(t *testing.T) {
-	ctx := context.Background()
-	instance := newReadinessTestInstance()
-	instance.Status.ObservedGeneration = 1
-	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
-		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
-			SignalLabels: map[string]string{"consumer.example/drain": "true"},
-		},
-	}
-	instance.Labels = map[string]string{
-		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStatePreDelete),
-		"consumer.example/drain":                    "true",
-	}
-	instance.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
-	c := newLifecycleTestClient(t, instance)
-	r := newLifecycleTestReconciler(t, c)
-	features.SetRoleInstanceLifecycleHooks(false)
-
-	newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
-	_, err := r.prepareLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
-		podsPresent: false,
-	}, nil)
-	require.NoError(t, err)
-
-	live := requireLifecycleInstance(t, c, instance)
-	require.NotContains(t, live.Finalizers, constants.RoleInstancePreDeleteFinalizer)
-	require.Equal(t, "true", live.Labels["consumer.example/drain"],
-		"a disabled gate must not rewrite signal labels")
 }

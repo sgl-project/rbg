@@ -38,7 +38,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	"sigs.k8s.io/rbgs/api/workloads/v1alpha2"
-	"sigs.k8s.io/rbgs/pkg/features"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statefulmode"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -124,7 +123,7 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 // revision. A lifecycle-only generation is latched as phase-complete when the
 // instance is already Running, so it does not enter preUpdate or roll Pods.
 func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx context.Context, set *v1alpha2.RoleInstanceSet) error {
-	if set.DeletionTimestamp != nil || !features.RoleInstanceLifecycleHooksEnabled() {
+	if set.DeletionTimestamp != nil {
 		return nil
 	}
 	desired := set.Spec.RoleInstanceTemplate.Lifecycle

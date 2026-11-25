@@ -69,12 +69,6 @@ spec:
             {{- with $gangScheduling.schedulerProfileName }}
             - --scheduler-profile-name={{ . }}
             {{- end }}
-            {{- $lifecycleHooks := $features.roleInstanceLifecycleHooks | default dict }}
-            {{- if $lifecycleHooks.enabled }}
-            - --feature-role-instance-lifecycle-hooks=true
-            {{- else }}
-            - --feature-role-instance-lifecycle-hooks=false
-            {{- end }}
             {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
             {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
             {{- if $deprecatedEnabled }}
