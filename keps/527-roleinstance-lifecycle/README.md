@@ -505,20 +505,19 @@ The controller always evaluates the latest effective lifecycle configuration. If
 a hook is configured, its `signalLabels` are matched; if a hook is not
 configured, no `signalLabel` matching occurs for that hook. A configuration
 change therefore takes effect on the next reconciliation without special
-in-flight handling. If the effective `signalLabels` of an active pre-operation
-hook change while the controller is waiting in that hook's phase, the controller
-writes the newly configured `signalLabels` before matching them. A configured
-`signalLabel` that the controller has not yet written in the current phase is
-not released: absence is a release signal only for `signalLabels` the controller
-wrote or confirmed present during that phase. For `preDelete`, this write occurs
-while the reserved finalizer is still held, so a mid-operation configuration
-change cannot shorten the deletion barrier. For example, after `signalLabelA`
-changes to `signalLabelB`, the controller writes `signalLabelB` if it is not yet
-present, checks it directly, and stops waiting for `signalLabelA`. If an active
-hook is removed, the controller treats it as absent, stops matching its
-`signalLabel`, removes its stale runtime labels, and follows the same transition
-as a released hook; for example, `PreUpdate` advances to `Updating`. This is the
-intended declarative semantics.
+in-flight handling: matching uses the latest configured keys and values, and a
+runtime `signalLabel` that no longer matches the latest configuration — because
+its key or value changed, or the hook was removed — releases the barrier.
+Reconfiguring `signalLabels` while an operation is armed is an operator
+decision with immediately visible effect. The executor's conditional removal,
+which tests `hook-state` and the resourceVersion before deleting a
+`signalLabel`, fences superseded executions from acting on stale labels. For
+example, after `signalLabelA` changes to `signalLabelB`, the controller matches
+`signalLabelB` and stops waiting for `signalLabelA`, which becomes a stale
+protocol label. If an active hook is removed, the controller treats it as
+absent, stops matching its `signalLabel`, removes its stale runtime labels, and
+follows the same transition as a released hook; for example, `PreUpdate`
+advances to `Updating`. This is the intended declarative semantics.
 
 To make stale-label cleanup and rollback verification durable, the controller
 records the `signalLabel` keys owned by the protocol in the annotation
@@ -1135,14 +1134,14 @@ lifecycle and distinguish workload backends.
   transitions to the actual operation state, and a restart does not repeat the
   released hook. `postReady` enters `Running` before asynchronous state cleanup.
 - A `signalLabelA` to `signalLabelB` change during a pending pre-operation hook
-  writes `signalLabelB` and keeps the operation blocked until `signalLabelB` is
-  removed; a configured but never-written `signalLabel` is never treated as
-  released. The controller treats `signalLabelA` as a stale protocol label: its
+  matches `signalLabelB` against the latest configuration and releases the
+  operation when the runtime labels no longer match; reconfiguring keys or
+  values while an operation is armed takes effect on the next reconciliation.
+  The controller treats `signalLabelA` as a stale protocol label: its
   RI label and Pod mirrors are removed, and `signalLabelA` stays in the
   `signalLabel`-key record until both copies are confirmed absent.
-- Cross-resource admission checks fail closed on read failure or stale data,
-  and the controller refuses to write a `signalLabel` whose key another hook
-  still records on a governed RI.
+- Admission stays static: it does not read RoleInstance runtime state and does
+  not reject set updates on cross-resource read failures or stale data.
 - Lifecycle-only configuration changes create no ControllerRevision, change no
   revision hash, and roll no member Pods.
 - The `signalLabel`-key record is written with the `signalLabel`, retained across

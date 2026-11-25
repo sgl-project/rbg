@@ -381,14 +381,14 @@ controller 保留的 hook-state key：controller 自身的运行时写入
 
 controller 始终按最新的生效 lifecycle 配置判断。配置了 hook 时匹配其 `signalLabel`；
 未配置 hook 时不为该 hook 执行 `signalLabel` 匹配。因此配置变更在下一次 reconcile
-直接生效，不引入特殊的在途处理。若等待期间某个生效前置 hook 的
-`signalLabels` 发生变化，controller 必须先写入新配置的 `signalLabel`
-再进行匹配；controller 在当前阶段尚未写入的 `signalLabel` 不视为已
-释放，只有本阶段已写入（或已确认存在）后消失的 `signalLabel` 才构成
-释放信号。对 `preDelete`，该写入发生在保留 finalizer 仍持有时，因此
-中途变更配置不能缩短删除屏障。例如 `signalLabelA` 改为 `signalLabelB`
-后，controller 先写入尚不存在的 `signalLabelB`，直接检查
-`signalLabelB`，不再等待 `signalLabelA`；如果删除 active hook，controller 视其
+直接生效，不引入特殊的在途处理：匹配始终使用最新配置的 key 与 value，
+运行时 `signalLabel` 不再匹配最新配置（key 或 value 变更、hook 被移除）即
+释放屏障。在操作处于 armed 状态时重新配置 `signalLabels` 属于运维决策，
+效果立即可见；executor 的条件写删除会在删除前测试 `hook-state` 与
+resourceVersion，防止被取代的执行基于遗留 label 继续行动。例如
+`signalLabelA` 改为 `signalLabelB` 后，controller 按 `signalLabelB` 匹配，
+不再等待 `signalLabelA`，后者成为协议遗留 label。如果删除 active hook，
+controller 视其
 为不存在，不为它执行 `signalLabel` 匹配，清理遗留 runtime labels，并按已放行
 hook 的转换继续，例如 `PreUpdate` 切换到 `Updating`。这是预期的声明式语义。
 
@@ -847,10 +847,11 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
   key，或与 controller 管理 label 冲突）、重启恢复和未配置 hooks 的行为；controller 不识别消费者身份。
 - `hook-state`、`signalLabel` 与 `signalLabel` key 记录同批写入；前置 hooks 清 `signalLabel`
   后切换到实际操作 state，重启后不会重复执行已放行 hook；postReady 先进入 `Running` 再异步清理 state。
-- 前置 hook 等待期间 `signalLabelA` 改为 `signalLabelB` 时，controller 写入
-  `signalLabelB` 并保持阻塞直到 `signalLabelB` 被清除；尚未写入的
-  `signalLabel` 不视为已释放。`signalLabelA` 按协议遗留 label 处理：清理
-  其 RI label 和 Pod 镜像，并在两份副本确认消失前保持记录。
+- 前置 hook 等待期间 `signalLabelA` 改为 `signalLabelB` 时，controller 按最新
+  配置匹配 `signalLabelB`，运行时 label 不再匹配即释放操作；在操作处于
+  armed 状态时重新配置 key 或 value 于下一次 reconcile 生效。`signalLabelA`
+  按协议遗留 label 处理：清理其 RI label 和 Pod 镜像，并在两份副本确认
+  消失前保持记录。
 - 准入保持静态：不读取 RoleInstance 运行时状态，不因跨资源读取失败或
   数据过期拒绝 set 更新。
 - 仅 lifecycle 配置变化不生成 ControllerRevision、不改变 revision 哈希，
