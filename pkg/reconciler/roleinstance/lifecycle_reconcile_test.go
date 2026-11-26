@@ -288,6 +288,39 @@ func TestPrepareLifecycleOperationDefersPreRecoverForArmedPreUpdate(t *testing.T
 	require.NotContains(t, live.Labels, "consumer.example/recover")
 }
 
+// A generation created by a lifecycle snapshot sync is not a spec-driven
+// workload update: the phase machine must classify the instance as recovering
+// and enter preRecover, not the update branch.
+func TestPrepareLifecycleOperationIgnoresLifecycleOnlyGenerationBump(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Status.LastPhaseCompleteGeneration = 1
+	instance.Generation = 2
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/recover": "true"},
+		},
+	}
+	instance.Annotations = map[string]string{
+		constants.RoleInstanceLifecycleSnapshotGenerationAnnotationKey: "2",
+	}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+	result, err := r.prepareLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent: false,
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, result.blocked, "the lifecycle-only bump must classify as recovery, not update")
+	require.True(t, result.operation)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Equal(t, constants.RoleInstanceHookStatePreRecover, roleinstancelifecycle.HookState(live))
+	require.Contains(t, live.Labels, "consumer.example/recover")
+}
+
 // When no hooks remain configured, reconciliation must remove stale protocol
 // labels, the hook-state label, and the preDelete finalizer instead of
 // skipping cleanup entirely.

@@ -21,11 +21,12 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -81,7 +82,7 @@ func NewRoleInstanceSetReconciler(mgr ctrl.Manager) (*RoleInstanceSetReconciler,
 func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	set := &v1alpha2.RoleInstanceSet{}
 	if err := r.client.Get(ctx, request.NamespacedName, set); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, err
@@ -124,9 +125,9 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 
 // syncRoleInstanceLifecycleSnapshots propagates the desired KEP-527 lifecycle
 // configuration to existing RoleInstances without changing the workload
-// revision. A lifecycle-only generation is latched as phase-complete in any
-// phase, so a lifecycle change never reclassifies the instance as mid-update
-// and never bypasses preRecover.
+// revision. The patch records the generation it creates in the same write, so
+// a lifecycle change never reclassifies the instance as mid-update and never
+// bypasses preRecover.
 func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx context.Context, set *v1alpha2.RoleInstanceSet) error {
 	if set.DeletionTimestamp != nil {
 		return nil
@@ -155,24 +156,45 @@ func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx conte
 		// the documented way to let a stuck deletion continue, and that
 		// configuration change must reach instances already held by the
 		// reserved finalizer.
-		base := instance.DeepCopy()
-		instance.Spec.Lifecycle = desired.DeepCopy()
-		if err := r.client.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
-			return err
-		}
-		if instance.DeletionTimestamp != nil {
-			continue
-		}
-		if instance.Status.LastPhaseCompleteGeneration >= instance.Generation {
-			continue
-		}
-		statusBase := instance.DeepCopy()
-		instance.Status.LastPhaseCompleteGeneration = instance.Generation
-		if err := r.client.Status().Patch(ctx, instance, client.MergeFrom(statusBase)); err != nil {
+		if err := r.patchLifecycleSnapshot(ctx, instance, desired); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// patchLifecycleSnapshot writes the lifecycle spec and the generation marker
+// in one optimistic-lock patch. The apiserver bumps metadata.generation by
+// exactly one for a spec-changing write applied at the pinned resource
+// version, so the predicted generation is exact; a conflict means a
+// concurrent write landed first, and the retry recomputes from fresh state.
+func (r *RoleInstanceSetReconciler) patchLifecycleSnapshot(
+	ctx context.Context,
+	instance *v1alpha2.RoleInstance,
+	desired *v1alpha2.RoleInstanceLifecycle,
+) error {
+	for attempt := 0; ; attempt++ {
+		base := instance.DeepCopy()
+		instance.Spec.Lifecycle = desired.DeepCopy()
+		if instance.Annotations == nil {
+			instance.Annotations = make(map[string]string)
+		}
+		instance.Annotations[constants.RoleInstanceLifecycleSnapshotGenerationAnnotationKey] =
+			strconv.FormatInt(base.Generation+1, 10)
+		err := r.client.Patch(ctx, instance,
+			client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) || attempt >= 5 {
+			return err
+		}
+		latest := &v1alpha2.RoleInstance{}
+		if err := r.client.Get(ctx, client.ObjectKeyFromObject(instance), latest); err != nil {
+			return err
+		}
+		*instance = *latest
+	}
 }
 
 const invalidCommittedOrdinalsReason = "InvalidCommittedOrdinals"
@@ -287,7 +309,7 @@ func (r *RoleInstanceSetReconciler) cleanupStaleInstances(ctx context.Context, s
 			continue
 		}
 		klog.InfoS("Deleting stale RoleInstance from different pattern", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance), "currentPattern", pattern)
-		if err := r.client.Delete(ctx, instance); err != nil && !errors.IsNotFound(err) {
+		if err := r.client.Delete(ctx, instance); err != nil && !apierrors.IsNotFound(err) {
 			return false, err
 		}
 		deleted = true

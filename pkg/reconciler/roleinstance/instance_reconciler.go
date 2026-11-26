@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/openkruise/kruise/pkg/util/expectations"
@@ -42,6 +43,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceupdatepod "sigs.k8s.io/rbgs/pkg/inplace/pod"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
@@ -464,7 +466,8 @@ func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newSta
 	// last confirmed-ready generation and stays recovery.
 	revisionUpdate := newStatus.UpdateRevision != "" && newStatus.UpdateRevision != newStatus.CurrentRevision
 	confirmedGeneration := lastConfirmedPhaseGeneration(instance)
-	specDrivenUpdate := confirmedGeneration != 0 && instance.Generation > confirmedGeneration
+	specDrivenUpdate := confirmedGeneration != 0 && instance.Generation > confirmedGeneration &&
+		!lifecycleOnlyGenerationBump(instance)
 	updateActive := revisionUpdate || specDrivenUpdate
 
 	readySatisfied := true
@@ -497,6 +500,22 @@ func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newSta
 		previouslyEstablished: confirmedGeneration != 0,
 		newInstance:           instance.Status.ObservedGeneration == 0,
 	}
+}
+
+// lifecycleOnlyGenerationBump reports whether the current generation was
+// created by a lifecycle snapshot sync: the sync writes the generation marker
+// in the same optimistic-lock patch as the lifecycle spec, so the bump changes
+// no workload-relevant spec and must not reclassify the instance as updating.
+func lifecycleOnlyGenerationBump(instance *workloadsv1alpha2.RoleInstance) bool {
+	if instance == nil || instance.Annotations == nil {
+		return false
+	}
+	value, ok := instance.Annotations[constants.RoleInstanceLifecycleSnapshotGenerationAnnotationKey]
+	if !ok {
+		return false
+	}
+	generation, err := strconv.ParseInt(value, 10, 64)
+	return err == nil && generation == instance.Generation
 }
 
 // podPhaseRuntimeReady reports controller-observed runtime readiness: the Pod

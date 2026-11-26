@@ -579,10 +579,10 @@ func TestCleanupStaleInstancesWaitsForPreDeleteFinalizer(t *testing.T) {
 	}
 }
 
-// A lifecycle snapshot change latches the generation as phase-complete in any
-// phase, so a change during recovery does not reclassify the instance as a
-// spec-driven update and bypass preRecover.
-func TestSyncRoleInstanceLifecycleSnapshotsLatchesAnyPhase(t *testing.T) {
+// A lifecycle snapshot patch records the generation it creates in the same
+// write, so the phase machine can treat the bump as lifecycle-only instead of
+// a spec-driven workload update, in any phase.
+func TestSyncRoleInstanceLifecycleSnapshotsRecordsGenerationMarker(t *testing.T) {
 	setUID := types.UID("latch-set-uid")
 	matchLabels := map[string]string{"app": "latch-app"}
 	set := &workloadsv1alpha2.RoleInstanceSet{
@@ -637,9 +637,9 @@ func TestSyncRoleInstanceLifecycleSnapshotsLatchesAnyPhase(t *testing.T) {
 	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), live); err != nil {
 		t.Fatal(err)
 	}
-	if live.Status.LastPhaseCompleteGeneration != 2 {
-		t.Fatalf("LastPhaseCompleteGeneration = %d, want 2 (latched regardless of phase)",
-			live.Status.LastPhaseCompleteGeneration)
+	if got := live.Annotations[constants.RoleInstanceLifecycleSnapshotGenerationAnnotationKey]; got != "3" {
+		t.Fatalf("lifecycle snapshot generation marker = %q, want 3 (base generation 2 + one spec write)",
+			got)
 	}
 }
 
