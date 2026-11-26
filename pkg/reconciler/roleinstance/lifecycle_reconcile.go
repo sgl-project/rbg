@@ -197,6 +197,14 @@ func (r *reconciler) prepareLifecycleOperation(
 		return lifecycleOperationResult{operation: true}, nil
 	}
 	hookState := lifecycle.HookState(instance)
+	if hookState == constants.RoleInstanceHookStatePreUpdate ||
+		hookState == constants.RoleInstanceHookStateUpdating {
+		// Mirror of the set-side arbitration: the owning RoleInstanceSet
+		// controller is gating an update on preUpdate. Entering preRecover
+		// would overwrite its state and the two writers would flip-flop. The
+		// recovery is folded into the update once it applies.
+		return lifecycleOperationResult{blocked: true, operation: true}, nil
+	}
 	// Recovering is durable authorization: preRecover has already been
 	// acknowledged, so a retry after partial Pod creation resumes recovery
 	// instead of replaying the hook and asking for a second acknowledgement.
@@ -262,7 +270,22 @@ func (r *reconciler) finishLifecycleOperation(
 		return nil
 	}
 	if instance.Spec.Lifecycle.PostReady != nil {
+		hookState := lifecycle.HookState(instance)
+		if hookState == constants.RoleInstanceHookStatePreUpdate ||
+			hookState == constants.RoleInstanceHookStatePreDelete {
+			// A pre-operation barrier owned by another writer is armed on the
+			// shared hook-state label; entering postReady would overwrite it.
+			// Retry once that operation resolves.
+			return nil
+		}
 		controlledOperation := operation || facts.newInstance ||
+			// A recorded Updating or Recovering state proves a controlled
+			// operation even when the phase machine did not observe one, for
+			// example a cancelled preUpdate grant or a stale state left by an
+			// update that never applied. Resolving it on readiness is the
+			// backstop that keeps grants from lingering forever.
+			hookState == constants.RoleInstanceHookStateUpdating ||
+			hookState == constants.RoleInstanceHookStateRecovering ||
 			instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseCreating ||
 			instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseUpdating ||
 			instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseRecovering

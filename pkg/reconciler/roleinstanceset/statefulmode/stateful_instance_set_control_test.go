@@ -576,8 +576,15 @@ func (f *fakeInplaceControl) CanUpdateInPlace(_, _ *apps.ControllerRevision, _ *
 	f.canUpdateCalls++
 	return f.canUpdateInPlace
 }
-func (f *fakeInplaceControl) Update(_ *workloadsv1alpha2.RoleInstance, _, _ *apps.ControllerRevision, _ *instanceinplace.UpdateOptions) instanceinplace.UpdateResult {
+func (f *fakeInplaceControl) Update(instance *workloadsv1alpha2.RoleInstance, _, _ *apps.ControllerRevision, opts *instanceinplace.UpdateOptions) instanceinplace.UpdateResult {
 	f.updateCalls++
+	if opts != nil {
+		// The real in-place control applies the option functions inside the
+		// same metadata write as the mutation.
+		for _, fn := range opts.AdditionalFuncs {
+			fn(instance)
+		}
+	}
 	if f.beforeUpdate != nil {
 		f.beforeUpdate()
 	}

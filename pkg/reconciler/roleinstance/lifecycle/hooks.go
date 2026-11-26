@@ -135,6 +135,56 @@ func (c *HookControl) SetHookState(
 	return c.mirrorSignalLabels(ctx, instance, pods)
 }
 
+// SetHookStateLabel returns an in-place update option function that stamps
+// the KEP-527 hook-state label. The option runs inside the same metadata
+// write as the mutation that consumes a released preUpdate grant, so Updating
+// always means the mutation was applied.
+func SetHookStateLabel(state constants.RoleInstanceLifecycleHookStateType) func(instance *workloadsv1alpha2.RoleInstance) {
+	return func(instance *workloadsv1alpha2.RoleInstance) {
+		if instance == nil {
+			return
+		}
+		if instance.Labels == nil {
+			instance.Labels = make(map[string]string)
+		}
+		instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(state)
+	}
+}
+
+// CancelHook ends an armed pre-operation hook: it removes the hook's signal
+// labels and transitions to the post-hook state in one metadata write. A
+// cancelled operation leaves neither a stale grant a later update could
+// consume nor a signal the executor keeps honoring.
+func (c *HookControl) CancelHook(
+	ctx context.Context,
+	instance *workloadsv1alpha2.RoleInstance,
+	state constants.RoleInstanceLifecycleHookStateType,
+	hook *workloadsv1alpha2.RoleInstanceLifecycleHook,
+	pods []*v1.Pod,
+) error {
+	if instance == nil {
+		return nil
+	}
+	base := instance.DeepCopy()
+	if instance.Labels == nil {
+		instance.Labels = make(map[string]string)
+	}
+	if state == "" {
+		delete(instance.Labels, constants.RoleInstanceLifecycleHookStateKey)
+	} else {
+		instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(state)
+	}
+	if hook != nil {
+		for key := range hook.SignalLabels {
+			delete(instance.Labels, key)
+		}
+	}
+	if err := c.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
+		return err
+	}
+	return c.mirrorSignalLabels(ctx, instance, pods)
+}
+
 // EnsurePreDeleteFinalizer adds the reserved finalizer before deletion can begin.
 func (c *HookControl) EnsurePreDeleteFinalizer(
 	ctx context.Context,

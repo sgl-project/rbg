@@ -762,6 +762,9 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 	baseUnavail := ssc.collectBaseUnavailable(set, replicas, topo, minReadySeconds)
 	initialBaseUnavail := len(baseUnavail)
 	targets := buildUpdateTargets(replicas, topo, updateRevision.Name)
+	if err := ssc.cancelUntargetedPreUpdateHooks(ctx, set, replicas, targets); err != nil {
+		return status, err
+	}
 
 	klog.InfoS("Progress rolling update", "instanceSet", klog.KObj(set),
 		"targets", targets, "maxUnavailable", topo.maxUnavailable,
@@ -1395,6 +1398,14 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 	}
 
 	// Perform in-place update
+	if set.Spec.RoleInstanceTemplate.Lifecycle != nil &&
+		set.Spec.RoleInstanceTemplate.Lifecycle.PreUpdate != nil {
+		// Consume the released preUpdate grant atomically: the Updating
+		// hook-state lands in the same metadata write as the mutation, so a
+		// failed mutation leaves the grant available for the retry.
+		opts.AdditionalFuncs = append(opts.AdditionalFuncs,
+			roleinstancelifecycle.SetHookStateLabel(constants.RoleInstanceHookStateUpdating))
+	}
 	result := ssc.inplaceControl.Update(instance, currentRevision, updateRevision, opts)
 	if result.UpdateErr != nil {
 		return false, result.UpdateErr
@@ -1457,23 +1468,78 @@ func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleUpdate(
 	set *workloadsv1alpha2.RoleInstanceSet,
 	instance *workloadsv1alpha2.RoleInstance,
 ) (bool, error) {
-	// Updating is durable authorization: preUpdate was already released, so a
-	// mutation retry proceeds without a second acknowledgement.
-	if roleinstancelifecycle.HookState(instance) == constants.RoleInstanceHookStateUpdating {
+	hookState := roleinstancelifecycle.HookState(instance)
+	if hookState == constants.RoleInstanceHookStateUpdating {
+		// Updating is durable authorization: preUpdate was already released,
+		// so a mutation retry proceeds without a second acknowledgement.
 		return false, nil
+	}
+	switch hookState {
+	case constants.RoleInstanceHookStatePreRecover,
+		constants.RoleInstanceHookStateRecovering,
+		constants.RoleInstanceHookStatePostReady,
+		constants.RoleInstanceHookStatePreDelete,
+		constants.RoleInstanceHookStateTerminating:
+		// The RoleInstance controller owns an in-flight operation on the same
+		// hook-state label. Entering preUpdate would overwrite it and the two
+		// writers would flip-flop forever; wait for it to resolve instead.
+		return true, nil
 	}
 	var hook *workloadsv1alpha2.RoleInstanceLifecycleHook
 	if set.Spec.RoleInstanceTemplate.Lifecycle != nil {
 		hook = set.Spec.RoleInstanceTemplate.Lifecycle.PreUpdate
 	}
-	return ssc.prepareLifecycleHook(
-		ctx,
-		set,
-		instance,
-		hook,
-		constants.RoleInstanceHookStatePreUpdate,
-		constants.RoleInstanceHookStateUpdating,
-	)
+	return ssc.prepareLifecycleHook(ctx, set, instance, hook, constants.RoleInstanceHookStatePreUpdate)
+}
+
+// cancelUntargetedPreUpdateHooks ends preUpdate for armed instances that are
+// no longer update targets (a reverted or re-partitioned rollout). The
+// signals are removed and the instance moves to Updating, which the
+// RoleInstance controller resolves once the workload is Ready again. Without
+// this, a reverted update leaves the instance drained and holding a stale
+// grant that a later unrelated update would consume without a drain.
+func (ssc *defaultStatefulInstanceSetControl) cancelUntargetedPreUpdateHooks(
+	ctx context.Context,
+	set *workloadsv1alpha2.RoleInstanceSet,
+	replicas []*workloadsv1alpha2.RoleInstance,
+	targets []int,
+) error {
+	if ssc.hookControl == nil {
+		return nil
+	}
+	var hook *workloadsv1alpha2.RoleInstanceLifecycleHook
+	if set.Spec.RoleInstanceTemplate.Lifecycle != nil {
+		hook = set.Spec.RoleInstanceTemplate.Lifecycle.PreUpdate
+	}
+	if hook == nil {
+		return nil
+	}
+	targetSet := make(map[int]bool, len(targets))
+	for _, idx := range targets {
+		targetSet[idx] = true
+	}
+	for i := range replicas {
+		instance := replicas[i]
+		if instance == nil || targetSet[i] || isTerminating(instance) {
+			continue
+		}
+		if roleinstancelifecycle.HookState(instance) != constants.RoleInstanceHookStatePreUpdate {
+			continue
+		}
+		pods, err := ssc.lifecyclePods(ctx, instance)
+		if err != nil {
+			return err
+		}
+		if err := ssc.hookControl.CancelHook(ctx, instance,
+			constants.RoleInstanceHookStateUpdating, hook, pods); err != nil {
+			return err
+		}
+		if ssc.recorder != nil {
+			ssc.recorder.Eventf(set, corev1.EventTypeNormal, "LifecycleHookCancelled",
+				"preUpdate lifecycle hook cancelled; instance is no longer an update target")
+		}
+	}
+	return nil
 }
 
 func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleHook(
@@ -1482,7 +1548,6 @@ func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleHook(
 	instance *workloadsv1alpha2.RoleInstance,
 	hook *workloadsv1alpha2.RoleInstanceLifecycleHook,
 	state constants.RoleInstanceLifecycleHookStateType,
-	nextState constants.RoleInstanceLifecycleHookStateType,
 ) (bool, error) {
 	if ssc.hookControl == nil || hook == nil {
 		return false, nil
@@ -1510,9 +1575,10 @@ func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleHook(
 	if err := ssc.hookControl.SyncRuntimeLabels(ctx, instance, set.Spec.RoleInstanceTemplate.Lifecycle, pods); err != nil {
 		return true, err
 	}
-	if err := ssc.hookControl.SetHookState(ctx, instance, nextState, pods); err != nil {
-		return true, err
-	}
+	// The released hook is the grant. The mutation that consumes it writes
+	// the Updating state atomically (see inPlaceUpdateInstance); Recreate
+	// deletes the instance, so the grant dies with the object. A grant that
+	// is never consumed is cancelled by cancelUntargetedPreUpdateHooks.
 	return false, nil
 }
 
@@ -1532,6 +1598,11 @@ func (ssc *defaultStatefulInstanceSetControl) lifecyclePods(
 	}
 	pods := make([]*corev1.Pod, 0, len(podList.Items))
 	for i := range podList.Items {
+		if !metav1.IsControlledBy(&podList.Items[i], instance) {
+			// The name label alone can match foreign or leftover Pods; only
+			// controller-owned members participate in the protocol.
+			continue
+		}
 		pods = append(pods, &podList.Items[i])
 	}
 	return pods, nil

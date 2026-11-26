@@ -255,6 +255,39 @@ func TestPrepareLifecycleOperationResumesRecoveringWithoutReplay(t *testing.T) {
 	require.Equal(t, constants.RoleInstanceHookStateRecovering, roleinstancelifecycle.HookState(live))
 }
 
+// Mirror of the set-side arbitration: while the owning RoleInstanceSet
+// controller holds an armed preUpdate, the RoleInstance controller must not
+// enter preRecover on the same hook-state label.
+func TestPrepareLifecycleOperationDefersPreRecoverForArmedPreUpdate(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/recover": "true"},
+		},
+	}
+	instance.Labels = map[string]string{
+		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStatePreUpdate),
+		"consumer.example/update":                   "blocked",
+	}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+	result, err := r.prepareLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent: false,
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, result.blocked, "recovery must defer while the set controller gates an update")
+	require.True(t, result.operation)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Equal(t, constants.RoleInstanceHookStatePreUpdate, roleinstancelifecycle.HookState(live),
+		"an armed preUpdate must not be overwritten by a preRecover entry")
+	require.NotContains(t, live.Labels, "consumer.example/recover")
+}
+
 // When no hooks remain configured, reconciliation must remove stale protocol
 // labels, the hook-state label, and the preDelete finalizer instead of
 // skipping cleanup entirely.
