@@ -1,0 +1,85 @@
+# Prometheus scrape config for the RBG controller.
+#
+# The file format is what Prometheus expects for scrape_config_files
+# includes: a mapping with a single scrape_configs key. The Prometheus
+# Operator's additionalScrapeConfigs secret (and kube-prometheus-stack's
+# additionalScrapeConfigs value) instead expect a bare list of scrape jobs,
+# so for those use the single job entry under scrape_configs as the content.
+# The job can also be copied into an existing configuration under
+# scrape_configs.
+scrape_configs:
+  - job_name: rbgs-controller
+    scrape_interval: 30s
+    # The RBG controller serves metrics over HTTPS on the
+    # --metrics-bind-address port. The shipped Helm chart and Kustomize
+    # manifests set :8443; the binary flag itself defaults to 0, which
+    # disables the metrics server. Requests are
+    # authenticated (TokenReview) and authorized (SubjectAccessReview)
+    # by the controller, so Prometheus must present its own service
+    # account token. See rbac.yaml for the required RBAC: a ClusterRole
+    # for /metrics and a namespaced Role for pod discovery.
+    # If the controller runs with --metrics-secure=false or
+    # --enable-webhooks=none, metrics are served over plain HTTP; change
+    # scheme to http and remove the authorization block in that case
+    # (see README.md).
+    scheme: https
+    metrics_path: /metrics
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tls_config:
+      # The shipped RBG manifests do not provision a certificate for the
+      # metrics server, so the controller serves a self-signed certificate
+      # and verification is disabled here. If you run the controller with
+      # --metrics-cert-path, targets are still addressed by pod IP, so
+      # verification needs both ca_file and server_name set to a DNS SAN
+      # of that certificate; flipping insecure_skip_verify alone does not
+      # work.
+      insecure_skip_verify: true
+    # Pod discovery requires get/list/watch on pods for the Prometheus
+    # service account; see the discovery Role in rbac.yaml. Discovery is
+    # scoped to the controller's namespace: the scrape job sends the
+    # Prometheus service account token to every discovered target, and the
+    # control-plane label is not a security boundary, so cluster-wide
+    # discovery would let any workload impersonate a controller pod and
+    # capture the token. Adjust the namespace to where the RBG controller
+    # runs.
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - rbgs-system
+    relabel_configs:
+      # Only scrape rbgs-controller-manager pods. The metrics port is not
+      # declared as a container port, so rebuild __address__ from the pod IP.
+      # IPv6 pod IPs must be bracketed in a host:port address.
+      - source_labels: [__meta_kubernetes_pod_label_control_plane]
+        regex: rbgs-controller
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_ip]
+        regex: ((?:[0-9]{1,3}\.){3}[0-9]{1,3})
+        target_label: __address__
+        replacement: $1:8443
+        action: replace
+      - source_labels: [__meta_kubernetes_pod_ip]
+        regex: ([0-9A-Fa-f:]*:[0-9A-Fa-f:]+)
+        target_label: __address__
+        replacement: "[$1]:8443"
+        action: replace
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+        replacement: $1
+        action: replace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+        replacement: $1
+        action: replace
+      # Mark every series from this job, including the up series that
+      # Prometheus maintains even when a scrape fails, so the Grafana
+      # dashboard can resolve the job and namespace before the first
+      # successful scrape and after a scrape job rename.
+      - target_label: rbgs_controller
+        replacement: "true"
+        action: replace

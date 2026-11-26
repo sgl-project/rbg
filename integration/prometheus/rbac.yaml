@@ -1,0 +1,75 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rbgs-prometheus-metrics-reader
+rules:
+  # The controller's metrics endpoint authenticates the caller with
+  # TokenReview and authorizes it with SubjectAccessReview. Scraping
+  # /metrics therefore needs nonResourceURLs permission.
+  - nonResourceURLs:
+      - /metrics
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rbgs-prometheus-metrics-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rbgs-prometheus-metrics-reader
+subjects:
+  # Adjust to the service account used by your Prometheus instance.
+  # prometheus-k8s/monitoring matches a default kube-prometheus (jsonnet)
+  # install. With kube-prometheus-stack the name comes from the Helm
+  # fullname (typically <release>-kube-prometheus-stack-prometheus; check
+  # the serviceAccountName of your Prometheus pod), and its default
+  # ClusterRole already allows get on /metrics, so
+  # kube-prometheus-stack users can skip this file entirely.
+  - kind: ServiceAccount
+    name: prometheus-k8s
+    namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: rbgs-prometheus-discovery
+  # Adjust to the namespace where the RBG controller runs; it must match the
+  # namespaces filter in scrape-config.yaml.
+  namespace: rbgs-system
+rules:
+  # The scrape config in scrape-config.yaml uses kubernetes_sd_configs with
+  # role: pod, scoped to this namespace, to find controller pods, which
+  # requires get/list/watch on pods. A kube-prometheus-stack Prometheus
+  # already has this permission; a kube-prometheus (jsonnet) Prometheus does
+  # not, and without this role the job silently discovers no targets.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: rbgs-prometheus-discovery
+  namespace: rbgs-system
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: rbgs-prometheus-discovery
+subjects:
+  # Adjust to the service account used by your Prometheus instance.
+  # prometheus-k8s/monitoring matches a default kube-prometheus (jsonnet)
+  # install. With kube-prometheus-stack the name comes from the Helm
+  # fullname (typically <release>-kube-prometheus-stack-prometheus; check
+  # the serviceAccountName of your Prometheus pod), and its default
+  # ClusterRole already grants cluster-wide pod discovery,
+  # so kube-prometheus-stack users can skip this file entirely.
+  - kind: ServiceAccount
+    name: prometheus-k8s
+    namespace: monitoring
