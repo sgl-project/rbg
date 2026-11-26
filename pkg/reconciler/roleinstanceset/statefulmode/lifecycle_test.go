@@ -321,6 +321,28 @@ func TestStatefulScaleDownWaitsForPreDeleteFinalizer(t *testing.T) {
 	h.assertDeleted(t, instance.Name)
 }
 
+// Enabling preDelete together with a Recreate image update must not delete
+// the target before the reserved finalizer exists.
+func TestStatefulRecreateUpdateWaitsForPreDeleteFinalizer(t *testing.T) {
+	h := newRollbackTestHarness(t, "kep527-recreate-gate", 1, 0, 0)
+	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+	h.set.Spec.UpdateStrategy.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/drain": "true"},
+		},
+	}
+	target := h.instance(0, h.intermediate.Name, true)
+	target.ResourceVersion = "1"
+
+	h.reconcile(t, target)
+	h.assertDeleted(t)
+
+	target.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
+	h.reconcile(t, target)
+	h.assertDeleted(t, target.Name)
+}
+
 // Without lifecycle hooks, OrderedReady scale-down keeps main's one-pass
 // pacing: every condemned instance is deleted in a single reconcile.
 func TestStatefulOrderedScaleDownKeepsMainPacingWithoutHooks(t *testing.T) {

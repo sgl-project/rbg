@@ -148,16 +148,20 @@ func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx conte
 		if !metav1.IsControlledBy(instance, set) {
 			continue
 		}
-		if instance.DeletionTimestamp != nil {
-			continue
-		}
 		if equality.Semantic.DeepEqual(instance.Spec.Lifecycle, desired) {
 			continue
 		}
+		// Deleting instances are still synced: removing the preDelete hook is
+		// the documented way to let a stuck deletion continue, and that
+		// configuration change must reach instances already held by the
+		// reserved finalizer.
 		base := instance.DeepCopy()
 		instance.Spec.Lifecycle = desired.DeepCopy()
 		if err := r.client.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
 			return err
+		}
+		if instance.DeletionTimestamp != nil {
+			continue
 		}
 		if instance.Status.LastPhaseCompleteGeneration >= instance.Generation {
 			continue

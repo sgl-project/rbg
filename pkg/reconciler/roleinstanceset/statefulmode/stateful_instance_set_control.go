@@ -1276,15 +1276,6 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 		// the object is gone, replacing the set-level hook wait.
 		return monotonic && controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer), nil
 	}
-	if set.Spec.RoleInstanceTemplate.Lifecycle != nil &&
-		set.Spec.RoleInstanceTemplate.Lifecycle.PreDelete != nil &&
-		!controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
-		// The reserved finalizer is the preDelete enablement window. Deletion
-		// cannot start before the RoleInstance controller installs it, or the
-		// hook is skipped entirely.
-		return monotonic, nil
-	}
-
 	klog.V(2).InfoS("InstanceSet terminating condemned Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance))
 	_, deleting, err := ssc.deleteInstance(set, instance)
 	if err != nil {
@@ -1437,6 +1428,16 @@ func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
 	instance *workloadsv1alpha2.RoleInstance,
 ) (bool, bool, error) {
 	if isTerminating(instance) {
+		return false, false, nil
+	}
+	if set.Spec.RoleInstanceTemplate.Lifecycle != nil &&
+		set.Spec.RoleInstanceTemplate.Lifecycle.PreDelete != nil &&
+		!controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
+		// The reserved finalizer is the preDelete enablement window. Deletion
+		// cannot start before the RoleInstance controller installs it, or the
+		// hook is skipped entirely. This covers scale-down and Recreate
+		// rollouts alike: enabling preDelete in the same change as an update
+		// must not delete instances before the finalizer exists.
 		return false, false, nil
 	}
 	if blocked, err := ssc.prepareDelete(set, instance); err != nil || blocked {

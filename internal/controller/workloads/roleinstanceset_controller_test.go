@@ -642,3 +642,66 @@ func TestSyncRoleInstanceLifecycleSnapshotsLatchesAnyPhase(t *testing.T) {
 			live.Status.LastPhaseCompleteGeneration)
 	}
 }
+
+// A deleting instance still receives lifecycle snapshot updates: removing the
+// preDelete hook is the documented way to let a stuck deletion continue, and
+// that change must reach instances held by the reserved finalizer.
+func TestSyncRoleInstanceLifecycleSnapshotsUpdatesDeletingInstances(t *testing.T) {
+	setUID := types.UID("escape-set-uid")
+	matchLabels := map[string]string{"app": "escape-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "escape-set",
+			Namespace: "default",
+			UID:       setUID,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: nil,
+				},
+			},
+		},
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "stuck-0",
+			Namespace:         "default",
+			UID:               types.UID("stuck-0-uid"),
+			Generation:        2,
+			Labels:            matchLabels,
+			DeletionTimestamp: ptr.To(metav1.Now()),
+			Finalizers:        []string{constants.RoleInstancePreDeleteFinalizer, "test.rbg.io/hold"},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+				PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+					SignalLabels: map[string]string{"consumer.example/drain": "true"},
+				},
+			},
+		},
+	}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithRuntimeObjects(set, instance).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	if err := r.syncRoleInstanceLifecycleSnapshots(context.Background(), set); err != nil {
+		t.Fatalf("syncRoleInstanceLifecycleSnapshots() error = %v", err)
+	}
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Spec.Lifecycle != nil {
+		t.Fatal("removing the preDelete hook must reach the deleting instance so its deletion can continue")
+	}
+}

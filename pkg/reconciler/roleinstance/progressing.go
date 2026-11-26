@@ -110,8 +110,10 @@ func instanceBlockerPriority(reason string) int {
 //   - Updating and Recovering return to Running only after the work and
 //     controller-observed readiness complete;
 //   - an update target identified while recovery continues moves to Updating;
-//   - deletion is not a phase: the reconciler returns before status writes once the
-//     instance has a deletionTimestamp, and clients use the deletionTimestamp;
+//   - Terminating is a terminal phase set while a preDelete hook holds the
+//     deleting instance; the reconciler returns before ordinary status writes
+//     once the instance has a deletionTimestamp, and clients use the
+//     deletionTimestamp;
 //   - an absent phase initializes from confirmed workflow facts: an update target is
 //     Updating, a previously established instance with missing Pods is Recovering,
 //     and only a genuinely new instance starts at Creating.
