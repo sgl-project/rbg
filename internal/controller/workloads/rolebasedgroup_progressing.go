@@ -350,6 +350,22 @@ func rbgEntryOwnBlocker(rbg *workloadsv1alpha2.RoleBasedGroup) *metav1.Condition
 	return condition.DeepCopy()
 }
 
+// observationIncompleteSuffixSeparator separates a retained child-derived
+// blocker's base message from the latest observation error appended to it.
+const observationIncompleteSuffixSeparator = "; observation incomplete: "
+
+// stripObservationIncompleteSuffix removes a previously appended
+// observation-error suffix. Retention is evaluated against the persisted
+// condition, whose message already carries the suffix from the previous retry;
+// without stripping it the message would grow on every reconcile until the API
+// limit rejects the write.
+func stripObservationIncompleteSuffix(message string) string {
+	if index := strings.Index(message, observationIncompleteSuffixSeparator); index >= 0 {
+		return message[:index]
+	}
+	return message
+}
+
 // childDerivedBlockerForObservationFailure returns a persisted restart-budget
 // blocker that must survive an incomplete observation. Unlike a controller-owned
 // entry blocker, this fact is re-observed from children on every successful
@@ -366,7 +382,8 @@ func childDerivedBlockerForObservationFailure(rbg *workloadsv1alpha2.RoleBasedGr
 		return nil
 	}
 	retained := condition.DeepCopy()
-	retained.Message = fmt.Sprintf("%s; observation incomplete: %v", retained.Message, observationErr)
+	retained.Message = fmt.Sprintf("%s%s%v",
+		stripObservationIncompleteSuffix(condition.Message), observationIncompleteSuffixSeparator, observationErr)
 	return retained
 }
 

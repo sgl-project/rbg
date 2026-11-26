@@ -588,6 +588,32 @@ func TestReportRBGProgressingBlockerKeepsRestartBudgetOnObservationError(t *test
 	}
 }
 
+func TestObservationIncompleteSuffixDoesNotGrow(t *testing.T) {
+	rbg := newProgressingRBG()
+	rbg.Status.Conditions = []metav1.Condition{{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+		Status:             metav1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonRestartBudgetExceeded,
+		Message:            "restart budget affects roles prefill",
+		ObservedGeneration: rbg.Generation,
+	}}
+	first := childDerivedBlockerForObservationFailure(rbg, stderrors.New("first timeout"))
+	if first == nil {
+		t.Fatal("first retention failed")
+	}
+	rbg.Status.Conditions[0].Message = first.Message
+	second := childDerivedBlockerForObservationFailure(rbg, stderrors.New("second timeout"))
+	if second == nil {
+		t.Fatal("second retention failed")
+	}
+	if got := strings.Count(second.Message, observationIncompleteSuffixSeparator); got != 1 {
+		t.Fatalf("suffix count = %d, want 1; message=%q", got, second.Message)
+	}
+	if !strings.HasSuffix(second.Message, "second timeout") {
+		t.Fatalf("latest observation error must replace the previous one, got %q", second.Message)
+	}
+}
+
 func TestPodGroupWaitingPhase(t *testing.T) {
 	podGroup := func(phase string, unschedulable bool) *unstructured.Unstructured {
 		object := map[string]interface{}{
