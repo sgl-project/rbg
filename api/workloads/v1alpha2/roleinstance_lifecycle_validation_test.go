@@ -97,6 +97,70 @@ func TestValidateRoleInstanceLifecycle(t *testing.T) {
 	}
 }
 
+// The KEP-527 Alpha supports only the native Stateful RoleInstanceSet
+// backend: lifecycle on deprecated workload types or Stateless-pattern roles
+// is rejected instead of being silently ignored.
+func TestValidateRoleInstanceLifecycleRequiresStatefulBackend(t *testing.T) {
+	hooks := &RoleInstanceLifecycle{
+		PreDelete: &RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"example.com/drain": "true"},
+		},
+	}
+	tests := []struct {
+		name    string
+		role    RoleSpec
+		wantErr string
+	}{
+		{
+			name: "stateful RIS accepted",
+			role: RoleSpec{
+				Name:      "worker",
+				Lifecycle: hooks,
+				Annotations: map[string]string{
+					constants.RoleInstancePatternKey: string(constants.StatefulPattern),
+				},
+			},
+		},
+		{
+			name: "stateless pattern rejected",
+			role: RoleSpec{
+				Name:      "worker",
+				Lifecycle: hooks,
+				Annotations: map[string]string{
+					constants.RoleInstancePatternKey: string(constants.StatelessPattern),
+				},
+			},
+			wantErr: "requires the native Stateful RoleInstanceSet backend",
+		},
+		{
+			name: "deprecated workload type rejected",
+			role: RoleSpec{
+				Name:      "worker",
+				Lifecycle: hooks,
+				Annotations: map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: "apps/v1/StatefulSet",
+				},
+			},
+			wantErr: "requires the native Stateful RoleInstanceSet backend",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			roles := []RoleSpec{test.role}
+			err := validateRoleInstanceLifecycleList("spec.roles", roles)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("validateRoleInstanceLifecycleList() error = %v, want nil", err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) {
+				t.Fatalf("validateRoleInstanceLifecycleList() error = %v, want containing %q", err, test.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateRoleInstanceSetLifecycleMutualExclusion(t *testing.T) {
 	set := &RoleInstanceSet{
 		Spec: RoleInstanceSetSpec{

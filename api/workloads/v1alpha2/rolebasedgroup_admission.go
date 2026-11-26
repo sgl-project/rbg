@@ -96,6 +96,12 @@ func validateRoleInstanceLifecycleList(path string, roles []RoleSpec) error {
 		if !HasRoleInstanceLifecycleHooks(role.Lifecycle) {
 			continue
 		}
+		pattern := role.Annotations[constants.RoleInstancePatternKey]
+		if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType ||
+			(pattern != "" && pattern != string(constants.StatefulPattern)) {
+			return fmt.Errorf("%s[%d].lifecycle requires the native Stateful RoleInstanceSet backend",
+				path, i)
+		}
 		if err := ValidateRoleInstanceLifecycle(
 			fmt.Sprintf("%s[%d].lifecycle", path, i), role.Lifecycle, nil); err != nil {
 			return err

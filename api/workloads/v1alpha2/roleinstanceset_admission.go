@@ -22,6 +22,8 @@ import (
 
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleInstanceSetValidator implements admission.CustomValidator for
@@ -73,6 +75,11 @@ func (v *RoleInstanceSetValidator) validate(oldSet, set *RoleInstanceSet) error 
 	newHasHooks := HasRoleInstanceLifecycleHooks(newLifecycle)
 	if !newHasHooks && !HasRoleInstanceLifecycleHooks(oldLifecycle) {
 		return nil
+	}
+	if pattern := set.Annotations[constants.RoleInstancePatternKey]; pattern != "" &&
+		pattern != string(constants.StatefulPattern) {
+		return fmt.Errorf(
+			"spec.roleInstanceTemplate.lifecycle requires the native Stateful RoleInstanceSet pattern")
 	}
 	if newHasHooks {
 		return ValidateRoleInstanceSetLifecycle(set)

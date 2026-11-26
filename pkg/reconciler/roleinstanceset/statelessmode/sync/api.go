@@ -26,7 +26,6 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
-	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
 )
 
@@ -54,7 +53,6 @@ type realControl struct {
 	client.Client
 	lifecycleControl lifecycle.Interface
 	inplaceControl   inplaceupdate.Interface
-	hookControl      *roleinstancelifecycle.HookControl
 	recorder         record.EventRecorder
 }
 
@@ -63,7 +61,6 @@ func New(c client.Client, recorder record.EventRecorder) Interface {
 		Client:           c,
 		inplaceControl:   inplaceupdate.New(c, utils.RevisionAdapterImpl),
 		lifecycleControl: lifecycle.New(c),
-		hookControl:      roleinstancelifecycle.NewHookControl(c),
 		recorder:         recorder,
 	}
 }

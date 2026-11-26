@@ -26,14 +26,12 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/klog/v2"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/inplace/instance/specifieddelete"
-	roleinstancelifecycle "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/utils"
 )
@@ -182,11 +180,6 @@ func (rc *realControl) updateInstance(ctx context.Context, set *workloadsv1alpha
 	updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision,
 	instance *workloadsv1alpha2.RoleInstance,
 ) (time.Duration, error) {
-	if blocked, err := rc.prepareLifecycleUpdate(ctx, set, instance); err != nil {
-		return 0, err
-	} else if blocked {
-		return 0, nil
-	}
 
 	if set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
 		var oldRevision *apps.ControllerRevision
@@ -265,81 +258,6 @@ func (rc *realControl) updateInstance(ctx context.Context, set *workloadsv1alpha
 	rc.recorder.Eventf(set, v1.EventTypeNormal, "SuccessfulUpdateInstanceReCreate",
 		"successfully patch instance %s specified-delete for update(revision %s)", instance.Name, updateRevision.Name)
 	return 0, nil
-}
-
-// prepareLifecycleUpdate runs the KEP-527 preUpdate barrier for a Stateless
-// update: enter the hook, wait for the executor to remove the signal labels,
-// then advance to Updating so the in-place or recreate mutation may run.
-func (rc *realControl) prepareLifecycleUpdate(
-	ctx context.Context,
-	set *workloadsv1alpha2.RoleInstanceSet,
-	instance *workloadsv1alpha2.RoleInstance,
-) (bool, error) {
-	if rc.hookControl == nil {
-		return false, nil
-	}
-	var hook *workloadsv1alpha2.RoleInstanceLifecycleHook
-	if set.Spec.RoleInstanceTemplate.Lifecycle != nil {
-		hook = set.Spec.RoleInstanceTemplate.Lifecycle.PreUpdate
-	}
-	if hook == nil {
-		return false, nil
-	}
-	pods, err := rc.lifecyclePods(ctx, instance)
-	if err != nil {
-		return true, err
-	}
-	hookState := roleinstancelifecycle.HookState(instance)
-	if hookState == constants.RoleInstanceHookStateUpdating {
-		// Updating is durable authorization: preUpdate was already released,
-		// so a mutation retry proceeds without a second acknowledgement.
-		return false, nil
-	}
-	if hookState != constants.RoleInstanceHookStatePreUpdate {
-		if err := rc.hookControl.EnterHook(
-			ctx, instance, constants.RoleInstanceHookStatePreUpdate, hook, pods); err != nil {
-			return true, err
-		}
-		rc.recorder.Eventf(set, v1.EventTypeNormal, "LifecycleHookEntered",
-			"preUpdate lifecycle hook entered; waiting for signal labels to be removed")
-		return true, nil
-	}
-	if !roleinstancelifecycle.HookReleased(instance, hook) {
-		if err := rc.hookControl.SyncRuntimeLabels(
-			ctx, instance, set.Spec.RoleInstanceTemplate.Lifecycle, pods); err != nil {
-			return true, err
-		}
-		return true, nil
-	}
-	if err := rc.hookControl.SyncRuntimeLabels(
-		ctx, instance, set.Spec.RoleInstanceTemplate.Lifecycle, pods); err != nil {
-		return true, err
-	}
-	if err := rc.hookControl.SetHookState(ctx, instance, constants.RoleInstanceHookStateUpdating, pods); err != nil {
-		return true, err
-	}
-	return false, nil
-}
-
-func (rc *realControl) lifecyclePods(
-	ctx context.Context,
-	instance *workloadsv1alpha2.RoleInstance,
-) ([]*v1.Pod, error) {
-	if rc.Client == nil {
-		return nil, nil
-	}
-	podList := &v1.PodList{}
-	if err := rc.List(ctx, podList,
-		client.InNamespace(instance.Namespace),
-		client.MatchingLabels{constants.RoleInstanceNameLabelKey: instance.Name},
-	); err != nil {
-		return nil, err
-	}
-	pods := make([]*v1.Pod, 0, len(podList.Items))
-	for i := range podList.Items {
-		pods = append(pods, &podList.Items[i])
-	}
-	return pods, nil
 }
 
 // SortUpdateIndexes sorts the given oldRevisionIndexes of Instances to update according to the InstanceSet strategy.

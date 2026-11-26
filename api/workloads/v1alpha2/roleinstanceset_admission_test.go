@@ -18,9 +18,12 @@ package v1alpha2
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // Lifecycle reconfiguration is validated statically. The webhook must not
@@ -52,5 +55,36 @@ func TestRoleInstanceSetValidatorAcceptsLifecycleReconfiguration(t *testing.T) {
 	validator := &RoleInstanceSetValidator{}
 	if _, err := validator.ValidateUpdate(context.Background(), oldSet, newSet); err != nil {
 		t.Fatalf("ValidateUpdate() error = %v, want static validation only", err)
+	}
+}
+
+// The KEP-527 Alpha supports only the native Stateful RoleInstanceSet
+// pattern: lifecycle on a Stateless-pattern standalone set is rejected.
+func TestRoleInstanceSetValidatorRejectsStatelessPattern(t *testing.T) {
+	set := &RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "set",
+			Namespace: "default",
+			Annotations: map[string]string{
+				constants.RoleInstancePatternKey: string(constants.StatelessPattern),
+			},
+		},
+		Spec: RoleInstanceSetSpec{
+			RoleInstanceTemplate: RoleInstanceTemplate{
+				RoleInstanceSpec: RoleInstanceSpec{
+					Lifecycle: &RoleInstanceLifecycle{
+						PreUpdate: &RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"example.com/signal": "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	validator := &RoleInstanceSetValidator{}
+	_, err := validator.ValidateCreate(context.Background(), set)
+	if err == nil || !strings.Contains(err.Error(), "Stateful RoleInstanceSet pattern") {
+		t.Fatalf("ValidateCreate() error = %v, want Stateless pattern rejection", err)
 	}
 }
