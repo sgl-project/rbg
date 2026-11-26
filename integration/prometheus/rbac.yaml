@@ -21,7 +21,10 @@ roleRef:
   name: rbgs-prometheus-metrics-reader
 subjects:
   # Adjust to the service account used by your Prometheus instance.
-  # prometheus-k8s/monitoring matches a default kube-prometheus-stack install.
+  # prometheus-k8s/monitoring matches a default kube-prometheus (jsonnet)
+  # install. kube-prometheus-stack names the account <release>-prometheus,
+  # and its default ClusterRole already allows get on /metrics, so
+  # kube-prometheus-stack users can skip this file entirely.
   - kind: ServiceAccount
     name: prometheus-k8s
     namespace: monitoring
@@ -31,11 +34,11 @@ kind: ClusterRole
 metadata:
   name: rbgs-prometheus-discovery
 rules:
-  # The scrape config in prometheus.yaml uses kubernetes_sd_configs with
+  # The scrape config in scrape-config.yaml uses kubernetes_sd_configs with
   # role: pod to find controller pods in any namespace, which requires
-  # get/list/watch on pods. kube-prometheus-stack already grants this to
-  # its Prometheus service account; apply this ClusterRole only if yours
-  # does not, otherwise the job silently discovers no targets.
+  # get/list/watch on pods. A kube-prometheus-stack Prometheus already has
+  # this permission; a kube-prometheus (jsonnet) Prometheus does not, and
+  # without this role the job silently discovers no targets.
   - apiGroups:
       - ""
     resources:
@@ -55,7 +58,10 @@ roleRef:
   name: rbgs-prometheus-discovery
 subjects:
   # Adjust to the service account used by your Prometheus instance.
-  # prometheus-k8s/monitoring matches a default kube-prometheus-stack install.
+  # prometheus-k8s/monitoring matches a default kube-prometheus (jsonnet)
+  # install. kube-prometheus-stack names the account <release>-prometheus,
+  # and its default ClusterRole already grants cluster-wide pod discovery,
+  # so kube-prometheus-stack users can skip this file entirely.
   - kind: ServiceAccount
     name: prometheus-k8s
     namespace: monitoring

@@ -8,7 +8,7 @@ controller Deployment; apply it next to your existing Prometheus and Grafana.
 
 | File | Purpose |
 | ---- | ------- |
-| `prometheus.yaml` | ConfigMap with a Prometheus scrape config for `rbgs-controller-manager` pods |
+| `scrape-config.yaml` | Bare Prometheus scrape config (`scrape_configs` only) for `rbgs-controller-manager` pods |
 | `rbac.yaml` | ClusterRoles and ClusterRoleBindings that let Prometheus discover controller pods and read the authenticated `/metrics` endpoint |
 | `rbgs-prometheus-grafana-monitor.json` | Grafana dashboard for the controller-runtime metrics exposed by the RBG controller |
 
@@ -21,19 +21,20 @@ against the Kubernetes API server, and the `role: pod` service discovery
 needs its own permissions. Three consequences:
 
 1. Prometheus must send its own service account token
-   (`authorization.credentials_file` in `prometheus.yaml`).
+   (`authorization.credentials_file` in `scrape-config.yaml`).
 2. That service account must be allowed to `get` the non-resource URL
    `/metrics`, which `rbac.yaml` grants.
 
 3. The `role: pod` service discovery requires `get`/`list`/`watch` on pods.
    `rbac.yaml` also grants this via a separate `rbgs-prometheus-discovery`
-   ClusterRole. A kube-prometheus-stack Prometheus already has this
-   permission, so the binding is redundant there; without it, a Prometheus
-   that lacks pod-discovery permissions silently discovers no targets. If you
-   know the namespace the controller runs in and prefer least privilege, drop
-   the ClusterRole and bind a namespaced Role with the same rules to the
-   Prometheus service account instead, and add a `namespaces:` filter to the
-   `kubernetes_sd_configs` entry.
+   ClusterRole. A default kube-prometheus-stack Prometheus already has both
+   permissions, so its users can skip `rbac.yaml` entirely. A kube-prometheus
+   (jsonnet) Prometheus, whose service account the default subject matches,
+   can list pods only in a few namespaces, so it needs the discovery
+   ClusterRole; without it the job silently discovers no targets. If you
+   know the namespace the controller runs in and prefer least privilege,
+   bind a namespaced Role with the same rules instead, and add a
+   `namespaces:` filter to the `kubernetes_sd_configs` entry.
 
 The scrape config discovers controller pods by the `control-plane:
 rbgs-controller` label, adds `namespace` and `pod` labels to every series, and
@@ -44,23 +45,27 @@ The config assumes the default secure metrics serving. Controllers started
 with `--metrics-secure=false`, or with `--enable-webhooks=none` (which forces
 `Metrics.SecureServing=false`), serve the same port over plain HTTP. For those
 installations, change `scheme: https` to `scheme: http` in the scrape config;
-the bearer token then becomes unnecessary, but leaving it configured is
-harmless.
+remove the `authorization` block as well: with plain HTTP, Prometheus would
+send the service-account token in cleartext to the pod IP on every scrape.
 
 ## Usage
 
-1. Adjust `rbac.yaml` to bind the service account your Prometheus runs as
-   (the default matches kube-prometheus-stack: `prometheus-k8s` in
-   `monitoring`), then apply it:
+1. Adjust `rbac.yaml` to bind the service account your Prometheus runs as,
+   then apply it. The default subject matches a kube-prometheus (jsonnet)
+   install (`prometheus-k8s` in `monitoring`); kube-prometheus-stack names
+   the account `<release>-prometheus`, and its default ClusterRole already
+   grants both discovery and `/metrics`, so kube-prometheus-stack users can
+   skip this file entirely:
 
    ```bash
    kubectl apply -f integration/prometheus/rbac.yaml
    ```
 
-2. Either mount `prometheus.yaml` as an additional config in your Prometheus,
-   or copy its `scrape_configs` entry into your existing Prometheus
-   configuration. For a kube-prometheus-stack install, use the
-   `additionalScrapeConfigs` secret.
+2. Add the scrape job to your Prometheus. `scrape-config.yaml` contains only
+   a `scrape_configs` list, so it fits the common integration points: a
+   `scrape_config_files` include, the `additionalScrapeConfigs` secret of a
+   kube-prometheus-stack release or the Prometheus operator, or a plain copy
+   of the job into an existing configuration.
 
 3. Import `rbgs-prometheus-grafana-monitor.json` into Grafana (Dashboards ->
    New -> Import), select your Prometheus data source, and pick the
@@ -81,13 +86,20 @@ The dashboard is built from the metrics controller-runtime exposes on
 - Controller process: leader election status, goroutines, resident memory and
   CPU usage.
 
-The `namespace` and `controller` variables are label-based, so the dashboard
-works for any RBG installation scraped by the same Prometheus.
+The `job`, `namespace` and `controller` variables are label-based. Every
+panel query filters on the scrape `job`, so the dashboard stays scoped to the
+RBG controller even when the same Prometheus scrapes other components, and it
+keeps working if you rename the scrape job.
 
 ## Security note
 
-`prometheus.yaml` sets `insecure_skip_verify: true` because the metrics server
-uses a self-signed certificate unless the controller is run with
-`--metrics-cert-path` (see `config/default/kustomization.yaml` for the
-cert-manager option). When you provision a real certificate for the metrics
-server, replace `insecure_skip_verify` with the matching `ca_file`.
+`scrape-config.yaml` sets `insecure_skip_verify: true` because the shipped
+RBG manifests do not provision a certificate for the metrics server: the
+cert-manager blocks in `config/default/kustomization.yaml` are commented-out
+kubebuilder scaffold, and the Helm chart has no knob for
+`--metrics-cert-path`, so the controller serves a self-signed certificate.
+If you run the controller with `--metrics-cert-path` and a real certificate,
+note that the scrape targets are addressed by pod IP: set both
+`tls_config.ca_file` and `tls_config.server_name` (a DNS SAN of that
+certificate). Setting a CA without `server_name` fails, because the
+certificate's SANs are service DNS names, not pod IPs.

@@ -1,0 +1,58 @@
+# Prometheus scrape config for the RBG controller.
+#
+# This file contains only a scrape_configs list, so it can be used as:
+#   - a scrape_config_files include from a Prometheus configuration file,
+#   - the additionalScrapeConfigs list of a kube-prometheus-stack release or
+#     the Prometheus operator's additionalScrapeConfigs secret,
+#   - a source to copy the single job from into an existing configuration.
+scrape_configs:
+  - job_name: rbgs-controller
+    scrape_interval: 30s
+    # The RBG controller serves metrics over HTTPS on the
+    # --metrics-bind-address port (8443 by default). Requests are
+    # authenticated (TokenReview) and authorized (SubjectAccessReview)
+    # by the controller, so Prometheus must present its own service
+    # account token. See rbac.yaml for the required ClusterRoles.
+    # If the controller runs with --metrics-secure=false or
+    # --enable-webhooks=none, metrics are served over plain HTTP; change
+    # scheme to http and remove the authorization block in that case
+    # (see README.md).
+    scheme: https
+    metrics_path: /metrics
+    authorization:
+      credentials_file: /var/run/secrets/kubernetes.io/serviceaccount/token
+    tls_config:
+      # The shipped RBG manifests do not provision a certificate for the
+      # metrics server, so the controller serves a self-signed certificate
+      # and verification is disabled here. If you run the controller with
+      # --metrics-cert-path, targets are still addressed by pod IP, so
+      # verification needs both ca_file and server_name set to a DNS SAN
+      # of that certificate; flipping insecure_skip_verify alone does not
+      # work.
+      insecure_skip_verify: true
+    # Pod discovery requires get/list/watch on pods for the Prometheus
+    # service account; see the discovery ClusterRole in rbac.yaml.
+    kubernetes_sd_configs:
+      - role: pod
+    relabel_configs:
+      # Only scrape rbgs-controller-manager pods. The metrics port is not
+      # declared as a container port, so rebuild __address__ from the pod IP.
+      - source_labels: [__meta_kubernetes_pod_label_control_plane]
+        regex: rbgs-controller
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_phase]
+        regex: Running
+        action: keep
+      - source_labels: [__meta_kubernetes_pod_ip]
+        regex: (.+)
+        target_label: __address__
+        replacement: $1:8443
+        action: replace
+      - source_labels: [__meta_kubernetes_namespace]
+        target_label: namespace
+        replacement: $1
+        action: replace
+      - source_labels: [__meta_kubernetes_pod_name]
+        target_label: pod
+        replacement: $1
+        action: replace

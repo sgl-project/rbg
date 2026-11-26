@@ -94,7 +94,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (controller) (rate(controller_runtime_reconcile_total{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
+          "expr": "sum by (controller) (rate(controller_runtime_reconcile_total{job=~\"$job\", namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
           "legendFormat": "{{controller}}",
           "range": true,
           "refId": "A"
@@ -167,7 +167,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (controller) (rate(controller_runtime_reconcile_errors_total{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
+          "expr": "sum by (controller) (rate(controller_runtime_reconcile_errors_total{job=~\"$job\", namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
           "legendFormat": "{{controller}}",
           "range": true,
           "refId": "A"
@@ -240,7 +240,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (controller) (rate(controller_runtime_terminal_reconcile_errors_total{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
+          "expr": "sum by (controller) (rate(controller_runtime_terminal_reconcile_errors_total{job=~\"$job\", namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
           "legendFormat": "{{controller}}",
           "range": true,
           "refId": "A"
@@ -313,7 +313,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (controller) (rate(controller_runtime_reconcile_panics_total{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
+          "expr": "sum by (controller) (rate(controller_runtime_reconcile_panics_total{job=~\"$job\", namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval]))",
           "legendFormat": "{{controller}}",
           "range": true,
           "refId": "A"
@@ -382,7 +382,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (controller) (controller_runtime_active_workers{namespace=~\"$namespace\", controller=~\"$controller\"})",
+          "expr": "max by (controller) (controller_runtime_active_workers{job=~\"$job\", namespace=~\"$namespace\", controller=~\"$controller\"})",
           "legendFormat": "{{controller}}",
           "range": true,
           "refId": "A"
@@ -464,7 +464,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.5, sum by (controller, le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.5, sum by (controller, le) (rate(controller_runtime_reconcile_time_seconds_bucket{job=~\"$job\", namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval])))",
           "legendFormat": "{{controller}} p50",
           "range": true,
           "refId": "A"
@@ -475,7 +475,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.95, sum by (controller, le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.95, sum by (controller, le) (rate(controller_runtime_reconcile_time_seconds_bucket{job=~\"$job\", namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval])))",
           "legendFormat": "{{controller}} p95",
           "range": true,
           "refId": "B"
@@ -486,7 +486,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (controller, le) (rate(controller_runtime_reconcile_time_seconds_bucket{namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (controller, le) (rate(controller_runtime_reconcile_time_seconds_bucket{job=~\"$job\", namespace=~\"$namespace\", controller=~\"$controller\"}[$__rate_interval])))",
           "legendFormat": "{{controller}} p99",
           "range": true,
           "refId": "C"
@@ -555,7 +555,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (controller) (controller_runtime_max_concurrent_reconciles{namespace=~\"$namespace\", controller=~\"$controller\"})",
+          "expr": "max by (controller) (controller_runtime_max_concurrent_reconciles{job=~\"$job\", namespace=~\"$namespace\", controller=~\"$controller\"})",
           "legendFormat": "{{controller}}",
           "range": true,
           "refId": "A"
@@ -624,7 +624,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (name) (rate(workqueue_retries_total{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval]))",
+          "expr": "sum by (name) (rate(workqueue_retries_total{job=~\"$job\", namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval]))",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -706,7 +706,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (name) (workqueue_depth{namespace=~\"$namespace\", name=~\"$controller\"})",
+          "expr": "max by (name) (workqueue_depth{job=~\"$job\", namespace=~\"$namespace\", name=~\"$controller\"})",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -775,7 +775,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (name) (rate(workqueue_adds_total{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval]))",
+          "expr": "sum by (name) (rate(workqueue_adds_total{job=~\"$job\", namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval]))",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -844,7 +844,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (name, le) (rate(workqueue_queue_duration_seconds_bucket{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (name, le) (rate(workqueue_queue_duration_seconds_bucket{job=~\"$job\", namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval])))",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -913,7 +913,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (name, le) (rate(workqueue_work_duration_seconds_bucket{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (name, le) (rate(workqueue_work_duration_seconds_bucket{job=~\"$job\", namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval])))",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -986,7 +986,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (name) (workqueue_unfinished_work_seconds{namespace=~\"$namespace\", name=~\"$controller\"})",
+          "expr": "max by (name) (workqueue_unfinished_work_seconds{job=~\"$job\", namespace=~\"$namespace\", name=~\"$controller\"})",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -1056,7 +1056,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (name) (workqueue_longest_running_processor_seconds{namespace=~\"$namespace\", name=~\"$controller\"})",
+          "expr": "max by (name) (workqueue_longest_running_processor_seconds{job=~\"$job\", namespace=~\"$namespace\", name=~\"$controller\"})",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -1138,7 +1138,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (code) (rate(rest_client_requests_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "expr": "sum by (code) (rate(rest_client_requests_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval]))",
           "legendFormat": "HTTP {{code}}",
           "range": true,
           "refId": "A"
@@ -1207,7 +1207,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (method) (rate(rest_client_requests_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "expr": "sum by (method) (rate(rest_client_requests_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval]))",
           "legendFormat": "{{method}}",
           "range": true,
           "refId": "A"
@@ -1280,7 +1280,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (code) (rate(rest_client_requests_total{namespace=~\"$namespace\", code=~\"[45]..\"}[$__rate_interval]))",
+          "expr": "sum by (code) (rate(rest_client_requests_total{job=~\"$job\", namespace=~\"$namespace\", code=~\"[45]..\"}[$__rate_interval]))",
           "legendFormat": "HTTP {{code}}",
           "range": true,
           "refId": "A"
@@ -1362,7 +1362,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (webhook, code) (rate(controller_runtime_webhook_requests_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "expr": "sum by (webhook, code) (rate(controller_runtime_webhook_requests_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval]))",
           "legendFormat": "{{webhook}} HTTP {{code}}",
           "range": true,
           "refId": "A"
@@ -1431,7 +1431,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (webhook, le) (rate(controller_runtime_webhook_latency_seconds_bucket{namespace=~\"$namespace\"}[$__rate_interval])))",
+          "expr": "histogram_quantile(0.99, sum by (webhook, le) (rate(controller_runtime_webhook_latency_seconds_bucket{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval])))",
           "legendFormat": "{{webhook}}",
           "range": true,
           "refId": "A"
@@ -1500,7 +1500,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (webhook) (controller_runtime_webhook_requests_in_flight{namespace=~\"$namespace\"})",
+          "expr": "max by (webhook) (controller_runtime_webhook_requests_in_flight{job=~\"$job\", namespace=~\"$namespace\"})",
           "legendFormat": "{{webhook}}",
           "range": true,
           "refId": "A"
@@ -1573,7 +1573,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (webhook) (rate(controller_runtime_webhook_panics_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "expr": "sum by (webhook) (rate(controller_runtime_webhook_panics_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval]))",
           "legendFormat": "{{webhook}}",
           "range": true,
           "refId": "A"
@@ -1654,7 +1654,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (name) (leader_election_master_status{namespace=~\"$namespace\"})",
+          "expr": "max by (name) (leader_election_master_status{job=~\"$job\", namespace=~\"$namespace\"})",
           "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
@@ -1724,7 +1724,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (pod) (go_goroutines{namespace=~\"$namespace\"})",
+          "expr": "max by (pod) (go_goroutines{job=~\"$job\", namespace=~\"$namespace\"})",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1793,7 +1793,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (pod) (process_resident_memory_bytes{namespace=~\"$namespace\"})",
+          "expr": "max by (pod) (process_resident_memory_bytes{job=~\"$job\", namespace=~\"$namespace\"})",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1862,7 +1862,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (pod) (rate(process_cpu_seconds_total{namespace=~\"$namespace\"}[$__rate_interval]))",
+          "expr": "sum by (pod) (rate(process_cpu_seconds_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval]))",
           "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
@@ -1902,28 +1902,24 @@
         "type": "datasource"
       },
       {
-        "allValue": ".*",
         "current": {
           "selected": true,
-          "text": [
-            "All"
-          ],
-          "value": [
-            "$__all"
-          ]
+          "text": "rbgs-controller",
+          "value": "rbgs-controller"
         },
         "datasource": {
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(controller_runtime_reconcile_total, namespace)",
+        "definition": "label_values(controller_runtime_reconcile_total{controller=\"workloads-rolebasedgroup\"}, job)",
         "hide": 0,
-        "includeAll": true,
-        "multi": true,
-        "name": "namespace",
+        "includeAll": false,
+        "label": "Prometheus job that scrapes the RBG controller",
+        "multi": false,
+        "name": "job",
         "options": [],
         "query": {
-          "query": "label_values(controller_runtime_reconcile_total, namespace)",
+          "query": "label_values(controller_runtime_reconcile_total{controller=\"workloads-rolebasedgroup\"}, job)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -1947,14 +1943,45 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(controller_runtime_reconcile_total{namespace=~\"$namespace\"}, controller)",
+        "definition": "label_values(controller_runtime_reconcile_total{job=~\"$job\"}, namespace)",
+        "hide": 0,
+        "includeAll": true,
+        "multi": true,
+        "name": "namespace",
+        "options": [],
+        "query": {
+          "query": "label_values(controller_runtime_reconcile_total{job=~\"$job\"}, namespace)",
+          "refId": "PrometheusVariableQueryEditor-VariableQuery"
+        },
+        "refresh": 2,
+        "regex": "",
+        "skipUrlSync": false,
+        "sort": 1,
+        "type": "query"
+      },
+      {
+        "allValue": ".*",
+        "current": {
+          "selected": true,
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${datasource}"
+        },
+        "definition": "label_values(controller_runtime_reconcile_total{job=~\"$job\", namespace=~\"$namespace\"}, controller)",
         "hide": 0,
         "includeAll": true,
         "multi": true,
         "name": "controller",
         "options": [],
         "query": {
-          "query": "label_values(controller_runtime_reconcile_total{namespace=~\"$namespace\"}, controller)",
+          "query": "label_values(controller_runtime_reconcile_total{job=~\"$job\", namespace=~\"$namespace\"}, controller)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
