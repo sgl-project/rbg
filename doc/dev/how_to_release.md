@@ -180,10 +180,11 @@ deprecation webhooks (#556) are both in the release before tagging.
 
 ### KEP-502 status release notes
 
-The release notes for the first release containing the KEP-502 status model must explicitly state
-that `FailedScale` and `FailedUpdate` have a zero compatibility window: the controller stops writing
-both conditions and drops persisted entries on the first status write. Clients must migrate to the
-edge-triggered Warning Events and the `Progressing` blocker reason.
+The release notes for `v0.9.0` final must explicitly state that the KEP-502 status model introduced
+a zero compatibility window for `FailedScale` and `FailedUpdate`, and that this behavior already
+shipped in the `v0.9.0` alpha series. The controller stops writing both conditions and drops
+persisted entries on the first status write. Clients must migrate to the edge-triggered Warning
+Events and the `Progressing` blocker reason.
 
 ### CI Validation
 

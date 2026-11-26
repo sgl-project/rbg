@@ -197,6 +197,7 @@ Parent controllers must aggregate through the documented reason-family mapping a
 
 ```text
 Configuration
+RestartBudget
 Permission
 Admission
 Quota
@@ -233,7 +234,7 @@ Automation should use a small, stable decision table:
 | --- | --- |
 | Is it serving? | RBG and RIS define no `Ready` condition. Evaluate serving readiness from the facts required by consumer policy: per-role `roleStatuses`, RIS `readyReplicas` / `availableReplicas` versus targets, and RI `RoleInstanceReady` plus configured gates |
 | Is the change done? | `Progressing=False`, `reason=Converged`, `status.observedGeneration == metadata.generation`, and the `Progressing` condition's own `observedGeneration == metadata.generation` |
-| Does it need attention? | `Progressing=True` with a reason in the configuration-compatibility, permission, admission, quota, resources, gang, dependencies, or unclassified families |
+| Does it need attention? | `Progressing=True` with a reason in the configuration-compatibility, restart-budget, permission, admission, quota, resources, gang, dependencies, or unclassified families |
 | Unknown / unrecognized reason | Treat as still progressing, not as failure |
 
 The condition-level `observedGeneration` check is required for completion: a legacy or rolled-back controller can advance `status.observedGeneration` while leaving a `Converged` condition written for an older generation. A missing or stale condition `observedGeneration` must be treated as incomplete, not done.
@@ -309,7 +310,7 @@ Each condition has one reason. Overall RBG progress in established children uses
 | Condition / Status | Reasons |
 | --- | --- |
 | Progressing=True | `Creating`, `RoleInstanceSetUpdated`, `Recovering` |
-| Progressing=True, blocked or waiting | `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported`, `PermissionDenied`, `AdmissionDenied`, `WaitingForQuota`, `WaitingForResources`, `WaitingForGang`, `WaitingForDependencies`, `UnclassifiedBlocker`, `RolesNotReady` |
+| Progressing=True, blocked or waiting | `InvalidSpec`, `IncompatibleGangConfig`, `SchedulerUnsupported`, `RestartBudgetExceeded`, `PermissionDenied`, `AdmissionDenied`, `WaitingForQuota`, `WaitingForResources`, `WaitingForGang`, `WaitingForDependencies`, `UnclassifiedBlocker`, `RolesNotReady` |
 | Progressing=False | `Converged`, `Paused` |
 | Unknown | `ObservationIncomplete` |
 
@@ -457,7 +458,7 @@ RI readiness and restart safeguards remain expressed by the following conditions
 | `RoleInstanceCustomReady` and external gates | Maintained by the corresponding owners, preserving their conditions, reasons, and messages |
 | `Restarting` | Restart safeguard maintained by the RI controller; continues to suppress duplicate restart-policy recreation and does not automatically become a readiness gate |
 
-RI `Progressing` uses operation-specific reasons such as `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `PodOperationUnclassified`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. `RoleInstanceReady` reasons are Ready, PodsNotReady, InplaceUpdateNotReady, and ReadinessGatesNotReady when a configured gate condition is missing. `RoleInstanceCustomReady` and other externally owned readiness gates remain separate conditions and do not change `RoleInstanceReady`.
+RI `Progressing` uses operation-specific reasons such as `GroupRestartBudgetExceeded`, `PodCreateQuotaExceeded`, `PodCreateForbidden`, `PodAdmissionRejected`, `InsufficientResources`, `PodOperationUnclassified`, `Creating`, `Updating`, and `Recovering`. A blocker reason is cleared only after a fresh observation of the current target succeeds or confirms that the blocker no longer holds; it must not be inferred from Event history. `RoleInstanceReady` reasons are Ready, PodsNotReady, InplaceUpdateNotReady, and ReadinessGatesNotReady when a configured gate condition is missing. `RoleInstanceCustomReady` and other externally owned readiness gates remain separate conditions and do not change `RoleInstanceReady`.
 `PodRecreateRace` is a non-blocker marker: a Pod operation waiting for a same-name Pod from a previous incarnation of the instance to be removed by garbage collection. RIS and RBG do not map it to a blocker family; it is persisted so the retry stays visible and identical Warning Events are deduplicated, and a previously confirmed current-generation blocker family is retained while the retried operation keeps failing.
 When several facts block `RoleInstanceReady`, the configured in-place update readiness gate takes precedence over Pod readiness, matching the current aggregation order. When blocking recurs after recovery, the condition must not keep a stale `True(reason=Ready)`.
 Preserve restartCount, lastRestartTime, inPlaceUpdateContainerBaselines, and their safety-critical persistence ordering.

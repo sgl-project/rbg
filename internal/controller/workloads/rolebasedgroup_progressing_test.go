@@ -481,10 +481,8 @@ func TestOwnBlockerCompetesWithFreshChildBlockers(t *testing.T) {
 }
 
 func TestRecomputedBlockerFamiliesAreNotCarried(t *testing.T) {
-	// Gang waiting and dependencies are re-observed on every reconcile. A
-	// persisted entry copy must not outlive the fresh observation: carrying it
-	// would keep reporting WaitingForDependencies with an empty role list after
-	// the dependencies became ready.
+	// Restart budgets, gang waiting, and dependencies are re-observed on every
+	// reconcile. A persisted entry copy must not outlive the fresh observation.
 	entry := metav1.Condition{
 		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
 		Status:             metav1.ConditionTrue,
@@ -515,6 +513,21 @@ func TestRecomputedBlockerFamiliesAreNotCarried(t *testing.T) {
 		reason, _ := retainRBGBlockerFamily(rbg, &entry, workloadconstants.ProgressingReasonUnclassifiedBlocker, "operation failed")
 		if reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
 			t.Fatalf("recomputed blocker families must not be retained, got %s", reason)
+		}
+	})
+
+	t.Run("child-derived restart budgets are not carried", func(t *testing.T) {
+		rbg := newProgressingRBG()
+		restartBudget := entry
+		restartBudget.Reason = workloadconstants.ProgressingReasonRestartBudgetExceeded
+		restartBudget.Message = "restart budget affects roles prefill"
+		rbg.Status.Conditions = []metav1.Condition{restartBudget}
+		if got := rbgEntryOwnBlocker(rbg); got != nil {
+			t.Fatalf("child-derived restart-budget blocker must not be captured, got %+v", got)
+		}
+		reason, _ := retainRBGBlockerFamily(rbg, &restartBudget, workloadconstants.ProgressingReasonUnclassifiedBlocker, "operation failed")
+		if reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
+			t.Fatalf("child-derived restart-budget blocker must not be retained, got %s", reason)
 		}
 	})
 }

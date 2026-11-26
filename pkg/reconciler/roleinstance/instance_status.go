@@ -630,16 +630,6 @@ func mergeBudgetStatus(clone *workloadsv1alpha2.RoleInstance, newStatus *workloa
 	clone.Status.GroupRestartCount = liveBudget.GroupRestartCount
 	clone.Status.GroupRestartRevision = liveBudget.GroupRestartRevision
 	clone.Status.RestartBudgetExhausted = liveBudget.RestartBudgetExhausted
-	if budgetManaged && !liveBudget.RestartBudgetExhausted {
-		// A stale informer snapshot may still have computed the exhausted
-		// Progressing condition. The live reset is authoritative, so drop that
-		// budget-owned fact instead of propagating it to RIS and RBG.
-		clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
-			return cond.Type == workloadsv1alpha2.RoleInstanceProgressing &&
-				cond.Status == v1.ConditionTrue &&
-				cond.Reason == synccontrol.GroupRestartBudgetExceeded
-		})
-	}
 	if budgetManaged {
 		synccontrol.EnforceRestartBudgetConditions(clone)
 	}

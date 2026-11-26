@@ -19,6 +19,7 @@ package roleinstanceset
 import (
 	stderrors "errors"
 	"slices"
+	"strings"
 	"testing"
 
 	corev1 "k8s.io/api/core/v1"
@@ -226,10 +227,9 @@ func TestComputeSetProgressingCondition(t *testing.T) {
 				set := newTestSet(3)
 				set.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(2))
 				set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
-					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
-					Status:             corev1.ConditionTrue,
-					Reason:             workloadconstants.ProgressingReasonRoleInstanceUpdated,
-					ObservedGeneration: set.Generation,
+					Type:   workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status: corev1.ConditionTrue,
+					Reason: workloadconstants.ProgressingReasonRoleInstanceUpdated,
 				}}
 				return set
 			}(),
@@ -740,11 +740,21 @@ func TestCurrentSetBlockerPriority(t *testing.T) {
 	}
 
 	instances = []*workloadsv1alpha2.RoleInstance{
-		instanceWithProgressing(workloadsv1alpha2.ReasonGroupRestartBudgetExceeded, workloadsv1alpha2.RoleInstancePhaseRecovering),
+		func() *workloadsv1alpha2.RoleInstance {
+			instance := instanceWithProgressing(workloadsv1alpha2.ReasonGroupRestartBudgetExceeded, workloadsv1alpha2.RoleInstancePhaseRecovering)
+			instance.Name = "router-0"
+			instance.Generation = 1
+			instance.Status.ObservedGeneration = 1
+			instance.Status.Conditions[0].ObservedGeneration = 1
+			return instance
+		}(),
 	}
-	reason, _ = currentSetBlocker(own, nil, instances)
+	reason, message = currentSetBlocker(own, nil, instances)
 	if reason != workloadconstants.ProgressingReasonRestartBudgetExceeded {
 		t.Fatalf("restart budget exhaustion must outrank permission, got %s", reason)
+	}
+	if !strings.Contains(message, "router-0") {
+		t.Fatalf("restart-budget message must name the affected RoleInstance, got %s", message)
 	}
 }
 
@@ -791,6 +801,12 @@ func TestPriorSetBlockerRequiresCurrentGeneration(t *testing.T) {
 	set.Status.Conditions[0].ObservedGeneration = 3
 	if prior := priorSetBlocker(set); prior != nil {
 		t.Fatalf("stale-generation blocker must not be retained, got %+v", prior)
+	}
+
+	set.Status.Conditions[0].Reason = workloadconstants.ProgressingReasonRestartBudgetExceeded
+	set.Status.Conditions[0].ObservedGeneration = 4
+	if prior := priorSetBlocker(set); prior != nil {
+		t.Fatalf("child-derived restart-budget blocker must not be retained as own evidence, got %+v", prior)
 	}
 }
 
@@ -900,9 +916,13 @@ func TestFreshBlockedSetDoesNotUseEstablishmentFallback(t *testing.T) {
 			Message: "exceeded quota",
 		}},
 	}
-	instances := append([]*workloadsv1alpha2.RoleInstance{
-		{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Status: workloadsv1alpha2.RoleInstanceStatus{LastReadyGeneration: 2}},
-	}, bareInstances(2)...)
+	instances := []*workloadsv1alpha2.RoleInstance{
+		{ObjectMeta: metav1.ObjectMeta{Generation: 2}, Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 2, LastReadyGeneration: 2,
+		}},
+		{ObjectMeta: metav1.ObjectMeta{Generation: 1}},
+		{ObjectMeta: metav1.ObjectMeta{Generation: 1}},
+	}
 	ApplySetProgressingCondition(set, blockedStatus, instances)
 	if slices.ContainsFunc(blockedStatus.Conditions, func(condition workloadsv1alpha2.RoleInstanceSetCondition) bool {
 		return condition.Type == workloadsv1alpha2.RoleInstanceSetEstablished
@@ -920,6 +940,91 @@ func TestFreshBlockedSetDoesNotUseEstablishmentFallback(t *testing.T) {
 	got := ComputeSetProgressingCondition(persisted, resumedStatus, instances, nil, nil)
 	if got.Status != corev1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonCreating {
 		t.Fatalf("got status=%s reason=%s, want Creating", got.Status, got.Reason)
+	}
+}
+
+func TestSetProgressingWithStaleOrUnwrittenInstances(t *testing.T) {
+	instance := func(generation, observed, latched int64) *workloadsv1alpha2.RoleInstance {
+		return &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{Generation: generation},
+			Status: workloadsv1alpha2.RoleInstanceStatus{
+				ObservedGeneration: observed, LastReadyGeneration: latched,
+			},
+		}
+	}
+	progressing := func(reason string, generation int64) workloadsv1alpha2.RoleInstanceSetCondition {
+		return workloadsv1alpha2.RoleInstanceSetCondition{
+			Type: workloadsv1alpha2.RoleInstanceSetProgressing, Status: corev1.ConditionTrue,
+			Reason: reason, ObservedGeneration: generation,
+		}
+	}
+	established := workloadsv1alpha2.RoleInstanceSetCondition{
+		Type: workloadsv1alpha2.RoleInstanceSetEstablished, Status: corev1.ConditionTrue,
+	}
+	status := func(ready int32) *workloadsv1alpha2.RoleInstanceSetStatus {
+		return &workloadsv1alpha2.RoleInstanceSetStatus{
+			Replicas: 3, ReadyReplicas: ready, AvailableReplicas: ready,
+			CurrentRevision: "rev", UpdateRevision: "rev", UpdatedReplicas: 3,
+			UpdatedReadyReplicas: ready, ExpectedUpdatedReplicas: 3,
+		}
+	}
+	cases := []struct {
+		name       string
+		replicas   int32
+		paused     bool
+		conditions []workloadsv1alpha2.RoleInstanceSetCondition
+		newStatus  *workloadsv1alpha2.RoleInstanceSetStatus
+		instances  []*workloadsv1alpha2.RoleInstance
+		want       string
+	}{{
+		name:       "behind-generation RI without current-generation update evidence",
+		replicas:   3,
+		conditions: []workloadsv1alpha2.RoleInstanceSetCondition{progressing(workloadconstants.ProgressingReasonRoleInstanceUpdated, 3), established},
+		newStatus:  status(3),
+		instances:  []*workloadsv1alpha2.RoleInstance{instance(2, 2, 2), instance(2, 2, 2), instance(2, 1, 1)},
+		want:       workloadconstants.ProgressingReasonRoleInstanceUpdated,
+	}, {
+		name:       "paused right after the last dispatch",
+		replicas:   3,
+		paused:     true,
+		conditions: []workloadsv1alpha2.RoleInstanceSetCondition{progressing(workloadconstants.ProgressingReasonRoleInstanceUpdated, 3), established},
+		newStatus:  status(3),
+		instances:  []*workloadsv1alpha2.RoleInstance{instance(2, 2, 2), instance(2, 2, 2), instance(2, 1, 1)},
+		want:       workloadconstants.ProgressingReasonRoleInstanceUpdated,
+	}, {
+		name:       "established scale-up with a never-written RI",
+		replicas:   3,
+		conditions: []workloadsv1alpha2.RoleInstanceSetCondition{progressing(workloadconstants.ProgressingReasonScalingUp, 4), established},
+		newStatus:  status(2),
+		instances:  []*workloadsv1alpha2.RoleInstance{instance(1, 1, 1), instance(1, 1, 1), instance(1, 0, 0)},
+		want:       workloadconstants.ProgressingReasonScalingUp,
+	}, {
+		name:       "recovery replacement that has not written status",
+		replicas:   3,
+		conditions: []workloadsv1alpha2.RoleInstanceSetCondition{progressing(workloadconstants.ProgressingReasonRecovering, 4), established},
+		newStatus:  status(2),
+		instances:  []*workloadsv1alpha2.RoleInstance{instance(1, 1, 1), instance(1, 1, 1), instance(1, 0, 0)},
+		want:       workloadconstants.ProgressingReasonRecovering,
+	}, {
+		name:       "set upgraded without latches keeps the RI-latch fallback",
+		replicas:   4,
+		conditions: []workloadsv1alpha2.RoleInstanceSetCondition{progressing(workloadconstants.ProgressingReasonInstancesNotReady, 3)},
+		newStatus:  status(2),
+		instances:  []*workloadsv1alpha2.RoleInstance{instance(1, 1, 1), instance(1, 1, 1), instance(1, 1, 0)},
+		want:       workloadconstants.ProgressingReasonScalingUp,
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			set := newTestSet(tc.replicas)
+			set.Spec.UpdateStrategy.Paused = tc.paused
+			set.Status.Conditions = tc.conditions
+			set.Status.Replicas, set.Status.ReadyReplicas = tc.newStatus.Replicas, tc.newStatus.ReadyReplicas
+			set.Status.UpdatedReplicas, set.Status.ExpectedUpdatedReplicas = tc.newStatus.UpdatedReplicas, tc.newStatus.ExpectedUpdatedReplicas
+			got := ComputeSetProgressingCondition(set, tc.newStatus, tc.instances, nil, nil)
+			if got.Reason != tc.want {
+				t.Fatalf("got %s/%s, want %s", got.Status, got.Reason, tc.want)
+			}
+		})
 	}
 }
 

@@ -168,45 +168,63 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 				return live.Status.GroupRestartCount == 1
 			}, timeout, interval).Should(BeTrue())
 			if exhausted {
-				instanceProgressingReason := func() string {
+				instanceProgressingCondition := func() (*v2.RoleInstanceCondition, int64) {
 					live := &v2.RoleInstance{}
 					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
-						return ""
+						return nil, 0
 					}
-					for _, condition := range live.Status.Conditions {
-						if condition.Type == v2.RoleInstanceProgressing && condition.Status == v1.ConditionTrue {
-							return condition.Reason
+					for i := range live.Status.Conditions {
+						if live.Status.Conditions[i].Type == v2.RoleInstanceProgressing && live.Status.Conditions[i].Status == v1.ConditionTrue {
+							return &live.Status.Conditions[i], live.Generation
 						}
 					}
-					return ""
+					return nil, 0
 				}
-				setProgressingReason := func() string {
+				setProgressingCondition := func() (*v2.RoleInstanceSetCondition, int64) {
 					list := &v2.RoleInstanceSetList{}
 					if err := cli.List(ctx, list, client.InNamespace(namespace)); err != nil || len(list.Items) != 1 {
-						return ""
+						return nil, 0
 					}
-					for _, condition := range list.Items[0].Status.Conditions {
-						if condition.Type == v2.RoleInstanceSetProgressing && condition.Status == v1.ConditionTrue {
-							return condition.Reason
+					for i := range list.Items[0].Status.Conditions {
+						if list.Items[0].Status.Conditions[i].Type == v2.RoleInstanceSetProgressing && list.Items[0].Status.Conditions[i].Status == v1.ConditionTrue {
+							return &list.Items[0].Status.Conditions[i], list.Items[0].Generation
 						}
 					}
-					return ""
+					return nil, 0
 				}
-				groupProgressingReason := func() string {
+				groupProgressingCondition := func() (*metav1.Condition, int64) {
 					live := &v2.RoleBasedGroup{}
 					if err := cli.Get(ctx, client.ObjectKeyFromObject(group), live); err != nil {
-						return ""
+						return nil, 0
 					}
-					for _, condition := range live.Status.Conditions {
-						if condition.Type == string(v2.RoleBasedGroupProgressing) && condition.Status == metav1.ConditionTrue {
-							return condition.Reason
+					for i := range live.Status.Conditions {
+						if live.Status.Conditions[i].Type == string(v2.RoleBasedGroupProgressing) && live.Status.Conditions[i].Status == metav1.ConditionTrue {
+							return &live.Status.Conditions[i], live.Generation
 						}
 					}
-					return ""
+					return nil, 0
 				}
-				Eventually(instanceProgressingReason, timeout, interval).Should(Equal(v2.ReasonGroupRestartBudgetExceeded))
-				Eventually(setProgressingReason, timeout, interval).Should(Equal(constants.ProgressingReasonRestartBudgetExceeded))
-				Eventually(groupProgressingReason, timeout, interval).Should(Equal(constants.ProgressingReasonRestartBudgetExceeded))
+				Eventually(func() string {
+					condition, _ := instanceProgressingCondition()
+					if condition == nil {
+						return ""
+					}
+					return condition.Reason
+				}, timeout, interval).Should(Equal(v2.ReasonGroupRestartBudgetExceeded))
+				Eventually(func() string {
+					condition, _ := setProgressingCondition()
+					if condition == nil {
+						return ""
+					}
+					return condition.Reason
+				}, timeout, interval).Should(Equal(constants.ProgressingReasonRestartBudgetExceeded))
+				Eventually(func() string {
+					condition, _ := groupProgressingCondition()
+					if condition == nil {
+						return ""
+					}
+					return condition.Reason
+				}, timeout, interval).Should(Equal(constants.ProgressingReasonRestartBudgetExceeded))
 
 				Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 					live := &v2.RoleInstance{}
@@ -227,11 +245,21 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
 						return false
 					}
+					instanceProgressing, instanceGeneration := instanceProgressingCondition()
+					setProgressing, setGeneration := setProgressingCondition()
+					groupProgressing, groupGeneration := groupProgressingCondition()
 					if live.Status.RestartBudgetExhausted ||
 						live.Annotations[constants.RoleInstanceRecoverAnnotationKey] != "" ||
-						instanceProgressingReason() == v2.ReasonGroupRestartBudgetExceeded ||
-						setProgressingReason() == constants.ProgressingReasonRestartBudgetExceeded ||
-						groupProgressingReason() == constants.ProgressingReasonRestartBudgetExceeded {
+						instanceProgressing == nil || setProgressing == nil || groupProgressing == nil ||
+						instanceProgressing.Status != v1.ConditionFalse ||
+						instanceProgressing.Reason != constants.ProgressingReasonConverged ||
+						instanceProgressing.ObservedGeneration != instanceGeneration ||
+						setProgressing.Status != v1.ConditionFalse ||
+						setProgressing.Reason != constants.ProgressingReasonConverged ||
+						setProgressing.ObservedGeneration != setGeneration ||
+						groupProgressing.Status != metav1.ConditionFalse ||
+						groupProgressing.Reason != constants.ProgressingReasonConverged ||
+						groupProgressing.ObservedGeneration != groupGeneration {
 						return false
 					}
 					return true

@@ -264,13 +264,14 @@ func isRBGBlockerFamily(reason string) bool {
 }
 
 // isRBGRecomputedBlockerFamily reports whether the family is a blocker fact the
-// RBG re-observes on every reconcile from runtime state (gang waiting and
-// dependencies). Such facts must not be carried as entry blockers or retained
-// across unclassified errors: once the fresh observation clears, a carried
-// condition would keep reporting the family — with an empty role list — instead
-// of letting the status move on.
+// RBG re-observes on every reconcile from child or runtime state (restart
+// budgets, gang waiting, and dependencies). Such facts must not be carried as
+// entry blockers or retained across unclassified errors: once the fresh
+// observation clears, a carried condition would keep reporting the family — with
+// an empty role list — instead of letting the status move on.
 func isRBGRecomputedBlockerFamily(reason string) bool {
-	return reason == constants.ProgressingReasonWaitingForGang ||
+	return reason == constants.ProgressingReasonRestartBudgetExceeded ||
+		reason == constants.ProgressingReasonWaitingForGang ||
 		reason == constants.ProgressingReasonWaitingForDependencies
 }
 
