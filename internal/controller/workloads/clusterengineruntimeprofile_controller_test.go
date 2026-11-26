@@ -427,6 +427,38 @@ func TestClusterEngineRuntimeProfileLabelBackfillContinuesAfterPatchFailure(t *t
 	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
 }
 
+func TestClusterEngineRuntimeProfileLabelBackfillRetriesAfterWarning(t *testing.T) {
+	recorder := record.NewFakeRecorder(32)
+	r := &ClusterEngineRuntimeProfileReconciler{
+		Recorder: recorder,
+	}
+	obj := controllerRBG("grp-old", "ns-a", "ik")
+	obj.Generation = 1
+	err := errors.New("webhook rejected the patch")
+	now := time.Now()
+
+	for i := 0; i < engineRuntimeLabelBackfillRetryLimit; i++ {
+		_, _ = r.recordEngineRuntimeLabelBackfillFailure(obj, err, now)
+	}
+	retry, scheduledRetry := r.recordEngineRuntimeLabelBackfillFailure(obj, err, now)
+	assert.False(t, retry)
+	assert.Equal(t, engineRuntimeLabelBackfillRetryAfter, scheduledRetry)
+
+	afterRetryWindow := now.Add(engineRuntimeLabelBackfillRetryAfter + time.Second)
+	attempt, retryAfter := r.shouldAttemptEngineRuntimeLabelBackfill(obj, afterRetryWindow)
+	assert.True(t, attempt)
+	assert.Zero(t, retryAfter)
+
+	_, scheduledRetry = r.recordEngineRuntimeLabelBackfillFailure(obj, err, afterRetryWindow)
+	assert.Equal(t, engineRuntimeLabelBackfillRetryAfter, scheduledRetry,
+		"a failure after the warning window must schedule another retry")
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1,
+		"the warning event must remain one-shot across repeated retries")
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
+}
+
 func TestClusterEngineRuntimeProfileLabelBackfillReturnsListErrors(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()
@@ -527,7 +559,7 @@ func TestClusterEngineRuntimeProfileLabelBackfillFailureResetsOnGeneration(t *te
 	err := errors.New("webhook rejected the patch")
 
 	for i := 0; i < engineRuntimeLabelBackfillRetryLimit; i++ {
-		_, _ = r.recordEngineRuntimeLabelBackfillFailure(obj, err)
+		_, _ = r.recordEngineRuntimeLabelBackfillFailure(obj, err, time.Now())
 	}
 	attempt, retryAfter := r.shouldAttemptEngineRuntimeLabelBackfill(obj, time.Now())
 	assert.False(t, attempt)
@@ -550,7 +582,7 @@ func TestClusterEngineRuntimeProfileLabelBackfillFailureKeysIncludeUID(t *testin
 	err := errors.New("webhook rejected the patch")
 
 	for i := 0; i < engineRuntimeLabelBackfillRetryLimit; i++ {
-		_, _ = r.recordEngineRuntimeLabelBackfillFailure(old, err)
+		_, _ = r.recordEngineRuntimeLabelBackfillFailure(old, err, time.Now())
 	}
 	attempt, retryAfter := r.shouldAttemptEngineRuntimeLabelBackfill(new, time.Now())
 	assert.True(t, attempt,

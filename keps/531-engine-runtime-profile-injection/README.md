@@ -1561,9 +1561,10 @@ controller's first reconcile. Before patching, the controller runs the
 mutating defaulter on a copy; if that would also change `spec`, it skips the
 object, emits an `EngineRuntimeLabelBackfillSkipped` warning, and leaves the
 object unlabeled so admission keeps the unscoped fallback. Repeated patch
-failures emit `EngineRuntimeLabelBackfillFailed` and leave the gate
-unconverged. A later user write heals the stored spec and labels the object
-through the normal admission path.
+failures emit one `EngineRuntimeLabelBackfillFailed` warning and continue
+retrying every 30 seconds until the patch succeeds or the object changes,
+leaving the gate unconverged in the meantime. A later user write heals the
+stored spec and labels the object through the normal admission path.
 
 **Rollback.** `helm rollback` restores the previous controller and webhook
 configuration but keeps the new CRDs, because the CRD upgrader runs only on

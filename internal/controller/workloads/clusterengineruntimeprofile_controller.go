@@ -312,7 +312,7 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillEngineRuntimeLabel(
 	base := obj.DeepCopyObject().(client.Object)
 	setEngineRuntimeLabelObject(obj)
 	if err := r.Patch(ctx, obj, client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
-		retry, scheduledRetry := r.recordEngineRuntimeLabelBackfillFailure(obj, err)
+		retry, scheduledRetry := r.recordEngineRuntimeLabelBackfillFailure(obj, err, time.Now())
 		outcome := engineRuntimeLabelBackfillOutcome{
 			stuck:        !apierrors.IsNotFound(err),
 			requeueAfter: scheduledRetry,
@@ -336,8 +336,11 @@ func engineRuntimeLabelBackfillNextRetry(current, candidate time.Duration) time.
 	return current
 }
 
+// recordEngineRuntimeLabelBackfillFailure records one failed label patch. Before
+// the warning threshold it asks the caller to retry with an error; at and after
+// the threshold it emits one warning and schedules the next bounded retry.
 func (r *ClusterEngineRuntimeProfileReconciler) recordEngineRuntimeLabelBackfillFailure(
-	obj client.Object, err error,
+	obj client.Object, err error, now time.Time,
 ) (bool, time.Duration) {
 	if apierrors.IsNotFound(err) {
 		r.engineRuntimeLabelBackfillFailure.Delete(engineRuntimeLabelBackfillKeyForObject(obj))
@@ -365,19 +368,20 @@ func (r *ClusterEngineRuntimeProfileReconciler) recordEngineRuntimeLabelBackfill
 	if state.attempts < engineRuntimeLabelBackfillRetryLimit {
 		return true, 0
 	}
-	if state.warned {
-		return false, 0
+	if !state.warned {
+		state.warned = true
+		if r.Recorder != nil {
+			r.Recorder.Event(obj, corev1.EventTypeWarning, ReasonEngineRuntimeLabelBackfillFailed,
+				fmt.Sprintf("the engine runtime label backfill failed %d times: %v; the object stays unlabeled, admission keeps the unscoped lookup, and retries continue every %s",
+					state.attempts, err, engineRuntimeLabelBackfillRetryAfter))
+		}
 	}
-	state.warned = true
-	state.retryAt = time.Now().Add(engineRuntimeLabelBackfillRetryAfter)
-	if r.Recorder != nil {
-		r.Recorder.Event(obj, corev1.EventTypeWarning, ReasonEngineRuntimeLabelBackfillFailed,
-			fmt.Sprintf("the engine runtime label backfill failed %d times: %v; the object stays unlabeled and admission keeps the unscoped lookup",
-				state.attempts, err))
-	}
+	state.retryAt = now.Add(engineRuntimeLabelBackfillRetryAfter)
 	return false, engineRuntimeLabelBackfillRetryAfter
 }
 
+// shouldAttemptEngineRuntimeLabelBackfill reports whether the object's retry
+// window has elapsed and the next patch may be attempted.
 func (r *ClusterEngineRuntimeProfileReconciler) shouldAttemptEngineRuntimeLabelBackfill(
 	obj client.Object, now time.Time,
 ) (bool, time.Duration) {
@@ -403,13 +407,10 @@ func (r *ClusterEngineRuntimeProfileReconciler) shouldAttemptEngineRuntimeLabelB
 	if state.attempts < engineRuntimeLabelBackfillRetryLimit {
 		return true, 0
 	}
-	if state.attempts == engineRuntimeLabelBackfillRetryLimit {
-		if now.Before(state.retryAt) {
-			return false, time.Until(state.retryAt)
-		}
-		return true, 0
+	if now.Before(state.retryAt) {
+		return false, time.Until(state.retryAt)
 	}
-	return false, 0
+	return true, 0
 }
 
 func engineRuntimeLabelBackfillKeyForObject(obj client.Object) engineRuntimeLabelBackfillKey {
