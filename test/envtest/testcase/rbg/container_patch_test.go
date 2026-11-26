@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -487,17 +488,21 @@ var _ = Describe("RoleBasedGroup container patch injection", func() {
 		Expect(testutil.K8sClient.Update(testutil.Ctx, profile)).To(Succeed())
 
 		// Lazy propagation: the profile change rides the RBG's next
-		// reconcile (KEP Update Propagation) — force one with a spec change;
-		// RBGPredicate enqueues only when the spec differs, so an
-		// object-metadata annotation would not trigger anything.
+		// reconcile (KEP Update Propagation); this test forces one with a
+		// spec change. The controller keeps patching the RBG's status, so
+		// the read-modify-write retries on conflict.
 		key := types.NamespacedName{Name: "lazy", Namespace: testNs}
-		current := &workloadsv1alpha2.RoleBasedGroup{}
-		Expect(testutil.K8sClient.Get(testutil.Ctx, key, current)).To(Succeed())
-		if current.Spec.Roles[0].Annotations == nil {
-			current.Spec.Roles[0].Annotations = map[string]string{}
-		}
-		current.Spec.Roles[0].Annotations["test-patch-touch"] = fmt.Sprintf("%d", time.Now().UnixNano())
-		Expect(testutil.K8sClient.Update(testutil.Ctx, current)).To(Succeed())
+		Expect(retry.RetryOnConflict(retry.DefaultRetry, func() error {
+			current := &workloadsv1alpha2.RoleBasedGroup{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, key, current); err != nil {
+				return err
+			}
+			if current.Spec.Roles[0].Annotations == nil {
+				current.Spec.Roles[0].Annotations = map[string]string{}
+			}
+			current.Spec.Roles[0].Annotations["test-patch-touch"] = fmt.Sprintf("%d", time.Now().UnixNano())
+			return testutil.K8sClient.Update(testutil.Ctx, current)
+		})).To(Succeed())
 
 		Eventually(func(g Gomega) {
 			ris := &workloadsv1alpha2.RoleInstanceSet{}
