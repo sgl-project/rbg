@@ -28,6 +28,8 @@ data:
         # CA (or set insecure_skip_verify: false) when you provision
         # certificates for the metrics server.
         insecure_skip_verify: true
+      # Pod discovery requires get/list/watch on pods for the Prometheus
+      # service account; see the discovery ClusterRole in rbac.yaml.
       kubernetes_sd_configs:
         - role: pod
       relabel_configs:

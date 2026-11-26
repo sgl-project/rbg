@@ -9,7 +9,7 @@ controller Deployment; apply it next to your existing Prometheus and Grafana.
 | File | Purpose |
 | ---- | ------- |
 | `prometheus.yaml` | ConfigMap with a Prometheus scrape config for `rbgs-controller-manager` pods |
-| `rbac.yaml` | ClusterRole and ClusterRoleBinding that let Prometheus read the authenticated `/metrics` endpoint |
+| `rbac.yaml` | ClusterRoles and ClusterRoleBindings that let Prometheus discover controller pods and read the authenticated `/metrics` endpoint |
 | `rbgs-prometheus-grafana-monitor.json` | Grafana dashboard for the controller-runtime metrics exposed by the RBG controller |
 
 ## How the scrape works
@@ -17,12 +17,23 @@ controller Deployment; apply it next to your existing Prometheus and Grafana.
 The RBG controller serves metrics on the `--metrics-bind-address` port (`8443` by
 default) with HTTPS. Unlike a plain HTTP metrics endpoint, every request is
 authenticated with `TokenReview` and authorized with `SubjectAccessReview`
-against the Kubernetes API server. Two consequences:
+against the Kubernetes API server, and the `role: pod` service discovery
+needs its own permissions. Three consequences:
 
 1. Prometheus must send its own service account token
    (`authorization.credentials_file` in `prometheus.yaml`).
 2. That service account must be allowed to `get` the non-resource URL
    `/metrics`, which `rbac.yaml` grants.
+
+3. The `role: pod` service discovery requires `get`/`list`/`watch` on pods.
+   `rbac.yaml` also grants this via a separate `rbgs-prometheus-discovery`
+   ClusterRole. A kube-prometheus-stack Prometheus already has this
+   permission, so the binding is redundant there; without it, a Prometheus
+   that lacks pod-discovery permissions silently discovers no targets. If you
+   know the namespace the controller runs in and prefer least privilege, drop
+   the ClusterRole and bind a namespaced Role with the same rules to the
+   Prometheus service account instead, and add a `namespaces:` filter to the
+   `kubernetes_sd_configs` entry.
 
 The scrape config discovers controller pods by the `control-plane:
 rbgs-controller` label, adds `namespace` and `pod` labels to every series, and

@@ -624,8 +624,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (controller) (rate(workqueue_retries_total{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval]))",
-          "legendFormat": "{{controller}}",
+          "expr": "sum by (name) (rate(workqueue_retries_total{namespace=~\"$namespace\", name=~\"$controller\"}[$__rate_interval]))",
+          "legendFormat": "{{name}}",
           "range": true,
           "refId": "A"
         }

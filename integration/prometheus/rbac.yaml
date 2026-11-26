@@ -25,3 +25,37 @@ subjects:
   - kind: ServiceAccount
     name: prometheus-k8s
     namespace: monitoring
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: rbgs-prometheus-discovery
+rules:
+  # The scrape config in prometheus.yaml uses kubernetes_sd_configs with
+  # role: pod to find controller pods in any namespace, which requires
+  # get/list/watch on pods. kube-prometheus-stack already grants this to
+  # its Prometheus service account; apply this ClusterRole only if yours
+  # does not, otherwise the job silently discovers no targets.
+  - apiGroups:
+      - ""
+    resources:
+      - pods
+    verbs:
+      - get
+      - list
+      - watch
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: rbgs-prometheus-discovery
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: rbgs-prometheus-discovery
+subjects:
+  # Adjust to the service account used by your Prometheus instance.
+  # prometheus-k8s/monitoring matches a default kube-prometheus-stack install.
+  - kind: ServiceAccount
+    name: prometheus-k8s
+    namespace: monitoring
