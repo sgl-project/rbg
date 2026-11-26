@@ -239,12 +239,17 @@ snapshot is reused rather than created on every reconcile.
   following enumerated system annotations from revision hashing and content
   drift comparison:
   `rbg.workloads.x-k8s.io/discovery-config-mode`,
+  `rbg.workloads.x-k8s.io/discovery-config-version`,
   `rbg.workloads.x-k8s.io/rollout-request`,
   `conversion.workloads.x-k8s.io/v1alpha1-coordination`,
   `conversion.workloads.x-k8s.io/v1alpha1-pod-group-policy`,
   `conversion.workloads.x-k8s.io/v1alpha2-rollout-strategy`,
   `conversion.workloads.x-k8s.io/v1alpha2-rollout-status`.
-  The same key set identifies values to preserve during metadata sync, not keys
+  The retired discovery-config-mode key is compatibility-only. The
+  discovery-config-version key is also revision-independent, but unlike the
+  other enumerated keys it is template-owned: the live template value converges
+  on every child rather than being preserved as child-side controller state.
+  The remaining keys identify values to preserve during metadata sync, not keys
   to discard from child creation or template propagation. User metadata,
   translated gang settings, and role replica counts remain part of the revision.
 - **Current versus update:** `updateRevision` represents the desired template.

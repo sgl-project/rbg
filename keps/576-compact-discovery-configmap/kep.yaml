@@ -1,0 +1,22 @@
+title: Compact Discovery ConfigMap
+kep-number: 576
+authors:
+  - "@diw-zw"
+status: provisional
+creation-date: 2026-11-13
+reviewers:
+  - "@cheyang"
+approvers:
+  - "@cheyang"
+
+stage: alpha
+
+latest-milestone: "v0.9.0"
+
+see-also:
+  - "https://github.com/sgl-project/rbg/issues/576"
+replaces:
+  - "/keps/133-configmap-refine"
+
+milestone:
+  alpha: "v0.9.0"

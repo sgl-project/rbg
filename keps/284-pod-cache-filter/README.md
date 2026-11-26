@@ -30,10 +30,9 @@ pre-upgrade hook. The marker is never written into a workload template, so no ex
 ## Motivation
 
 In a shared cluster, caching the spec and status of unrelated Pods wastes memory: the operator can
-OOM on a large cluster while a small one is fine. The Pods RBG manages already carry one of three
-labels (one per resource family that introduced it), so the operator can tell them apart in
-process; what it lacks is a way to stop retaining everything else without changing how cached reads
-behave.
+OOM on a large cluster while a small one is fine. The Pods RBG manages already carry identifying
+labels, so the operator can tell them apart in process. It needs a way to stop retaining
+everything else while preserving how cached reads behave.
 
 ### Goals
 
@@ -66,6 +65,7 @@ A Pod is cached whole when **any one** of these conditions holds:
 | Condition | Pod category |
 | --- | --- |
 | label `rbg.workloads.x-k8s.io/group-name` exists | RBG workload Pods, including supported native workloads |
+| label `rolebasedgroup.workloads.x-k8s.io/name` exists | Pods from workloads that retain the v0.6 group label |
 | label `rbg.workloads.x-k8s.io/role-instance-name` exists | RoleInstance Pods, including standalone instances |
 | label `workloads.x-k8s.io/warmup-name` exists | Warmup execution Pods |
 | label `rbg.workloads.x-k8s.io/managed` equals `true` | the common marker |
@@ -226,7 +226,7 @@ mechanism and verifies the effective value; its environment variable is explicit
 | Risk | Mitigation |
 | --- | --- |
 | A future unscoped Pod List sees stubs | Read-path audit as an alpha criterion; a regression test that every cached Pod List is selector- or index-scoped; the `rbg_pod_cache_stub_reads_total` metric |
-| An RBG Pod is not admitted | Admission covers the three legacy labels, the marker, and any ownerReference to an RBG object; creation-path tests; whole and stub counts are exported |
+| An RBG Pod is not admitted | Admission covers the four legacy labels, the marker, and any ownerReference to an RBG object; creation-path tests; whole and stub counts are exported |
 | The marker in a template rolls existing Pods | Never written into templates; key-scoped drift exemption with contract tests; an upgrade e2e asserting zero template diffs |
 | List startup still decodes all Pods | Budget from measured ranges; with a supporting server, the optional WatchListClient and early watch wrapper reduce the shared-shape peak |
 | A transform defect hides Pod data | `--pod-cache-scope=all` restores today's cache with a restart; unit tests for every admission condition and for idempotence |
@@ -299,7 +299,8 @@ production-integration work.
 - `kubectl rbg migrate pod-labels` with `check`, `--dry-run`, and a rate limit, plus the Helm
   pre-upgrade hook.
 - Unit and integration tests in the repository; the upgrade e2e asserts zero template diffs.
-- The [Monitoring](#monitoring) metrics are exported.
+- The five [Monitoring](#monitoring) metrics are deferred from Alpha to a dedicated follow-up
+  for secure metrics scraping and the first RBG-specific operational metrics.
 
 #### Beta
 

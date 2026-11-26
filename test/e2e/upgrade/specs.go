@@ -18,6 +18,8 @@ package upgrade
 
 import (
 	"fmt"
+	"maps"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +28,7 @@ import (
 	"github.com/onsi/gomega"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -34,9 +37,12 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
+	"sigs.k8s.io/yaml"
+
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
 	"sigs.k8s.io/rbgs/test/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
@@ -66,6 +72,10 @@ func RunUpgradeSpecs(f *framework.Framework) {
 		// neither of these is a plain ready-by-the-end RoleBasedGroup.
 		pending   *workloadsv1alpha2.RoleBasedGroup
 		legacySet *workloadsv1alpha1.RoleBasedGroupSet
+		// legacyDiscovery is also deliberately not a ready-by-the-end fixture: the
+		// from-release honors its legacy mode by leaving the ConfigMap absent, so its
+		// stateful role cannot start until the upgraded controller creates it.
+		legacyDiscovery *workloadsv1alpha2.RoleBasedGroup
 		// legacySetV2 is the v1alpha2 RoleBasedGroupSet whose GroupTemplate carries the
 		// legacy "Recreate" spelling. It is kept separate from legacySet (a v1alpha1
 		// set) because the two prove different things: the v1alpha1 fixture covers the
@@ -104,6 +114,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			rbgSet = buildSetFixture(f.Namespace)
 			legacy = buildV1alpha1Fixture(f.Namespace)
 			pending = buildPendingFixture(f.Namespace)
+			legacyDiscovery = buildLegacyDiscoveryFixture(f.Namespace)
 			legacySet = buildV1alpha1SetFixture(f.Namespace)
 			legacySetV2 = buildLegacySetFixture(f.Namespace)
 			exclusiveGroup = createExclusiveTopologyFixture(f, fromProfile().exclusiveTopologyFromLabel)
@@ -175,6 +186,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			gomega.Expect(f.Client.Create(f.Ctx, legacySet)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, legacySetV2)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, pending)).To(gomega.Succeed())
+			gomega.Expect(f.Client.Create(f.Ctx, legacyDiscovery)).To(gomega.Succeed())
 
 			for _, rbg := range rbgs {
 				ginkgo.By("waiting for " + rbg.Name + " to be ready")
@@ -190,59 +202,49 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			// so without this the snapshot could be taken while a child's pods are still
 			// starting -- and a baseline of a half-started world proves nothing.
 			ginkgo.By("waiting for every RoleBasedGroup in the namespace to be ready")
-			waitAllRBGsReady(f, fxPending)
+			waitAllRBGsReady(f, fxPending, fxLegacyDiscovery)
 
 			// And the gate above is not enough on its own, because an RBG's Ready
 			// condition is only as good as the workload status it is derived from. This
 			// waits on the pods themselves: all of them present, all of them Running.
 			ginkgo.By("waiting for every pod the snapshot will record to be Running")
-			waitAllPodsRunning(f, fxPending)
+			waitAllPodsRunning(f, fxPending, fxLegacyDiscovery)
 
 			// The never-ready fixture is still required to have got as far as a Pending
 			// pod. Without that it would contribute nothing to compare, and "the upgrade
 			// left the Pending pod alone" would be a claim about an empty set.
 			ginkgo.By("waiting for " + fxPending + " to have a Pending pod")
 			waitForPendingPod(f, pending)
+			ginkgo.By("waiting for " + fxLegacyDiscovery + " to have a Pending pod")
+			waitForPendingPod(f, legacyDiscovery)
 		},
 	)
+
+	ginkgo.It("[phase 1] leaves a direct legacy RBG without a discovery ConfigMap", func() {
+		for _, name := range slices.Sorted(maps.Keys(fromProfile().rewrites.discoveryConfigRBGs)) {
+			cm := &corev1.ConfigMap{}
+			err := f.Client.Get(
+				f.Ctx,
+				client.ObjectKey{Namespace: f.Namespace, Name: name},
+				cm,
+			)
+			gomega.Expect(apierrors.IsNotFound(err)).To(
+				gomega.BeTrue(), "the from-release should not write a ConfigMap for a legacy-mode RBG",
+			)
+		}
+	})
 
 	ginkgo.It(
 		"[phase 1] records the running pods", func() {
 			// Marked before the snapshot, not after, so no removal event can slip
 			// into the untracked window between the two.
 			preUpgradeMark = metav1.Now()
-			before = captureAll(gomega.Default, f)
+			ginkgo.By(fmt.Sprintf("waiting for the old controller to settle for %s", settleDuration))
+			before = waitQuiesced(f)
 
 			gomega.Expect(before).ToNot(gomega.BeEmpty(), "no RoleBasedGroups were captured")
 
-			// Without this, "nothing churned" would also hold for a namespace whose
-			// pods never started, which is the way this suite could most easily pass
-			// while proving nothing.
-			var problems []string
-			for name, snap := range before {
-				// The never-ready fixture is exempt: its pod cannot be scheduled by
-				// construction. It stays in the snapshot, because a Pending pod is state
-				// the upgrade must leave alone too -- it just cannot be Running.
-				if name == fxPending {
-					continue
-				}
-				for role, pods := range snap.Roles {
-					running := 0
-					for _, facts := range pods {
-						if facts.Phase == corev1.PodRunning {
-							running++
-						}
-					}
-					if running == 0 {
-						problems = append(
-							problems, fmt.Sprintf(
-								"%s/%s has no Running pod (%d pods total)", name, role, len(pods),
-							),
-						)
-					}
-				}
-			}
-			reportProblems("some roles have nothing running, so there is nothing to observe", problems)
+			reportProblems("the pre-upgrade baseline is not ready", baselineProblems(before))
 
 			ginkgo.By(fmt.Sprintf("captured %d RoleBasedGroups before the upgrade", len(before)))
 			printSnapshots(before)
@@ -299,7 +301,35 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			).Should(gomega.Succeed())
 			midRollPodsAtPartition = listPodFactsForRole(gomega.Default, f, target, midRollRole)
 
-			runHelmUpgrade(f)
+			if job := runHelmUpgrade(f); job != nil {
+				logs := podLabelMigrationLogs(f, job.Name)
+				gomega.Expect(logs).To(gomega.ContainSubstring("candidates=0 patched=0 failed=0 dry-run=false check=true"))
+				for _, workload := range []struct {
+					fixture string
+					kind    string
+					paths   []string
+				}{
+					{fxDeploy, "Deployment", []string{"spec.template"}},
+					{fxSts, "StatefulSet", []string{"spec.template"}},
+					{fxLws, "LeaderWorkerSet", []string{"spec.leaderWorkerTemplate.leaderTemplate", "spec.leaderWorkerTemplate.workerTemplate"}},
+				} {
+					rbg := findFixture(rbgs, workload.fixture)
+					name := rbg.GetWorkloadName(&rbg.Spec.Roles[0])
+					for _, path := range workload.paths {
+						gomega.Expect(logs).To(gomega.ContainSubstring(fmt.Sprintf("unmarked template %s %s/%s (%s)", workload.kind, rbg.Namespace, name, path)))
+					}
+				}
+				gomega.Expect(logs).NotTo(gomega.ContainSubstring("WARNING: Pod label migration"))
+				gomega.Expect(logs).NotTo(gomega.ContainSubstring("WARNING: legacy workload template report"))
+			} else {
+				gomega.Expect(listPodLabelMigrationJobs(f)).To(gomega.BeEmpty(), "the default upgrade must not run Pod label migration")
+			}
+
+			// Creating the missing discovery ConfigMap intentionally moves this
+			// fixture's pod from Pending to Running. Keep it out of the
+			// nothing-else-changed comparison; its own phase 3 spec asserts the
+			// ConfigMap migration directly.
+			mutated = append(mutated, fxLegacyDiscovery)
 
 			// Asserted rather than reported: the partition holds the fixture here for as
 			// long as it takes, so the upgrade cannot have missed the half-rolled state.
@@ -343,6 +373,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			fs := &findings{}
 			runDetectors(fs, f, before, after, preUpgradeMark, fromProfile().rewrites, mutated)
 			fs.report()
+			expectMigratedPodLabels(after)
 		},
 	)
 
@@ -358,6 +389,12 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			g.Expect(after.pod.Labels[appsv1.ControllerRevisionHashLabelKey]).NotTo(
 				gomega.Equal(exclusiveBefore.pod.Labels[appsv1.ControllerRevisionHashLabelKey]))
 		}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+	})
+
+	ginkgo.It("[phase 3] creates the direct legacy RBG's discovery ConfigMap", func() {
+		for _, name := range slices.Sorted(maps.Keys(fromProfile().rewrites.discoveryConfigRBGs)) {
+			expectDirectRBGDiscoveryConfig(f, name)
+		}
 	})
 
 	ginkgo.It(
@@ -472,6 +509,16 @@ func RunUpgradeSpecs(f *framework.Framework) {
 				gomega.Equal(workloadsv1alpha2.RecreatePodUpdateStrategyType),
 				"the stored legacy strategy type in the child RoleBasedGroup was not healed",
 			)
+		},
+	)
+
+	ginkgo.It(
+		"[phase 3] maintains every RoleBasedGroupSet child's discovery ConfigMap", func() {
+			// KEP-576 removes the mode selector, so the upgrade's observable #603
+			// contract is that each child's ConfigMap exists and continues to follow
+			// its spec. These children get no allowance from the pod, stored-spec and
+			// revision detectors.
+			expectSetChildrenMaintainDiscoveryConfig(f, before, fromProfile().rewrites.discoveryConfigChildren)
 		},
 	)
 
@@ -591,6 +638,8 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			fs.report()
 		},
 	)
+
+	runPodCacheRollbackSpec(f)
 
 	// ---------------------------------------------------------------------------
 	// Phase 4: the upgraded controller is not merely quiet -- it still works.
@@ -737,6 +786,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			checkNoPodChurn(fs, baseline, after)
 			checkNoRestarts(fs, baseline, after)
 			checkOwnersStable(fs, baseline, after, fromProfile().rewrites.specRewrites)
+			checkDiscoveryConfigVersionStable(fs, baseline, after)
 			fs.report()
 		},
 	)
@@ -1038,6 +1088,25 @@ func RunUpgradeSpecs(f *framework.Framework) {
 	)
 
 	ginkgo.It(
+		"[phase 4] keeps the discovery ConfigMap of a RoleBasedGroupSet child current", func() {
+			// What the pin to refine mode is for. Outside refine mode the controller
+			// skips the child's discovery ConfigMap, so a membership change made
+			// through the set template reached the child's spec and its pods but
+			// never /etc/rbg/config.yaml (#603). Scaling the template role must now
+			// show up in the ConfigMap, and the template sync that carries the new
+			// replica count is the write that used to remove the mode annotation.
+			children := childRBGNames(f, fxSet)
+			gomega.Expect(children).To(
+				gomega.HaveLen(1), "the set fixture has no child RoleBasedGroup, so there is nothing to observe",
+			)
+			childName := children[0]
+			mutated = append(mutated, fxSet, childName)
+
+			expectSetChildDiscoveryConfigFollowsScale(f, fxSet, childName)
+		},
+	)
+
+	ginkgo.It(
 		"[phase 4] accepts the RoleBasedGroupWarmup API the upgrade introduced", func() {
 			// A shallow check on purpose: the point is that the new API surface is
 			// reachable on an upgraded cluster, not that warmup works -- the main e2e
@@ -1246,6 +1315,30 @@ func waitAllRBGsReady(f *framework.Framework, except ...string) {
 	).Should(gomega.Succeed())
 }
 
+func baselineProblems(snapshots map[string]RBGSnapshot) []string {
+	var problems []string
+	for name, snap := range snapshots {
+		if name == fxPending || name == fxLegacyDiscovery {
+			continue
+		}
+		if snap.Kind == kindRBG && !snap.RBGReady {
+			problems = append(problems, fmt.Sprintf("%s is not Ready", name))
+		}
+		for role, pods := range snap.Roles {
+			running := 0
+			for _, facts := range pods {
+				if facts.Phase == corev1.PodRunning {
+					running++
+				}
+			}
+			if running == 0 {
+				problems = append(problems, fmt.Sprintf("%s/%s has no Running pod (%d pods total)", name, role, len(pods)))
+			}
+		}
+	}
+	return problems
+}
+
 // waitAllPodsRunning waits until every role of every RoleBasedGroup in the namespace has
 // its full expected pod count and every one of those pods is Running, except for the
 // named RBGs.
@@ -1369,6 +1462,125 @@ func waitForPendingPod(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedG
 			}
 		}, utils.Timeout, utils.Interval,
 	).Should(gomega.Succeed())
+}
+
+// expectDirectRBGDiscoveryConfig asserts the one-hop rewrite for a direct
+// legacy RBG: after the upgrade, its ConfigMap exists, carries only the
+// discovery key, is selected by the group-name label, and is controlled by the
+// RBG incarnation that owns it.
+func expectDirectRBGDiscoveryConfig(f *framework.Framework, name string) {
+	rbg := &workloadsv1alpha2.RoleBasedGroup{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: name}, rbg)).To(gomega.Succeed())
+	gomega.Expect(rbg.Spec.Roles).To(gomega.HaveLen(1))
+
+	cm := &corev1.ConfigMap{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: name}, cm)).To(gomega.Succeed())
+	gomega.Expect(cm.Data).To(gomega.HaveLen(1), "the discovery ConfigMap should contain only config.yaml")
+	gomega.Expect(cm.Labels[constants.GroupNameLabelKey]).To(gomega.Equal(name))
+	owner := metav1.GetControllerOf(cm)
+	gomega.Expect(owner).NotTo(gomega.BeNil())
+	gomega.Expect(owner.UID).To(gomega.Equal(rbg.UID))
+
+	config := discoveryConfig(gomega.Default, f, name)
+	roleName := rbg.Spec.Roles[0].Name
+	gomega.Expect(config.Roles).To(gomega.HaveKey(roleName))
+	gomega.Expect(config.Roles[roleName].Size).To(gomega.Equal(int(*rbg.Spec.Roles[0].Replicas)))
+
+	gomega.Eventually(func(g gomega.Gomega) {
+		pods := listPodFactsForRole(g, f, rbg, roleName)
+		g.Expect(pods).To(gomega.HaveLen(int(*rbg.Spec.Roles[0].Replicas)))
+		for pod, facts := range pods {
+			g.Expect(facts.Phase).To(
+				gomega.Equal(corev1.PodRunning), "pod %s is %s", pod, facts.Phase,
+			)
+		}
+	}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
+}
+
+// expectSetChildrenMaintainDiscoveryConfig runs
+// expectSetChildMaintainsDiscoveryConfig for every recorded RoleBasedGroupSet child,
+// each of which must predate the upgrade.
+func expectSetChildrenMaintainDiscoveryConfig(f *framework.Framework, before map[string]RBGSnapshot, children map[string]bool) {
+	gomega.Expect(children).ToNot(gomega.BeEmpty(), "the profile records no set child to observe")
+	for _, name := range slices.Sorted(maps.Keys(children)) {
+		gomega.Expect(before).To(gomega.HaveKey(name), "set child %s was not there before the upgrade", name)
+		expectSetChildMaintainsDiscoveryConfig(f, name)
+	}
+}
+
+// expectSetChildMaintainsDiscoveryConfig asserts the end state for one
+// RoleBasedGroupSet child: its stateful roles have the ConfigMap named after the
+// group, which the pods mount.
+func expectSetChildMaintainsDiscoveryConfig(f *framework.Framework, name string) {
+	child := &workloadsv1alpha2.RoleBasedGroup{}
+	gomega.Expect(f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: name}, child)).To(gomega.Succeed())
+	gomega.Expect(child.HasStatefulRole()).To(
+		gomega.BeTrue(), "set child %s has no stateful role, so it has no discovery ConfigMap to observe", name,
+	)
+	config := discoveryConfig(gomega.Default, f, name)
+	for i := range child.Spec.Roles {
+		role := &child.Spec.Roles[i]
+		if workloadsv1alpha2.IsStatefulRole(role) {
+			gomega.Expect(config.Roles).To(
+				gomega.HaveKey(role.Name), "the discovery ConfigMap of %s does not list role %s", name, role.Name,
+			)
+		}
+	}
+}
+
+// expectSetChildDiscoveryConfigFollowsScale scales the only template role of a set
+// from one instance to two and waits for the child's discovery ConfigMap to show it.
+func expectSetChildDiscoveryConfigFollowsScale(f *framework.Framework, setName, childName string) {
+	setKey := client.ObjectKey{Namespace: f.Namespace, Name: setName}
+	set := &workloadsv1alpha2.RoleBasedGroupSet{}
+	gomega.Expect(f.Client.Get(f.Ctx, setKey, set)).To(gomega.Succeed())
+	gomega.Expect(set.Spec.GroupTemplate.Spec.Roles).To(gomega.HaveLen(1))
+	roleName := set.Spec.GroupTemplate.Spec.Roles[0].Name
+	gomega.Expect(discoveryConfig(gomega.Default, f, childName).Roles[roleName].Size).To(
+		gomega.Equal(1), "the fixture's role is expected to start with one instance",
+	)
+
+	ginkgo.By("scaling " + roleName + " to 2 in the template of " + setName)
+	gomega.Expect(
+		retry.RetryOnConflict(
+			retry.DefaultRetry, func() error {
+				live := &workloadsv1alpha2.RoleBasedGroupSet{}
+				if err := f.Client.Get(f.Ctx, setKey, live); err != nil {
+					return err
+				}
+				live.Spec.GroupTemplate.Spec.Roles[0].Replicas = ptr.To(int32(2))
+				return f.Client.Update(f.Ctx, live)
+			},
+		),
+	).To(gomega.Succeed())
+
+	childKey := client.ObjectKey{Namespace: f.Namespace, Name: childName}
+	gomega.Eventually(
+		func(g gomega.Gomega) {
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			g.Expect(f.Client.Get(f.Ctx, childKey, child)).To(gomega.Succeed())
+			g.Expect(child.Spec.Roles[0].Replicas).To(gomega.Equal(ptr.To(int32(2))))
+			g.Expect(discoveryConfig(g, f, childName).Roles[roleName].Size).To(
+				gomega.Equal(2), "the discovery ConfigMap of %s was not updated", childName,
+			)
+		}, utils.Timeout, utils.Interval,
+	).Should(gomega.Succeed())
+
+}
+
+// discoveryConfig reads the discovery ConfigMap of one RoleBasedGroup, which is named
+// after the group, and parses the config.yaml its pods mount.
+func discoveryConfig(g gomega.Gomega, f *framework.Framework, rbgName string) discovery.ClusterConfig {
+	cm := &corev1.ConfigMap{}
+	g.Expect(
+		f.Client.Get(f.Ctx, client.ObjectKey{Namespace: f.Namespace, Name: rbgName}, cm),
+	).To(gomega.Succeed(), "RoleBasedGroup %s has no discovery ConfigMap", rbgName)
+
+	var config discovery.ClusterConfig
+	g.Expect(yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &config)).To(
+		gomega.Succeed(), "the discovery ConfigMap of %s does not parse", rbgName,
+	)
+	return config
 }
 
 // childRBGNames returns the sorted names of the RoleBasedGroups a RoleBasedGroupSet owns.

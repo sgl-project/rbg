@@ -5,12 +5,15 @@ global:
   imagePullSecrets: []
 
 controller:
+  # Leave unset to use the image's defaults (all and false in Alpha).
+  podCacheScope: null
+  watchListClient: null
   replicaCount: 2
   # imagePullSecrets overrides global.imagePullSecrets for the controller when set.
   imagePullSecrets: []
   image:
     repository: rolebasedgroup/rbgs-controller
-    tag: "v0.9.0-1fc69f70"
+    tag: "v0.9.0-45e6e1c2"
     pullPolicy: IfNotPresent
   resources:
     limits:
@@ -104,6 +107,14 @@ controller:
   deprecatedWorkloadTypes:
     enabled: true
 
+podLabelMigration:
+  # Opt in to migration on upgrades with a controller image that includes /kubectl-rbg.
+  enabled: false
+  rateLimit: 10
+  timeout: 2m
+  activeDeadlineSeconds: 300
+  ttlSecondsAfterFinished: 259200
+
 crdUpgrade:
   # Whether to enable CRD Upgrader Job (runs before install/upgrade)
   enabled: true
@@ -116,7 +127,7 @@ crdUpgrade:
   # CRD Upgrader image configuration
   image:
     repository: rolebasedgroup/rbgs-upgrade-crd
-    tag: "v0.9.0-1fc69f70"
+    tag: "v0.9.0-45e6e1c2"
     pullPolicy: IfNotPresent
   # Tolerations for CRD Upgrader Job pod
   tolerations:

@@ -108,6 +108,20 @@ func TestValidateNoDeprecatedWorkloadTypes(t *testing.T) {
 			errContains: "leaderworkerset.x-k8s.io/v1/LeaderWorkerSet",
 		},
 		{
+			// InstanceSet has no reconciler since v0.7.0, so the final cutoff must
+			// reject it like the other deprecated types instead of leaving the whole
+			// RBG failing preflight reconciliation.
+			name: "InstanceSet workload type - error",
+			roles: []RoleSpec{
+				{
+					Name:        "worker",
+					Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: constants.InstanceSetWorkloadType},
+				},
+			},
+			expectError: true,
+			errContains: "workloads.x-k8s.io/v1alpha1/InstanceSet",
+		},
+		{
 			name: "mixed roles with one deprecated - error",
 			roles: []RoleSpec{
 				{Name: "role-a"},
@@ -494,6 +508,73 @@ func TestRoleBasedGroupValidator_ValidateUpdate_DeprecatedWorkloadTypesDisabled(
 		}
 		_, err := v.ValidateUpdate(context.Background(), oldDeprecated, newDeprecated)
 		assert.NoError(t, err)
+	})
+}
+
+// TestRoleBasedGroupValidator_ValidateUpdate_InstanceSetWorkloadType pins the
+// compatibility-mode behaviour for the v1alpha1 InstanceSet selector. The gate
+// historically matched only Deployment, StatefulSet and LeaderWorkerSet, so
+// restoring an InstanceSet selector into a migrated role was admitted and only
+// failed later, when the unsupported workload type stopped the whole RBG during
+// preflight reconciliation. The type-exact exemption still applies: a role that
+// already used InstanceSet before the upgrade keeps being writable while the
+// compatibility flag is enabled.
+func TestRoleBasedGroupValidator_ValidateUpdate_InstanceSetWorkloadType(t *testing.T) {
+	instanceSetRole := func(replicas int32) RoleSpec {
+		return RoleSpec{
+			Name:     "worker",
+			Replicas: ptr.To(replicas),
+			Annotations: map[string]string{
+				constants.RoleWorkloadTypeAnnotationKey: constants.InstanceSetWorkloadType,
+			},
+		}
+	}
+	oldRIS := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
+		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{{Name: "worker", Replicas: ptr.To(int32(1))}}},
+	}
+	oldInstanceSet := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg"},
+		Spec:       RoleBasedGroupSpec{Roles: []RoleSpec{instanceSetRole(1)}},
+	}
+
+	t.Run("compatibility mode rejects restoring InstanceSet into a migrated role", func(t *testing.T) {
+		newRBG := oldRIS.DeepCopy()
+		newRBG.Spec.Roles[0].Annotations = map[string]string{
+			constants.RoleWorkloadTypeAnnotationKey: constants.InstanceSetWorkloadType,
+		}
+		v := &RoleBasedGroupValidator{
+			Client:                        newFakeValidatorClient(t),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateUpdate(context.Background(), oldRIS, newRBG)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "workloads.x-k8s.io/v1alpha1/InstanceSet")
+		assert.Contains(t, err.Error(), "new uses are not accepted")
+	})
+
+	t.Run("compatibility mode keeps an existing InstanceSet role writable", func(t *testing.T) {
+		newRBG := oldInstanceSet.DeepCopy()
+		newRBG.Spec.Roles[0].Replicas = ptr.To(int32(3))
+		v := &RoleBasedGroupValidator{
+			Client:                        newFakeValidatorClient(t),
+			EnableDeprecatedWorkloadTypes: true,
+		}
+		_, err := v.ValidateUpdate(context.Background(), oldInstanceSet, newRBG)
+		assert.NoError(t, err)
+	})
+
+	t.Run("final cutoff rejects an InstanceSet role on every update", func(t *testing.T) {
+		newRBG := oldInstanceSet.DeepCopy()
+		newRBG.Spec.Roles[0].Replicas = ptr.To(int32(3))
+		v := &RoleBasedGroupValidator{
+			Client:                        newFakeValidatorClient(t),
+			EnableDeprecatedWorkloadTypes: false,
+		}
+		_, err := v.ValidateUpdate(context.Background(), oldInstanceSet, newRBG)
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "workloads.x-k8s.io/v1alpha1/InstanceSet")
+		assert.Contains(t, err.Error(), "controller.deprecatedWorkloadTypes.enabled=true")
 	})
 }
 
@@ -1642,4 +1723,170 @@ func TestValidateEngineRuntimesScopeOwnershipErrorOrder(t *testing.T) {
 		}
 		assert.Equal(t, first, msgs, "error order must be stable across runs")
 	}
+}
+
+func TestRestartBudgetWorkloadCompatibilityRawConfig(t *testing.T) {
+	for _, pattern := range []string{"leaderWorkerPattern", "customComponentsPattern"} {
+		t.Run(pattern, func(t *testing.T) {
+			tests := []struct {
+				name        string
+				config      *RestartPolicyConfig
+				legacy      RestartPolicyType
+				workload    string
+				errContains string
+			}{
+				{name: "nil config"},
+				{name: "nil budget", config: &RestartPolicyConfig{}},
+				{name: "legacy only without budget", legacy: RecreateRoleInstanceOnPodRestart},
+				{name: "explicit recreate policy", config: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](0)}},
+				{name: "omitted type", config: &RestartPolicyConfig{MaxGroupRestarts: ptr.To[int32](2)}, errContains: "requires a whole-RoleInstance recreate policy"},
+				{name: "legacy policy with budget", legacy: RecreateRoleInstanceOnPodRestart, config: &RestartPolicyConfig{MaxGroupRestarts: ptr.To[int32](2)}, errContains: "requires a whole-RoleInstance recreate policy"},
+				{name: "None policy", config: &RestartPolicyConfig{Type: RestartPolicyNone, MaxGroupRestarts: ptr.To[int32](2)}, errContains: "requires a whole-RoleInstance recreate policy"},
+				{name: "unknown policy", config: &RestartPolicyConfig{Type: "Unknown", MaxGroupRestarts: ptr.To[int32](2)}, errContains: "requires a whole-RoleInstance recreate policy"},
+				{name: "negative budget", config: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](-1)}, errContains: "must be non-negative"},
+				{name: "unsupported backend", workload: constants.LeaderWorkerSetWorkloadType, config: &RestartPolicyConfig{Type: RecreateRoleInstanceOnPodRestart, MaxGroupRestarts: ptr.To[int32](2)}, errContains: "only supported by native RoleInstanceSet workloads"},
+			}
+			for _, tt := range tests {
+				t.Run(tt.name, func(t *testing.T) {
+					role := RoleSpec{Name: "worker"}
+					if pattern == "leaderWorkerPattern" {
+						role.LeaderWorkerPattern = &LeaderWorkerPattern{RestartPolicy: tt.legacy, RestartPolicyConfig: tt.config}
+					} else {
+						role.CustomComponentsPattern = &CustomComponentsPattern{RestartPolicy: tt.legacy, RestartPolicyConfig: tt.config}
+					}
+					if tt.workload != "" {
+						role.Annotations = map[string]string{constants.RoleWorkloadTypeAnnotationKey: tt.workload}
+					}
+					err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{role})
+					if tt.errContains == "" {
+						require.NoError(t, err)
+					} else {
+						require.Error(t, err)
+						assert.Contains(t, err.Error(), tt.errContains)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestRestartBudgetWorkloadCompatibility(t *testing.T) {
+	for _, workload := range []string{constants.RoleInstanceSetWorkloadType, constants.LeaderWorkerSetWorkloadType, constants.DeploymentWorkloadType, constants.StatefulSetWorkloadType} {
+		for _, policy := range []RestartPolicyType{RestartPolicyNone, RecreateRoleInstanceOnPodRestart} {
+			for _, limit := range []int32{-1, 0, 2} {
+				role := RoleSpec{Name: "worker", Annotations: map[string]string{constants.RoleWorkloadTypeAnnotationKey: workload}, Pattern: Pattern{LeaderWorkerPattern: &LeaderWorkerPattern{RestartPolicyConfig: &RestartPolicyConfig{Type: policy, MaxGroupRestarts: ptr.To(limit)}}}}
+				err := ValidateRestartPolicyWorkloadCompatibility("spec.roles", []RoleSpec{role})
+				if workload == constants.RoleInstanceSetWorkloadType && policy == RecreateRoleInstanceOnPodRestart && limit >= 0 {
+					require.NoError(t, err)
+				} else {
+					require.Error(t, err)
+				}
+			}
+		}
+	}
+}
+
+func TestValidateDiscoveryConfigVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		version     constants.DiscoveryConfigVersion
+		workload    string
+		errContains string
+	}{
+		{
+			name:     "missing version is historical v1alpha1",
+			version:  "",
+			workload: constants.RoleInstanceSetWorkloadType,
+		},
+		{
+			name:     "v1alpha1 is accepted",
+			version:  constants.DiscoveryConfigVersionV1Alpha1,
+			workload: constants.RoleInstanceSetWorkloadType,
+		},
+		{
+			name:     "v1 accepts RoleInstanceSet",
+			version:  constants.DiscoveryConfigVersionV1,
+			workload: constants.RoleInstanceSetWorkloadType,
+		},
+		{
+			name:     "v1 accepts a stateless deprecated workload",
+			version:  constants.DiscoveryConfigVersionV1,
+			workload: constants.DeploymentWorkloadType,
+		},
+		{
+			name:        "v1 rejects a deprecated stateful workload",
+			version:     constants.DiscoveryConfigVersionV1,
+			workload:    constants.StatefulSetWorkloadType,
+			errContains: "v1 is not supported for deprecated stateful workload type",
+		},
+		{
+			name:        "invalid version is rejected",
+			version:     "v2",
+			workload:    constants.RoleInstanceSetWorkloadType,
+			errContains: "unsupported value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rbg := &RoleBasedGroup{
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{{
+						Name: "worker",
+						Annotations: map[string]string{
+							constants.RoleWorkloadTypeAnnotationKey: tt.workload,
+						},
+					}},
+				},
+			}
+			rbg.SetDiscoveryConfigVersion(tt.version)
+
+			err := ValidateDiscoveryConfigVersion(rbg)
+			if tt.errContains == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			}
+		})
+	}
+}
+
+func TestValidateRBGSetDiscoveryConfigVersion(t *testing.T) {
+	t.Run("v1 with a RoleInstanceSet template is accepted", func(t *testing.T) {
+		rbgs := &RoleBasedGroupSet{
+			Spec: RoleBasedGroupSetSpec{
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Annotations: map[string]string{
+						constants.DiscoveryConfigVersionAnnotationKey: "v1",
+					},
+					Spec: RoleBasedGroupSpec{
+						Roles: []RoleSpec{{Name: "worker"}},
+					},
+				},
+			},
+		}
+		require.NoError(t, validateRBGSetDiscoveryConfigVersion(rbgs))
+	})
+
+	t.Run("v1 with a deprecated stateful template role is rejected", func(t *testing.T) {
+		rbgs := &RoleBasedGroupSet{
+			Spec: RoleBasedGroupSetSpec{
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Annotations: map[string]string{
+						constants.DiscoveryConfigVersionAnnotationKey: "v1",
+					},
+					Spec: RoleBasedGroupSpec{
+						Roles: []RoleSpec{{
+							Name: "worker",
+							Annotations: map[string]string{
+								constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType,
+							},
+						}},
+					},
+				},
+			},
+		}
+		require.Error(t, validateRBGSetDiscoveryConfigVersion(rbgs))
+	})
 }

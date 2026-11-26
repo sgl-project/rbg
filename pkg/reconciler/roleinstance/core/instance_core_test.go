@@ -19,9 +19,25 @@ package core
 import (
 	"testing"
 
+	"github.com/stretchr/testify/require"
+	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
+
+func TestNewPodsMarkedWithoutTemplateChanges(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: "ns"}, Spec: workloadsv1alpha2.RoleInstanceSpec{
+		Components: []workloadsv1alpha2.RoleInstanceComponent{{Name: "main", Template: corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{Name: "main", Image: "test"}}}}}},
+	}}
+	before := instance.DeepCopy()
+	pods, err := New(instance).NewUpdatePods("revision", "main", []int32{0})
+	require.NoError(t, err)
+	require.Len(t, pods, 1)
+	require.Equal(t, "true", pods[0].Labels[constants.ManagedLabelKey])
+	require.Equal(t, before, instance)
+}
 
 func TestGetUpdateOptionsReadsGracePeriodAnnotation(t *testing.T) {
 	tests := []struct {

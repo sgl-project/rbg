@@ -125,7 +125,7 @@ func (r *DeploymentReconciler) Reconciler(
 		return nil
 	}
 
-	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, deployApplyConfig, utils.PatchSpec); err != nil {
+	if _, err := utils.ApplyObjectConfiguration(ctx, r.client, deployApplyConfig, utils.ApplySpec); err != nil {
 		logger.Error(err, "Failed to patch deployment apply configuration")
 		return err
 	}
@@ -178,7 +178,7 @@ func (r *DeploymentReconciler) constructDeployApplyConfiguration(
 						WithMatchLabels(matchLabels),
 				),
 		).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithAnnotations(labels.Merge(workloadRoleAnnotations(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), deployLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().

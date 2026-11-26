@@ -86,13 +86,20 @@ var _ = Describe("Stateful RoleInstance orphan Pod recovery", func() {
 				return false, err
 			}
 			for _, condition := range currentInstance.Status.Conditions {
-				if condition.Type == workloadsv1alpha2.RoleInstanceFailedScale &&
-					condition.Status == corev1.ConditionTrue {
+				// KEP-502: this Pod is owned by the legacy StatefulSet, so it is a
+				// genuinely foreign same-name Pod rather than a previous
+				// incarnation of this instance. Unlike the RecreatePod race, the
+				// conflict must stay visible through the Progressing condition
+				// until garbage collection removes the legacy Pod.
+				if condition.Type == workloadsv1alpha2.RoleInstanceProgressing &&
+					condition.Status == corev1.ConditionTrue &&
+					condition.Reason == workloadsv1alpha2.ReasonPodOperationUnclassified {
 					return true, nil
 				}
 			}
 			return false, nil
-		}, timeout, interval).Should(BeTrue(), "the blocked creation should be reported through FailedScale")
+		}, timeout, interval).Should(BeTrue(),
+			"a genuinely foreign same-name Pod must stay a published blocker")
 
 		Expect(testutil.K8sClient.Delete(testutil.Ctx, oldPod)).To(Succeed())
 		Eventually(func() (bool, error) {
@@ -133,18 +140,18 @@ var _ = Describe("Stateful RoleInstance orphan Pod recovery", func() {
 				return false, err
 			}
 			ready := false
-			failedScale := false
+			blocked := false
 			for _, condition := range instance.Status.Conditions {
 				switch condition.Type {
 				case workloadsv1alpha2.RoleInstanceReady:
 					ready = condition.Status == corev1.ConditionTrue
-				case workloadsv1alpha2.RoleInstanceFailedScale:
-					failedScale = condition.Status == corev1.ConditionTrue
+				case workloadsv1alpha2.RoleInstanceProgressing:
+					blocked = condition.Status == corev1.ConditionTrue
 				}
 			}
-			return ready && !failedScale, nil
+			return ready && !blocked, nil
 		}, timeout, interval).Should(BeTrue(),
-			"the recovered instance should become Ready and clear the transient FailedScale condition")
+			"the recovered instance should become Ready and clear the transient Progressing blocker")
 	})
 })
 

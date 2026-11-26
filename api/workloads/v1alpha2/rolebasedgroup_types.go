@@ -202,6 +202,7 @@ const (
 
 // RestartPolicyConfig groups restart policy type and backoff configuration.
 // +kubebuilder:validation:XValidation:rule="!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds) || self.maxDelaySeconds >= self.baseDelaySeconds",message="maxDelaySeconds must be greater than or equal to baseDelaySeconds"
+// +kubebuilder:validation:XValidation:rule="!has(self.maxGroupRestarts) || (has(self.type) && self.type != 'None')",message="maxGroupRestarts requires an explicit whole-RoleInstance recreate policy"
 type RestartPolicyConfig struct {
 	// Type defines the restart policy when pod failures happen.
 	// Default is RecreateRoleInstanceOnPodRestart.
@@ -239,6 +240,13 @@ type RestartPolicyConfig struct {
 	// +kubebuilder:validation:Minimum=0
 	// +kubebuilder:default=600
 	MaxDelaySeconds *int32 `json:"maxDelaySeconds,omitempty"`
+
+	// MaxGroupRestarts limits accepted whole-instance rebuilds per topology/Pod-template
+	// revision. Native RoleInstanceSet only; unset is unlimited; zero stops on the
+	// first eligible fault.
+	// +optional
+	// +kubebuilder:validation:Minimum=0
+	MaxGroupRestarts *int32 `json:"maxGroupRestarts,omitempty"`
 }
 
 // resolveRestartPolicyConfig folds the deprecated restartPolicy string into cfg.
@@ -285,6 +293,7 @@ const (
 // RoleSpec defines the specification for a role in the group
 // +kubebuilder:validation:XValidation:rule="!(has(self.standalonePattern) && has(self.leaderWorkerPattern))",message="standalonePattern and leaderWorkerPattern are mutually exclusive"
 // +kubebuilder:validation:XValidation:rule="!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.sharedServiceSelection) || self.leaderWorkerPattern.sharedServiceSelection != 'LeaderOnly' || !has(self.annotations) || !('rbg.workloads.x-k8s.io/role-workload-type' in self.annotations) || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'] == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'",message="leaderWorkerPattern.sharedServiceSelection=LeaderOnly is only supported for RoleInstanceSet + leaderWorkerPattern"
+// +kubebuilder:validation:XValidation:rule="((!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.restartPolicyConfig) || !has(self.leaderWorkerPattern.restartPolicyConfig.maxGroupRestarts)) && (!has(self.customComponentsPattern) || !has(self.customComponentsPattern.restartPolicyConfig) || !has(self.customComponentsPattern.restartPolicyConfig.maxGroupRestarts))) || !has(self.annotations) || !('rbg.workloads.x-k8s.io/role-workload-type' in self.annotations) || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'].size() == 0 || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'] == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'",message="maxGroupRestarts is only supported for RoleInstanceSet"
 // The targetContainers-requires-component rule (with the standalonePattern
 // exemption) is enforced in the admission webhook's shared validation
 // (ValidateEngineRuntimes), not CEL: a comprehension over the uncapped
@@ -668,7 +677,12 @@ type RoleBasedGroupStatus struct {
 	Conditions []metav1.Condition `json:"conditions,omitempty" patchStrategy:"merge" patchMergeKey:"type"`
 
 	// Status of individual roles
-	RoleStatuses []RoleStatus `json:"roleStatuses"`
+	RoleStatuses []RoleStatus `json:"roleStatuses,omitempty"`
+
+	// ObservedRolloutRequest is the rbg.workloads.x-k8s.io/rollout-request annotation value of the
+	// object for which every role workload was last verified as rolled out.
+	// +optional
+	ObservedRolloutRequest string `json:"observedRolloutRequest,omitempty"`
 }
 
 // RoleStatus shows the current state of a specific role
@@ -691,6 +705,7 @@ type RoleStatus struct {
 // +kubebuilder:subresource:status
 // +kubebuilder:storageversion
 // +kubebuilder:printcolumn:name="READY",type="string",JSONPath=".status.conditions[?(@.type=='Ready')].status"
+// +kubebuilder:printcolumn:name="PROGRESSING",type="string",JSONPath=".status.conditions[?(@.type=='Progressing')].reason",description="Current progress or blocker reason"
 // +kubebuilder:printcolumn:name="AGE",type="date",JSONPath=".metadata.creationTimestamp"
 // +kubebuilder:resource:shortName={rbg}
 

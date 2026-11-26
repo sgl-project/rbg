@@ -324,7 +324,7 @@ func (r *PodReconciler) emitWrapShadowedWarning(
 }
 
 func podTemplateSpecEqual(template1, template2 corev1.PodTemplateSpec) (bool, error) {
-	if equal, err := objectMetaEqual(template1.ObjectMeta, template2.ObjectMeta); !equal {
+	if equal, err := objectMetaEqual(template1.ObjectMeta, template2.ObjectMeta, constants.ManagedLabelKey); !equal {
 		return false, fmt.Errorf("objectMeta not equal: %s", err.Error())
 	}
 
@@ -425,12 +425,12 @@ func exclusiveAffinityApplied(podTemplateSpec corev1.PodTemplateSpec, topologyKe
 	return hasAffinity && hasAntiAffinity
 }
 
-func objectMetaEqual(meta1, meta2 metav1.ObjectMeta) (bool, error) {
+func objectMetaEqual(meta1, meta2 metav1.ObjectMeta, ignoredLabelKeys ...string) (bool, error) {
 	meta1Copy := meta1.DeepCopy()
 	meta2Copy := meta2.DeepCopy()
 
-	meta1Copy.Labels = utils.FilterSystemLabels(meta1Copy.Labels)
-	meta2Copy.Labels = utils.FilterSystemLabels(meta2Copy.Labels)
+	meta1Copy.Labels = utils.FilterSystemLabels(meta1Copy.Labels, ignoredLabelKeys...)
+	meta2Copy.Labels = utils.FilterSystemLabels(meta2Copy.Labels, ignoredLabelKeys...)
 	if !mapsEqual(meta1Copy.Labels, meta2Copy.Labels) {
 		return false, fmt.Errorf("label not equal, old [%s], new [%s]", meta1Copy.Labels, meta2Copy.Labels)
 	}
@@ -486,8 +486,13 @@ func containersEqual(containers1, containers2 []corev1.Container) (bool, error) 
 	sortedContainers2 := sortContainers(containers2)
 
 	normalizeByApiServerDefaults := func(c corev1.Container) corev1.Container {
-		c.Env = utils.FilterSystemEnvs(c.Env)
-		p := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{c}}}
+		// Deep-copy before defaulting: containersEqual may be called on live informer-cache
+		// objects (e.g. from WorkloadPredicate), and legacyscheme.Scheme.Default mutates
+		// nested maps, slices, and pointers (such as Resources.Requests, Ports, Probes, and
+		// Env[].ValueFrom.FieldRef) in place.
+		copied := *c.DeepCopy()
+		copied.Env = utils.FilterSystemEnvs(copied.Env)
+		p := &corev1.Pod{Spec: corev1.PodSpec{Containers: []corev1.Container{copied}}}
 		legacyscheme.Scheme.Default(p)
 		return p.Spec.Containers[0]
 	}

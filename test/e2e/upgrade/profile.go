@@ -118,6 +118,8 @@ func v070Profile() *releaseProfile {
 	// resolves the unset field to LeaderOnly, so its profile records nothing
 	// here.
 	rewrites.leaderOnlyServices = map[string]bool{sharedServiceName(fxLwp, lwpRole): true}
+	rewrites.discoveryConfigChildren = setChildDiscoveryConfigChildren()
+	rewrites.discoveryConfigRBGs = setDirectDiscoveryConfigRBGs()
 
 	return &releaseProfile{
 		installValues: []string{
@@ -148,6 +150,10 @@ func v070Profile() *releaseProfile {
 
 // v080Profile is the v0.8.0 -> current hop.
 func v080Profile() *releaseProfile {
+	rewrites := strategyHealRewrites()
+	rewrites.discoveryConfigChildren = setChildDiscoveryConfigChildren()
+	rewrites.discoveryConfigRBGs = setDirectDiscoveryConfigRBGs()
+
 	return &releaseProfile{
 		installValues: []string{
 			// v0.8.0 already uses the current controller.* layout. The values
@@ -170,7 +176,7 @@ func v080Profile() *releaseProfile {
 			present:     risStrategyEnumPresent,
 		},
 		prunesRestartPolicyConfig:  false,
-		rewrites:                   strategyHealRewrites(),
+		rewrites:                   rewrites,
 		exclusiveTopologyFromLabel: constants.GroupUniqueHashLabelKey,
 	}
 }
@@ -220,6 +226,25 @@ func strategyHealRewrites() recordedRewrites {
 			legacySetChildName(): 1,
 		},
 	}
+}
+
+// setChildDiscoveryConfigChildren records the RoleBasedGroupSet children whose
+// discovery ConfigMap the upgrade must resume maintaining (#603). KEP-576 removed
+// the mode selector, so the observable contract is the ConfigMap itself rather than
+// an annotation rewrite.
+func setChildDiscoveryConfigChildren() map[string]bool {
+	return map[string]bool{
+		setChildName(fxSet):         true,
+		legacySetChildName():        true,
+		setChildName(fxV1alpha1Set): true,
+	}
+}
+
+// setDirectDiscoveryConfigRBGs records the direct legacy RBGs whose ConfigMap
+// must be created by the upgraded controller. The suite runs once for every
+// supported from-release, so both hops exercise the same one-hop rewrite.
+func setDirectDiscoveryConfigRBGs() map[string]bool {
+	return map[string]bool{fxLegacyDiscovery: true}
 }
 
 // risStrategyEnumPresent reports whether the RoleInstanceSet CRD constrains

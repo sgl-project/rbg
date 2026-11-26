@@ -36,50 +36,45 @@ import (
 const (
 	FieldManager = "rbg"
 
-	PatchAll    PatchType = "all"
-	PatchSpec   PatchType = "spec"
-	PatchStatus PatchType = "status"
+	ApplySpec   ApplyTarget = "spec"
+	ApplyStatus ApplyTarget = "status"
 )
 
-type PatchType string
+type ApplyTarget string
 
-// nolint:staticcheck
-// TODO:  SA1019: Use client.Client.Apply() instead
-func PatchObjectApplyConfiguration(
+// ApplyObjectConfiguration applies the configuration and returns
+// the object populated by the API server. Callers can use the returned identity
+// without waiting for the informer cache to observe the write.
+func ApplyObjectConfiguration(
 	ctx context.Context, k8sClient client.Client,
-	objApplyConfig interface{}, patchType PatchType,
-) error {
+	objApplyConfig interface{}, target ApplyTarget,
+) (*unstructured.Unstructured, error) {
 	logger := log.FromContext(ctx)
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(objApplyConfig)
 	if err != nil {
 		logger.Error(err, "Converting obj apply configuration to json.")
-		return err
+		return nil, err
 	}
-
-	patch := &unstructured.Unstructured{
-		Object: obj,
-	}
-
+	patch := &unstructured.Unstructured{Object: obj}
 	logger.V(1).Info("patch content", "patchObject", patch.Object)
 
 	// Use server side apply and add fieldmanager to the rbg owned fields
 	// If there are conflicts in the fields owned by the rbg controller, rbg will obtain the ownership and force override
 	// these fields to the ones desired by the rbg controller
 	// TODO b/316776287 add E2E test for SSA
-	if patchType == PatchSpec || patchType == PatchAll {
-		err = k8sClient.Patch(
-			ctx, patch, client.Apply, &client.PatchOptions{
-				FieldManager: FieldManager,
-				Force:        ptr.To[bool](true),
-			},
-		)
-		if err != nil {
+	if target == ApplySpec {
+		applyConfig := client.ApplyConfigurationFromUnstructured(patch)
+		if err := k8sClient.Apply(ctx, applyConfig, client.FieldOwner(FieldManager), client.ForceOwnership); err != nil {
 			logger.Error(err, "Using server side apply to patch object")
-			return err
+			return nil, err
 		}
+		// ApplyConfigurationFromUnstructured retains the same object pointer, so
+		// patch now contains the API server response, including UID, resourceVersion,
+		// defaults, and admission mutations.
 	}
 
-	if patchType == PatchStatus || patchType == PatchAll {
+	if target == ApplyStatus {
+		// TODO: Use a subresource Apply method once controller-runtime provides one.
 		err = k8sClient.Status().Patch(
 			ctx, patch, client.Apply,
 			&client.SubResourcePatchOptions{
@@ -91,11 +86,11 @@ func PatchObjectApplyConfiguration(
 		)
 		if err != nil {
 			logger.Error(err, "Using server side apply to patch object status")
-			return err
+			return nil, err
 		}
 	}
 
-	return nil
+	return patch, nil
 }
 
 // CalculatePartitionReplicas returns absolute value of partition for workload. This func can solve some
@@ -191,7 +186,7 @@ func FilterSystemAnnotations(annotations map[string]string) map[string]string {
 	return filtered
 }
 
-func FilterSystemLabels(labels map[string]string) map[string]string {
+func FilterSystemLabels(labels map[string]string, ignoredLabelKeys ...string) map[string]string {
 	if labels == nil {
 		return nil
 	}
@@ -203,6 +198,9 @@ func FilterSystemLabels(labels map[string]string) map[string]string {
 			!strings.HasPrefix(k, "rolebasedgroup.workloads.x-k8s.io/") {
 			filtered[k] = v
 		}
+	}
+	for _, key := range ignoredLabelKeys {
+		delete(filtered, key)
 	}
 	return filtered
 

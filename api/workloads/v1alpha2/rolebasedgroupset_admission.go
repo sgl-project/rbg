@@ -19,11 +19,15 @@ package v1alpha2
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/runtime"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 // RoleBasedGroupSetValidator implements admission.CustomValidator for RoleBasedGroupSet.
@@ -47,14 +51,27 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 	}
 	klog.V(4).InfoS("validating RoleBasedGroupSet on create", "name", rbgs.Name, "namespace", rbgs.Namespace)
 
+	if err := ValidateRestartPolicyWorkloadCompatibility("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		return nil, err
+	}
+
 	if err := validateRBGSetExcludedOrdinals(rbgs); err != nil {
 		return nil, err
 	}
 	var allErrs []error
+	if err := validateGroupSetRolloutStrategy(&rbgs.Spec); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := validateGroupSetScalingAdapters(nil, rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if err := validateNoNewEngineRuntimeViolations(rbgs.Spec.GroupTemplate.Spec.Roles, nil); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := validateNoNewUnsupportedWorkloadTypes("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles, nil); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {
@@ -66,17 +83,22 @@ func (v *RoleBasedGroupSetValidator) ValidateCreate(_ context.Context, obj runti
 			allErrs = append(allErrs, err)
 		}
 	}
-
+	if err := validateRBGSetDiscoveryConfigVersion(rbgs); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	return nil, utilerrors.NewAggregate(allErrs)
 }
 
 // ValidateUpdate validates a RoleBasedGroupSet on update.
-func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj runtime.Object, newObj runtime.Object) (admission.Warnings, error) {
+func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj, newObj runtime.Object) (admission.Warnings, error) {
 	rbgs, ok := newObj.(*RoleBasedGroupSet)
 	if !ok {
 		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", newObj)
 	}
 	klog.V(4).InfoS("validating RoleBasedGroupSet on update", "name", rbgs.Name, "namespace", rbgs.Namespace)
+	if err := ValidateRestartPolicyWorkloadCompatibility("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		return nil, err
+	}
 	oldRBGS, ok := oldObj.(*RoleBasedGroupSet)
 	if !ok {
 		return nil, fmt.Errorf("expected *RoleBasedGroupSet but got %T", oldObj)
@@ -86,10 +108,23 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj ru
 		return nil, err
 	}
 	var allErrs []error
+	if err := validateGroupSetRolloutStrategy(&rbgs.Spec); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := validateGroupSetScalingAdapters(oldRBGS.Spec.GroupTemplate.Spec.Roles, rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
 	if err := validateRoleDependencies("spec.groupTemplate.spec.roles", rbgs.Spec.GroupTemplate.Spec.Roles); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if err := validateNoNewEngineRuntimeViolations(rbgs.Spec.GroupTemplate.Spec.Roles, oldRBGS.Spec.GroupTemplate.Spec.Roles); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	if err := validateNoNewUnsupportedWorkloadTypes(
+		"spec.groupTemplate.spec.roles",
+		rbgs.Spec.GroupTemplate.Spec.Roles,
+		oldRBGS.Spec.GroupTemplate.Spec.Roles,
+	); err != nil {
 		allErrs = append(allErrs, err)
 	}
 	if v.EnableDeprecatedWorkloadTypes {
@@ -108,11 +143,147 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj ru
 			allErrs = append(allErrs, err)
 		}
 	}
+	if rbgs.DeletionTimestamp == nil {
+		if err := ratchetRBGSetDiscoveryConfigVersion(oldRBGS, rbgs); err != nil {
+			allErrs = append(allErrs, err)
+		}
+	}
 
 	return nil, utilerrors.NewAggregate(allErrs)
+}
+
+// ratchetRBGSetDiscoveryConfigVersion permits updates to objects that already
+// carry an invalid version (for example, one written while admission was
+// unavailable), while rejecting a version violation introduced by this update.
+// DeletionTimestamp updates skip the check entirely.
+func ratchetRBGSetDiscoveryConfigVersion(oldRBGS, rbgs *RoleBasedGroupSet) error {
+	newErr := validateRBGSetDiscoveryConfigVersion(rbgs)
+	if newErr == nil {
+		return nil
+	}
+	oldViolation := make(map[string]bool)
+	for _, key := range violationKeys(validateRBGSetDiscoveryConfigVersion(oldRBGS)) {
+		oldViolation[key] = true
+	}
+	return ratchetError(newErr, oldViolation)
 }
 
 // ValidateDelete just implements admission.CustomValidator. This verb is currently no-op.
 func (v *RoleBasedGroupSetValidator) ValidateDelete(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
 	return nil, nil
+}
+
+func validateGroupSetRolloutStrategy(spec *RoleBasedGroupSetSpec) error {
+	strategy := spec.RolloutStrategy
+	if strategy == nil {
+		return nil
+	}
+
+	var allErrs []error
+	if strategy.Type != "" && strategy.Type != RecreateStrategyType && strategy.Type != InPlaceUpdateStrategyType {
+		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.type: unsupported value %q; supported values are Recreate and InPlaceUpdate", strategy.Type))
+	}
+
+	maxUnavailable, _, unavailableErr := parseGroupSetIntOrPercent(strategy.MaxUnavailable, 1)
+	if unavailableErr != nil {
+		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.maxUnavailable: %w", unavailableErr))
+	} else if err := validateGroupSetRolloutPercentage("spec.rolloutStrategy.maxUnavailable", strategy.MaxUnavailable); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	maxSurge, _, surgeErr := parseGroupSetIntOrPercent(strategy.MaxSurge, 0)
+	if surgeErr != nil {
+		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.maxSurge: %w", surgeErr))
+	} else if err := validateGroupSetRolloutPercentage("spec.rolloutStrategy.maxSurge", strategy.MaxSurge); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	// Check the declared values, not percentages resolved against replicas: a positive
+	// percentage that rounds down to zero is handled by the controller's fallback.
+	switch strategy.Type {
+	case RecreateStrategyType:
+		if unavailableErr == nil && surgeErr == nil && maxUnavailable == 0 && maxSurge == 0 {
+			allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy: maxUnavailable and maxSurge cannot both be 0 or 0%% for Recreate"))
+		}
+	case "", InPlaceUpdateStrategyType:
+		if surgeErr == nil && maxSurge > 0 {
+			allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.maxSurge: must be omitted, 0 or 0%% for InPlaceUpdate"))
+		}
+		if unavailableErr == nil && maxUnavailable == 0 {
+			allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.maxUnavailable: must be greater than 0 for InPlaceUpdate"))
+		}
+	}
+
+	if _, _, err := parseGroupSetIntOrPercent(strategy.Partition, 0); err != nil {
+		allErrs = append(allErrs, fmt.Errorf("spec.rolloutStrategy.partition: %w", err))
+	} else if err := validateGroupSetRolloutPercentage("spec.rolloutStrategy.partition", strategy.Partition); err != nil {
+		allErrs = append(allErrs, err)
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
+func validateRBGSetDiscoveryConfigVersion(rbgs *RoleBasedGroupSet) error {
+	version := constants.DiscoveryConfigVersion(rbgs.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey])
+	return validateDiscoveryConfigVersion(
+		rbgs.Spec.GroupTemplate.Spec.Roles,
+		version,
+		"spec.groupTemplate.annotations["+constants.DiscoveryConfigVersionAnnotationKey+"]",
+	)
+}
+
+func validateGroupSetRolloutPercentage(field string, value *intstr.IntOrString) error {
+	if value == nil {
+		return nil
+	}
+	percentage, isPercent, err := parseGroupSetIntOrPercent(value, 0)
+	if err != nil || !isPercent {
+		return nil
+	}
+	if percentage > 100 {
+		return fmt.Errorf("%s: percentage must be between 0%% and 100%%", field)
+	}
+	return nil
+}
+
+func parseGroupSetIntOrPercent(value *intstr.IntOrString, defaultValue int64) (int64, bool, error) {
+	if value == nil {
+		return defaultValue, false, nil
+	}
+	switch value.Type {
+	case intstr.Int:
+		if value.IntVal >= 0 {
+			return int64(value.IntVal), false, nil
+		}
+	case intstr.String:
+		if strings.HasSuffix(value.StrVal, "%") {
+			digits := strings.TrimSuffix(value.StrVal, "%")
+			if len(digits) == 0 {
+				break
+			}
+			for _, digit := range digits {
+				if digit < '0' || digit > '9' {
+					return 0, false, fmt.Errorf("invalid value %q: must be a non-negative integer or percentage", value.String())
+				}
+			}
+			percentage, err := strconv.ParseInt(digits, 10, 64)
+			if err != nil {
+				return 0, false, fmt.Errorf("invalid percentage %q: %w", value.StrVal, err)
+			}
+			return percentage, true, nil
+		}
+	}
+	return 0, false, fmt.Errorf("invalid value %q: must be a non-negative integer or percentage", value.String())
+}
+
+func validateGroupSetScalingAdapters(oldRoles, newRoles []RoleSpec) error {
+	oldEnabled := make(map[string]bool, len(oldRoles))
+	for _, role := range oldRoles {
+		oldEnabled[role.Name] = role.ScalingAdapter != nil && role.ScalingAdapter.Enable
+	}
+
+	var allErrs []error
+	for i, role := range newRoles {
+		if role.ScalingAdapter != nil && role.ScalingAdapter.Enable && !oldEnabled[role.Name] {
+			allErrs = append(allErrs, fmt.Errorf("spec.groupTemplate.spec.roles[%d].scalingAdapter.enable (role %q): cannot enable scaling adapter in a RoleBasedGroupSet", i, role.Name))
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
 }

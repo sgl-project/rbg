@@ -81,14 +81,14 @@ vet: ## Run go vet against code.
 
 .PHONY: test
 test: manifests generate fmt vet ## Run tests.
-	go test $$(go list ./api/... ./cmd/... ./internal/... ./pkg/... ) -coverprofile cover.out
+	go test $$(go list ./api/... ./cmd/... ./internal/... ./pkg/... ./test/envtest/testutil/... ) -coverprofile cover.out
 	go tool cover -func=cover.out | awk '/^total:/ {print $$3}'
 
 .PHONY: test-envtest
 test-envtest: manifests generate setup-envtest ## Run envtest integration tests.
 	@echo "Running envtest tests..."
 	KUBEBUILDER_ASSETS="$$($(SETUP_ENVTEST) use $(ENVTEST_K8S_VERSION) --bin-dir $(LOCALBIN) -p path)" \
-		go test -v ./test/envtest/testcase/... -timeout 30m
+		go test -v ./test/envtest/testcase/... ./pkg/utils/client ./cmd/cli/cmd/migrate -timeout 30m
 
 .PHONY: test-coverage-html
 test-coverage-html: test
@@ -139,7 +139,7 @@ test-e2e-deprecated-disabled: ## Run the deprecated-workload-types-disabled e2e 
 		-timeout 30m
 
 # Runs against a throwaway cluster with NO rbgs install: the suite installs the
-# from-release itself from a git worktree of the tag, upgrades it in place to the
+# from-release itself from an exported chart of the tag, upgrades it in place to the
 # chart in this tree, then removes it again. Teardown deletes the workloads.x-k8s.io
 # CRDs, which cascades to every object of those kinds. The upgrade target defaults
 # to the chart's own image values, so no variables are needed to test a release; set
@@ -159,27 +159,6 @@ test-e2e-upgrade: ## Run the upgrade-compatibility e2e suite (RBGS_FROM_GIT_TAG=
 	# gate's own message.
 	mkdir -p test/e2e/upgrade/artifacts
 	go test ./test/e2e/upgrade/ -v -ginkgo.v --ginkgo.fail-fast \
-		--ginkgo.junit-report=artifacts/junit.xml \
-		--ginkgo.json-report=artifacts/report.json \
-		-timeout 60m
-
-# Runs the KEP-531 upgrade/downgrade drills against a throwaway cluster with NO
-# rbgs install: the suite installs the pre-KEP release itself from a git
-# worktree of RBGS_DRILL_FROM_REF (default main), upgrades it to the chart in
-# this tree, rolls the controller image back inside an admission-disabled
-# window, and re-applies the validating webhook configuration from the rendered
-# chart. RBGS_DRILLS=1 is the runtime gate; without it a bare `go test` of the
-# package skips instead of mutating whatever cluster the KUBECONFIG points at.
-# The images of both ends must be reachable; a local build of the target goes
-# through RBGS_TO_TAG as with the upgrade suite. See test/e2e/drills.
-.PHONY: test-e2e-drills
-test-e2e-drills: ## Run the KEP-531 upgrade/downgrade drill e2e suite (RBGS_DRILL_FROM_REF selects the pre-KEP base; default main).
-	# 60m: two image rollouts with their readiness gates, one helm upgrade and
-	# install, several render settles and the re-apply of the webhook
-	# configuration each spend minutes, and a go test timeout that fires first
-	# reports a panic instead of a gate's own message.
-	mkdir -p test/e2e/drills/artifacts
-	RBGS_DRILLS=1 go test ./test/e2e/drills/ -v -ginkgo.v --ginkgo.fail-fast \
 		--ginkgo.junit-report=artifacts/junit.xml \
 		--ginkgo.json-report=artifacts/report.json \
 		-timeout 60m

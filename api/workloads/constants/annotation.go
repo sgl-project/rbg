@@ -85,6 +85,9 @@ var SystemManagedRoleAnnotations = map[string]struct{}{
 	RoleWorkloadTypeAnnotationKey:      {},
 	ExcludedOrdinalsAnnotationKey:      {},
 	CommittedSkipOrdinalsAnnotationKey: {},
+	// A recovery request is read from a RoleInstance only. A copy on a role
+	// would reach the role's workload, where nothing acts on it.
+	RoleInstanceRecoverAnnotationKey: {},
 }
 
 const (
@@ -105,6 +108,13 @@ func IsSystemManagedRoleAnnotation(key string) bool {
 
 // RoleInstance level annotations
 const (
+	// RoleInstanceRecoverAnnotationKey requests recovery after budget exhaustion.
+	RoleInstanceRecoverAnnotationKey = RBGPrefix + "recover"
+
+	// GroupRestartBudgetCleanupFinalizer retains Pod API objects, not containers.
+	// Also protects the RI until its owned Pods have had this finalizer removed.
+	GroupRestartBudgetCleanupFinalizer = RBGPrefix + "group-restart-budget-cleanup"
+
 	// RoleInstancePatternKey identifies the RoleInstance organization pattern (Stateful/Stateless)
 	RoleInstancePatternKey = RBGPrefix + "role-instance-pattern"
 
@@ -129,8 +139,40 @@ const (
 	// Example: rbg.workloads.x-k8s.io/role-instance-gang-scheduling: "true"
 	RoleInstanceGangSchedulingAnnotationKey = RBGPrefix + "role-instance-gang-scheduling"
 
-	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
+	// DiscoveryConfigVersionAnnotationKey selects the serialized content version
+	// of the RBG discovery ConfigMap. Supported values are v1alpha1 and v1.
+	DiscoveryConfigVersionAnnotationKey = RBGPrefix + "discovery-config-version"
+
+	// DiscoveryConfigModeAnnotationKey is the retired v0.7 discovery mode
+	// selector. The controller no longer reads or writes it. The key remains
+	// defined so RBGSet revision matching can keep ignoring the value already
+	// stored on children written by older controllers.
 	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
+
+	// RolloutRequestAnnotationKey carries an opaque token a managing controller changes with every
+	// write it needs acknowledged. The RoleBasedGroup controller copies it to
+	// status.observedRolloutRequest only once every role workload has rolled out for that object,
+	// which covers metadata-only writes that never bump metadata.generation.
+	RolloutRequestAnnotationKey = RBGPrefix + "rollout-request"
+
+	// ConversionV1alpha1CoordinationAnnotationKey carries v1alpha1 coordination intent to child RBGs independently of revisions.
+	ConversionV1alpha1CoordinationAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha1-coordination"
+
+	// ConversionV1alpha1PodGroupPolicyAnnotationKey preserves v1alpha1 PodGroupPolicy through hub round trips.
+	ConversionV1alpha1PodGroupPolicyAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha1-pod-group-policy"
+
+	// ConversionV1alpha2RolloutStrategyAnnotationKey stores the v1alpha2 rollout strategy on the
+	// v1alpha1 view during conversion.
+	ConversionV1alpha2RolloutStrategyAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-rollout-strategy"
+
+	// ConversionV1alpha2RolloutStatusAnnotationKey stores v1alpha2-only rollout status on the
+	// v1alpha1 view during conversion.
+	ConversionV1alpha2RolloutStatusAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-rollout-status"
+
+	// ConversionV1alpha2DiscoveryConfigVersionAnnotationKey stores the KEP-576
+	// discovery-config-version on the v1alpha1 view of RoleBasedGroupSet, whose
+	// schema has no spec.groupTemplate.annotations field.
+	ConversionV1alpha2DiscoveryConfigVersionAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-discovery-config-version"
 )
 
 // Lifecycle management annotations

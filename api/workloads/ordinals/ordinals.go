@@ -82,6 +82,15 @@ func (r Ranges) Contains(ordinal int) bool {
 	return i < len(r.intervals) && r.intervals[i].first <= ordinal
 }
 
+// Count returns the number of ordinals covered by the normalized ranges.
+func (r Ranges) Count() int {
+	var total int64
+	for _, interval := range r.intervals {
+		total += int64(interval.last) - int64(interval.first) + 1
+	}
+	return int(total)
+}
+
 // Position returns an allowed ordinal's zero-based position without expanding
 // ranges or allocating the prefix. Excluded or out-of-range ordinals return false.
 func (r Ranges) Position(ordinal int) (int, bool) {
@@ -132,6 +141,133 @@ func (r Ranges) Members(replicas int) ([]int, error) {
 		next = ordinal + 1
 	}
 	return result, nil
+}
+
+// Summarize returns the canonical hole record for the first replicas allowed
+// ordinals without materializing them. The member count is replicas; an empty
+// record means dense membership. It is the range-jumping counterpart of Members
+// followed by Record and must stay equivalent to them.
+func Summarize(replicas int, excluded Ranges) (string, error) {
+	if replicas < 0 {
+		return "", fmt.Errorf("negative replica count %d", replicas)
+	}
+	if replicas == 0 {
+		return "", nil
+	}
+
+	// Find the last selected ordinal: the replicas-th allowed ordinal.
+	last := int64(replicas) - 1
+	excludedBefore := int64(0)
+	found := false
+	for _, interval := range excluded.intervals {
+		allowedBefore := int64(interval.first) - excludedBefore
+		if int64(replicas) <= allowedBefore {
+			last += excludedBefore
+			found = true
+			break
+		}
+		excludedBefore += int64(interval.last) - int64(interval.first) + 1
+	}
+	if !found {
+		last += excludedBefore
+	}
+	if last < 0 || last > MaxOrdinal {
+		return "", fmt.Errorf("no available ordinal for replica %d", replicas)
+	}
+
+	// Holes are the excluded ordinals at or below the last selected ordinal.
+	var entries []string
+	for _, interval := range excluded.intervals {
+		if int64(interval.first) > last {
+			break
+		}
+		lo := int64(interval.first)
+		hi := int64(interval.last)
+		if hi > last {
+			hi = last
+		}
+		if lo > hi {
+			continue
+		}
+		entry := strconv.Itoa(int(lo))
+		if hi > lo {
+			entry += "-" + strconv.Itoa(int(hi))
+		}
+		entries = append(entries, entry)
+	}
+	return strings.Join(entries, ","), nil
+}
+
+// SelectionSubset reports whether the first desiredReplicas ordinals allowed by
+// desiredExcluded are all contained in the first retainedReplicas ordinals
+// allowed by retainedExcluded. It compares ordinal intervals, so huge replica
+// counts do not allocate a member list.
+func SelectionSubset(
+	desiredReplicas int,
+	desiredExcluded Ranges,
+	retainedReplicas int,
+	retainedExcluded Ranges,
+) (bool, error) {
+	desired, err := selectedIntervals(desiredReplicas, desiredExcluded)
+	if err != nil {
+		return false, err
+	}
+	retained, err := selectedIntervals(retainedReplicas, retainedExcluded)
+	if err != nil {
+		return false, err
+	}
+
+	// A desired interval can fall inside a larger retained interval, so the
+	// retained cursor is not advanced after a successful containment check.
+	i, j := 0, 0
+	for i < len(desired) {
+		for j < len(retained) && retained[j].last < desired[i].first {
+			j++
+		}
+		if j == len(retained) ||
+			retained[j].first > desired[i].first ||
+			retained[j].last < desired[i].last {
+			return false, nil
+		}
+		i++
+	}
+	return true, nil
+}
+
+func selectedIntervals(replicas int, excluded Ranges) ([]interval, error) {
+	if replicas < 0 {
+		return nil, fmt.Errorf("negative replica count %d", replicas)
+	}
+	if replicas == 0 {
+		return nil, nil
+	}
+
+	remaining := int64(replicas)
+	current := int64(0)
+	selected := make([]interval, 0, len(excluded.intervals)+1)
+	for _, skipped := range excluded.intervals {
+		if int64(skipped.first) > current {
+			size := int64(skipped.first) - current
+			if size > remaining {
+				size = remaining
+			}
+			selected = append(selected, interval{int(current), int(current + size - 1)})
+			remaining -= size
+			if remaining == 0 {
+				return selected, nil
+			}
+		}
+		if skipped.last == MaxOrdinal {
+			return nil, fmt.Errorf("no available ordinal for replica %d", replicas)
+		}
+		current = int64(skipped.last) + 1
+	}
+
+	if remaining > int64(MaxOrdinal)-current+1 {
+		return nil, fmt.Errorf("no available ordinal for replica %d", replicas)
+	}
+	selected = append(selected, interval{int(current), int(current + remaining - 1)})
+	return selected, nil
 }
 
 // Select keeps membership at fixed count, prefers excluded members on scale-in,

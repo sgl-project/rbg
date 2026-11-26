@@ -17,7 +17,7 @@ Workload-type content migration must use the `v1alpha2` representation and write
 There are two independent tracks:
 
 1. **API encoding (v1alpha1 to v1alpha2).** Objects created through `v1alpha1` and never updated may still be encoded as `v1alpha1` in etcd. The storage-version step rewrites them through the `v1alpha2` endpoint. It does not change object content.
-2. **Legacy workload selectors.** `Deployment`, `StatefulSet`, and `LeaderWorkerSet` roles are compatibility-gated and must move to `RoleInstanceSet`. A v1alpha1 `InstanceSet` selector is different: the v0.7.0-and-later controller has no InstanceSet reconciler, so such roles do not reconcile in either compatibility mode.
+2. **Legacy workload selectors.** `Deployment`, `StatefulSet`, and `LeaderWorkerSet` roles are compatibility-gated and must move to `RoleInstanceSet`. A v1alpha1 `InstanceSet` selector is different: the v0.7.0-and-later controller has no InstanceSet reconciler, so such roles do not reconcile in either compatibility mode. Admission still gates it like the other deprecated types, so a new InstanceSet use is rejected in either mode.
 
 Finishing one track does not imply that the other is complete. Check both before upgrading beyond `0.9.0`.
 
@@ -25,7 +25,7 @@ Finishing one track does not imply that the other is complete. Check both before
 
 - Upgrade the RBG controller to `0.9.0` or later and confirm that the controller, conversion webhook, and admission webhook are healthy.
 - Confirm the roles being migrated are currently ready and have no unrelated rollout in progress. An `InstanceSet` role is an exception: it has not reconciled since v0.7.0, and its unsupported workload type prevents the whole RoleBasedGroup from passing preflight reconciliation.
-- Complete the discovery ConfigMap prerequisite for every stateful role before submitting its migration. RBGs upgraded from v0.6.0 or earlier and RoleBasedGroupSet children run in `legacy` discovery mode; see [Discovery ConfigMap prerequisite](#discovery-configmap-prerequisite).
+- Complete the discovery ConfigMap prerequisite for every stateful role before submitting its migration. The legacy mode selector was removed with KEP-576; see [Discovery ConfigMap prerequisite](#discovery-configmap-prerequisite).
 - Coordinate with autoscaling, traffic management, scheduling, and any business process that can change the role while it is being migrated.
 - Freeze external writes to the object during the change window.
 - Save the current object and record its revision before editing it.
@@ -65,7 +65,8 @@ Interpret the inventory as follows:
 | `apps/v1/StatefulSet` | The role still depends on a StatefulSet. | Migrate to `RoleInstanceSet`. |
 | `leaderworkerset.x-k8s.io/v1/LeaderWorkerSet` | The role still depends on a LeaderWorkerSet. | Migrate to `RoleInstanceSet`. |
 | `workloads.x-k8s.io/v1alpha1/InstanceSet` | The selector has not been reconciled since v0.7.0 and blocks the whole RBG. | Migrate to `RoleInstanceSet`; then delete the old InstanceSet manually. |
-| Any other value | Unknown compatibility value. | Stop and review the object with its owner; do not guess. |
+| A value with no `/` after its first character, such as `RoleInstanceSet` or `StatefulSet` | Not an `apiVersion/kind` selector. The controller falls back to `RoleInstanceSet` for it, whatever it names, so the role runs as a `RoleInstanceSet`. Admission rejects it on a new role and on a role whose value changes; a role that already stores it stays writable. | Review the object with its owner. Set `workloads.x-k8s.io/v1alpha2/RoleInstanceSet` or remove the annotation; either keeps what the role runs. |
+| Any other value | No reconciler supports it, so it blocks the whole RBG. Admission rejects it on a new role and on a role whose value changes; a role that already stores it stays writable. | Stop and review the object with its owner; do not guess. |
 
 The inventory is an impact report, not a rollout decision. The operator decides which role to migrate first and when to pause.
 
@@ -73,26 +74,28 @@ The inventory is an impact report, not a rollout decision. The operator decides 
 
 ### Discovery ConfigMap prerequisite
 
-The discovery ConfigMap is the Pod discovery information (`config.yaml`) the controller creates and mounts into the Pods of stateful roles. Since v0.7.0 the controller maintains one ConfigMap per RoleBasedGroup instead of one per role (identical copies); the content format is unchanged. Each RBG records its mode in the annotation `rbg.workloads.x-k8s.io/discovery-config-mode` (the discovery mode below), either `legacy` or `refine`; the controller creates the ConfigMap only in `refine` mode.
+The discovery ConfigMap is the Pod discovery information (`config.yaml`) the controller creates and mounts into the Pods of stateful roles. Since v0.7.0 the controller maintains one ConfigMap per RoleBasedGroup, named after the RBG. The legacy `discovery-config-mode` selector was removed with KEP-576: the controller now maintains `<rbg>` for every RBG with a stateful role. Existing RBGs previously pinned to `legacy` receive `<rbg>` at their next reconcile; Pod templates are unchanged because v0.7.0 and later already mount `<rbg>`.
 
-Before migrating a stateful role, switch the discovery mode to `refine` according to the object's origin:
+The serialized content is selected by the annotation `rbg.workloads.x-k8s.io/discovery-config-version`:
 
-| Object origin | Discovery mode | Action before migrating |
-| --- | --- | --- |
-| Created by v0.7.0 or later, or a fresh v0.9.0 install | `refine` | None. |
-| Upgraded from v0.6.0 or earlier | Derived `legacy` | Set the RBG's discovery-mode annotation to `refine` and trigger a reconcile. |
-| RoleBasedGroupSet child, any origin | Effectively `legacy` | Set `rbg.workloads.x-k8s.io/discovery-config-mode: refine` in `spec.groupTemplate.annotations`. The set controller replaces child annotations with the template's, so an annotation written directly on a child does not survive. |
+| Annotation value | ConfigMap content |
+| --- | --- |
+| missing or `v1alpha1` | the historical full per-instance enumeration |
+| `v1` | the compact KEP-576 format |
 
-For a plain RoleBasedGroup, set the annotation and then verify the ConfigMap exists before migrating:
+The mutating webhook defaults new RBGs to `v1`; existing RBGs without the annotation keep `v1alpha1`. To opt out on creation, set the annotation to `v1alpha1`. New RBGs and RoleBasedGroupSet templates that still contain deprecated stateful roles (StatefulSet, LeaderWorkerSet, or InstanceSet) default to `v1alpha1`, because the compact format supports RoleInstanceSet only; admission also rejects `v1` for such RBGs. If an object carrying `v1` and a deprecated stateful role was written while admission was bypassed, the controller keeps publishing v1alpha1 content. An update that rebuilds the object and omits the annotation preserves the stored version; set `v1alpha1` explicitly to roll back.
+
+For a RoleBasedGroupSet, put the annotation in `spec.groupTemplate.annotations`: child RBGs inherit it, direct edits to a child annotation are overwritten, and a template update that omits the key preserves the stored version. Set the template annotation to `v1alpha1` explicitly to roll the set and its children back.
+
+Rolling the annotation back to `v1alpha1` is allowed only when the serialized enumeration still fits the API server's 1 MiB ConfigMap limit. The controller rejects an oversized rollback before writing, retains the current compact content, and keeps reconciling roles only while each stateful role's target ordinals stay within the retained content and nothing else in it changes. Reduce the topology to make a retry fit, or stay on `v1`; other changes made together with the rollback must be reverted first.
+
+Before migrating a stateful role, confirm the RBG-level ConfigMap exists:
 
 ```bash
-kubectl annotate rolebasedgroup RBG_NAME -n NAMESPACE \
-  rbg.workloads.x-k8s.io/discovery-config-mode=refine --overwrite
-# Confirm the ConfigMap exists before migrating:
 kubectl get configmap RBG_NAME -n NAMESPACE
 ```
 
-An annotation-only change does not enqueue a reconcile: the controller watches RoleBasedGroup spec changes, not annotation changes. Restart the controller, or submit an approved spec change alongside the annotation, and wait for the ConfigMap to appear before continuing. This prerequisite does not apply to a Deployment role switched to `Stateless` in step 3 below: stateless roles do not mount the ConfigMap.
+Annotation-only changes enqueue a reconcile: the RBG controller watches the discovery-config-version annotation. This prerequisite does not apply to a Deployment role switched to `Stateless` in step 3 below: stateless roles do not mount the ConfigMap.
 
 ### Migration steps
 
@@ -151,7 +154,9 @@ With the prerequisite above completed, migrate each `Deployment`, `StatefulSet`,
 
 v0.6.0 and earlier have no `RoleInstanceSet` (introduced in v0.7.0): clusters upgraded from those versions must upgrade to `0.9.0` first, then migrate.
 
-A v1alpha1 `InstanceSet` selector is not covered by the compatibility toggle. It has not been reconciled since v0.7.0, and an unsupported workload type makes the whole RoleBasedGroup fail preflight reconciliation rather than isolating the failure to one role.
+A v1alpha1 `InstanceSet` selector does not reconcile in either compatibility mode: it has had no reconciler since v0.7.0, and an unsupported workload type makes the whole RoleBasedGroup fail preflight reconciliation rather than isolating the failure to one role.
+
+The compatibility toggle still gates its admission like the other deprecated types. While the value is `true`, an existing InstanceSet role stays writable, but a new use is rejected, including restoring a saved InstanceSet selector into a role that has already been migrated; such a selector would not reconcile anyway, so do not plan recovery around it. While the value is `false`, every create or update whose roles still include an InstanceSet selector is rejected.
 
 Migrate the role to `RoleInstanceSet`. Orphan cleanup does not cover InstanceSet: after the replacement `RoleInstanceSet` is ready, the old InstanceSet and its Pods run alongside the replacement until the old object is explicitly deleted. Review the deletion with the workload owner and include it in the recovery plan.
 
@@ -162,7 +167,7 @@ A `RoleBasedGroupSet` is not an independent per-child staging mechanism. Its con
 - If the set controller updates a migrated child, restoring the legacy role is a new deprecated use and the admission guard rejects it.
 - If the set controller deletes and re-creates the child from the unmigrated template, the re-created child inherits the legacy type through the create-time exemption for set-owned children, and the role must be migrated again.
 
-Migrate the set template first. Each child deletes its old workload in the same reconcile pass, so the propagated change takes every child's role to zero Pods at the same time. Plan it as a full outage of that role across the set, not as a staged rollout. Set the discovery-mode annotation on the template as described in the Discovery ConfigMap prerequisite above before migrating. If per-child staging is required, use an explicitly reviewed plan that coordinates or isolates the child from set reconciliation. Do not assume that a child can be permanently migrated while its parent template remains unchanged.
+Migrate the set template first. Each child deletes its old workload in the same reconcile pass, so the propagated change takes every child's role to zero Pods at the same time. Plan it as a full outage of that role across the set, not as a staged rollout. Set the discovery-config-version annotation on the template as described in the Discovery ConfigMap prerequisite above before migrating. If per-child staging is required, use an explicitly reviewed plan that coordinates or isolates the child from set reconciliation. Do not assume that a child can be permanently migrated while its parent template remains unchanged.
 
 ## 3. Rewrite objects in the v1alpha2 storage encoding
 

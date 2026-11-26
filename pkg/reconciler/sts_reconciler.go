@@ -84,53 +84,53 @@ func (r *StatefulSetReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string,
 ) error {
-	if err := r.reconcileStatefulSet(ctx, rbg, role, rollingUpdateStrategy, revisionKey); err != nil {
+	workload, err := r.reconcileStatefulSet(ctx, rbg, role, rollingUpdateStrategy, revisionKey)
+	if err != nil {
 		return err
 	}
-
-	return NewServiceReconciler(r.client).reconcileHeadlessService(ctx, rbg, role)
+	return NewServiceReconciler(r.client).reconcileHeadlessService(ctx, rbg, role, workload)
 }
 
 func (r *StatefulSetReconciler) reconcileStatefulSet(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string,
-) error {
+) (*appsv1.StatefulSet, error) {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling sts workload")
 
 	rollingStrategy, err := validateRolloutStrategy(role.RolloutStrategy, int(*role.Replicas))
 	if err != nil {
 		logger.Error(err, "Invalid rollout strategy")
-		return err
+		return nil, err
 	}
 	role.RolloutStrategy = rollingStrategy
 
 	oldSts := &appsv1.StatefulSet{}
 	err = r.client.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldSts)
 	if err != nil && !apierrors.IsNotFound(err) {
-		return err
+		return nil, err
 	}
 	if err == nil {
 		if err := checkWorkloadClaimable(oldSts, rbg); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	stsApplyConfig, err := r.constructStatefulSetApplyConfiguration(ctx, rbg, role, oldSts, revisionKey)
 	if err != nil {
 		logger.Error(err, "Failed to construct statefulset apply configuration")
-		return err
+		return nil, err
 	}
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(stsApplyConfig)
 	if err != nil {
 		logger.Error(err, "Converting obj apply configuration to json.")
-		return err
+		return nil, err
 	}
 
 	newSts := &appsv1.StatefulSet{}
 	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, newSts); err != nil {
-		return fmt.Errorf("convert stsApplyConfig to sts error: %s", err.Error())
+		return nil, fmt.Errorf("convert stsApplyConfig to sts error: %s", err.Error())
 	}
 
 	// the err value was used to pass the differences between the old and new objects,
@@ -154,14 +154,14 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 	stsUpdated := !semanticallyEqual || !revisionHashEqual
 	partition, replicas, err := r.rollingUpdateParameters(ctx, role, oldSts, stsUpdated, rollingUpdateStrategy)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// An orphaned workload is never skipped: the apply re-attaches the controller reference.
 	if semanticallyEqual && revisionHashEqual && partition == *oldSts.Spec.UpdateStrategy.RollingUpdate.Partition &&
 		*oldSts.Spec.Replicas == *role.Replicas && v1.GetControllerOfNoCopy(oldSts) != nil {
 		logger.Info("sts equal, skip reconcile")
-		return nil
+		return oldSts, nil
 	}
 
 	rollingUpdate := appsapplyv1.RollingUpdateStatefulSetStrategy().WithPartition(partition)
@@ -178,12 +178,15 @@ func (r *StatefulSetReconciler) reconcileStatefulSet(
 			),
 	)
 
-	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, stsApplyConfig, utils.PatchSpec); err != nil {
+	applied, err := utils.ApplyObjectConfiguration(ctx, r.client, stsApplyConfig, utils.ApplySpec)
+	if err != nil {
 		logger.Error(err, "Failed to patch statefulset apply configuration")
-		return err
+		return nil, err
 	}
-
-	return nil
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(applied.Object, newSts); err != nil {
+		return nil, fmt.Errorf("convert applied StatefulSet to typed object: %w", err)
+	}
+	return newSts, nil
 }
 
 // Rolling update will always wait for the former replica to be ready then process the next one,
@@ -540,7 +543,7 @@ func (r *StatefulSetReconciler) constructStatefulSetApplyConfiguration(
 						WithMatchLabels(matchLabels),
 				),
 		).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithAnnotations(labels.Merge(workloadRoleAnnotations(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), stsLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().

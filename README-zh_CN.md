@@ -85,11 +85,12 @@ helm upgrade --install rbgs https://github.com/sgl-project/rbg/releases/download
 
 `v1alpha1` API 以及 `Deployment` / `StatefulSet` / `LeaderWorkerSet` 三种 workload 类型正在被弃用，
 由 `v1alpha2` 和 `RoleInstanceSet` 取代。Chart 参数 `controller.deprecatedWorkloadTypes.enabled`
-（对应控制器参数 `--enable-deprecated-workload-types`）决定控制器服务哪一套逻辑：
+（对应控制器参数 `--enable-deprecated-workload-types`）决定控制器服务哪一套逻辑。v1alpha1
+`InstanceSet` 同属弃用类型，但它自 v0.7.0 起就没有 reconciler：
 
 | 取值 | 行为 |
 |:-----|:-----|
-| `true`（chart 默认） | 兼容模式：`v1alpha1` 与 `v1alpha2` 的控制逻辑同时生效。已使用弃用 workload 类型的 role 继续可 reconcile，但**新增使用会被拒绝**（包括在弃用类型之间切换）——请将这些 role 迁移到 `RoleInstanceSet`。 |
+| `true`（chart 默认） | 兼容模式：`v1alpha1` 与 `v1alpha2` 的控制逻辑同时生效。已使用弃用 workload 类型的 role 继续可 reconcile（v1alpha1 `InstanceSet` 除外），但**新增使用会被拒绝**（包括在弃用类型之间切换）——请将这些 role 迁移到 `RoleInstanceSet`。 |
 | `false` | 严格模式：控制器直接拒绝已弃用的 workload 类型——不授予相关 RBAC、不 watch 这些资源，校验 webhook 拒绝任何使用了它们的创建与更新请求。 |
 
 每个 `v1alpha1` 请求都会返回弃用警告；`v1alpha1` 将在 `0.10.0` 移除。
@@ -98,7 +99,7 @@ helm upgrade --install rbgs https://github.com/sgl-project/rbg/releases/download
 
 - **全新安装**：使用 `false`。这是推荐的起点，只接受 `RoleInstanceSet`，且这一约束由控制器强制执行而非依赖约定。
 - **升级后迁移已完成的集群**：使用 `false`——已无弃用 role、reconcile 已完成，且旧的 RBG-owned workload 已删除。
-- **升级后仍有弃用 role 的集群**：保持 `true`，直到这些 role 迁移到 `RoleInstanceSet`、reconcile 完成且旧的 RBG-owned workload 已删除后再切换为 `false`。`true` 期间控制器保留弃用类型的 RBAC、watch 与孤儿清理，存量 role 保持可 reconcile。
+- **升级后仍有弃用 role 的集群**：保持 `true`，直到这些 role 迁移到 `RoleInstanceSet`、reconcile 完成且旧的 RBG-owned workload 已删除后再切换为 `false`。`true` 期间控制器保留 `Deployment`、`StatefulSet` 与 `LeaderWorkerSet` 的 RBAC、watch 与孤儿清理，这些存量 role 保持可 reconcile。
 
 请阅读[手工 v1alpha1 到 v1alpha2 迁移指南](doc/zh/migration-v1alpha1-to-v1alpha2.md)，其中包含 role 盘点、逐 role rollout、RoleBasedGroupSet 顺序、回滚、InstanceSet 清理和存储版本迁移。
 

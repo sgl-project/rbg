@@ -36,6 +36,7 @@
   - [Feature Enablement and Rollback](#feature-enablement-and-rollback)
   - [Alternatives Considered](#alternatives-considered)
   - [Future Work](#future-work)
+  - [Implementation History](#implementation-history)
 <!-- /toc -->
 
 ## Summary
@@ -141,8 +142,11 @@ the defects this KEP answers:
 - The legacy `containers` env/args merge keeps working unchanged, within the
   reference's component scope.
 - Pre-existing objects render byte-for-byte identically to main.
-- Validation is split: CEL at write time checks shape only; vocabularies and
-  existence are decided at render time.
+- Validation is split: OpenAPI shape rules and the one CEL rule (the five-root
+  path allowlist) apply at write time; the cross-field
+  presence rule runs in the admission webhooks (its CEL form exceeds the
+  apiserver's per-CRD cost budget); the webhooks also check the component
+  vocabulary, and vocabularies and existence are re-checked at render time.
 
 ## Non-Goals
 
@@ -416,7 +420,7 @@ RBG carries `component`/`targetContainers` from the group template.
 
 The absent-column expansion applies to pod-level injection (and the legacy
 `containers` merge). `targetContainers` normally requires `component`; that is
-the write-time CEL rule, with one exception: standalonePattern has exactly one
+the write-time webhook rule, with one exception: standalonePattern has exactly one
 component, so a reference may list `targetContainers` with `component`
 omitted, attaching to the role's own component. A written `component`
 unequal to the role's name fails the same render vocabulary check as any
@@ -1058,37 +1062,40 @@ and enforcement was never status's to begin with.
 
 ### Validation Model
 
-CEL at write time checks shape and field presence only: the DNS-label patterns
-on container names, list bounds, the `op` enum, the five-root path allowlist
-(shared rule text and messages on both the CERP and the reference side), and the
-cross-field presence rule. The rule attaches to `RoleSpec` because the standalone
-exemption needs `standalonePattern`, inline in `RoleSpec` (the same access the
-existing pattern mutual-exclusion rule uses), which a rule scoped to the
-`engineRuntimes` field cannot see:
+Write-time shape validation is OpenAPI-native — the DNS-label patterns on
+container names, list bounds, the `op` enum — plus one CEL rule, the five-root
+path allowlist (shared
+rule text and messages on both the CERP and the reference side). The
+cross-field presence rule — `targetContainers` requires `component`, except
+under `standalonePattern` — is enforced by the admission webhooks
+(`ValidateEngineRuntimes`, run by the RoleBasedGroup and RoleBasedGroupSet
+validators and re-run by the render-time resolver as the authoritative
+backstop), not by CEL. The CEL form of the rule is a comprehension over the
+uncapped `engineRuntimes` list scoped at the uncapped `roles[]`, and the
+apiserver's CEL cost estimate rejects the CRD carrying it by more than 100x
+the per-CRD budget. The envtest spec "KEP-531 presence rule placement"
+(test/envtest/testcase/rbg/engine_runtime_celcost_test.go) pins this as an
+executable invariant against the suite's kube-apiserver: a server-side
+dry-run create of the generated CRDs stamped with the rule below is
+rejected, while the unmodified CRDs are admitted, so the rejection is
+attributable to the rule alone. The rule as
+originally sketched was:
 
 ```go
 // +kubebuilder:validation:XValidation:rule="!has(self.engineRuntimes) || self.engineRuntimes.all(p, !has(p.targetContainers) || has(p.component) || has(self.standalonePattern))",message="targetContainers requires component to be set, except under standalonePattern"
 type RoleSpec struct { /* fields as published */ }
 ```
 
-The rule's inner term stays single: the entry-level `extraPatches` are
-structurally nested inside their `targetContainers` entry (gating the list
-gates them), and `targetContainers` is `+listType=map` keyed by `name`, so
-duplicate names are rejected by the apiserver for free. The rule as written is
-the v1alpha2 form; the v1alpha1 mirror carries a version-specific predicate,
-because v1alpha1 `RoleSpec` has no `standalonePattern` field. Standalone is
-the conversion default when neither `leaderWorkerSet` nor `components` is set
-(`rolebasedgroup_conversion.go`), so copying the rule verbatim would fail CEL
-type checking and block the CRD upgrade. The v1alpha1 form substitutes the
-native shape, `!has(self.leaderWorkerSet) && !(has(self.components) &&
-size(self.components) > 0)`, matching the Hub conversion's pattern inference
-exactly: the conversion switches on `len(components) > 0`, while CEL `has()`
-is true for a present-but-empty list. And `components: []` is writable
-(`+optional`, no `MinItems`), so a bare `!has(self.components)` would treat
-that degenerate shape as pattern-set and reject a v1alpha1 write whose
-conversion default is StandalonePattern. envtest pins rule compilation in
-both versions and the exemption firing through a v1alpha1 write, including
-the empty-`components` edge.
+If the apiserver's cost model ever admits the rule, the pin fails loudly and
+the placement can be revisited. The webhook form needs no version-specific
+v1alpha1 predicate: the shared validation runs on the converted Hub object,
+so the standalone exemption reads `standalonePattern` directly, and the
+v1alpha1 empty-`components` edge is handled by the conversion's pattern
+inference rather than re-encoded in rule text. The entry-level
+`extraPatches` are structurally nested inside their `targetContainers`
+entry (gating the list gates them), and `targetContainers` is
+`+listType=map` keyed by `name`, so duplicate names are rejected by the
+apiserver for free.
 
 The reference-side Go shape: `EngineRuntime` keeps `profileName` and the
 legacy `containers` and inert `injectContainers` exactly as published
@@ -1108,11 +1115,12 @@ single reference can carry (`extraPatches` values are schema-less), one of the
 few size controls short of the apiserver request limit. The published lists
 (`roles`, `engineRuntimes`) carry **no new caps**: capping them inside the
 already-published v1alpha2 would reject stored objects on any update. If the
-CEL cost budget is ever exceeded, the remedy is restructuring checks into
-OpenAPI-native validation, verified against the oldest supported kube-apiserver
-(1.28) via envtest. Patch values are expected small; a per-value size CEL rule
-is a beta candidate, and until then object size is bounded only by the
-apiserver request limit.
+CEL cost budget is exceeded, the remedy is restructuring the check out of CEL —
+into OpenAPI-native validation, or where no native rule can express it, into
+the admission webhooks (the presence rule above is the demonstrated case) —
+verified against the oldest supported kube-apiserver (1.28) via envtest. Patch
+values are expected small; a per-value size CEL rule is a beta candidate, and
+until then object size is bounded only by the apiserver request limit.
 
 The lack of a pattern on `component` is deliberate: its source fields
 (`RoleSpec.Name`, `InstanceComponent.Name`) accept any non-empty string, and a
@@ -1175,9 +1183,10 @@ trivially lossless. RBG converts through hand-written Hub functions
 `targetContainers` with each entry's `extraPatches`) mirror into v1alpha1
 through the `convertEngineRuntimes` helpers in both directions, alongside the
 pre-existing `injectContainers` and `containers`. The write-time surface is
-thereby symmetric: the role-level cross-field rule (in the version-specific
-form above; its v1alpha1 predicate differs because the field it tests differs)
-and the entry-name DNS-label rule are generated into both schemas, and
+thereby symmetric: the entry-name DNS-label rule and the five-root path
+allowlist (the shared patch type) are generated into both schemas, while the
+presence rule needs no per-version form at all — the webhook validates the
+converted Hub object, so one Go function serves both versions — and
 round-trip losslessness through both Hub conversions, plus the CERP v1alpha2 →
 v1alpha1 update → v1alpha2 round trip keeping `containerPatches` and the
 tracking status fields (`referenceCount`, `referencedGeneration`, the
@@ -1192,7 +1201,7 @@ The four write-time scenarios for (`component`, `targetContainers`):
 | 1 | absent | absent | injection and legacy merge across the pattern's default components; no patches; warning event iff the profile declares `containerPatches` | **rendered output byte-for-byte identical to main**; the warning event is the only possible delta, and a pre-KEP profile cannot trigger it (item 1 below) |
 | 2 | set | absent | injection and legacy merge to the named component only; no patches; warning event iff the profile declares `containerPatches` | new capability: scope narrowing for components main's default reaches, scope extension for those it does not (`worker` under leaderWorkerPattern) |
 | 3 | set | present | injection to the named component; the profile's `containerPatches` fire at every listed role-declared entry, and each entry's `extraPatches` land after them (a profile-declared entry fires only its own) | new capability: the full precise-targeting path |
-| 4 | absent | present | under standalonePattern: attaches to the pattern's single component (the CEL exemption); under the other patterns: apiserver rejects at write time (CEL rule) | new capability under standalonePattern; impossible state elsewhere, never reaches render |
+| 4 | absent | present | under standalonePattern: attaches to the pattern's single component (the webhook exemption); under the other patterns: the admission webhook rejects at write time | new capability under standalonePattern; impossible state elsewhere, never reaches render |
 
 1. **Pre-existing references are byte-for-byte stable.** References that set
    only `profileName` render identically to main; a pre-KEP profile has no
@@ -1312,20 +1321,23 @@ grants, and their mitigations:
 - **Capabilities pass-through**: names landing in `capabilities.add` verbatim;
   the form warning on lowercase and `CAP_`-prefixed names; well-formed unknown
   names passing silently.
-- **Variants and CEL**: per-role divergent values via role-side patch and via
-  profile variant; CEL rule construction (path allowlist boundaries, scenario
-  combinations, the standalone exemption) in both served versions; the v1alpha1
-  predicate compiling; the exemption firing through a v1alpha1 write.
+- **Variants and validation**: per-role divergent values via role-side patch
+  and via profile variant; the path-allowlist CEL rule in both served
+  versions; the presence rule's standalone exemption firing through a
+  v1alpha1 write (the webhook validates the converted Hub object, so the
+  exemption covers the empty-`components` edge the conversion infers as
+  standalone).
 
 ### Integration Tests
 
 - Byte-for-byte upgrade tests: a `profileName`-only reference under each
   pattern renders identically to main (golden comparisons, including the
   duplicate-reference case).
-- Write-time shape: CEL acceptance/rejection of the scenario matrix: the
+- Write-time shape: the scenario matrix through the admission webhooks: the
   standalone exemption accepted; a component-less `targetContainers` under the
-  other patterns rejected; duplicate `targetContainers` names rejected by the
-  apiserver at write time (`+listType=map`).
+  other patterns rejected (RoleBasedGroup and RoleBasedGroupSet group template
+  alike, v1alpha1 writes included); duplicate `targetContainers` names
+  rejected by the apiserver at write time (`+listType=map`).
 - Deprecated-path rejection: the new fields rejected on a role whose workload
   type routes through a deprecated surface (Deployment/StatefulSet, LWS), per
   Non-Goals: at write time by the shared validation function, including the
@@ -1392,13 +1404,13 @@ grants, and their mitigations:
 
 ### Upgrade / Downgrade Drills
 
-- The chart two-pass upgrade: `helm upgrade` with `--set
-  crdUpgrade.enabled=false` swapping only the controller image and rendering
-  identically to main (the new-controller/old-CRD row), then the default
-  settings applying the new CRD without restarting the controller; a
-  controller-only rollback between the passes landing in the old/old row;
-  the dangerous old-controller/new-CRD row never traversed across the
-  sequence.
+- The chart upgrade: a single `helm upgrade` from the previous release
+  applying the new CRDs ahead of the controller, pre-existing
+  references rendering identically to main throughout; a `helm rollback`
+  after the upgrade landing in the old-controller/new-CRD row, safe after the
+  documented cleanup. The drills ran that two-pass order as the documented
+  exception and were retired with the 0.9.0-alpha.5 release (Implementation
+  History).
 - A strict write against the pre-upgrade CRD schema rejected as an unknown
   field; a non-strict write pruned to an unscoped reference resolving to the
   default component set, including the pruning shape that surfaces: the pruned
@@ -1447,8 +1459,12 @@ Alpha (v0.9.0):
 - [ ] Field surfaces landed: CERP `spec.containerPatches`; RBG `component`,
   `targetContainers` entries with `extraPatches` (v1alpha2 + v1alpha1 mirror via
   `convertEngineRuntimes`)
-- [ ] CEL rules generated into both served schemas (the role-level cross-field
-  rule, the five-root path allowlist, the DNS-label entry-name rule)
+- [ ] Validation generated into both served schemas: the five-root path
+  allowlist as the one CEL rule, the DNS-label entry-name rule, list bounds
+  and the `op` enum as OpenAPI-native shape rules; the role-level cross-field
+  presence rule enforced in the admission webhooks instead — its CEL form
+  exceeds the apiserver's per-CRD cost budget, pinned by the envtest spec
+  "KEP-531 presence rule placement"
 - [ ] Shared validation function wired at all call sites (RoleBasedGroup and
   RoleBasedGroupSet webhooks with `failurePolicy: Fail`, resolver backstop); a
   child RBG carries `component`/`targetContainers` from the group template
@@ -1485,51 +1501,46 @@ renderer). Every scenario below is a combination of their versions.
 |---|---|---|
 | old | old | main, exactly. |
 | new | old | Unscoped references only: `profileName`-only references render identically to main. New fields cannot be stored: a strict client is rejected with `unknown field`, the correct outcome; a non-strict client has `component` silently pruned and stores an active **unscoped** reference, the same hazard and mechanism as the CRD rollback in the Downgrade section below. Where the pruned reference's default set intersects a surviving component-scoped reference of the same profile, scope ownership turns the silent change into a render error, the one pruning shape that surfaces. |
-| old | new | Fields are storable but ignored: a `component: worker` reference silently degrades to the pattern's default component set (the injection moves from worker to leader), and the new patch fields on both sides are stored but never fire. **The most dangerous combination**: this is where a controller-only rollback lands after the CRD upgrade (Upgrade below). |
+| old | new | Fields are storable but ignored: a `component: worker` reference silently degrades to the pattern's default component set (the injection moves from worker to leader), and the new patch fields on both sides are stored but never fire. **The most dangerous combination** once the new fields are stored — a `helm rollback` after the upgrade lands in it (Rollback below). |
 | new | new | Full semantics. |
 
-**Upgrade: controller first, CRD second.** The two pieces are swapped in a
-fixed order: the controller image first, the CRD second. The order is chosen
-so the documented dangerous row (old controller, new CRD: fields stored but
-silently ignored) is never traversed on the way up. It is reachable only
-through a controller-only rollback, described below.
+**Upgrade: one `helm upgrade`, CRDs first.** The chart's CRD upgrader Job runs
+as a `pre-upgrade` hook (`deploy/helm/rbgs/templates/crd-upgrade/crd-upgrade.yaml`),
+so a single `helm upgrade` applies the CRDs ahead of the controller: the order
+every release upgrades in, and the one the upgrade-compatibility suite
+(`test/e2e/upgrade`) exercises. When the upgrade begins no object carries the new fields: the
+previous schemas declare none of them and preserve no unknown fields, so every
+earlier write pruned them. Every pre-existing reference therefore renders as
+on main across the upgrade (Compatibility Guarantees #1). The one rule: write
+`component`, `targetContainers` and `containerPatches` only once the upgrade
+has completed — until then the previous controller doesn't know them: it
+renders a new reference across the pattern's default components, and its own
+updates to a RoleBasedGroup can drop them.
 
-**The chart's default order is the reverse.** The CRD upgrader Job runs as a
-`pre-upgrade` hook (`deploy/helm/rbgs/templates/crd-upgrade/crd-upgrade.yaml`),
-enabled by default in `values.yaml`. A plain `helm upgrade` therefore
-replaces the CRD before the new controller is running and traverses the
-dangerous row. Upgrading through the chart takes two passes:
+The reverse order, controller first, is not supported: the new controller
+persists state the previous release's CRDs prune — this KEP's CERP tracking
+status on every earlier release, and on hops from v0.8.0 and earlier also
+`RoleInstanceSet.status.rolloutReplacementState` and
+`RoleInstance.status.lastReadyGeneration` (the v0.9.0-alpha.4 CRDs already
+carry both), whose pruning stalls surge rollouts and loses restart policies'
+readiness record.
 
-1. **Pass one swaps the controller only.** Run `helm upgrade` with `--set
-   crdUpgrade.enabled=false`. The cluster lands in the new-controller/old-CRD
-   window row, where every reference renders exactly as on main
-   (Compatibility Guarantees #1). The new fields cannot be stored: a strict
-   client is rejected with `unknown field` at write time, and the render never
-   sees them. A non-strict client has the new fields silently pruned, so users
-   must not write the new fields through non-strict paths during the window.
-   Doing so stores an active unscoped reference (the window row's pruning
-   hazard, shared with the CRD rollback below).
-2. **Pass two swaps the CRD only.** Run `helm upgrade` again with the default
-   settings. The controller image is unchanged from pass one, so Helm does not
-   restart it; the only change is the CRD replacement, applied while the new
-   controller is running. The cluster lands in the new-controller/new-CRD row
-   with full semantics.
+**What goes live when.** Everything goes live with the upgrade: the
+immutability admission once the new controller serves the CERP webhook entry
+the same upgrade applies; the persisted reference tracking with the new
+controller's startup reconcile; adoption, per workload (`component` or
+`targetContainers`, never cluster-wide), when the workload spec first carries
+them. Until the new controller serves that entry, its `failurePolicy: Fail`
+means CERP updates and deletes are rejected rather than slipping past
+unvalidated — retry them once the upgrade has completed.
 
-**Rollback inside the sequence.** Between the passes, rolling the controller
-image back lands in the old-controller/old-CRD row, which renders as main and
-is safe. After pass two, rollback follows the Downgrade procedure below. A
-bare controller-only rollback at that point traverses the dangerous row; the
-Downgrade depths exist to avoid exactly that.
+**Rollback.** `helm rollback` restores the previous controller and webhook
+configuration but keeps the new CRDs, because the CRD upgrader runs only on
+install and upgrade. It lands in the old-controller/new-CRD row with whatever
+new-field usage exists, so the Downgrade procedure below applies, cleanup
+first.
 
-**What goes live when.** The immutability admission is live from the
-controller swap in pass one (it binds on pre-existing CERP fields). The
-persisted reference tracking lands with the CRD in pass two (Version skew
-below). Adoption is per-workload (`component` or `targetContainers`), never
-cluster-wide, and begins only after pass two.
-
-**Chart follow-up.** A chart sequencing change that defers the CRD hook until
-the new controller is ready would make the two passes unnecessary; it is an
-implementation-PR follow-up, not part of this KEP's contract. The CERP
+**Webhook configuration.** The CERP
 webhook entry ships as a release artifact (chart /
 `config/webhook/manifests.yaml`) applied at install time; the controller
 image never creates or restores it, so re-enabling admission after an entry
@@ -1568,12 +1579,12 @@ specs, so kubelet and core-control-plane skew are irrelevant. The only skew
 surfaces are the controller×CRD matrix above and one deliberate exception: the
 immutability admission ships with the controller image and binds on the
 **pre-existing** CERP fields too, so any new-controller row freezes referenced
-profiles regardless of CRD version. The persisted reference tracking lands
-with the new CRD: the old CRD's status schema (a bare `type: object`) prunes
-the new status fields on write, while the in-memory watch event fires on
-either row. This is the one behavior
-a controller-only upgrade changes: the edit it blocks is the unconsented content
-drift this KEP exists to prevent.
+profiles regardless of CRD version. The persisted reference tracking needs
+the new CRD: on the old one, reachable only through the unsupported
+controller-first order, its status fields are pruned and the drift warning
+never fires. The drift warning and the freeze admission are also the two
+behaviors a controller rollback removes — the unconsented content drift this
+KEP exists to prevent is only caught while the new controller runs.
 
 ## Feature Enablement and Rollback
 
@@ -1633,7 +1644,7 @@ the CRD was retained; after a CRD rollback the pruned specs must be rewritten.
   which no-ops for init containers and cannot deliver mounts. Superseded by
   consolidation into `targetContainers` with per-entry `extraPatches` (adopted):
   one reviewable entry per container holds consent, profile delivery and role
-  rules; `+listType=map` rejects duplicate names; the cross-field CEL rule needs
+  rules; `+listType=map` rejects duplicate names; the cross-field presence rule needs
   one list-scan term per entry, plus the standalone exemption. Accepted cost:
   role patches on a role-declared container imply consent to the profile's
   patches there, tolerable because role patches land after the profile's and an
@@ -1693,3 +1704,25 @@ the CRD was retained; after a CRD rollback the pruned specs must be rewritten.
   publisher cluster-admin-equivalent trust across every consuming namespace
   need their own answer; none is planned here.
 - A pod-level patch pass, if a consumer for pod-spec mutation appears.
+
+## Implementation History
+
+- 2026-10-26: KEP created.
+- 2026-11-11: Merged after review (#548).
+- 2026-11-18: Implemented (#571): the field surfaces, the render pipeline,
+  the CERP immutability admission and reference tracking, the envtest suites
+  and the real-cluster upgrade drills. One deliberate deviation from the text
+  as merged: the cross-field presence rule ships in the admission webhooks
+  and the render-time re-run instead of the RoleSpec CEL rule — the CEL form
+  exceeds the apiserver's per-CRD cost budget by more than 100x (Validation
+  Model).
+- 2026-11-19: KEP text amended for the webhook placement of the presence rule,
+  and the documented upgrade changed to a single `helm upgrade` (#601).
+- 2026-11-20: The drill suite is retired with the 0.9.0-alpha.5 release — the
+  first release shipping KEP-531 — per the retirement note the `e2e-drills`
+  workflow carried since #571: the pre-KEP → KEP hop the drills rehearsed is
+  now a released upgrade path. Removed: `test/e2e/drills`, the `e2e-drills`
+  CI job, `make test-e2e-drills`, and the drill-only parameterization in
+  `test/e2e/upgrade` (the `harness.go` aliases, `runHelmUpgradeWith`,
+  `waitForUpgradeReadyFor`); the image-pull-secret fixes that rode the same
+  change stay.

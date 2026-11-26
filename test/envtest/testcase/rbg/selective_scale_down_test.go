@@ -159,7 +159,10 @@ var _ = Describe("Stateful selective scale-down", func() {
 		current := &workloadsv1alpha2.RoleInstanceSet{}
 		Expect(testutil.K8sClient.Get(testutil.Ctx, setKey, current)).To(Succeed())
 		Expect(current.Labels[hashKey]).To(Equal(hash))
-		Expect(revisionNames()).To(Equal(revisions))
+		// A spec transition can transiently register one extra ControllerRevision
+		// before revision-history truncation removes it; the converged state, not a
+		// point-in-time sample, is the contract.
+		Eventually(revisionNames, timeout, interval).Should(Equal(revisions))
 		// Later scale-out can fill a released gap; it cannot evict a warm survivor.
 		update(key, func(g *workloadsv1alpha2.RoleBasedGroup) { g.Spec.Roles[0].Replicas = ptr.To[int32](4) })
 		Eventually(func() []int { return getMembers(setKey) }, timeout, interval).Should(Equal([]int{0, 1, 2, 4}))
@@ -236,7 +239,7 @@ var _ = Describe("Stateful selective scale-down", func() {
 		Eventually(func(g Gomega) {
 			latest := &workloadsv1alpha2.RoleBasedGroup{}
 			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, latest)).To(Succeed())
-			g.Expect(latest.GetDiscoveryConfigMode()).To(Equal(constants.RefineDiscoveryConfigMode))
+			g.Expect(latest.GetDiscoveryConfigVersion()).To(BeEmpty())
 			cm := &corev1.ConfigMap{}
 			g.Expect(testutil.K8sClient.Get(testutil.Ctx, key, cm)).To(Succeed())
 			owner := metav1.GetControllerOf(cm)
@@ -380,7 +383,11 @@ var _ = Describe("Stateful selective scale-down", func() {
 				return false
 			}
 			for _, condition := range set.Status.Conditions {
-				if condition.Type == workloadsv1alpha2.RoleInstanceSetConditionFailedScale && condition.Reason == "InvalidCommittedOrdinals" {
+				// KEP-502 reports the configuration-family blocker through the
+				// Progressing condition instead of the legacy FailedScale marker.
+				if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
+					condition.Status == corev1.ConditionTrue &&
+					condition.Reason == constants.ProgressingReasonInvalidSpec {
 					return true
 				}
 			}
@@ -429,6 +436,7 @@ var _ = Describe("Stateful selective scale-down", func() {
 			g.Expect(set.Annotations).NotTo(HaveKey(constants.ExcludedOrdinalsAnnotationKey))
 			for _, condition := range set.Status.Conditions {
 				g.Expect(condition.Reason).NotTo(Equal("InvalidCommittedOrdinals"))
+				g.Expect(condition.Reason).NotTo(Equal(constants.ProgressingReasonInvalidSpec))
 			}
 			g.Expect(instances(group.Name)).To(Equal(original))
 			cm := &corev1.ConfigMap{}
@@ -544,15 +552,17 @@ var _ = Describe("Stateful selective scale-down", func() {
 						return err
 					}
 				}
-				// Preserve lifecycle/update readiness gate conditions the controllers write.
-				conditions := pod.Status.Conditions
-				testutil.SetPodRunningAndReady(pod)
-				for _, condition := range conditions {
-					if condition.Type != corev1.PodReady && condition.Type != corev1.ContainersReady {
-						pod.Status.Conditions = append(pod.Status.Conditions, condition)
+				// SetPodRunningAndReady upserts the kubelet conditions and
+				// preserves lifecycle/update readiness gate conditions the
+				// controllers write; the conflict-safe write rereads the Pod
+				// on every retry instead of reusing the List's version.
+				if err := testutil.UpdatePodStatusOnConflict(testutil.Ctx, pod, func(pod *corev1.Pod) bool {
+					if testutil.ShouldSkipPodStatusUpdate(pod) {
+						return true
 					}
-				}
-				if err := testutil.K8sClient.Status().Update(testutil.Ctx, pod); err != nil {
+					testutil.SetPodRunningAndReady(pod)
+					return false
+				}); err != nil {
 					return err
 				}
 			}
@@ -584,7 +594,11 @@ var _ = Describe("Stateful selective scale-down", func() {
 			}
 			return current.Spec.UpdateStrategy.Paused
 		}, timeout, interval).Should(BeTrue())
-		Expect(markPodsReady()).To(Succeed())
+		// The rollout can still replace or concurrently update Pods while
+		// paused. Retry so the fixture re-lists and re-targets rebuilt Pods.
+		Eventually(func() error {
+			return markPodsReady()
+		}, timeout, interval).Should(Succeed())
 		Consistently(func() types.UID { return instances(group.Name)[setKey.Name+"-4"] }, time.Second, interval).Should(Equal(original[setKey.Name+"-4"]))
 		Expect(instances(group.Name)).To(HaveKey(setKey.Name + "-6"))
 		Expect(instances(group.Name)).NotTo(HaveKey(setKey.Name + "-5"))

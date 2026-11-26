@@ -21,7 +21,6 @@ import (
 	"fmt"
 	"reflect"
 
-	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -46,15 +45,13 @@ func NewServiceReconciler(client client.Client) *ServiceReconciler {
 }
 
 func (r *ServiceReconciler) reconcileHeadlessService(
-	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
+	ctx context.Context,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	role *workloadsv1alpha2.RoleSpec,
+	workload client.Object,
 ) error {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling headless service")
-
-	workload, err := r.getObjectByKind(ctx, rbg, role)
-	if err != nil {
-		return err
-	}
 
 	svcApplyConfig, err := r.constructServiceApplyConfiguration(ctx, rbg, role, workload)
 	if err != nil {
@@ -89,7 +86,7 @@ func (r *ServiceReconciler) reconcileHeadlessService(
 
 	logger.V(1).Info(fmt.Sprintf("svc not equal, diff: %s", err.Error()))
 
-	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, svcApplyConfig, utils.PatchSpec); err != nil {
+	if _, err := utils.ApplyObjectConfiguration(ctx, r.client, svcApplyConfig, utils.ApplySpec); err != nil {
 		logger.Error(err, "Failed to patch svc apply configuration")
 		return err
 	}
@@ -114,7 +111,7 @@ func (r *ServiceReconciler) constructServiceApplyConfiguration(
 	if err != nil {
 		return nil, err
 	}
-	gvk := workload.GetObjectKind().GroupVersionKind()
+	workloadSpec := role.GetWorkloadSpec()
 	serviceConfig := coreapplyv1.Service(svcName, rbg.Namespace).
 		WithSpec(
 			coreapplyv1.ServiceSpec().
@@ -127,34 +124,13 @@ func (r *ServiceReconciler) constructServiceApplyConfiguration(
 		WithAnnotations(rbg.GetCommonAnnotationsFromRole(role)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().
-				WithAPIVersion(gvk.GroupVersion().String()).
-				WithKind(gvk.Kind).
+				WithAPIVersion(workloadSpec.APIVersion).
+				WithKind(workloadSpec.Kind).
 				WithName(workload.GetName()).
 				WithUID(workload.GetUID()).
 				WithBlockOwnerDeletion(true),
 		)
 	return serviceConfig, nil
-}
-
-func (r *ServiceReconciler) getObjectByKind(
-	ctx context.Context,
-	rbg *workloadsv1alpha2.RoleBasedGroup,
-	role *workloadsv1alpha2.RoleSpec,
-) (client.Object, error) {
-	workloadName := rbg.GetWorkloadName(role)
-
-	switch role.GetWorkloadType() {
-	case constants.RoleInstanceSetWorkloadType:
-		obj := &workloadsv1alpha2.RoleInstanceSet{}
-		err := r.client.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: rbg.Namespace}, obj)
-		return obj, err
-	case constants.StatefulSetWorkloadType:
-		obj := &appsv1.StatefulSet{}
-		err := r.client.Get(ctx, types.NamespacedName{Name: workloadName, Namespace: rbg.Namespace}, obj)
-		return obj, err
-	default:
-		return nil, fmt.Errorf("unsupported workload type: %s", role.GetWorkloadType())
-	}
 }
 
 func semanticallyEqualService(svc1, svc2 *corev1.Service) (bool, error) {

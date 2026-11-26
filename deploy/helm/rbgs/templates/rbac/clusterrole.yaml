@@ -4,9 +4,9 @@
   Run "make manifests" after changing kubebuilder RBAC markers.
 
   Rules for the deprecated workload types (Deployment, StatefulSet,
-  LeaderWorkerSet) are wrapped in a conditional so that disabling
-  controller.deprecatedWorkloadTypes.enabled removes them. An unset value counts
-  as enabled, matching values.yaml.
+  LeaderWorkerSet, v1alpha1 InstanceSet and Instance) are wrapped in a
+  conditional so that disabling controller.deprecatedWorkloadTypes.enabled
+  removes them. An unset value counts as enabled, matching values.yaml.
 */}}
 {{- $deprecatedWorkloadTypes := .Values.controller.deprecatedWorkloadTypes | default dict }}
 {{- $deprecatedEnabled := or (not (hasKey $deprecatedWorkloadTypes "enabled")) $deprecatedWorkloadTypes.enabled }}
@@ -119,6 +119,18 @@ rules:
   - update
 {{- end }}
 - apiGroups:
+  - authentication.k8s.io
+  resources:
+  - tokenreviews
+  verbs:
+  - create
+- apiGroups:
+  - authorization.k8s.io
+  resources:
+  - subjectaccessreviews
+  verbs:
+  - create
+- apiGroups:
   - coordination.k8s.io
   resources:
   - leases
@@ -180,8 +192,6 @@ rules:
   resources:
   - clusterengineruntimeprofiles/status
   - coordinatedpolicies/status
-  - instances/status
-  - instancesets/status
   - rolebasedgroups/status
   - rolebasedgroupscalingadapters/status
   - rolebasedgroupsets/status
@@ -192,12 +202,21 @@ rules:
   - get
   - patch
   - update
+{{- if $deprecatedEnabled }}
+- apiGroups:
+  - workloads.x-k8s.io
+  resources:
+  - instances/status
+  - instancesets/status
+  verbs:
+  - get
+  - patch
+  - update
+{{- end }}
 - apiGroups:
   - workloads.x-k8s.io
   resources:
   - coordinatedpolicies
-  - instances
-  - instancesets
   - rolebasedgroups
   - rolebasedgroupscalingadapters
   - rolebasedgroupsets
@@ -212,10 +231,24 @@ rules:
   - patch
   - update
   - watch
+{{- if $deprecatedEnabled }}
 - apiGroups:
   - workloads.x-k8s.io
   resources:
-  - instancesets/finalizers
+  - instances
+  - instancesets
+  verbs:
+  - create
+  - delete
+  - get
+  - list
+  - patch
+  - update
+  - watch
+{{- end }}
+- apiGroups:
+  - workloads.x-k8s.io
+  resources:
   - rolebasedgroups/finalizers
   - rolebasedgroupsets/finalizers
   - rolebasedgroupwarmups/finalizers
@@ -223,3 +256,11 @@ rules:
   - roleinstancesets/finalizers
   verbs:
   - update
+{{- if $deprecatedEnabled }}
+- apiGroups:
+  - workloads.x-k8s.io
+  resources:
+  - instancesets/finalizers
+  verbs:
+  - update
+{{- end }}

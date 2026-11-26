@@ -60,6 +60,25 @@ func ValidateRollingUpdate(rbg *RoleBasedGroup) error {
 	return utilerrors.NewAggregate(allErrs)
 }
 
+// ValidateRestartPolicyWorkloadCompatibility rejects policies that the backing
+// workload cannot implement faithfully.
+func ValidateRestartPolicyWorkloadCompatibility(fieldPath string, roles []RoleSpec) error {
+	var allErrs []error
+	for i := range roles {
+		role := &roles[i]
+		cfg := role.GetRawRestartPolicyConfig()
+		if cfg != nil && cfg.MaxGroupRestarts != nil {
+			if *cfg.MaxGroupRestarts < 0 || cfg.Type != RecreateRoleInstanceOnPodRestart {
+				allErrs = append(allErrs, fmt.Errorf("%s[%d] (role %q): maxGroupRestarts must be non-negative and requires a whole-RoleInstance recreate policy", fieldPath, i, role.Name))
+			}
+			if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+				allErrs = append(allErrs, fmt.Errorf("%s[%d] (role %q): maxGroupRestarts is only supported by native RoleInstanceSet workloads", fieldPath, i, role.Name))
+			}
+		}
+	}
+	return utilerrors.NewAggregate(allErrs)
+}
+
 // ValidateRoleDependencies validates that every role dependency references an
 // existing role, no role depends on itself, and the role dependency graph is acyclic.
 func ValidateRoleDependencies(rbg *RoleBasedGroup) error {
@@ -694,11 +713,166 @@ const deprecatedWorkloadTypeCompatHint = "note: the v1alpha1 schema defaults spe
 // superseded by RoleInstanceSet.
 func isDeprecatedWorkloadType(wt string) bool {
 	switch wt {
-	case constants.DeploymentWorkloadType, constants.StatefulSetWorkloadType, constants.LeaderWorkerSetWorkloadType:
+	case constants.DeploymentWorkloadType, constants.StatefulSetWorkloadType,
+		constants.LeaderWorkerSetWorkloadType, constants.InstanceSetWorkloadType:
 		return true
 	default:
 		return false
 	}
+}
+
+// reconcilableWorkloadTypes are the canonical selectors of the workload types the
+// controller builds a reconciler for (pkg/reconciler.NewWorkloadReconciler). The
+// unsupported-type check rejects every other selector on a new or changed role.
+// Whether a reconcilable but deprecated type (Deployment, StatefulSet,
+// LeaderWorkerSet) is accepted is decided separately by the deprecated-type checks
+// and --enable-deprecated-workload-types.
+//
+// Any other apiVersion/kind fails the controller's pre-check, which stops the
+// whole RoleBasedGroup. A value that is not apiVersion/kind at all is different:
+// GetWorkloadSpec falls back to RoleInstanceSet for it, whatever it names, and the
+// role reconciles. Admission rejects that value too, so a stored selector always
+// says what the role runs, not because it would stop the group.
+var reconcilableWorkloadTypes = []string{
+	constants.RoleInstanceSetWorkloadType,
+	constants.DeploymentWorkloadType,
+	constants.StatefulSetWorkloadType,
+	constants.LeaderWorkerSetWorkloadType,
+}
+
+// IsReconcilableWorkloadType reports whether wt is the canonical selector of a
+// workload type the controller has a reconciler for.
+func IsReconcilableWorkloadType(wt string) bool {
+	for _, supported := range reconcilableWorkloadTypes {
+		if wt == supported {
+			return true
+		}
+	}
+	return false
+}
+
+// isUnsupportedWorkloadType reports whether wt is not a canonical supported
+// selector and the deprecated-type checks do not already answer for it. The
+// v1alpha1 InstanceSet is deprecated and not reconcilable; it keeps its own
+// rejection and migration hint.
+func isUnsupportedWorkloadType(wt string) bool {
+	return !IsReconcilableWorkloadType(wt) && !isDeprecatedWorkloadType(wt)
+}
+
+// validateNoNewUnsupportedWorkloadTypes checks that a write gives a role only a
+// canonical supported selector. It rejects a type the controller cannot reconcile,
+// such as "apps/v1/DaemonSet" or a misspelled "apps/v1/Statefulset", and a value
+// that is not apiVersion/kind at all, such as "RoleInstanceSet", which the
+// controller runs as RoleInstanceSet whatever it names. It applies whatever
+// --enable-deprecated-workload-types is set to.
+//
+// The check is ratcheted like validateNoNewDeprecatedWorkloadTypes: a role that
+// already stores the same unsupported type under the same name is left alone, so
+// an object admitted before this check can still be updated, for example to fix
+// the role. fieldPath is the JSON path of the role slice.
+func validateNoNewUnsupportedWorkloadTypes(fieldPath string, roles, oldRoles []RoleSpec) error {
+	oldWorkloadTypes := make(map[string]string, len(oldRoles))
+	for i := range oldRoles {
+		oldWorkloadTypes[oldRoles[i].Name] = oldRoles[i].GetWorkloadType()
+	}
+
+	var allErrs []error
+	for i := range roles {
+		role := &roles[i]
+		wt := role.GetWorkloadType()
+		if !isUnsupportedWorkloadType(wt) {
+			continue
+		}
+		if oldType, existed := oldWorkloadTypes[role.Name]; !existed || oldType != wt {
+			reason := ""
+			if !isWorkloadSelector(wt) {
+				reason = ": it is not in apiVersion/kind form"
+			}
+			allErrs = append(allErrs, fmt.Errorf(
+				"%s[%d] (role %q): workload type %q is not supported%s",
+				fieldPath, i, role.Name, wt, reason,
+			))
+		}
+	}
+	if len(allErrs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w; %s", utilerrors.NewAggregate(allErrs), unsupportedWorkloadTypeHint)
+}
+
+// unsupportedWorkloadTypeHint names the remedy for both API versions. A v1alpha2
+// write sets the role annotation directly. A v1alpha1 write reaches the same check
+// through conversion (matchPolicy: Equivalent), which overwrites the annotation from
+// spec.roles[].workload, so for it only the workload field is actionable.
+var unsupportedWorkloadTypeHint = fmt.Sprintf(
+	"the %s role annotation must be %q, or be left unset for the same default; "+
+		"an object submitted through the v1alpha1 API takes that annotation from the role's workload field, "+
+		"so set workload.apiVersion=workloads.x-k8s.io/v1alpha2 and workload.kind=RoleInstanceSet there, "+
+		"or submit the object as v1alpha2",
+	constants.RoleWorkloadTypeAnnotationKey, constants.RoleInstanceSetWorkloadType,
+)
+
+// isWorkloadSelector reports whether wt has the apiVersion/kind form that
+// GetWorkloadSpec parses; for any other value it falls back to RoleInstanceSet.
+func isWorkloadSelector(wt string) bool {
+	return strings.LastIndex(wt, "/") > 0
+}
+
+// validateDiscoveryConfigVersion checks the KEP-576 content-version
+// annotation. A missing value is the historical v1alpha1 content. The compact
+// v1 format supports the native RoleInstanceSet backend only; deprecated
+// stateful roles must stay on v1alpha1 until they are migrated.
+func validateDiscoveryConfigVersion(roles []RoleSpec, version constants.DiscoveryConfigVersion, fieldPath string) error {
+	switch version {
+	case "", constants.DiscoveryConfigVersionV1Alpha1:
+		return nil
+	case constants.DiscoveryConfigVersionV1:
+		for i := range roles {
+			role := &roles[i]
+			if role.GetWorkloadType() == constants.RoleInstanceSetWorkloadType {
+				continue
+			}
+			if IsStatefulRole(role) {
+				return fmt.Errorf(
+					"%s: v1 is not supported for deprecated stateful workload type %s; keep v1alpha1 or migrate role %s to RoleInstanceSet",
+					fieldPath, role.GetWorkloadType(), role.Name,
+				)
+			}
+		}
+		return nil
+	default:
+		return fmt.Errorf("%s: unsupported value %q; supported values are v1alpha1 and v1", fieldPath, version)
+	}
+}
+
+// hasDeprecatedStatefulRole reports whether any role uses a stateful workload
+// backend other than the native RoleInstanceSet. Such roles keep the
+// v1alpha1 discovery content.
+func hasDeprecatedStatefulRole(roles []RoleSpec) bool {
+	for i := range roles {
+		role := &roles[i]
+		if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType && IsStatefulRole(role) {
+			return true
+		}
+	}
+	return false
+}
+
+// SupportsCompactDiscoveryContent reports whether the role set can serialize
+// the KEP-576 compact discovery content. Deprecated stateful backends must
+// keep the v1alpha1 enumeration.
+func SupportsCompactDiscoveryContent(roles []RoleSpec) bool {
+	return !hasDeprecatedStatefulRole(roles)
+}
+
+// ValidateDiscoveryConfigVersion validates the RBG discovery ConfigMap
+// content-version annotation.
+func ValidateDiscoveryConfigVersion(rbg *RoleBasedGroup) error {
+	return validateDiscoveryConfigVersion(
+		rbg.Spec.Roles,
+		rbg.GetDiscoveryConfigVersion(),
+		"metadata.annotations["+constants.DiscoveryConfigVersionAnnotationKey+"]",
+	)
 }
 
 // validateNoDeprecatedWorkloadTypes checks that no role uses a deprecated workload
@@ -723,8 +897,9 @@ func validateNoDeprecatedWorkloadTypes(fieldPath string, roles []RoleSpec) error
 }
 
 // validateNoNewDeprecatedWorkloadTypes checks that a write does not introduce a
-// deprecated workload type (Deployment, StatefulSet, or LeaderWorkerSet) into a
-// role that did not already use one. fieldPath is the JSON path of the role slice
+// deprecated workload type (Deployment, StatefulSet, LeaderWorkerSet, or the
+// v1alpha1 InstanceSet) into a role that did not already use one. fieldPath is
+// the JSON path of the role slice
 // being validated, since roles live under different paths in a RoleBasedGroup and a
 // RoleBasedGroupSet. Returns an aggregated error listing all offending roles,
 // suffixed with deprecatedWorkloadTypeCompatHint.

@@ -23,6 +23,7 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
@@ -38,23 +39,39 @@ type Interface interface {
 	// Called when the instance transitions to Ready with no wave in progress,
 	// or when it is deleted.
 	ClearRestarting(instance *workloadsv1alpha2.RoleInstance)
+	// CleanupRestartBudget releases retained Pod objects during RI teardown.
+	CleanupRestartBudget(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) error
 }
 
-// restartingCache tracks in-progress restart-policy recreation waves. The value is
-// the set of pre-restart Pod identities: while any of them is still present, the
-// deletion triggers they produce belong to the same wave instead of starting a new
-// recreation (#563). Once all of them are gone the wave is complete and the marker
-// is removed, even if the replacement generation has not become Ready yet.
-// This in-memory cache provides immediate visibility that doesn't depend on the
-// informer cache catching up with the latest status write.
+type budgetObservationKey struct{}
+
+type budgetObservation struct {
+	checked          bool
+	uid              types.UID
+	generation       int64
+	selectedRevision string
+	fresh            *workloadsv1alpha2.RoleInstance
+	blocked          bool
+	err              error
+}
+
+// WithBudgetObservation scopes live budget reads to one Scale -> Update
+// reconcile. It deliberately carries no state across reconciles.
+func WithBudgetObservation(ctx context.Context) context.Context {
+	return context.WithValue(ctx, budgetObservationKey{}, &budgetObservation{})
+}
+
+func budgetObservationFrom(ctx context.Context) *budgetObservation {
+	observation, _ := ctx.Value(budgetObservationKey{}).(*budgetObservation)
+	return observation
+}
+
+// restartingCache tracks the original Pod UIDs in an active group-restart wave.
+// The same wave is used by budgeted and unbudgeted restart policies.
 var restartingCache sync.Map
 
-// waveDeletesIssued tracks, per restart wave, the Pod identities whose deletion
-// has already been accepted (DELETE succeeded, NotFound, or already terminating).
-// pendingWaveDeletions uses it to avoid re-issuing DELETEs for Pods that the pod
-// informer still shows as non-terminating due to lag right after a wave starts.
-// It shares the lifecycle of restartingCache: written by deletePods and cleared
-// on wave completion, Ready, and instance deletion.
+// waveDeletesIssued tracks deletes accepted for UIDs in an active wave, avoiding
+// duplicate DELETEs while the Pod informer catches up. Cleared with the wave.
 var waveDeletesIssued sync.Map
 
 type realControl struct {

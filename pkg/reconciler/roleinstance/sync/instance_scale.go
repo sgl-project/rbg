@@ -18,7 +18,9 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"slices"
 	"sync/atomic"
 	"time"
 
@@ -26,6 +28,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
@@ -45,8 +48,57 @@ const (
 	initialBatchSize = 1
 )
 
+// RecreatePodConflictError reports a same-name Pod collision that is provably
+// part of the recreate flow racing garbage collection: the Pod is already being
+// deleted, or it is controlled by a previous incarnation of the same
+// RoleInstance (same name, different UID). A collision with a genuinely foreign
+// Pod is returned as a plain error instead, so it is still published as a
+// current blocker.
+type RecreatePodConflictError struct {
+	Pod      string
+	Instance string
+	UID      types.UID
+}
+
+func (e *RecreatePodConflictError) Error() string {
+	return fmt.Sprintf("pod %s is not controlled by RoleInstance %s (UID %s): awaiting garbage collection of the previous instance",
+		e.Pod, e.Instance, e.UID)
+}
+
+// newPodNotControlledError classifies a same-name Pod collision.
+func newPodNotControlledError(existingPod *v1.Pod, updateInstance *workloadsv1alpha2.RoleInstance) error {
+	if existingPod.DeletionTimestamp != nil || previousIncarnationPod(existingPod, updateInstance) {
+		return &RecreatePodConflictError{
+			Pod:      klog.KObj(existingPod).String(),
+			Instance: klog.KObj(updateInstance).String(),
+			UID:      updateInstance.UID,
+		}
+	}
+	return fmt.Errorf(
+		"pod %s is not controlled by RoleInstance %s (UID %s)",
+		klog.KObj(existingPod), klog.KObj(updateInstance), updateInstance.UID,
+	)
+}
+
+// previousIncarnationPod reports whether the Pod is controlled by a previous
+// UID of the same-named RoleInstance.
+func previousIncarnationPod(pod *v1.Pod, instance *workloadsv1alpha2.RoleInstance) bool {
+	reference := metav1.GetControllerOfNoCopy(pod)
+	if reference == nil || reference.Kind != "RoleInstance" {
+		return false
+	}
+	return reference.Name == instance.Name && reference.UID != instance.UID
+}
+
 func (c *realControl) Scale(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (bool, time.Duration, error) {
+	// Budget lifecycle precedes backoff, ordinary scale and in-place updates.
+	if blocked, err := c.reconcileRestartBudgetOnce(ctx, updateInstance, selectedControllerRevision(updateRevision), append(slices.Clone(pods), inactivePods...)); blocked || err != nil {
+		if err != nil {
+			return true, 0, err
+		}
+		return true, RestartBudgetRequeueAfter, nil
+	}
 	// Record node bindings for in-place scheduling.
 	// Piggybacks on the already-fetched pods — no additional API calls.
 	RecordNodeBindings(c.bindings, updateInstance, pods)
@@ -92,6 +144,21 @@ type expectationDiff struct {
 	waveStarted bool
 }
 
+func (c *realControl) restartTrackingObservation(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
+	var freshInstance *workloadsv1alpha2.RoleInstance
+	if observation := budgetObservationFrom(ctx); observation != nil && observation.checked &&
+		observation.uid == instance.UID && observation.generation == instance.Generation &&
+		observation.fresh != nil {
+		// Hand out a copy: the shared observation is later mutated in place by
+		// wave completion and must not be compared against by readers.
+		freshInstance = syncRestartTrackingFromFresh(instance, observation.fresh.DeepCopy())
+	} else if instance.Spec.GetRestartPolicy() == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
+		freshInstance = c.syncRestartTrackingFromAPI(ctx, instance)
+	}
+
+	return freshInstance
+}
+
 func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance,
 	currentRevision, updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (*expectationDiff, error) {
@@ -100,10 +167,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	// logic. The informer cache may be stale for RestartCount, LastRestartTime,
 	// and the Restarting condition. A single fresh read is shared between
 	// checkRestartBackoff and shouldRecreateInstance to avoid duplicate API calls.
-	var freshInstance *workloadsv1alpha2.RoleInstance
-	if updateInstance.Spec.GetRestartPolicy() == workloadsv1alpha2.RecreateRoleInstanceOnPodRestart {
-		freshInstance = c.syncRestartTrackingFromAPI(ctx, updateInstance)
-	}
+	freshInstance := c.restartTrackingObservation(ctx, updateInstance)
 
 	// Check RestartPolicy: if RecreateInstanceOnPodRestart and any pod Failed,
 	// recreate all pods of the instance.
@@ -113,47 +177,12 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	allPods = append(allPods, pods...)
 	allPods = append(allPods, inactivePods...)
 
-	// Release the restart guard once the recreation itself is complete: all Pods
-	// from the pre-restart generation are gone. The guard exists only to absorb the
-	// cascading triggers produced while those Pods are deleted; keeping it until the
-	// instance becomes Ready again permanently blocks a second recovery when the
-	// rebuilt group fails before Ready (#563).
-	c.releaseCompletedRestartWave(updateInstance, freshInstance, allPods)
-
-	// Check restart backoff BEFORE any pod processing (including inactive pod cleanup).
-	// If the delay from the last restart hasn't elapsed, skip all scaling and requeue.
-	// This preserves crashed pods during the backoff window for log observability.
-	if requeue := c.checkRestartBackoff(updateInstance, freshInstance, pods, inactivePods); requeue > 0 {
-		return &expectationDiff{requeueAfter: requeue}, nil
+	restartDiff, err := c.calculateRestartDiff(ctx, updateInstance, allPods, pods, inactivePods, freshInstance, updateRevision)
+	if restartDiff != nil || err != nil {
+		return restartDiff, err
 	}
 
 	coreControl := instancecore.New(updateInstance)
-
-	if c.shouldRecreateInstanceGuarded(ctx, updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines, freshInstance) {
-		// Mark instance as restarting to prevent cascading re-triggers
-		setRestartingCondition(updateInstance)
-		// Remember the pre-restart Pods so the guard below only absorbs the triggers
-		// caused by deleting them, not failures of the replacement generation.
-		rememberRestartWave(updateInstance, allPods)
-		// Update restart tracking for exponential backoff
-		updateRestartTracking(updateInstance)
-		reason, podName := recreateTriggerReason(updateInstance, allPods, updateInstance.Status.InPlaceUpdateContainerBaselines)
-		c.recorder.Event(updateInstance, v1.EventTypeNormal, "ReCreateInstance",
-			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v (reason=%s, pod=%s, restartCount=%d)",
-				klog.KObj(updateInstance), reason, podName, updateInstance.Status.RestartCount))
-		return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods, waveStarted: true}, nil
-	}
-
-	// A wave whose deletion failed or was interrupted must retry deleting the
-	// recorded pre-restart Pods. The guard above intentionally suppresses new
-	// triggers while those Pods remain, so without this retry a transient DELETE
-	// failure (for example a UID-precondition conflict) would leave the wave —
-	// and the guard — stuck forever while normal scaling sees no diff for the
-	// still-running desired members. The retry re-issues the same deletions: it
-	// does not start a new wave and does not increment RestartCount.
-	if pending := pendingWaveDeletions(updateInstance, allPods); len(pending) > 0 {
-		return &expectationDiff{toDeleteNum: len(pending), toDeletePod: pending}, nil
-	}
 
 	if isGangSchedulingEnabled(updateInstance) {
 		for i := range pods {
@@ -265,6 +294,58 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	}, nil
 }
 
+func (c *realControl) calculateRestartDiff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, allPods, activePods, inactivePods []*v1.Pod, fresh *workloadsv1alpha2.RoleInstance, target *apps.ControllerRevision) (*expectationDiff, error) {
+	budgeted := HasRestartBudgetLifecycle(instance)
+	if fresh != nil && !budgeted && HasRestartBudgetLifecycle(fresh) {
+		budgeted = true
+		// A Pod event can precede the RI spec watch. Wait for that generation
+		// instead of executing the old spec through the unbudgeted path.
+		if fresh.UID != instance.UID {
+			return nil, fmt.Errorf("RoleInstance identity changed while evaluating restart budget")
+		}
+		if fresh.Generation != instance.Generation {
+			return &expectationDiff{requeueAfter: RestartBudgetRequeueAfter}, nil
+		}
+		if blocked, err := c.reconcileRestartBudgetOnce(ctx, fresh, selectedControllerRevision(target), allPods); blocked || err != nil {
+			copyRestartBudgetStatus(instance, fresh)
+			syncRestartingConditionFromFresh(instance, fresh)
+			return &expectationDiff{requeueAfter: RestartBudgetRequeueAfter}, err
+		}
+	}
+	// Release the guard against actual Pod state, never the pending synthetic list.
+	c.releaseCompletedRestartWave(instance, fresh, allPods)
+	if delay := c.checkRestartBackoff(instance, fresh, activePods, inactivePods); delay > 0 {
+		return &expectationDiff{requeueAfter: delay}, nil
+	}
+	if c.shouldRecreateInstanceGuarded(ctx, instance, allPods, instance.Status.InPlaceUpdateContainerBaselines, fresh) {
+		if budgeted {
+			livePods, accepted, err := c.acceptBudgetRestart(ctx, instance, selectedControllerRevision(target))
+			if errors.Is(err, errRestartBudgetGenerationChanged) {
+				return &expectationDiff{requeueAfter: RestartBudgetRequeueAfter}, nil
+			}
+			if err != nil {
+				return nil, err
+			}
+			if !accepted {
+				return &expectationDiff{requeueAfter: RestartBudgetRequeueAfter}, nil
+			}
+			return &expectationDiff{toDeleteNum: len(livePods), toDeletePod: livePods, waveStarted: true}, nil
+		}
+		setRestartingCondition(instance)
+		rememberRestartWave(instance, allPods)
+		updateRestartTracking(instance)
+		reason, podName := recreateTriggerReason(instance, allPods, instance.Status.InPlaceUpdateContainerBaselines)
+		c.recorder.Event(instance, v1.EventTypeNormal, "ReCreateInstance",
+			fmt.Sprintf("RestartPolicy is RecreateInstanceOnPodRestart, recreate all pods of instance: %v (reason=%s, pod=%s, restartCount=%d)",
+				klog.KObj(instance), reason, podName, instance.Status.RestartCount))
+		return &expectationDiff{toDeleteNum: len(allPods), toDeletePod: allPods, waveStarted: true}, nil
+	}
+	if pending := pendingWaveDeletions(instance, allPods); len(pending) > 0 {
+		return &expectationDiff{toDeleteNum: len(pending), toDeletePod: pending}, nil
+	}
+	return nil, nil
+}
+
 func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv1alpha2.RoleInstance, expectedCreations map[string]sets.Set[int32], updateRevision string) (bool, error) {
 	coreControl := instancecore.New(updateInstance)
 	var newPods []*v1.Pod
@@ -303,10 +384,7 @@ func (c *realControl) createPods(ctx context.Context, updateInstance *workloadsv
 		}
 		if existingPod != nil {
 			if !metav1.IsControlledBy(existingPod, updateInstance) {
-				err := fmt.Errorf(
-					"pod %s is not controlled by RoleInstance %s (UID %s)",
-					klog.KObj(existingPod), klog.KObj(updateInstance), updateInstance.UID,
-				)
+				err := newPodNotControlledError(existingPod, updateInstance)
 				c.recorder.Eventf(updateInstance, v1.EventTypeWarning, "FailedCreate",
 					"cannot create replacement pod: %v", err)
 				// Gang scheduling requires all Pods to be created together. For
@@ -438,7 +516,20 @@ func (c *realControl) getExistingPod(ctx context.Context, namespace, name string
 
 func (c *realControl) createOnePod(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) error {
 	if err := c.Create(ctx, pod); err != nil {
-		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedCreate", "failed to create pod: %v, pod: %v", err, podinplace.DumpJSON(pod))
+		// Edge-triggered and without the full pod dump: the same failure retries
+		// repeatedly, and per-attempt events with large payloads would drain the
+		// object's event budget (KEP-502). The current blocker fact is carried by
+		// the Progressing condition; the event dedupes against its message.
+		emit := true
+		for _, condition := range instance.Status.Conditions {
+			if condition.Type == workloadsv1alpha2.RoleInstanceProgressing && condition.Message == err.Error() {
+				emit = false
+				break
+			}
+		}
+		if emit {
+			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedCreate", "failed to create pod %s: %v", pod.Name, err)
+		}
 		return err
 	}
 	c.recorder.Eventf(instance, v1.EventTypeNormal, "SuccessfulCreate", "succeed to create pod %s", pod.Name)
@@ -489,6 +580,10 @@ func (c *realControl) syncRestartTrackingFromAPI(ctx context.Context, instance *
 	if err := c.apiReader.Get(ctx, client.ObjectKeyFromObject(instance), fresh); err != nil {
 		return nil
 	}
+	return syncRestartTrackingFromFresh(instance, fresh)
+}
+
+func syncRestartTrackingFromFresh(instance, fresh *workloadsv1alpha2.RoleInstance) *workloadsv1alpha2.RoleInstance {
 	// Adopt the versioned pair when the fresh timestamp is newer.
 	// This carries resets downward (e.g. 5→1) unlike a monotonic-up guard.
 	if fresh.Status.LastRestartTime != nil && (instance.Status.LastRestartTime == nil ||

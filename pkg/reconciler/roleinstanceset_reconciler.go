@@ -92,27 +92,28 @@ func (r *RoleInstanceSetReconciler) Reconciler(
 	ctx context.Context, rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string,
 ) error {
-	if err := r.reconcileRoleInstanceSet(ctx, rbg, role, rollingUpdateStrategy, revisionKey); err != nil {
+	workload, err := r.reconcileRoleInstanceSet(ctx, rbg, role, rollingUpdateStrategy, revisionKey)
+	if err != nil {
 		return err
 	}
-	return NewServiceReconciler(r.client).reconcileHeadlessService(ctx, rbg, role)
+	return NewServiceReconciler(r.client).reconcileHeadlessService(ctx, rbg, role, workload)
 }
 
 func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	ctx context.Context,
 	rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec,
 	rollingUpdateStrategy *workloadsv1alpha2.RollingUpdate, revisionKey string,
-) error {
+) (*workloadsv1alpha2.RoleInstanceSet, error) {
 	logger := log.FromContext(ctx)
 	logger.V(1).Info("start to reconciling roleinstanceset workload")
 	if err := workloadsv1alpha2.ValidateRoleExcludedOrdinals(rbg, role); err != nil {
-		return err
+		return nil, err
 	}
 
 	rollingStrategy, err := validateRolloutStrategy(role.RolloutStrategy, int(*role.Replicas))
 	if err != nil {
 		logger.Error(err, "Invalid rollout strategy")
-		return err
+		return nil, err
 	}
 	role.RolloutStrategy = rollingStrategy
 
@@ -121,11 +122,11 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	// Choose the writer from an uncached read of the committed child record.
 	err = r.apiReader.Get(ctx, types.NamespacedName{Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace}, oldRoleInstanceSet)
 	if err != nil && !apierrors.IsNotFound(err) {
-		return err
+		return nil, err
 	}
 	if err == nil {
 		if err := checkWorkloadClaimable(oldRoleInstanceSet, rbg); err != nil {
-			return err
+			return nil, err
 		}
 	}
 	// Feature roles use one conditional writer for the complete child target.
@@ -139,31 +140,34 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 	// Fold that ownership before ordinary SSA so omitted fields can be removed.
 	if oldRoleInstanceSet.ResourceVersion != "" {
 		if err := r.upgradeRoleInstanceSetOwnership(ctx, oldRoleInstanceSet); err != nil {
-			return err
+			return nil, err
 		}
 	}
 
 	roleInstanceSetApplyConfig, err := r.constructRoleInstanceSetApplyConfiguration(ctx, rbg, role, rollingUpdateStrategy, revisionKey, oldRoleInstanceSet)
 	if err != nil {
 		logger.Error(err, "Failed to construct roleInstanceSet apply configuration")
-		return err
+		return nil, err
 	}
 	obj, err := runtime.DefaultUnstructuredConverter.ToUnstructured(roleInstanceSetApplyConfig)
 	if err != nil {
 		logger.Error(err, "Converting obj apply configuration to json.")
-		return err
+		return nil, err
 	}
 
 	newRoleInstanceSet := &workloadsv1alpha2.RoleInstanceSet{}
 	if err = runtime.DefaultUnstructuredConverter.FromUnstructured(obj, newRoleInstanceSet); err != nil {
-		return fmt.Errorf("convert roleInstanceSet ApplyConfig to roleInstanceSet error: %s", err.Error())
+		return nil, fmt.Errorf("convert roleInstanceSet ApplyConfig to roleInstanceSet error: %s", err.Error())
 	}
 	if oldRoleInstanceSet.ResourceVersion == "" {
 		// Create-only cannot overwrite a concurrently created sparse target.
 		if err := r.client.Create(ctx, newRoleInstanceSet, client.FieldOwner(utils.FieldManager)); err != nil {
-			return err
+			return nil, err
 		}
-		return r.upgradeRoleInstanceSetOwnership(ctx, newRoleInstanceSet)
+		if err := r.upgradeRoleInstanceSetOwnership(ctx, newRoleInstanceSet); err != nil {
+			return nil, err
+		}
+		return newRoleInstanceSet, nil
 	}
 	// A concurrent membership commit must invalidate this ordinary update.
 	// Force apply alone could let replicas move ahead of the committed record.
@@ -180,12 +184,17 @@ func (r *RoleInstanceSetReconciler) reconcileRoleInstanceSet(
 		)
 	}
 
-	if err := utils.PatchObjectApplyConfiguration(ctx, r.client, roleInstanceSetApplyConfig, utils.PatchSpec); err != nil {
+	applied, err := utils.ApplyObjectConfiguration(
+		ctx, r.client, roleInstanceSetApplyConfig, utils.ApplySpec,
+	)
+	if err != nil {
 		logger.Error(err, "Failed to patch roleInstanceSet apply configuration")
-		return err
+		return nil, err
 	}
-
-	return nil
+	if err := runtime.DefaultUnstructuredConverter.FromUnstructured(applied.Object, newRoleInstanceSet); err != nil {
+		return nil, fmt.Errorf("convert applied RoleInstanceSet to typed object: %w", err)
+	}
+	return newRoleInstanceSet, nil
 }
 
 // upgradeRoleInstanceSetOwnership transfers only the controller's main-resource
@@ -222,6 +231,10 @@ func (r *RoleInstanceSetReconciler) upgradeRoleInstanceSetOwnership(
 	// snapshot that preceded the ownership write.
 	*set = *updated
 	return nil
+}
+
+func restartPolicyConfigRequiresBlock(raw *workloadsv1alpha2.RestartPolicyConfig) bool {
+	return raw != nil && (raw.BaseDelaySeconds != nil || raw.MaxDelaySeconds != nil || raw.ActivateAfter != "" || raw.MaxGroupRestarts != nil)
 }
 
 func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
@@ -276,14 +289,16 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 	// upgrade with nothing to roll to: RoleInstanceSpec's getters fold the string in
 	// and default the delays to these very values.
 	roleInstanceTemplateConfig := workloadsv1alpha2client.RoleInstanceTemplate()
-	if raw := role.GetRawRestartPolicyConfig(); raw != nil &&
-		(raw.BaseDelaySeconds != nil || raw.MaxDelaySeconds != nil || raw.ActivateAfter != "") {
+	if raw := role.GetRawRestartPolicyConfig(); restartPolicyConfigRequiresBlock(raw) {
 		restartPolicyApplyConfig := workloadsv1alpha2client.RestartPolicyConfig().
 			WithType(role.GetRestartPolicy()).
 			WithBaseDelaySeconds(role.GetBaseDelaySeconds()).
 			WithMaxDelaySeconds(role.GetMaxDelaySeconds())
 		if raw.ActivateAfter != "" {
 			restartPolicyApplyConfig = restartPolicyApplyConfig.WithActivateAfter(raw.ActivateAfter)
+		}
+		if raw.MaxGroupRestarts != nil {
+			restartPolicyApplyConfig.WithMaxGroupRestarts(*raw.MaxGroupRestarts)
 		}
 		roleInstanceTemplateConfig.WithRestartPolicyConfig(restartPolicyApplyConfig)
 	} else {

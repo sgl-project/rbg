@@ -71,7 +71,7 @@ limitations under the License.
 // that rewrites specs on every apply, is not read as a clean result.
 //
 // The cluster must have no rbgs install at all when the suite starts: it installs the
-// release it upgrades from itself, from a git worktree of that tag, and removes it
+// release it upgrades from itself, from a chart exported from that tag, and removes it
 // again on teardown. That precondition is what makes the teardown safe, since
 // removing the install means deleting CRDs and so cascading to every object of those
 // kinds. A precondition check fails fast with cleanup instructions otherwise, because

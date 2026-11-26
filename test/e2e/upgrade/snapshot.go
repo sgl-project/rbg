@@ -141,6 +141,11 @@ type RBGSnapshot struct {
 	// ownerFacts.Spec: a generation bump on the root is reported with the diff.
 	Spec        map[string]any
 	ReadyByRole map[string]int32
+	// DiscoveryConfigVersion is the value of the discovery-config-version annotation
+	// on a RoleBasedGroup, empty when it has none. It lives in metadata, so neither
+	// the spec comparison nor the generation sees it change, and it selects the
+	// content of the group's discovery ConfigMap.
+	DiscoveryConfigVersion string
 	// RBGReady is the RBG's Ready condition being True.
 	RBGReady bool
 }
@@ -224,6 +229,8 @@ func captureRBG(g gomega.Gomega, f *framework.Framework, rbg *workloadsv1alpha2.
 		Services:      listServicesForRBG(g, f, rbg),
 		RevisionNames: listRevisionsForRBG(g, f, rbg),
 		ReadyByRole:   make(map[string]int32, len(rbg.Spec.Roles)),
+
+		DiscoveryConfigVersion: string(rbg.GetDiscoveryConfigVersion()),
 	}
 
 	for _, role := range rbg.Spec.Roles {
@@ -548,8 +555,7 @@ func waitQuiesced(f *framework.Framework, skip ...string) map[string]RBGSnapshot
 		}, quiesceTimeout, time.Second,
 	).Should(
 		gomega.Succeed(),
-		"the controller was still changing things %s after the upgrade, so nothing can be attributed to "+
-			"the upgrade itself", quiesceTimeout,
+		"the controller was still changing things after %s, so a stable comparison is not possible", quiesceTimeout,
 	)
 	return latest
 }
@@ -566,6 +572,7 @@ func checkSnapshotDiff(fs *findings, f *framework.Framework, before, after map[s
 	checkServicesStable(fs, before, after, rec.leaderOnlyServices)
 	checkOwnersStable(fs, before, after, rec.specRewrites)
 	checkNoRevisionExplosion(fs, f, before, after, rec.revisionAdds)
+	checkDiscoveryConfigVersionStable(fs, before, after)
 	checkStillReady(fs, before, after)
 }
 
@@ -706,6 +713,7 @@ func checkNoRestarts(fs *findings, before, after map[string]RBGSnapshot) {
 // a question for the correctness suites, and this suite can only speak about what the
 // upgrade changed.
 func checkPodMetadataStable(fs *findings, before, after map[string]RBGSnapshot) {
+	allowManagedMarker := podLabelMigrationEnabled()
 	var labelProblems, annotationProblems, gateProblems []string
 	for rbgName, beforeSnap := range before {
 		afterSnap, ok := after[rbgName]
@@ -720,7 +728,7 @@ func checkPodMetadataStable(fs *findings, before, after map[string]RBGSnapshot) 
 				}
 				where := fmt.Sprintf("%s/%s: pod %s", rbgName, role, podName)
 
-				for _, diff := range stringMapDiff(beforeFacts.Labels, afterFacts.Labels) {
+				for _, diff := range podLabelDiff(beforeFacts.Labels, afterFacts.Labels, allowManagedMarker) {
 					labelProblems = append(labelProblems, where+" label "+diff)
 				}
 				for _, diff := range stringMapDiff(beforeFacts.Annotations, afterFacts.Annotations) {
@@ -739,6 +747,28 @@ func checkPodMetadataStable(fs *findings, before, after map[string]RBGSnapshot) 
 	// A gate appearing means the pod went through an in-place update, which is a
 	// rewrite of its template even though the pod itself survived.
 	fs.add("pod readiness gates were changed by the upgrade", gateProblems)
+}
+
+func podLabelDiff(before, after map[string]string, allowManagedMarker bool) []string {
+	if _, existed := before[constants.ManagedLabelKey]; allowManagedMarker && !existed && after[constants.ManagedLabelKey] == constants.ManagedLabelValue {
+		after = copyStringMap(after)
+		delete(after, constants.ManagedLabelKey)
+	}
+	return stringMapDiff(before, after)
+}
+
+func expectMigratedPodLabels(after map[string]RBGSnapshot) {
+	if !podLabelMigrationEnabled() {
+		return
+	}
+	for _, snap := range after {
+		for _, pods := range snap.Roles {
+			for name, pod := range pods {
+				gomega.Expect(pod.Labels[constants.ManagedLabelKey]).To(gomega.Equal(constants.ManagedLabelValue),
+					"Pod %s was not marked by migration or at creation", name)
+			}
+		}
+	}
 }
 
 // stringMapDiff describes how two maps differ, one line per key. Reporting per key is
@@ -911,6 +941,17 @@ type recordedRewrites struct {
 	// component-name=leader and nothing else, no endpoint may be added, and every
 	// endpoint that left must belong to a pod that is not a leader.
 	leaderOnlyServices map[string]bool
+
+	// discoveryConfigChildren are the RoleBasedGroupSet children whose discovery
+	// ConfigMap phase 3 and phase 4 observe directly. They are not a recorded
+	// metadata rewrite: KEP-576 removes the mode selector and existing children
+	// without the version annotation keep their historical content.
+	discoveryConfigChildren map[string]bool
+
+	// discoveryConfigRBGs are the direct legacy RoleBasedGroups whose ConfigMap
+	// phase 1 and phase 3 observe. The from-release leaves them without a
+	// ConfigMap; the upgraded controller must create, label, and own it.
+	discoveryConfigRBGs map[string]bool
 }
 
 // healStoredStrategyType is the rewrite the mutating webhook performs on a stored
@@ -1183,6 +1224,25 @@ func checkNoRevisionExplosion(fs *findings, f *framework.Framework, before, afte
 	// <rbg>-<hash>-<n>, the RoleInstanceSet layer names them <set>-<hash>. Both carry
 	// GroupNameLabelKey, so this list spans both and the added names say which moved.
 	fs.add("ControllerRevisions changed across the upgrade", problems)
+}
+
+// checkDiscoveryConfigVersionStable fails when the discovery-config-version of a
+// RoleBasedGroup changes. Existing objects without the annotation keep the
+// historical v1alpha1 content, so an upgrade must not stamp a new value onto them.
+func checkDiscoveryConfigVersionStable(fs *findings, before, after map[string]RBGSnapshot) {
+	var problems []string
+	for name, beforeSnap := range before {
+		afterSnap, ok := after[name]
+		if !ok || beforeSnap.Kind != kindRBG {
+			continue
+		}
+		was, is := beforeSnap.DiscoveryConfigVersion, afterSnap.DiscoveryConfigVersion
+		if was != is {
+			problems = append(problems, fmt.Sprintf("%s: %q -> %q", name, was, is))
+		}
+	}
+	sort.Strings(problems)
+	fs.add("the discovery config mode of RoleBasedGroups changed", problems)
 }
 
 // describeRevisionChange renders one RBG's revision change, including a content diff

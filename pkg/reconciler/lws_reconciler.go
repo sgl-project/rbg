@@ -127,7 +127,7 @@ func (r *LeaderWorkerSetReconciler) Reconciler(
 		return nil
 	}
 
-	if err = utils.PatchObjectApplyConfiguration(ctx, r.client, lwsApplyConfig, utils.PatchSpec); err != nil {
+	if _, err = utils.ApplyObjectConfiguration(ctx, r.client, lwsApplyConfig, utils.ApplySpec); err != nil {
 		logger.Error(err, "Failed to patch lws apply configuration")
 		return err
 	}
@@ -367,7 +367,7 @@ func (r *LeaderWorkerSetReconciler) constructLWSApplyConfiguration(
 	// construct lws apply configuration
 	lwsConfig := lwsapplyv1.LeaderWorkerSet(rbg.GetWorkloadName(role), rbg.Namespace).
 		WithSpec(lwsSpecConfig).
-		WithAnnotations(labels.Merge(maps.Clone(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
+		WithAnnotations(labels.Merge(workloadRoleAnnotations(role.Annotations), rbg.GetCommonAnnotationsFromRole(role))).
 		WithLabels(labels.Merge(maps.Clone(role.Labels), lwsLabel)).
 		WithOwnerReferences(
 			metaapplyv1.OwnerReference().

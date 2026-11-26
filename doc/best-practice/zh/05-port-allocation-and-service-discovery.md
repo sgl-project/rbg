@@ -161,6 +161,25 @@ roles:
           http: 8000
 ```
 
+RBG 还支持紧凑的带版本格式。Controller 通过 RBG annotation
+`rbg.workloads.x-k8s.io/discovery-config-version` 记录所选版本。没有该
+annotation 的存量 RBG 继续使用上面的 v1alpha1 格式；新 RBG 默认使用 v1。
+
+```yaml
+# 紧凑 v1 内容
+apiVersion: v1
+group: pd-inference
+roles:
+  - name: prefill
+    members: 2
+    ports:
+      http: 8000
+    components:
+      - name: prefill
+        size: 1
+        base: "pd-inference-prefill-{roleIndex}.s-pd-inference-prefill"
+``+
+
 #### 不同 Pattern 的地址格式
 
 上例使用 `standalonePattern`（每个副本一条地址）。使用多 Pod Pattern 时，Controller 会将每个 Pod 展开为一条独立的 `instances` 条目，`roles.<role>.size` 随之变为地址条目数（而非角色副本数）：
@@ -210,19 +229,82 @@ roles:
 推理引擎可以直接读取 `/etc/rbg/config.yaml` 获取整个集群的拓扑信息：
 
 ```python
-# 推理引擎代码示例：读取集群拓扑
+# 推理引擎代码示例：同时读取两种版本的集群拓扑
 import yaml
 
 with open("/etc/rbg/config.yaml") as f:
     config = yaml.safe_load(f)
 
+# 归一化两种受支持的版本
+api_version = config.get("apiVersion", "v1alpha1")
+if api_version == "v1alpha1":
+    roles = {role["name"]: role for role in config["roles"].values()}
+elif api_version == "v1":
+    roles = {role["name"]: role for role in config["roles"]}
+else:
+    raise ValueError(f"unsupported discovery apiVersion: {api_version}")
+
+def parse_ranges(value):
+    ranges = []
+    if not value:
+        return ranges
+    for entry in value.split(","):
+        if "-" in entry:
+            start, end = map(int, entry.split("-"))
+        else:
+            start = end = int(entry)
+        ranges.append((start, end))
+    return sorted(ranges)
+
+def selected_members(count, ranges):
+    members = []
+    ordinal = 0
+    while len(members) < count:
+        covering = None
+        for start, end in ranges:
+            if start <= ordinal <= end:
+                covering = (start, end)
+                break
+        if covering:
+            ordinal = covering[1] + 1
+        else:
+            members.append(ordinal)
+            ordinal += 1
+    return members
+
+def expand_v1_role(role):
+    instances = []
+    for member in selected_members(
+        role["members"], parse_ranges(role.get("excludedOrdinals", ""))
+    ):
+        for component in role["components"]:
+            base = component["base"]
+            offset = component.get("offset", 0)
+            for index in range(component["size"]):
+                address = base.replace(
+                    "{roleIndex}", str(member)
+                ).replace(
+                    "{componentIndex}", str(offset + index)
+                )
+                instances.append({"address": address, "ports": role["ports"]})
+    return instances
+
 # 获取所有 Prefill 实例的地址
-prefill_instances = config["roles"]["prefill"]["instances"]
+prefill = roles["prefill"]
+prefill_instances = (
+    prefill["instances"]
+    if api_version == "v1alpha1"
+    else expand_v1_role(prefill)
+)
 for inst in prefill_instances:
     print(f"Prefill: {inst['address']}:{inst['ports']['http']}")
 
-# 获取所有 Decode 实例的地址
-decode_instances = config["roles"]["decode"]["instances"]
+decode = roles["decode"]
+decode_instances = (
+    decode["instances"]
+    if api_version == "v1alpha1"
+    else expand_v1_role(decode)
+)
 for inst in decode_instances:
     print(f"Decode: {inst['address']}:{inst['ports']['http']}")
 ```

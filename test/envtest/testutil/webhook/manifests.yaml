@@ -1,11 +1,4 @@
-# Mutating webhook configurations for the admission defaulters this suite tests.
-#
-# This directory also installs RBG/RBGSet validators for content and placement
-# tests. The caBundle/clientConfig below are rewritten by envtest's
-# WebhookInstallOptions to point at the local test webhook server.
-#
-# Do NOT use this file for real deployments; deploy/kubectl and deploy/helm carry the
-# full rendered set.
+# Test-only mutating webhooks; envtest rewrites their clientConfig and caBundle for its local server.
 apiVersion: admissionregistration.k8s.io/v1
 kind: MutatingWebhookConfiguration
 metadata:

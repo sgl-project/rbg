@@ -171,6 +171,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.EngineRuntimeTargetContainerApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("GangSchedulingStrategy"):
 		return &workloadsv1alpha2.GangSchedulingStrategyApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("GroupSetRolloutStrategy"):
+		return &workloadsv1alpha2.GroupSetRolloutStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("InPlaceUpdateStrategy"):
 		return &workloadsv1alpha2.InPlaceUpdateStrategyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("InstanceComponent"):

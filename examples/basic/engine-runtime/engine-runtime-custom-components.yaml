@@ -1,0 +1,136 @@
+# Example: Engine Runtime Profile scoped to one component of a
+# customComponentsPattern role (KEP-531)
+#
+# Step 1's profile is referenced with `component: router`, so its pod-level
+# fragments (sidecar, volume) and its containerPatches deliver to the router
+# component's pods only — the prefill and decode components render from their
+# own templates unchanged. A `profileName`-only reference instead delivers the
+# fragments to every declared component, the pattern's default component set;
+# naming one component is the narrowing this example exercises.
+#
+# The images are publicly pullable stand-ins, so the example runs on any
+# ordinary cluster; a GPU-flavored workload would swap in the real engine
+# images and resource requests.
+---
+# Step 1: Create a ClusterEngineRuntimeProfile whose content is only useful
+# to the routing tier: a metrics sidecar, a shared config volume, and
+# profile-side patches (env default + the volume's mount). containerPatches
+# are target-less — a cluster-scoped publisher cannot know consumer
+# container names — so they fire at whichever role-declared containers the
+# referencing role's targetContainers entries name; an entry that names a
+# profile-declared container receives only that entry's own extraPatches,
+# never the profile's containerPatches.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: ClusterEngineRuntimeProfile
+metadata:
+  name: router-runtime-profile
+spec:
+  containers:
+    - name: router-metrics-agent
+      image: registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest
+      # A sidecar has no reason to serve; the stand-in just idles.
+      command: ["sleep", "infinity"]
+      resources:
+        requests:
+          cpu: "50m"
+          memory: "64Mi"
+  volumes:
+    - name: router-config
+      emptyDir: {}
+  containerPatches:
+    # Profile-side roots only: /env, /volumeMounts and /command/0.
+    - jsonPatch:
+        op: add
+        path: /env/-
+        value:
+          name: ROUTER_METRICS_MODE
+          value: component-scoped
+    - jsonPatch:
+        op: add
+        path: /volumeMounts/-
+        value:
+          name: router-config
+          mountPath: /etc/router
+
+---
+# Step 2: Create a RoleBasedGroup with a customComponentsPattern role whose
+# reference scopes the profile to its router component.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: scoped-serving
+  namespace: default
+spec:
+  roles:
+    - name: serving
+      replicas: 2
+      # component must be a declared component name of the pattern
+      # (the write-time vocabulary check); targetContainers requires
+      # component. Listing router-main is the consent to the profile's
+      # containerPatches at that container, and the entry's extraPatches
+      # carry this role's own rules for it, landing after the profile's.
+      engineRuntimes:
+        - profileName: router-runtime-profile
+          component: router
+          targetContainers:
+            - name: router-main
+              extraPatches:
+                - jsonPatch:
+                    op: add
+                    path: /env/-
+                    value:
+                      name: ROUTER_SHARD
+                      value: "0"
+      customComponentsPattern:
+        restartPolicyConfig:
+          type: RecreateRoleInstanceOnPodRestart
+        components:
+          - name: router
+            size: 1
+            template:
+              spec:
+                containers:
+                  - name: router-main
+                    image: registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest
+                    ports:
+                      - containerPort: 80
+                        name: http
+                    resources:
+                      requests:
+                        cpu: "100m"
+                        memory: "128Mi"
+          - name: prefill
+            size: 1
+            template:
+              spec:
+                containers:
+                  - name: prefill-main
+                    image: registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest
+                    ports:
+                      - containerPort: 8080
+                        name: http
+                    resources:
+                      requests:
+                        cpu: "100m"
+                        memory: "128Mi"
+          - name: decode
+            size: 2
+            template:
+              spec:
+                containers:
+                  - name: decode-main
+                    image: registry.cn-hangzhou.aliyuncs.com/acs-sample/nginx:latest
+                    ports:
+                      - containerPort: 8081
+                        name: http
+                    resources:
+                      requests:
+                        cpu: "100m"
+                        memory: "128Mi"
+
+# Result: every router pod carries the router-metrics-agent sidecar and the
+# router-config volume, and its router-main container ends with
+#   env: [..., ROUTER_METRICS_MODE=component-scoped, ROUTER_SHARD=0]
+# (the profile's entry first, the role's extraPatch after it) and the
+# /etc/router mount. The prefill and decode pods render from their own
+# templates byte-identical to a role with no engineRuntimes at all.

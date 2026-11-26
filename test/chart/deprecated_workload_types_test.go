@@ -27,6 +27,7 @@ limitations under the License.
 package chart
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -49,9 +50,11 @@ const (
 
 // deprecatedGrants is the exact set of "apiGroup/resource" grants that the toggle
 // gates. Keep it in sync with the deprecated workload types the validator switches on
-// (api/workloads/constants: Deployment, StatefulSet, LeaderWorkerSet) and their
-// status/finalizers subresources. When enabled these must be present in the
-// ClusterRole; when disabled none of them may be.
+// (api/workloads/constants: Deployment, StatefulSet, LeaderWorkerSet, and the
+// v1alpha1 InstanceSet) and their status/finalizers subresources. The v1alpha1
+// Instance is gated too: it is not a role workload selector, but its grants are
+// dead permission now that RoleInstance replaced it. When enabled these must be
+// present in the ClusterRole; when disabled none of them may be.
 var deprecatedGrants = map[string]bool{
 	"apps/deployments":                                 true,
 	"apps/statefulsets":                                true,
@@ -61,6 +64,11 @@ var deprecatedGrants = map[string]bool{
 	"apps/statefulsets/finalizers":                     true,
 	"leaderworkerset.x-k8s.io/leaderworkersets":        true,
 	"leaderworkerset.x-k8s.io/leaderworkersets/status": true,
+	"workloads.x-k8s.io/instances":                     true,
+	"workloads.x-k8s.io/instances/status":              true,
+	"workloads.x-k8s.io/instancesets":                  true,
+	"workloads.x-k8s.io/instancesets/status":           true,
+	"workloads.x-k8s.io/instancesets/finalizers":       true,
 }
 
 // docSeparator splits a multi-document YAML stream on lines containing only "---".
@@ -81,10 +89,7 @@ func chartDir(t *testing.T) string {
 	return dir
 }
 
-// renderChart runs `helm template` with the given extra args and returns the rendered
-// manifest stream. It skips the test if helm is not installed, so local runs without
-// helm do not fail; CI installs helm for the job that runs this package.
-func renderChart(t *testing.T, extraArgs ...string) string {
+func requireHelm(t *testing.T) {
 	t.Helper()
 	if _, err := exec.LookPath("helm"); err != nil {
 		if os.Getenv("CI") != "" {
@@ -92,11 +97,22 @@ func renderChart(t *testing.T, extraArgs ...string) string {
 		}
 		t.Skip("helm not installed; skipping chart render test")
 	}
+}
+
+// renderChart runs `helm template` and returns the rendered manifest stream.
+// Only stdout is the manifest: helm writes warnings to stderr, for example when the
+// kubeconfig is group- or world-readable, so stderr is kept apart and shown only
+// when helm fails.
+func renderChart(t *testing.T, extraArgs ...string) string {
+	t.Helper()
+	requireHelm(t)
 	args := append([]string{"template", "rbgs", chartDir(t)}, extraArgs...)
 	cmd := exec.Command("helm", args...)
-	out, err := cmd.CombinedOutput()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("helm template failed: %v\n%s", err, out)
+		t.Fatalf("helm template failed: %v\n%s", err, stderr.String())
 	}
 	return string(out)
 }
@@ -239,6 +255,22 @@ func TestClusterRoleGrantsReflectToggle(t *testing.T) {
 	}
 }
 
+func TestClusterRoleGrantsMetricsReviewPermissions(t *testing.T) {
+	role := clusterRole(t, renderChart(t))
+
+	for _, tc := range []struct {
+		apiGroup string
+		resource string
+	}{
+		{apiGroup: "authentication.k8s.io", resource: "tokenreviews"},
+		{apiGroup: "authorization.k8s.io", resource: "subjectaccessreviews"},
+	} {
+		if !hasRule(t, role, tc.apiGroup, tc.resource, "create") {
+			t.Errorf("ClusterRole lacks create on %s/%s", tc.apiGroup, tc.resource)
+		}
+	}
+}
+
 // TestToggleDeltaIsScopedToDeprecatedRBACAndFlag renders the chart with the toggle on
 // and off and asserts the two renders differ in exactly two objects — the controller
 // ClusterRole and the manager Deployment — and in no others. This is the guard the
@@ -287,4 +319,39 @@ func keysNotIn(a, b map[string]k8sObject) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+func clusterRole(t *testing.T, manifest string) rbacv1.ClusterRole {
+	t.Helper()
+	obj, ok := splitObjects(t, manifest)["ClusterRole/"+controllerClusterRoleName]
+	if !ok {
+		t.Fatalf("ClusterRole %q not found in rendered chart", controllerClusterRoleName)
+	}
+	var role rbacv1.ClusterRole
+	if err := yaml.Unmarshal([]byte(obj.raw), &role); err != nil {
+		t.Fatalf("unmarshal ClusterRole: %v", err)
+	}
+	return role
+}
+
+func hasRule(t *testing.T, role rbacv1.ClusterRole, apiGroup, resource, verb string) bool {
+	t.Helper()
+	for _, rule := range role.Rules {
+		if !contains(rule.APIGroups, apiGroup) || !contains(rule.Resources, resource) {
+			continue
+		}
+		if contains(rule.Verbs, verb) {
+			return true
+		}
+	}
+	return false
+}
+
+func contains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

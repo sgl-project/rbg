@@ -90,6 +90,7 @@ func TestUpgradeToCurrent(t *testing.T) {
 		ginkgo.Ordered,
 		func() {
 			RunUpgradeSpecs(f)
+			RunPodCacheSpecs(f)
 		},
 	)
 

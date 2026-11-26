@@ -28,20 +28,24 @@ import (
 	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/kubernetes/pkg/controller/history"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statefulmode"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset/statelessmode/revision"
+	"sigs.k8s.io/rbgs/pkg/utils"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
 
@@ -225,6 +229,112 @@ func TestRoleInstanceSetReconciler_LeaderWorkerPattern_WithTemplateRef(t *testin
 			assert.NotNil(t, ris.Spec.RoleInstanceTemplate)
 		})
 	}
+}
+
+// laggingCache models an informer that has not observed the latest workload:
+// it either misses the workload or serves a stale copy with an old UID.
+type laggingCache struct {
+	client.Client
+	staleUID  types.UID
+	createUID types.UID // the fake client assigns no UIDs
+}
+
+func (c *laggingCache) Get(
+	ctx context.Context, key client.ObjectKey, obj client.Object, opts ...client.GetOption,
+) error {
+	switch obj.(type) {
+	case *workloadsv1alpha2.RoleInstanceSet, *apps.StatefulSet:
+		if c.staleUID == "" {
+			return apierrors.NewNotFound(schema.GroupResource{Resource: "workload"}, key.Name)
+		}
+		if err := c.Client.Get(ctx, key, obj, opts...); err != nil {
+			return err
+		}
+		obj.SetUID(c.staleUID)
+		return nil
+	}
+	return c.Client.Get(ctx, key, obj, opts...)
+}
+
+func (c *laggingCache) Create(
+	ctx context.Context, obj client.Object, opts ...client.CreateOption,
+) error {
+	if obj.GetUID() == "" && c.createUID != "" {
+		obj.SetUID(c.createUID)
+	}
+	return c.Client.Create(ctx, obj, opts...)
+}
+
+func laggingScheme(t *testing.T) *runtime.Scheme {
+	t.Helper()
+	s := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(s))
+	require.NoError(t, apps.AddToScheme(s))
+	require.NoError(t, corev1.AddToScheme(s))
+	return s
+}
+
+func laggingRBG(role workloadsv1alpha2.RoleSpec) *workloadsv1alpha2.RoleBasedGroup {
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("lag", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+	rbg.UID = "rbg-uid"
+	rbg.APIVersion = workloadsv1alpha2.GroupVersion.String()
+	rbg.Kind = "RoleBasedGroup"
+	return rbg
+}
+
+func headlessServiceOwner(
+	t *testing.T, c client.Client, rbg *workloadsv1alpha2.RoleBasedGroup,
+) metav1.OwnerReference {
+	t.Helper()
+	name, err := utils.GetCompatibleHeadlessServiceName(
+		context.Background(), c, rbg, &rbg.Spec.Roles[0],
+	)
+	require.NoError(t, err)
+	svc := &corev1.Service{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKey{
+		Namespace: rbg.Namespace,
+		Name:      name,
+	}, svc))
+	require.Len(t, svc.OwnerReferences, 1)
+	return svc.OwnerReferences[0]
+}
+
+func TestRoleInstanceSetReconciler_HeadlessServiceWithCacheLag(t *testing.T) {
+	s := laggingScheme(t)
+	rbg := laggingRBG(wrappersv2.BuildStandaloneRole("worker").Obj())
+	backend := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg).Build()
+	r := NewRoleInstanceSetReconciler(s, &laggingCache{
+		Client: backend, createUID: "ris-created-uid",
+	})
+	r.SetAPIReader(backend)
+
+	require.NoError(t, r.Reconciler(context.Background(), rbg, &rbg.Spec.Roles[0], nil, "rev-1"))
+	owner := headlessServiceOwner(t, backend, rbg)
+	require.Equal(t, types.UID("ris-created-uid"), owner.UID)
+	require.Equal(t, "workloads.x-k8s.io/v1alpha2", owner.APIVersion)
+	require.Equal(t, "RoleInstanceSet", owner.Kind)
+}
+
+func TestRoleInstanceSetReconciler_HeadlessServiceWithStaleCachedUID(t *testing.T) {
+	s := laggingScheme(t)
+	rbg := laggingRBG(wrappersv2.BuildStandaloneRole("worker").Obj())
+	live := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{
+		Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+		Namespace: rbg.Namespace,
+		UID:       "ris-live-uid",
+		OwnerReferences: []metav1.OwnerReference{
+			*metav1.NewControllerRef(rbg, workloadsv1alpha2.GroupVersion.WithKind("RoleBasedGroup")),
+		},
+	}}
+	backend := fake.NewClientBuilder().WithScheme(s).WithObjects(rbg, live).Build()
+	r := NewRoleInstanceSetReconciler(s, &laggingCache{
+		Client: backend, staleUID: "ris-stale-uid",
+	})
+	r.SetAPIReader(backend)
+
+	require.NoError(t, r.Reconciler(context.Background(), rbg, &rbg.Spec.Roles[0], nil, "rev-1"))
+	require.Equal(t, live.UID, headlessServiceOwner(t, backend, rbg).UID)
 }
 
 // TestRoleInstanceSetReconciler_LeaderWorkerPattern_ComponentServiceName verifies which
@@ -642,6 +752,15 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 			wantRestartPolicy: workloadsv1alpha2.RestartPolicyNone,
 		},
 		{
+			name: "role configuring only a zero group restart budget",
+			role: func() workloadsv1alpha2.RoleSpec {
+				role := wrappersv2.BuildLeaderWorkerRole("budget-role").Obj()
+				role.LeaderWorkerPattern.RestartPolicyConfig = &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, ActivateAfter: workloadsv1alpha2.RestartPolicyActivateAfterCreated, MaxGroupRestarts: ptr.To[int32](0)}
+				return role
+			},
+			wantConfig: &workloadsv1alpha2.RestartPolicyConfig{Type: workloadsv1alpha2.RecreateRoleInstanceOnPodRestart, ActivateAfter: workloadsv1alpha2.RestartPolicyActivateAfterCreated, BaseDelaySeconds: ptr.To(workloadsv1alpha2.DefaultBaseDelaySeconds), MaxDelaySeconds: ptr.To(workloadsv1alpha2.DefaultMaxDelaySeconds), MaxGroupRestarts: ptr.To[int32](0)},
+		},
+		{
 			name: "role configuring both delays",
 			role: func() workloadsv1alpha2.RoleSpec {
 				return wrappersv2.BuildLeaderWorkerRole("backoff-role").
@@ -711,6 +830,7 @@ func TestRoleInstanceSetReconciler_RestartPolicySerializedShape(t *testing.T) {
 				} else {
 					assert.Equal(t, ptr.To(tt.wantConfig.ActivateAfter), template.RestartPolicyConfig.ActivateAfter)
 				}
+				assert.Equal(t, tt.wantConfig.MaxGroupRestarts, template.RestartPolicyConfig.MaxGroupRestarts)
 			}
 
 			// The typed assertions above can both hold while the field the apiserver
@@ -1018,4 +1138,41 @@ func TestRoleInstanceSetReconciler_DerivesRoleInstanceGangAnnotation(t *testing.
 			assert.Equal(t, tt.want, ris.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey])
 		})
 	}
+}
+
+// TestRoleInstanceSetReconciler_DropsRecoverAnnotationAtRoleBoundary covers a
+// recovery request written on a role instead of on a RoleInstance. Nothing reads
+// it from a RoleInstanceSet, so copying it there only makes an ignored request
+// look accepted.
+func TestRoleInstanceSetReconciler_DropsRecoverAnnotationAtRoleBoundary(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = corev1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	role := wrappersv2.BuildStandaloneRole("worker").
+		WithWorkload("workloads.x-k8s.io/v1alpha2", "RoleInstanceSet").
+		WithAnnotations(map[string]string{
+			constants.RoleInstanceRecoverAnnotationKey: "true",
+			"team": "a",
+		}).
+		Obj()
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+		WithRoles([]workloadsv1alpha2.RoleSpec{role}).
+		Obj()
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).Build()
+
+	ctx := context.Background()
+	err := NewRoleInstanceSetReconciler(scheme, fakeClient).
+		Reconciler(ctx, rbg, &role, nil, expectedRevisionHash)
+	assert.NoError(t, err)
+
+	ris := &workloadsv1alpha2.RoleInstanceSet{}
+	err = fakeClient.Get(
+		ctx,
+		types.NamespacedName{Name: rbg.GetWorkloadName(&role), Namespace: rbg.Namespace},
+		ris,
+	)
+	assert.NoError(t, err)
+	assert.NotContains(t, ris.Annotations, constants.RoleInstanceRecoverAnnotationKey)
+	assert.Equal(t, "a", ris.Annotations["team"], "user annotations on the role must still reach the RoleInstanceSet")
 }

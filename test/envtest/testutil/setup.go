@@ -19,9 +19,13 @@ package testutil
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"runtime"
 	"time"
+
+	"sigs.k8s.io/rbgs/pkg/podcache"
+	utilclient "sigs.k8s.io/rbgs/pkg/utils/client"
 
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
@@ -187,8 +191,13 @@ func WaitForReconcile() {
 
 // SetupManager creates and starts a controller manager for testing
 func SetupManager(ctx context.Context) (manager.Manager, error) {
+	scope := os.Getenv("RBGS_POD_CACHE_SCOPE")
+	if scope == "" {
+		scope = podcache.ScopeAll
+	}
 	mgr, err := ctrl.NewManager(Cfg, ctrl.Options{
-		Scheme: scheme.Scheme,
+		NewCache: utilclient.NewCacheForScope(scope),
+		Scheme:   scheme.Scheme,
 		Metrics: metricsserver.Options{
 			BindAddress: "0", // disable metrics server to avoid port conflicts in tests
 		},
@@ -229,26 +238,35 @@ func SetupInstanceController(mgr manager.Manager, bindings *instancesync.NodeBin
 
 // SetupInstanceSetController sets up the InstanceSet controller
 func SetupInstanceSetController(mgr manager.Manager) error {
-	instanceSetReconciler := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
+	instanceSetReconciler, err := workloadscontroller.NewRoleInstanceSetReconciler(mgr)
+	if err != nil {
+		return err
+	}
 	return instanceSetReconciler.SetupWithManager(mgr, controller.Options{})
 }
 
 // SetPodRunningAndReady updates a pod's status to Running with Ready condition
 // and proper ContainerStatuses. This simulates kubelet behavior in envtest.
+// Conditions the kubelet does not own (for example controller-managed
+// readiness-gate conditions) are preserved instead of being dropped, so the
+// fixture does not trigger extra reconciliation to restore them.
+// SetPodRunningAndReady emulates a kubelet that has observed every readiness
+// gate open: it sets PodReady=True unconditionally, even when the status
+// carries a preserved gate condition that is currently False. This is the
+// bootstrap contract, not an oversight. The RBG controller's runtime-ready
+// path (IsPodRuntimeReady) checks ContainersReady and InPlaceUpdateReady, while
+// PodReady feeds the RoleInstance-level availability path (IsRunningAndAvailable
+// and IsPodAvailable) and is recomputed from readiness gates by the in-place
+// update path. A fixture that derives PodReady from those gates can deadlock
+// the restart and in-place-update loops (verified: five restart_policy specs
+// hang). A fixture that must model a genuinely closed gate — a readiness gate
+// whose condition the test itself owns — sets the gate with SetPodCondition and
+// mirrors it into PodReady explicitly; see the rank-rejoin fixture in
+// restart_policy_test.go.
 func SetPodRunningAndReady(pod *corev1.Pod) {
 	pod.Status.Phase = corev1.PodRunning
-	pod.Status.Conditions = []corev1.PodCondition{
-		{
-			Type:               corev1.PodReady,
-			Status:             corev1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-		},
-		{
-			Type:               corev1.ContainersReady,
-			Status:             corev1.ConditionTrue,
-			LastTransitionTime: metav1.Now(),
-		},
-	}
+	SetPodCondition(pod, corev1.ContainersReady, corev1.ConditionTrue)
+	SetPodCondition(pod, corev1.PodReady, corev1.ConditionTrue)
 	// Build ContainerStatuses from pod spec containers
 	pod.Status.ContainerStatuses = make([]corev1.ContainerStatus, len(pod.Spec.Containers))
 	for i, c := range pod.Spec.Containers {
@@ -270,6 +288,36 @@ func SetPodContainerRestarted(pod *corev1.Pod, containerName string, restartCoun
 			return
 		}
 	}
+}
+
+// SetPodCondition upserts a pod condition. LastTransitionTime only moves when
+// the condition status actually changes; existing conditions of other types
+// are left in place.
+func SetPodCondition(pod *corev1.Pod, conditionType corev1.PodConditionType, status corev1.ConditionStatus) {
+	now := metav1.Now()
+	for i := range pod.Status.Conditions {
+		if pod.Status.Conditions[i].Type == conditionType {
+			if pod.Status.Conditions[i].Status != status {
+				pod.Status.Conditions[i].Status = status
+				pod.Status.Conditions[i].LastTransitionTime = now
+				// A flipped status invalidates the previous status's reason
+				// and message: kubelet (and the controller's own condition
+				// writer) replaces the whole condition, so a True condition
+				// must not keep the stale ReadinessGatesNotReady reason the
+				// False one carried.
+				pod.Status.Conditions[i].Reason = ""
+				pod.Status.Conditions[i].Message = ""
+			}
+			pod.Status.Conditions[i].LastProbeTime = now
+			return
+		}
+	}
+	pod.Status.Conditions = append(pod.Status.Conditions, corev1.PodCondition{
+		Type:               conditionType,
+		Status:             status,
+		LastProbeTime:      now,
+		LastTransitionTime: now,
+	})
 }
 
 func boolPtr(b bool) *bool {

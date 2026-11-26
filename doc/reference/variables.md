@@ -7,6 +7,7 @@
 | Key | Description |
 |-----|-------------|
 | `rbg.workloads.x-k8s.io/group-name` | The name of the RoleBasedGroup to which these resources belong. |
+| `rbg.workloads.x-k8s.io/managed` | Set to `"true"` on RBG-managed Pods (created by RoleInstance/Warmup or backfilled by `kubectl rbg migrate pod-labels`) for Pod cache admission. |
 | `rbg.workloads.x-k8s.io/group-uid` | A hash of the RoleBasedGroup's namespace and name, used for exclusive-topology affinity. It is not the Kubernetes object UID. |
 | `rbg.workloads.x-k8s.io/group-revision` | The revision hash of the RoleBasedGroup, used to determine whether the RBG object has changed. |
 | `rbg.workloads.x-k8s.io/group-unique-hash` | Legacy exclusive-topology selector key. The constant and user-supplied labels are retained; new rules use `group-uid`. |

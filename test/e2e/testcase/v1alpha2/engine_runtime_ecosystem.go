@@ -43,9 +43,8 @@ import (
 // live in the private kube-ai-registry and the data-level scenario reads a
 // real OSS bucket through real credentials. They register behind
 // RBGS_E2E_ECOSYSTEM=1 instead — the registration-time gate means CI (and
-// its dry-run matrix-coverage audit) never sees these specs, the same
-// all-or-nothing posture as the RBGS_DRILLS gate. Within the set, the real
-// OSS scenario needs one more opt-in, RBGS_E2E_ECOSYSTEM_DATA=1, plus its
+// its dry-run matrix-coverage audit) never sees these specs. Within the set,
+// the real OSS scenario needs one more opt-in, RBGS_E2E_ECOSYSTEM_DATA=1, plus its
 // environment (defaults in the spec).
 
 const (

@@ -261,10 +261,10 @@ type topology struct {
 	// surgeStart equals replicas: surge ords occupy [surgeStart, endOrdinal).
 	surgeStart int
 
-	// inRollout is true when update work remains and the rollout is not paused.
-	// Update work includes a revision mismatch, a stale base instance, or an
-	// in-flight early-rollback replacement. Used to gate surge allocation and to
-	// decide whether Phase C runs at all.
+	// updatePending includes paused work, such as a revision mismatch, a stale
+	// base instance, or an in-flight early-rollback replacement.
+	updatePending bool
+	// inRollout gates surge allocation and Phase C while updates can proceed.
 	inRollout bool
 }
 
@@ -638,9 +638,9 @@ func computeTopology(
 	t.partition = partition
 
 	staleBase := hasStaleBaseInstance(instances, t.partition, t.replicas, updateRevision, t.ordinals)
-	updatePending := currentRevision != updateRevision || staleBase || earlyRollbackReplacement
-	t.inRollout = updatePending && !set.Spec.UpdateStrategy.Paused
-	if maxSurge == 0 || !updatePending {
+	t.updatePending = currentRevision != updateRevision || staleBase || earlyRollbackReplacement
+	t.inRollout = t.updatePending && !set.Spec.UpdateStrategy.Paused
+	if maxSurge == 0 || !t.updatePending {
 		return t, nil
 	}
 	exclusions, err := ordinals.Parse(set.Annotations[constants.ExcludedOrdinalsAnnotationKey])

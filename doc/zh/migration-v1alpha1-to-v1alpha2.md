@@ -17,7 +17,7 @@ workload 类型内容迁移必须使用 `v1alpha2` 表达和写入路径。在 `
 迁移包含两条独立轨道：
 
 1. **API 编码（v1alpha1 到 v1alpha2）。** 通过 `v1alpha1` 创建且从未更新过的对象，在 etcd 中可能仍按 `v1alpha1` 编码存储。存储版本重写会通过 `v1alpha2` 端点重写这些对象，内容保持不变。
-2. **旧 workload 选择器。** `Deployment`、`StatefulSet` 和 `LeaderWorkerSet` Role 受兼容开关保护，必须迁移到 `RoleInstanceSet`。v1alpha1 `InstanceSet` 选择器不同：v0.7.0 及之后的控制器没有 InstanceSet reconciler，因此无论兼容开关如何，这类 Role 都无法 reconcile。
+2. **旧 workload 选择器。** `Deployment`、`StatefulSet` 和 `LeaderWorkerSet` Role 受兼容开关保护，必须迁移到 `RoleInstanceSet`。v1alpha1 `InstanceSet` 选择器不同：v0.7.0 及之后的控制器没有 InstanceSet reconciler，因此无论兼容开关如何，这类 Role 都无法 reconcile。不过 admission 仍会像对待其他弃用类型一样校验它：无论开关取值，新的 InstanceSet 使用都会被拒绝。
 
 完成其中一条轨道并不代表另一条轨道也已完成。升级超过 `0.9.0` 前，必须分别检查两条轨道。
 
@@ -25,7 +25,7 @@ workload 类型内容迁移必须使用 `v1alpha2` 表达和写入路径。在 `
 
 - 将 RBG 控制器升级到 `0.9.0` 或更新版本，并确认控制器、conversion webhook 和 admission webhook 健康。
 - 确认待迁移 Role 当前 ready，且没有其他 rollout 正在进行。`InstanceSet` Role 是例外：它从 v0.7.0 起就不再 reconcile，且不支持的 workload 类型会让整个 RoleBasedGroup 无法通过 preflight reconcile。
-- 在提交任何有状态 Role 的迁移前，先完成 discovery ConfigMap 前置条件。从 v0.6.0 或更早版本升级上来的 RBG 以及 RoleBasedGroupSet 子对象都处于 `legacy` 发现模式；参见[discovery ConfigMap 前置条件](#discovery-configmap-前置条件)。
+- 在提交任何有状态 Role 的迁移前，先完成 discovery ConfigMap 前置条件。旧的发现模式选择器已随 KEP-576 移除；参见[discovery ConfigMap 前置条件](#discovery-configmap-前置条件)。
 - 与自动扩缩容、流量管理、调度以及可能在迁移期间修改 RBG 的业务流程协调。
 - 在变更窗口内冻结外部写入。
 - 修改前保存当前对象，并记录 revision。
@@ -65,7 +65,8 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
 | `apps/v1/StatefulSet` | Role 仍依赖 StatefulSet。 | 迁移到 `RoleInstanceSet`。 |
 | `leaderworkerset.x-k8s.io/v1/LeaderWorkerSet` | Role 仍依赖 LeaderWorkerSet。 | 迁移到 `RoleInstanceSet`。 |
 | `workloads.x-k8s.io/v1alpha1/InstanceSet` | 该选择器从 v0.7.0 起不再 reconcile，并阻塞整个 RBG。 | 迁移到 `RoleInstanceSet`；之后手工删除旧 InstanceSet。 |
-| 其他值 | 未知兼容值。 | 停止并与对象负责人审查，不要猜测。 |
+| 第一个字符之后不含 `/` 的值，例如 `RoleInstanceSet` 或 `StatefulSet` | 不是 `apiVersion/kind` 形式的选择器。无论它写的是什么，控制器都会回退为 `RoleInstanceSet`，因此该 Role 以 `RoleInstanceSet` 运行。新增 Role 或修改 Role 的取值时，admission 会拒绝它；已经存储该值的 Role 仍可写入。 | 与对象负责人一起审查。设置为 `workloads.x-k8s.io/v1alpha2/RoleInstanceSet` 或删除该注解；两者都保持该 Role 当前的运行方式。 |
+| 其他值 | 没有 reconciler 支持该值，因此会阻塞整个 RBG。新增 Role 或修改 Role 的取值时，admission 会拒绝它；已经存储该值的 Role 仍可写入。 | 停止并与对象负责人审查，不要猜测。 |
 
 盘点结果是影响面报告，不是 rollout 决策。操作者决定先迁移哪个 Role，以及何时暂停。
 
@@ -73,26 +74,28 @@ printf '%s' "$inventory" | jq -r '.items[] | . as $o
 
 ### discovery ConfigMap 前置条件
 
-discovery ConfigMap 是控制器创建的 Pod 发现信息（`config.yaml`），挂载到有状态 Role 的 Pod 上。v0.7.0 起，控制器把它从每个 Role 一份（各份内容相同）改为每个 RBG 一份，内容格式不变。每个 RBG 的模式记录在注解 `rbg.workloads.x-k8s.io/discovery-config-mode` 中（下文称发现模式），取值 `legacy` 或 `refine`；控制器只在 `refine` 模式下创建这个 ConfigMap。
+discovery ConfigMap 是控制器创建的 Pod 发现信息（`config.yaml`），挂载到有状态 Role 的 Pod 上。v0.7.0 起，控制器为每个 RBG 维护一份与 RBG 同名的 ConfigMap。KEP-576 移除了旧的 `discovery-config-mode` 选择器：控制器现在为每个含 stateful role 的 RBG 维护 `<rbg>`。原先固定在 `legacy` 的 RBG 会在下一次 reconcile 时开始接收 `<rbg>`；Pod 模板不变，因为 v0.7.0 及之后的版本已经挂载 `<rbg>`。
 
-迁移有状态 Role 前，按对象来源把发现模式切换为 `refine`：
+序列化内容由注解 `rbg.workloads.x-k8s.io/discovery-config-version` 选择：
 
-| 对象来源 | 发现模式 | 迁移前的动作 |
-| --- | --- | --- |
-| v0.7.0 及以后创建，或全新 v0.9.0 安装 | `refine` | 无需操作。 |
-| 从 v0.6.0 或更早版本升级上来 | 派生为 `legacy` | 把 RBG 的发现模式注解设为 `refine`，触发一次 reconcile。 |
-| RoleBasedGroupSet 子对象（任意来源） | 实际为 `legacy` | 在 `spec.groupTemplate.annotations` 中设置 `rbg.workloads.x-k8s.io/discovery-config-mode: refine`。set controller 会用模板注解替换子对象注解，直接写在子对象上的注解不会保留。 |
+| 注解值 | ConfigMap 内容 |
+| --- | --- |
+| 缺失或 `v1alpha1` | 历史的全量逐实例枚举 |
+| `v1` | KEP-576 的紧凑格式 |
 
-对普通 RoleBasedGroup，先设置注解，再确认与 RBG 同名的 ConfigMap 已创建：
+mutating webhook 会把新建 RBG 默认为 `v1`；没有该注解的存量 RBG 保持 `v1alpha1`。创建时如需退回旧行为，可将注解设为 `v1alpha1`。仍含 deprecated stateful role（StatefulSet、LeaderWorkerSet 或 InstanceSet）的新 RBG 和 RoleBasedGroupSet 模板默认为 `v1alpha1`，因为紧凑格式只支持 RoleInstanceSet；admission 也会拒绝这类 RBG 使用 `v1`。如果在绕过 admission 的情况下写入了同时带 `v1` 和 deprecated stateful role 的对象，控制器会继续发布 v1alpha1 内容。重建对象但省略该注解的 UPDATE 会保留已存储版本；如需回滚，请显式设置 `v1alpha1`。
+
+RoleBasedGroupSet 应把注解放在 `spec.groupTemplate.annotations`：子 RBG 会继承该值，直接改子对象注解会被覆盖，省略该键的模板 UPDATE 会保留已存储版本。如需让 set 及其子对象回滚，请把模板注解显式设为 `v1alpha1`。
+
+把注解回滚为 `v1alpha1` 的前提是序列化后的枚举仍能放进 API server 的 1 MiB ConfigMap 限制。控制器会在写入前拒绝超限回滚并保留当前紧凑内容；只有当每个 stateful role 的目标 ordinal 都在保留内容之内、且其余内容不变时，才继续 role reconcile。请缩减拓扑让后续重试重新满足大小限制，或继续使用 `v1`；与回滚一起做的其他变更需要先撤回。
+
+迁移 stateful role 前，确认 RBG 级 ConfigMap 已存在：
 
 ```bash
-kubectl annotate rolebasedgroup RBG_NAME -n NAMESPACE \
-  rbg.workloads.x-k8s.io/discovery-config-mode=refine --overwrite
-# 确认 ConfigMap 存在后才开始迁移：
 kubectl get configmap RBG_NAME -n NAMESPACE
 ```
 
-只修改注解不会触发 reconcile：控制器只按 RoleBasedGroup 的 spec 变化入队，注解变化不入队。请重启控制器，或在注解变更的同时提交一次经过审批的 spec 变更，等待 ConfigMap 出现。若 Role 已按步骤 3 设为 `Stateless`，本节不适用：无状态 Role 不挂载 discovery ConfigMap。
+只修改注解也会触发 reconcile：RBG controller 会监听 discovery-config-version 注解。若 Role 已按步骤 3 设为 `Stateless`，本节不适用：无状态 Role 不挂载 discovery ConfigMap。
 
 ### 迁移操作
 
@@ -151,7 +154,9 @@ kubectl get configmap RBG_NAME -n NAMESPACE
 
 v0.6.0 及更早版本没有 `RoleInstanceSet`（v0.7.0 引入）：从这些版本升级的集群，先升级到 `0.9.0`，再迁移。
 
-v1alpha1 `InstanceSet` 选择器不受兼容开关保护。它从 v0.7.0 起就不再 reconcile，且不支持的 workload 类型会让整个 RoleBasedGroup preflight 失败，而不是把失败隔离在单个 Role 内。
+无论兼容开关取值如何，v1alpha1 `InstanceSet` 选择器都不会 reconcile：它从 v0.7.0 起就没有 reconciler，且不支持的 workload 类型会让整个 RoleBasedGroup preflight 失败，而不是把失败隔离在单个 Role 内。
+
+兼容开关仍会像对待其他弃用类型一样，在 admission 阶段校验它。取值为 `true` 时，已有的 InstanceSet Role 仍可写，但新使用会被拒绝，包括把保存的 InstanceSet 选择器恢复到已迁移的 Role 上；这样的选择器本来也不会 reconcile，因此不要把恢复方案建立在它之上。取值为 `false` 时，只要还有 Role 使用 InstanceSet 选择器，创建和更新请求都会被拒绝。
 
 迁移时把 Role 迁移到 `RoleInstanceSet`。孤儿清理不覆盖 InstanceSet：替代 `RoleInstanceSet` ready 后，旧 InstanceSet 及其 Pod 会与替代对象并存，需要显式删除。请与工作负载负责人审查该删除操作，并将其纳入恢复方案。
 
@@ -162,7 +167,7 @@ v1alpha1 `InstanceSet` 选择器不受兼容开关保护。它从 v0.7.0 起就�
 - 如果 set 控制器更新已迁移的子对象，恢复旧 Role 属于新的弃用使用，admission guard 会拒绝。
 - 如果 set 控制器按未迁移模板删除并重建子对象，重建的子对象会通过 set 子对象的创建时豁免继承旧类型，该 Role 必须再次迁移。
 
-先迁移 set 模板。每个子对象都会在同一轮 reconcile 中删除旧 workload，因此传播的变更会让所有子对象的该 Role 同时降为零 Pod。请把它规划为该 Role 在整个 set 内的完全中断，而不是灰度 rollout。迁移前先按 discovery ConfigMap 前置条件的说明，在模板上设置发现模式注解。如果确实需要逐子对象灰度，必须使用单独审查过的方案，协调或隔离子对象与 set reconcile 的关系。不要假设在父模板未更新时，某个子对象的迁移可以永久保持。
+先迁移 set 模板。每个子对象都会在同一轮 reconcile 中删除旧 workload，因此传播的变更会让所有子对象的该 Role 同时降为零 Pod。请把它规划为该 Role 在整个 set 内的完全中断，而不是灰度 rollout。迁移前先按 discovery ConfigMap 前置条件的说明，在模板上设置 discovery-config-version 注解。如果确实需要逐子对象灰度，必须使用单独审查过的方案，协调或隔离子对象与 set reconcile 的关系。不要假设在父模板未更新时，某个子对象的迁移可以永久保持。
 
 ## 3. 将对象重写为 v1alpha2 存储编码
 

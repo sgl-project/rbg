@@ -487,23 +487,24 @@ func applyStrategicMergePatch(base corev1.PodTemplateSpec, patch *runtime.RawExt
 	return *merged, nil
 }
 
-// GetDiscoveryConfigMode returns the discovery config mode from annotations.
-func (rbg *RoleBasedGroup) GetDiscoveryConfigMode() constants.DiscoveryConfigMode {
+// GetDiscoveryConfigVersion returns the discovery ConfigMap content version.
+// A missing annotation means v1alpha1 for objects created before KEP-576.
+func (rbg *RoleBasedGroup) GetDiscoveryConfigVersion() constants.DiscoveryConfigVersion {
 	if rbg == nil || rbg.Annotations == nil {
 		return ""
 	}
-	return constants.DiscoveryConfigMode(rbg.Annotations[constants.DiscoveryConfigModeAnnotationKey])
+	return constants.DiscoveryConfigVersion(rbg.Annotations[constants.DiscoveryConfigVersionAnnotationKey])
 }
 
-// SetDiscoveryConfigMode sets the discovery config mode in annotations.
-func (rbg *RoleBasedGroup) SetDiscoveryConfigMode(mode constants.DiscoveryConfigMode) {
+// SetDiscoveryConfigVersion sets the discovery ConfigMap content version.
+func (rbg *RoleBasedGroup) SetDiscoveryConfigVersion(version constants.DiscoveryConfigVersion) {
 	if rbg == nil {
 		return
 	}
 	if rbg.Annotations == nil {
 		rbg.Annotations = make(map[string]string)
 	}
-	rbg.Annotations[constants.DiscoveryConfigModeAnnotationKey] = string(mode)
+	rbg.Annotations[constants.DiscoveryConfigVersionAnnotationKey] = string(version)
 }
 
 // ContainsRBGOwner checks if the RoleBasedGroupScalingAdapter has the given RBG as owner.

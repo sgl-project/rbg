@@ -19,6 +19,7 @@ package roleinstance
 import (
 	"context"
 	"fmt"
+	"slices"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -35,6 +36,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
+	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	instanceutils "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
 
@@ -45,12 +47,17 @@ type StatusUpdater interface {
 	UpdateInstanceStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, pods []*v1.Pod) error
 }
 
-func newStatusUpdater(c client.Client) StatusUpdater {
-	return &realStatusUpdater{Client: c, lifecycleControl: lifecycle.New(c)}
+func newStatusUpdater(c client.Client, readers ...client.Reader) StatusUpdater {
+	reader := client.Reader(c)
+	if len(readers) > 0 && readers[0] != nil {
+		reader = readers[0]
+	}
+	return &realStatusUpdater{Client: c, apiReader: reader, lifecycleControl: lifecycle.New(c)}
 }
 
 type realStatusUpdater struct {
 	client.Client
+	apiReader        client.Reader
 	lifecycleControl lifecycle.Interface
 }
 
@@ -105,6 +112,7 @@ func controllerOwnedConditionTypes() sets.Set[workloadsv1alpha2.RoleInstanceCond
 		// so they are already present and must not be appended again from the live clone.
 		workloadsv1alpha2.RoleInstanceInPlaceUpdateReady,
 		workloadsv1alpha2.RoleInstanceCustomReady,
+		workloadsv1alpha2.RoleInstanceProgressing,
 	)
 }
 
@@ -178,19 +186,33 @@ func (r *realStatusUpdater) calculateStatus(instance *workloadsv1alpha2.RoleInst
 			}
 		}
 	}
-	r.setInstanceConditions(instance, newStatus, conditions)
+	r.setInstanceConditions(instance, newStatus, conditions, pods)
 }
 
 func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus,
-	newInnerConditions []workloadsv1alpha2.RoleInstanceCondition) {
+	newInnerConditions []workloadsv1alpha2.RoleInstanceCondition, pods []*v1.Pod) {
 	conditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0, len(instance.Status.Conditions)+1)
-	conditions = append(conditions, newInnerConditions...)
+	for _, condition := range newInnerConditions {
+		// The blocker Progressing condition from this reconcile is finalized below;
+		// appending it here as well would duplicate the entry.
+		if condition.Type == workloadsv1alpha2.RoleInstanceProgressing {
+			continue
+		}
+		conditions = append(conditions, condition)
+	}
 	podsReadyCondition := r.getInstancePodsReadyCondition(instance)
-	conditions = append(conditions, getInstanceReadyCondition(
+	if podsReadyCondition != nil {
+		podsReadyCondition.LastTransitionTime = preserveConditionTransitionTime(
+			instance.Status.Conditions, workloadsv1alpha2.RoleInstanceAllPodsReady, podsReadyCondition.Status)
+	}
+	instanceReadyCondition := getInstanceReadyCondition(
 		instance,
 		podsReadyCondition,
 		r.getInstanceInplaceUpdateReadyCondition(instance),
-	))
+	)
+	instanceReadyCondition.LastTransitionTime = preserveConditionTransitionTime(
+		instance.Status.Conditions, workloadsv1alpha2.RoleInstanceReady, instanceReadyCondition.Status)
+	conditions = append(conditions, instanceReadyCondition)
 	if instance.Spec.ReadyPolicy == workloadsv1alpha2.RoleInstanceReadyOnAllPodReady && podsReadyCondition != nil {
 		conditions = append(conditions, *podsReadyCondition)
 	}
@@ -224,6 +246,11 @@ func (r *realStatusUpdater) setInstanceConditions(instance *workloadsv1alpha2.Ro
 		}
 		conditions = filtered
 	}
+
+	progressing := computeInstanceProgressingCondition(instance, newStatus.Phase, instanceReady, newInnerConditions, insufficientResourcesMessage(pods))
+	progressing.LastTransitionTime = preserveConditionTransitionTime(
+		instance.Status.Conditions, workloadsv1alpha2.RoleInstanceProgressing, progressing.Status)
+	conditions = append(conditions, progressing)
 
 	innerConditionTypes := sets.New[workloadsv1alpha2.RoleInstanceConditionType]()
 	for _, c := range conditions {
@@ -351,6 +378,11 @@ func getInstanceReadyCondition(instance *workloadsv1alpha2.RoleInstance, podsRea
 		Status:             v1.ConditionFalse,
 		LastTransitionTime: metav1.NewTime(time.Now()),
 	}
+	if instance.Status.RestartBudgetExhausted {
+		instanceReady.Reason = synccontrol.GroupRestartBudgetExceeded
+		instanceReady.Message = synccontrol.GroupRestartBudgetMessage
+		return instanceReady
+	}
 	if containsInstanceInplaceUpdateReadinessGates(instance) {
 		if inplace != nil {
 			if inplace.Status == v1.ConditionFalse {
@@ -378,11 +410,13 @@ func getInstanceReadyCondition(instance *workloadsv1alpha2.RoleInstance, podsRea
 func (r *realStatusUpdater) inconsistentStatus(instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus) bool {
 	oldStatus := instance.Status
 	if newStatus.ObservedGeneration > oldStatus.ObservedGeneration ||
+		newStatus.Phase != oldStatus.Phase ||
 		newStatus.LabelSelector != oldStatus.LabelSelector ||
 		newStatus.CurrentRevision != oldStatus.CurrentRevision ||
 		newStatus.UpdateRevision != oldStatus.UpdateRevision ||
 		newStatus.RestartCount != oldStatus.RestartCount ||
 		newStatus.LastReadyGeneration != oldStatus.LastReadyGeneration ||
+		newStatus.LastPhaseCompleteGeneration != oldStatus.LastPhaseCompleteGeneration ||
 		inconsistentRestartTime(oldStatus.LastRestartTime, newStatus.LastRestartTime) {
 		return true
 	}
@@ -476,15 +510,27 @@ func inconsistentCondition(oldConditions, newConditions []workloadsv1alpha2.Role
 
 func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus) error {
 	ownedTypes := controllerOwnedConditionTypes()
+	budgetManaged := synccontrol.HasRestartBudgetLifecycle(instance)
 	return retry.RetryOnConflict(retry.DefaultBackoff, func() error {
 		clone := &workloadsv1alpha2.RoleInstance{}
-		if err := r.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, clone); err != nil {
+		reader := client.Reader(r.Client)
+		if budgetManaged && r.apiReader != nil {
+			reader = r.apiReader
+		}
+		if err := reader.Get(ctx, types.NamespacedName{Namespace: instance.Namespace, Name: instance.Name}, clone); err != nil {
 			if apierrors.IsNotFound(err) {
 				// Instance has been deleted; nothing to update.
 				return nil
 			}
 			return err
 		}
+		// The informer snapshot may predate the first budget configuration.
+		// Discover budget ownership from the fetched object as well.
+		budgetManaged = budgetManaged || synccontrol.HasRestartBudgetLifecycle(clone)
+		if budgetManaged && (clone.UID != instance.UID || clone.DeletionTimestamp != nil || clone.Generation != instance.Generation || clone.Status.ObservedGeneration > newStatus.ObservedGeneration) {
+			return nil
+		}
+		liveBudget := clone.Status
 		// Snapshot the live custom conditions before overwriting clone.Status.
 		// These are conditions not owned by this controller (e.g. RoleInstanceCustomReady
 		// written by readiness/*, RoleInstanceInPlaceUpdateReady written by inplaceupdate/*).
@@ -493,7 +539,7 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// rolling them back via the precomputed newStatus.
 		liveCustomConditions := make([]workloadsv1alpha2.RoleInstanceCondition, 0)
 		for _, c := range clone.Status.Conditions {
-			if !ownedTypes.Has(c.Type) {
+			if !ownedTypes.Has(c.Type) && c.Type != workloadsv1alpha2.RoleInstanceDegraded {
 				liveCustomConditions = append(liveCustomConditions, c)
 			}
 		}
@@ -505,6 +551,7 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		liveRestartCount := clone.Status.RestartCount
 		liveLastRestartTime := clone.Status.LastRestartTime
 		liveLastReadyGeneration := clone.Status.LastReadyGeneration
+		liveLastPhaseCompleteGeneration := clone.Status.LastPhaseCompleteGeneration
 		// Detect whether updateRestartTracking ran this reconcile. It sets
 		// LastRestartTime = metav1.Now(), producing a timestamp that differs from
 		// BOTH the informer's value AND the live API value. In contrast,
@@ -513,12 +560,56 @@ func (r *realStatusUpdater) updateStatus(ctx context.Context, instance *workload
 		// "not changed" and preserves the live (potentially reset) count.
 		restartTrackingModified := restartTrackingChanged(newStatus.LastRestartTime, instance.Status.LastRestartTime, liveLastRestartTime)
 		clone.Status = *newStatus
+		if budgetManaged {
+			clone.Status = *newStatus.DeepCopy()
+			// Degraded is owned by the budget lifecycle. Preserve its live message
+			// while exhausted (including drain progress), but discard stale copies
+			// after recovery has committed.
+			clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+				return cond.Type == workloadsv1alpha2.RoleInstanceDegraded
+			})
+			if liveBudget.RestartBudgetExhausted {
+				for _, cond := range liveBudget.Conditions {
+					if cond.Type == workloadsv1alpha2.RoleInstanceDegraded && cond.Status == v1.ConditionTrue && cond.Reason == synccontrol.GroupRestartBudgetExceeded {
+						clone.Status.Conditions = append(clone.Status.Conditions, cond)
+						break
+					}
+				}
+			}
+			if liveBudget.GroupRestartRevision != "" {
+				// Budget acceptance and completion persist Restarting in their own
+				// status transaction. Even if its response was lost, computed status
+				// must not erase that guard or resurrect an already completed wave.
+				ready := slices.ContainsFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+					return cond.Type == workloadsv1alpha2.RoleInstanceReady && cond.Status == v1.ConditionTrue
+				})
+				clone.Status.Conditions = slices.DeleteFunc(clone.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+					return cond.Type == workloadsv1alpha2.RoleInstanceRestarting
+				})
+				for _, cond := range liveBudget.Conditions {
+					if cond.Type == workloadsv1alpha2.RoleInstanceRestarting && (cond.Status == v1.ConditionTrue || !ready) {
+						clone.Status.Conditions = append(clone.Status.Conditions, cond)
+					}
+				}
+			}
+		}
+		// These fields belong only to the budget lifecycle, including when the
+		// informer snapshot does not know that budgeting has been enabled yet.
+		clone.Status.GroupRestartCount = liveBudget.GroupRestartCount
+		clone.Status.GroupRestartRevision = liveBudget.GroupRestartRevision
+		clone.Status.RestartBudgetExhausted = liveBudget.RestartBudgetExhausted
 		clone.Status.Conditions = append(clone.Status.Conditions, liveCustomConditions...)
 		// The latch only advances. A stale informer snapshot must not move it back, and
 		// a generation already latched is never lost just because this reconcile did not
 		// re-observe the Ready condition.
 		if liveLastReadyGeneration > clone.Status.LastReadyGeneration {
 			clone.Status.LastReadyGeneration = liveLastReadyGeneration
+		}
+		if budgetManaged {
+			synccontrol.EnforceRestartBudgetConditions(clone)
+		}
+		if liveLastPhaseCompleteGeneration > clone.Status.LastPhaseCompleteGeneration {
+			clone.Status.LastPhaseCompleteGeneration = liveLastPhaseCompleteGeneration
 		}
 		if restartTrackingModified {
 			// updateRestartTracking ran this reconcile — trust newStatus values.

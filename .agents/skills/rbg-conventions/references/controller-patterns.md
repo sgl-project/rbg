@@ -3,7 +3,7 @@
 ## Writes: one writer style per field set
 
 - **The RBG controller renders workloads and Services with server-side apply,** through
-  applyconfigurations (`utils.PatchObjectApplyConfiguration` in `pkg/utils/utils.go`, field
+  applyconfigurations (`utils.ApplyObjectConfiguration` in `pkg/utils/utils.go`, field
   manager `rbg`, `Force: true`).
 - **Never write those same fields with a typed `Create`, `Update` or merge patch on another code
   path.** Doing so leaves a second field manager (`rbg`/Update) in `managedFields`, and any key the

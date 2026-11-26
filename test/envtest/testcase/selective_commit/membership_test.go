@@ -119,6 +119,45 @@ func (c *guardedClient) Patch(ctx context.Context, obj client.Object, patch clie
 	return c.Client.Patch(ctx, obj, patch, opts...)
 }
 
+func (c *guardedClient) Apply(ctx context.Context, obj apiruntime.ApplyConfiguration, opts ...client.ApplyOption) error {
+	raw, err := json.Marshal(obj)
+	if err != nil {
+		return err
+	}
+	var body map[string]interface{}
+	if err = json.Unmarshal(raw, &body); err != nil {
+		return err
+	}
+	if body["kind"] != "RoleInstanceSet" {
+		return c.Client.Apply(ctx, obj, opts...)
+	}
+	options := &client.ApplyOptions{}
+	for _, opt := range opts {
+		opt.ApplyToApply(options)
+	}
+	c.writes = append(c.writes, membershipWrite{
+		patchType: types.ApplyPatchType,
+		body:      body,
+		force:     ptr.Deref(options.Force, false),
+	})
+	c.sawApply = true
+	if c.beforePatch != nil {
+		f := c.beforePatch
+		c.beforePatch = nil
+		f()
+	}
+	if c.fail {
+		metadata, _ := body["metadata"].(map[string]interface{})
+		name, _ := metadata["name"].(string)
+		return apierrors.NewConflict(
+			workloadsv1alpha2.GroupVersion.WithResource("roleinstancesets").GroupResource(),
+			name,
+			fmt.Errorf("injected concurrent update"),
+		)
+	}
+	return c.Client.Apply(ctx, obj, opts...)
+}
+
 func assertConditionalMembershipWrite(t *testing.T, writes []membershipWrite, resourceVersion string, replicas int32, record interface{}) {
 	t.Helper()
 	require.Len(t, writes, 1, "the complete child target must use one patch")

@@ -16615,6 +16615,10 @@ spec:
                 description: The generation observed by the controller
                 format: int64
                 type: integer
+              observedRolloutRequest:
+                description: ObservedRolloutRequest identifies the last completed
+                  controller-requested rollout.
+                type: string
               roleStatuses:
                 description: Status of individual roles
                 items:
@@ -16653,6 +16657,10 @@ spec:
   - additionalPrinterColumns:
     - jsonPath: .status.conditions[?(@.type=='Ready')].status
       name: READY
+      type: string
+    - description: Current progress or blocker reason
+      jsonPath: .status.conditions[?(@.type=='Progressing')].reason
+      name: PROGRESSING
       type: string
     - jsonPath: .metadata.creationTimestamp
       name: AGE
@@ -24108,6 +24116,14 @@ spec:
                               format: int32
                               minimum: 0
                               type: integer
+                            maxGroupRestarts:
+                              description: |-
+                                MaxGroupRestarts limits accepted whole-instance rebuilds per topology/Pod-template
+                                revision. Native RoleInstanceSet only; unset is unlimited; zero stops on the
+                                first eligible fault.
+                              format: int32
+                              minimum: 0
+                              type: integer
                             type:
                               description: |-
                                 Type defines the restart policy when pod failures happen.
@@ -24122,6 +24138,10 @@ spec:
                               to baseDelaySeconds
                             rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                               || self.maxDelaySeconds >= self.baseDelaySeconds'
+                          - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                              recreate policy
+                            rule: '!has(self.maxGroupRestarts) || (has(self.type)
+                              && self.type != ''None'')'
                       type: object
                     dependencies:
                       description: Dependencies of the role
@@ -25666,6 +25686,14 @@ spec:
                               format: int32
                               minimum: 0
                               type: integer
+                            maxGroupRestarts:
+                              description: |-
+                                MaxGroupRestarts limits accepted whole-instance rebuilds per topology/Pod-template
+                                revision. Native RoleInstanceSet only; unset is unlimited; zero stops on the
+                                first eligible fault.
+                              format: int32
+                              minimum: 0
+                              type: integer
                             type:
                               description: |-
                                 Type defines the restart policy when pod failures happen.
@@ -25680,6 +25708,10 @@ spec:
                               to baseDelaySeconds
                             rule: '!has(self.baseDelaySeconds) || !has(self.maxDelaySeconds)
                               || self.maxDelaySeconds >= self.baseDelaySeconds'
+                          - message: maxGroupRestarts requires an explicit whole-RoleInstance
+                              recreate policy
+                            rule: '!has(self.maxGroupRestarts) || (has(self.type)
+                              && self.type != ''None'')'
                         sharedServiceSelection:
                           description: |-
                             SharedServiceSelection indicates the service policy of the role. When unset, a RoleInstanceSet
@@ -40755,6 +40787,15 @@ spec:
                       || !has(self.annotations) || !(''rbg.workloads.x-k8s.io/role-workload-type''
                       in self.annotations) || self.annotations[''rbg.workloads.x-k8s.io/role-workload-type'']
                       == ''workloads.x-k8s.io/v1alpha2/RoleInstanceSet'''
+                  - message: maxGroupRestarts is only supported for RoleInstanceSet
+                    rule: ((!has(self.leaderWorkerPattern) || !has(self.leaderWorkerPattern.restartPolicyConfig)
+                      || !has(self.leaderWorkerPattern.restartPolicyConfig.maxGroupRestarts))
+                      && (!has(self.customComponentsPattern) || !has(self.customComponentsPattern.restartPolicyConfig)
+                      || !has(self.customComponentsPattern.restartPolicyConfig.maxGroupRestarts)))
+                      || !has(self.annotations) || !('rbg.workloads.x-k8s.io/role-workload-type'
+                      in self.annotations) || self.annotations['rbg.workloads.x-k8s.io/role-workload-type'].size()
+                      == 0 || self.annotations['rbg.workloads.x-k8s.io/role-workload-type']
+                      == 'workloads.x-k8s.io/v1alpha2/RoleInstanceSet'
                 minItems: 1
                 type: array
                 x-kubernetes-list-map-keys:
@@ -40826,6 +40867,11 @@ spec:
                 description: The generation observed by the controller
                 format: int64
                 type: integer
+              observedRolloutRequest:
+                description: |-
+                  ObservedRolloutRequest is the rbg.workloads.x-k8s.io/rollout-request annotation value of the
+                  object for which every role workload was last verified as rolled out.
+                type: string
               roleStatuses:
                 description: Status of individual roles
                 items:
@@ -40853,8 +40899,6 @@ spec:
                   - updatedReplicas
                   type: object
                 type: array
-            required:
-            - roleStatuses
             type: object
         type: object
     served: true

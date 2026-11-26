@@ -387,10 +387,8 @@ jobs:
   # was recreated or restarted. The other two jobs install one version from scratch,
   # so neither can see an upgrade-only regression.
   #
-  # This belongs to the release gate rather than the per-PR e2e workflow because the
-  # upgrade target is the chart's own default images. Those point at a real published
-  # release only once a release PR bumps them, and testing the upgrade with the images
-  # actually being shipped is the point: no locally built image.
+  # Test the published images selected by the chart defaults and use a separate
+  # source-built target to exercise the opt-in Pod cache and label migration.
   #
   # One value is not a chart default: the suite enables portAllocator, on the
   # from-release install and on the upgrade alike, which is how the other e2e
@@ -403,19 +401,22 @@ jobs:
   e2e-test-upgrade:
     needs: check-command
     runs-on: ubuntu-latest
-    name: e2e-test-upgrade (${{ matrix.from.git_tag }})
+    name: e2e-test-upgrade (${{ matrix.from.git_tag }}, ${{ matrix.from.target }})
     strategy:
-      # Both legs have to report, even when the first one fails.
+      # All legs have to report, even when the first one fails.
       fail-fast: false
       matrix:
-        # The published releases the job upgrades FROM. Both the git tag (for the
-        # chart, taken from a worktree) and the image tag (for the published images)
-        # are pinned per entry, so a future bump or an added hop is a one-place edit.
+        # Pin both the chart tag and image tag of each source release.
         from:
           - git_tag: v0.7.0
             image_tag: v0.7.0-888ade7
+            target: published
           - git_tag: v0.8.0
             image_tag: v0.8.0-16705159
+            target: published
+          - git_tag: v0.8.0
+            image_tag: v0.8.0-16705159
+            target: pod-cache
     env:
       GOPATH: ${{ github.workspace }}
       GO111MODULE: on
@@ -433,7 +434,7 @@ jobs:
         with:
           ref: ${{ needs.check-command.outputs.pr_head_sha }}
           path: ${{ env.GOPATH }}/src/sigs.k8s.io/rbgs
-          # Full history and tags: the old chart is taken from a worktree of the tag.
+          # Full history and tags: the suite exports the old chart from the tag.
           fetch-depth: 0
 
       - name: Install Kind
@@ -448,8 +449,18 @@ jobs:
           helm version
 
       - name: Create Kind cluster
+        env:
+          POD_CACHE_UPGRADE: ${{ matrix.from.target == 'pod-cache' && 'true' || 'false' }}
         run: |
-          kind create cluster --name rbgs-upgrade-e2e --image kindest/node:${{ env.KUBERNETES_VERSION }} --wait 5m
+          kind_args=()
+          if [ "$POD_CACHE_UPGRADE" = true ]; then
+            printf '%s\n' 'kind: Cluster' 'apiVersion: kind.x-k8s.io/v1alpha4' \
+              'nodes:' '  - role: control-plane' 'kubeadmConfigPatches:' '  - |' \
+              '    kind: ClusterConfiguration' '    apiServer:' '      extraArgs:' \
+              '        feature-gates: WatchList=true' > /tmp/kind-pod-cache.yaml
+            kind_args=(--config /tmp/kind-pod-cache.yaml)
+          fi
+          kind create cluster --name rbgs-upgrade-e2e --image kindest/node:${{ env.KUBERNETES_VERSION }} --wait 5m "${kind_args[@]}"
           kubectl cluster-info
           kubectl get nodes
 
@@ -499,6 +510,7 @@ jobs:
           done
 
       - name: Load the images the chart ships
+        if: matrix.from.target == 'published'
         run: |
           set -euo pipefail
           # The suite upgrades to whatever the chart's default values point at, with no
@@ -526,11 +538,26 @@ jobs:
             kind load image-archive "${image_archive}" --name rbgs-upgrade-e2e
           done < /tmp/chart-images.txt
 
+      - name: Build and load images for the Pod cache upgrade
+        if: matrix.from.target == 'pod-cache'
+        run: |
+          set -euo pipefail
+          make docker-build-controller docker-build-crd-upgrader TAG=pod-cache-e2e
+          image_archive=$(mktemp "${RUNNER_TEMP}/kind-image.XXXXXX")
+          trap 'rm -f "${image_archive}"' EXIT
+          docker image save --platform "${KIND_IMAGE_PLATFORM}" --output "${image_archive}" \
+            rolebasedgroup/rbgs-controller:pod-cache-e2e rolebasedgroup/rbgs-upgrade-crd:pod-cache-e2e
+          kind load image-archive "${image_archive}" --name rbgs-upgrade-e2e
+
       - name: Run upgrade-compatibility E2E tests
         env:
           CI: "true"
           RBGS_FROM_GIT_TAG: ${{ matrix.from.git_tag }}
           RBGS_FROM_TAG: ${{ matrix.from.image_tag }}
+          RBGS_TO_TAG: ${{ matrix.from.target == 'pod-cache' && 'pod-cache-e2e' || '' }}
+          RBGS_POD_CACHE_SCOPE: ${{ matrix.from.target == 'pod-cache' && 'filtered' || '' }}
+          RBGS_WATCH_LIST_CLIENT: ${{ matrix.from.target == 'pod-cache' && 'true' || '' }}
+          RBGS_POD_LABEL_MIGRATION: ${{ matrix.from.target == 'pod-cache' && 'true' || '' }}
         run: |
           make test-e2e-upgrade
 
@@ -573,7 +600,7 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: kind-upgrade-release-logs-${{ matrix.from.git_tag }}
+          name: kind-upgrade-release-logs-${{ matrix.from.git_tag }}-${{ matrix.from.target }}
           path: /tmp/kind-upgrade-logs
           retention-days: 7
 

@@ -27,6 +27,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -80,7 +81,8 @@ func TestRBGPredicateExclusiveTopologyAnnotation(t *testing.T) {
 		{name: "changed", old: map[string]string{key: "old"}, new: map[string]string{key: "new"}, want: true},
 		{name: "empty value added", new: map[string]string{key: ""}, want: true},
 		{name: "unchanged", old: map[string]string{key: "node"}, new: map[string]string{key: "node"}},
-		{name: "unrelated annotation", new: map[string]string{"example.com/key": "value"}},
+		{name: "non-topology annotation", new: map[string]string{"example.com/key": "value"}, want: true},
+		{name: "rollout request", new: map[string]string{constants.RolloutRequestAnnotationKey: "1"}, want: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			old := &workloadsv1alpha2.RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Annotations: tt.old}}
@@ -368,6 +370,39 @@ func Test_CalculateNextRollingTarget_WithNormalCases(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+func TestWithoutConflicts(t *testing.T) {
+	conflict := apierrors.NewConflict(schema.GroupResource{Group: "workloads.x-k8s.io", Resource: "roleinstancesets"},
+		"decode", errors.New("Operation cannot be fulfilled on roleinstancesets"))
+	forbidden := apierrors.NewForbidden(schema.GroupResource{Group: "workloads.x-k8s.io", Resource: "roleinstancesets"},
+		"decode", errors.New(`User "alice" cannot create resource "roleinstancesets"`))
+
+	// apierrors.IsConflict reports a match as soon as one constituent of a
+	// joined error carries it; the whole error must not be classified as a
+	// conflict while another role's permission failure is still unreported.
+	joined := errors.Join(conflict, forbidden)
+	if got := withoutConflicts(joined); len(got) != 1 || got[0] != forbidden {
+		t.Fatalf("conflict must be filtered per constituent, got %v", got)
+	}
+
+	if got := withoutConflicts(errors.Join(conflict, conflict)); len(got) != 0 {
+		t.Fatalf("conflict-only failures are transient, got %v", got)
+	}
+
+	if got := withoutConflicts(forbidden); len(got) != 1 || got[0] != forbidden {
+		t.Fatalf("single non-conflict failure must be kept, got %v", got)
+	}
+
+	// Wrapped single conflicts are still recognized through the wrapper.
+	wrapped := fmt.Errorf("role decode: %w", conflict)
+	if got := withoutConflicts(wrapped); len(got) != 0 {
+		t.Fatalf("wrapped conflict must be filtered, got %v", got)
+	}
+
+	if got := withoutConflicts(nil); len(got) != 0 {
+		t.Fatalf("nil error must be empty, got %v", got)
 	}
 }
 
@@ -2491,6 +2526,8 @@ func TestReconcileIncompatibleGangConfig(t *testing.T) {
 	stub.err = nil
 	result, err = r.Reconcile(ctx, request)
 	require.NoError(t, err)
+	// Gang configuration is valid, but the new workloads still need to finish
+	// rolling out; their watch events, not a fixed-interval poll, trigger completion.
 	assert.Zero(t, result.RequeueAfter)
 	condition = gangConfigured()
 	require.NotNil(t, condition)
@@ -2508,6 +2545,9 @@ func TestReconcileIncompatibleGangConfig(t *testing.T) {
 	assert.Nil(t, gangConfigured())
 
 	require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, current))
+	if current.Annotations == nil {
+		current.Annotations = map[string]string{}
+	}
 	current.Annotations[constants.GangSchedulingAnnotationKey] = gangAnnotation
 	require.NoError(t, fakeClient.Update(ctx, current))
 
@@ -2601,6 +2641,39 @@ func TestReconcileEngineRuntimeRenderEvents(t *testing.T) {
 	require.NoError(t, err)
 	assert.False(t, hasEventContaining("Warning EngineRuntimeRenderFailed"),
 		"no render-failed event after a successful render")
+}
+
+func TestReconcileOnlyRequeuesPendingRolloutRequest(t *testing.T) {
+	testScheme := runtime.NewScheme()
+	require.NoError(t, clientgoscheme.AddToScheme(testScheme))
+	require.NoError(t, workloadsv1alpha2.AddToScheme(testScheme))
+	rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
+	fakeClient := fake.NewClientBuilder().WithScheme(testScheme).WithObjects(rbg).
+		WithStatusSubresource(&workloadsv1alpha2.RoleBasedGroup{}).Build()
+	r := &RoleBasedGroupReconciler{
+		client:             fakeClient,
+		apiReader:          fakeClient,
+		scheme:             testScheme,
+		recorder:           record.NewFakeRecorder(20),
+		workloadReconciler: make(map[string]reconciler.WorkloadReconciler),
+		gangScheduler:      &stubGangScheduler{},
+	}
+	ctx := ctrl.LoggerInto(context.Background(), zap.New().WithValues("env", "unit-test"))
+	request := reconcile.Request{NamespacedName: client.ObjectKeyFromObject(rbg)}
+
+	result, err := r.Reconcile(ctx, request)
+	require.NoError(t, err)
+	current := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, current))
+	require.True(t, apimeta.IsStatusConditionTrue(current.Status.Conditions,
+		string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress)))
+	assert.Zero(t, result.RequeueAfter, "readiness changes must arrive through workload watches, not a 2s poll")
+
+	current.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: "1"}
+	require.NoError(t, fakeClient.Update(ctx, current))
+	result, err = r.Reconcile(ctx, request)
+	require.NoError(t, err)
+	assert.Equal(t, 2*time.Second, result.RequeueAfter, "an unacknowledged request needs a recheck")
 }
 
 // OrderScheduled must wait for every Pod in the current replica batch, including
@@ -2835,7 +2908,7 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 		{name: "updated replicas reset after scale to zero", oldUpdated: 1, newUpdated: 0, wantPatches: 1},
 		{name: "rollout progresses with stable ready replicas", replicas: 2, oldUpdated: 1, newUpdated: 2, wantPatches: 1},
 		{name: "new revision resets updated replicas", replicas: 2, oldUpdated: 2, newUpdated: 0, wantPatches: 1},
-		{name: "unchanged status skips patch", replicas: 2, oldUpdated: 2, newUpdated: 2},
+		{name: "unchanged status skips patch", replicas: 2, oldUpdated: 2, newUpdated: 2, wantPatches: 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx := context.Background()
@@ -2851,6 +2924,10 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 						Type: string(workloadsv1alpha2.RoleBasedGroupReady), Status: metav1.ConditionTrue,
 						ObservedGeneration: 1, LastTransitionTime: metav1.Now(),
 						Reason: "AllRolesReady", Message: "All roles are ready",
+					}, {
+						Type: string(workloadsv1alpha2.RoleBasedGroupRollingUpdateInProgress), Status: metav1.ConditionTrue,
+						ObservedGeneration: 1, LastTransitionTime: metav1.Now(),
+						Reason: "RolesUpdating", Message: "Waiting for all target role workloads to be updated and ready",
 					}},
 					RoleStatuses: []workloadsv1alpha2.RoleStatus{
 						{Name: "prefill", Replicas: tc.replicas, ReadyReplicas: tc.replicas, UpdatedReplicas: tc.oldUpdated},
@@ -2903,9 +2980,20 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 					return nil
 				},
 			}).Build()
+			// Register the live RoleInstanceSets: with the KEP-502 missing-child
+			// classification, an absent child plus zero-valued fresh status would
+			// otherwise be treated as prior-establishment evidence to preserve.
+			for _, role := range rbg.Spec.Roles {
+				set := &workloadsv1alpha2.RoleInstanceSet{
+					ObjectMeta: metav1.ObjectMeta{Name: rbg.GetWorkloadName(&role), Namespace: rbg.Namespace},
+				}
+				if err := c.Create(ctx, set); err != nil {
+					t.Fatal(err)
+				}
+			}
 			r := &RoleBasedGroupReconciler{client: c}
 			for i := 0; i < 2; i++ {
-				if err := r.updateRBGStatus(ctx, rbg, observed); err != nil {
+				if err := r.updateRBGStatus(ctx, rbg, observed, false, nil, nil); err != nil {
 					t.Fatal(err)
 				}
 				if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {
@@ -2916,5 +3004,78 @@ func TestUpdateRBGStatusUpdatedReplicas(t *testing.T) {
 				t.Errorf("status patches = %d, want %d", patches, tc.wantPatches)
 			}
 		})
+	}
+}
+
+// TestUpdateRBGStatusPreservesMissingChildEvidence covers the call chain KEP-502
+// relies on for missing-child recovery: ConstructRoleStatus returns a zero-valued
+// entry when the RoleInstanceSet is NotFound, while the persisted non-zero counters
+// are the durable prior-establishment evidence. updateRBGStatus must classify the
+// missing child from the persisted counters and must not overwrite them with zeros.
+func TestUpdateRBGStatusPreservesMissingChildEvidence(t *testing.T) {
+	ctx := context.Background()
+	replicas := int32(2)
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default", Generation: 1},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{
+			{Name: "prefill", Replicas: &replicas},
+			{Name: "decode", Replicas: &replicas},
+		}},
+		Status: workloadsv1alpha2.RoleBasedGroupStatus{
+			ObservedGeneration: 1,
+			RoleStatuses: []workloadsv1alpha2.RoleStatus{
+				// The decode RoleInstanceSet was established and then deleted; only
+				// these persisted counters can prove it.
+				{Name: "decode", Replicas: 2, ReadyReplicas: 2, UpdatedReplicas: 2},
+			},
+		},
+	}
+	// Fresh statuses as constructed for two missing RoleInstanceSets.
+	observed := []workloadsv1alpha2.RoleStatus{
+		{Name: "prefill"},
+		{Name: "decode"},
+	}
+	want := []workloadsv1alpha2.RoleStatus{
+		// Readiness is not preserved for a missing child: consumers treat
+		// readyReplicas as a serving fact, so it is zeroed while the
+		// replica/updated counters remain as prior-establishment evidence.
+		{Name: "decode", Replicas: 2, ReadyReplicas: 0, UpdatedReplicas: 2},
+		{Name: "prefill"},
+	}
+	var appliedRoleStatuses []workloadsv1alpha2.RoleStatus
+	scheme := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithInterceptorFuncs(interceptor.Funcs{
+		SubResourcePatch: func(_ context.Context, _ client.Client, subresource string, obj client.Object, patch client.Patch, _ ...client.SubResourcePatchOption) error {
+			if subresource != "status" || patch.Type() != types.ApplyPatchType {
+				t.Fatalf("expected status SSA, got %s %s", subresource, patch.Type())
+			}
+			data, err := patch.Data(obj)
+			if err != nil {
+				return err
+			}
+			var payload struct {
+				Status struct {
+					RoleStatuses []workloadsv1alpha2.RoleStatus `json:"roleStatuses"`
+				} `json:"status"`
+			}
+			if err := json.Unmarshal(data, &payload); err != nil {
+				return err
+			}
+			appliedRoleStatuses = payload.Status.RoleStatuses
+			return nil
+		},
+	}).Build()
+	r := &RoleBasedGroupReconciler{client: c}
+	if err := r.updateRBGStatus(ctx, rbg, observed, false, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(rbg.Status.RoleStatuses, want) {
+		t.Fatalf("role statuses = %+v, want %+v", rbg.Status.RoleStatuses, want)
+	}
+	if !reflect.DeepEqual(appliedRoleStatuses, want) {
+		t.Fatalf("applied role statuses = %+v, want %+v", appliedRoleStatuses, want)
 	}
 }

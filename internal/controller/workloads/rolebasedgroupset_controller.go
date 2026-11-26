@@ -23,6 +23,7 @@ import (
 	"sort"
 	"strconv"
 
+	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,7 +37,9 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/handler"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/utils"
@@ -83,6 +86,9 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		logger.Info("rbgset is deleting, skip reconcile")
 		return ctrl.Result{}, nil
 	}
+	if rbgset.Spec.RolloutStrategy != nil {
+		return r.reconcileRollingGroupSet(ctx, req.NamespacedName)
+	}
 
 	// 2. List all child RoleBasedGroup instances currently associated with this RoleBasedGroupSet.
 	var rbglist workloadsv1alpha2.RoleBasedGroupList
@@ -91,6 +97,11 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		ctx, &rbglist, client.InNamespace(rbgset.Namespace), client.MatchingLabelsSelector{Selector: selector},
 	); err != nil {
 		logger.Error(err, "Failed to list child RoleBasedGroups")
+		return ctrl.Result{}, err
+	}
+	// The set and its children come from separate informers, so the cached set can predate the
+	// deletion that released an orphan in this listing.
+	if err := r.recheckGroupSetBeforeAdoptingOrphans(ctx, rbgset, rbglist.Items); err != nil {
 		return ctrl.Result{}, err
 	}
 
@@ -120,7 +131,7 @@ func (r *RoleBasedGroupSetReconciler) Reconcile(ctx context.Context, req ctrl.Re
 		if metav1.GetControllerOfNoCopy(rbg) == nil {
 			// Adopt the orphan (e.g. left behind by a cascade=orphan deletion) so
 			// that it is garbage-collected together with the Set.
-			if err := controllerutil.SetControllerReference(rbgset, rbg, r.scheme); err != nil {
+			if err := r.claimGroupSetOrphan(rbgset, rbg); err != nil {
 				return ctrl.Result{}, err
 			}
 			if err := r.client.Update(ctx, rbg); err != nil {
@@ -326,6 +337,14 @@ func (r *RoleBasedGroupSetReconciler) updateStatus(
 
 	// Create a deep copy of the status to modify.
 	newStatus := *rbgset.Status.DeepCopy()
+	newStatus.ObservedGeneration = rbgset.Generation
+	newStatus.CurrentRevision = ""
+	newStatus.UpdateRevision = ""
+	newStatus.CurrentReplicas = 0
+	newStatus.UpdatedReplicas = 0
+	newStatus.UpdatedReadyReplicas = 0
+	newStatus.ExpectedUpdatedReplicas = 0
+	meta.RemoveStatusCondition(&newStatus.Conditions, string(workloadsv1alpha2.RoleBasedGroupSetRolling))
 	newStatus.Replicas = int32(len(rbglist.Items))
 
 	// Calculate the number of ready replicas.
@@ -429,7 +448,21 @@ func (r *RoleBasedGroupSetReconciler) rolesEqual(
 	normalizeRolloutUpdateTypes(sortedRoles2)
 
 	// Compare the sorted slices
-	return reflect.DeepEqual(sortedRoles1, sortedRoles2)
+	return apiequality.Semantic.DeepEqual(sortedRoles1, sortedRoles2)
+}
+
+// roleTemplatesEqual compares role templates by name. Sorting copies rather than the
+// inputs keeps the informer-cache slices in their original order; the elements are only
+// read, so a shallow copy is enough.
+func roleTemplatesEqual(templates1, templates2 []workloadsv1alpha2.RoleTemplate) bool {
+	if len(templates1) != len(templates2) {
+		return false
+	}
+	sorted1 := append([]workloadsv1alpha2.RoleTemplate(nil), templates1...)
+	sorted2 := append([]workloadsv1alpha2.RoleTemplate(nil), templates2...)
+	sort.Slice(sorted1, func(i, j int) bool { return sorted1[i].Name < sorted1[j].Name })
+	sort.Slice(sorted2, func(i, j int) bool { return sorted2[i].Name < sorted2[j].Name })
+	return apiequality.Semantic.DeepEqual(sorted1, sorted2)
 }
 
 // deepCopyRoles returns a deep copy of roles so callers can sort, normalize and
@@ -480,6 +513,9 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 	if !r.rolesEqual(rbg.Spec.Roles, rbgset.Spec.GroupTemplate.Spec.Roles) {
 		return true
 	}
+	if !roleTemplatesEqual(rbg.Spec.RoleTemplates, rbgset.Spec.GroupTemplate.Spec.RoleTemplates) {
+		return true
+	}
 
 	// Check if labels from the template need to be propagated
 	if r.needsTemplateLabelUpdate(rbgset, rbg) {
@@ -520,13 +556,34 @@ func (r *RoleBasedGroupSetReconciler) needsTemplateAnnotationUpdate(
 ) bool {
 	templateAnnotations := rbgset.Spec.GroupTemplate.Annotations
 	for k, v := range templateAnnotations {
-		if rbg.Annotations[k] != v {
+		// Template-owned keys use the dedicated comparison below, which
+		// applies the v1alpha1 default for an unset or empty template value.
+		if k == constants.RolloutRequestAnnotationKey || templateOwnedAnnotationKeys[k] {
+			continue
+		}
+		if value, exists := rbg.Annotations[k]; !exists || value != v {
 			return true
 		}
 	}
-	// Check if any template annotation was removed from the template but still exists on RBG
+	// Absence from the template must not erase child-side compatibility or controller state.
+	// Template-owned keys (such as the discovery-config-version) intentionally
+	// fall through to the template-owned comparison below, which also handles
+	// a template that no longer sets the key.
 	for k := range rbg.Annotations {
+		if systemManagedAnnotationKeys[k] || templateOwnedAnnotationKeys[k] {
+			continue
+		}
 		if _, exists := templateAnnotations[k]; !exists {
+			return true
+		}
+	}
+	for key := range templateOwnedAnnotationKeys {
+		_, templatePresent := templateAnnotations[key]
+		_, childPresent := rbg.Annotations[key]
+		if !templatePresent && !childPresent {
+			continue
+		}
+		if rbg.Annotations[key] != desiredDiscoveryConfigVersion(templateAnnotations, rbg.Spec.Roles) {
 			return true
 		}
 	}
@@ -558,6 +615,7 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 
 				// Update the spec from template, normalizing legacy update-strategy type
 				// values so a pre-webhook legacy template cannot poison the child.
+				latestRBG.Spec = *rbgset.Spec.GroupTemplate.Spec.DeepCopy()
 				latestRBG.Spec.Roles = normalizedGroupTemplateRoles(rbgset)
 
 				// Sync labels and annotations from the template
@@ -596,14 +654,35 @@ func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	newLabels[constants.GroupSetIndexLabelKey] = rbg.Labels[constants.GroupSetIndexLabelKey]
 	rbg.Labels = newLabels
 
-	// Sync annotations: replace with exactly what the template specifies.
-	if len(rbgset.Spec.GroupTemplate.Annotations) == 0 {
-		rbg.Annotations = nil
-	} else {
-		newAnnotations := make(map[string]string, len(rbgset.Spec.GroupTemplate.Annotations))
-		for k, v := range rbgset.Spec.GroupTemplate.Annotations {
+	// Sync annotations: keys the controllers own are carried over from the child, template
+	// annotations are applied over them, and anything else is removed.
+	// Template-owned keys converge separately below: a template value
+	// overwrites a direct child edit, and a template without the key returns
+	// the child to v1alpha1.
+	originalAnnotations := rbg.Annotations
+	newAnnotations := make(map[string]string, len(rbg.Annotations)+len(rbgset.Spec.GroupTemplate.Annotations))
+	for k, v := range rbg.Annotations {
+		if systemManagedAnnotationKeys[k] {
 			newAnnotations[k] = v
 		}
+	}
+	for k, v := range rbgset.Spec.GroupTemplate.Annotations {
+		if k != constants.RolloutRequestAnnotationKey {
+			newAnnotations[k] = v
+		}
+	}
+	for key := range templateOwnedAnnotationKeys {
+		_, templatePresent := rbgset.Spec.GroupTemplate.Annotations[key]
+		_, childPresent := originalAnnotations[key]
+		// Keep the implicit v1alpha1 content implicit for legacy children;
+		// converge only when the template or the child already carries the key.
+		if templatePresent || childPresent {
+			newAnnotations[key] = desiredDiscoveryConfigVersion(rbgset.Spec.GroupTemplate.Annotations, rbg.Spec.Roles)
+		}
+	}
+	if len(newAnnotations) == 0 {
+		rbg.Annotations = nil
+	} else {
 		rbg.Annotations = newAnnotations
 	}
 }
@@ -624,10 +703,18 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 	if len(rbgset.Spec.GroupTemplate.Annotations) > 0 {
 		rbgAnnotations = make(map[string]string, len(rbgset.Spec.GroupTemplate.Annotations))
 		for k, v := range rbgset.Spec.GroupTemplate.Annotations {
-			rbgAnnotations[k] = v
+			if k != constants.RolloutRequestAnnotationKey {
+				rbgAnnotations[k] = v
+			}
 		}
 	}
 
+	spec := rbgset.Spec.GroupTemplate.Spec.DeepCopy()
+	spec.Roles = normalizedGroupTemplateRoles(rbgset)
+	// Materialize the effective discovery version before Create so the child
+	// does not fall back to the webhook's v1 default when the set predates
+	// KEP-576 or explicitly opted out.
+	rbgAnnotations = withChildDiscoveryConfigVersion(rbgAnnotations, spec.Roles, rbgset.Spec.GroupTemplate.Annotations)
 	return &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   rbgset.Namespace,
@@ -636,12 +723,57 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 			Annotations: rbgAnnotations,
 			// The OwnerReference will be set in the scaleUp function.
 		},
-		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
-			// Normalize legacy update-strategy type values the same way updateExistingRBGs
-			// does, so a fresh child never carries a value the CRD enum rejects.
-			Roles: normalizedGroupTemplateRoles(rbgset),
-		},
+		Spec: *spec,
 	}
+}
+
+// withChildDiscoveryConfigVersion returns child annotations carrying the
+// template-owned discovery-config-version. The template value wins; a set
+// without the key keeps its children on the historical v1alpha1 content.
+// A v1 template never reaches a child whose roles cannot serialize compact
+// content, so the resulting object cannot be rejected by admission.
+func withChildDiscoveryConfigVersion(
+	annotations map[string]string,
+	roles []workloadsv1alpha2.RoleSpec,
+	templateAnnotations map[string]string,
+) map[string]string {
+	version := desiredDiscoveryConfigVersion(templateAnnotations, roles)
+	if annotations == nil {
+		annotations = make(map[string]string, 1)
+	}
+	annotations[constants.DiscoveryConfigVersionAnnotationKey] = version
+	return annotations
+}
+
+// desiredDiscoveryConfigVersion returns the child value for the
+// template-owned discovery-config-version key: the template value, or the
+// historical v1alpha1 default when the template does not set it. A v1 value
+// is downgraded when the child roles cannot serialize compact content, so a
+// held deprecated revision never receives an admission-invalid combination.
+func desiredDiscoveryConfigVersion(
+	templateAnnotations map[string]string,
+	roles []workloadsv1alpha2.RoleSpec,
+) string {
+	version := templateAnnotations[constants.DiscoveryConfigVersionAnnotationKey]
+	if version == "" {
+		version = string(constants.DiscoveryConfigVersionV1Alpha1)
+	}
+	if version == string(constants.DiscoveryConfigVersionV1) &&
+		!workloadsv1alpha2.SupportsCompactDiscoveryContent(roles) {
+		version = string(constants.DiscoveryConfigVersionV1Alpha1)
+	}
+	return version
+}
+
+func groupSetForOrphanRBG(_ context.Context, obj client.Object) []reconcile.Request {
+	if metav1.GetControllerOfNoCopy(obj) != nil {
+		return nil
+	}
+	name := obj.GetLabels()[constants.GroupSetNameLabelKey]
+	if name == "" {
+		return nil
+	}
+	return []reconcile.Request{{NamespacedName: types.NamespacedName{Namespace: obj.GetNamespace(), Name: name}}}
 }
 
 // SetupWithManager sets up the controller with the Manager.
@@ -650,6 +782,7 @@ func (r *RoleBasedGroupSetReconciler) SetupWithManager(mgr ctrl.Manager, options
 		WithOptions(options).
 		For(&workloadsv1alpha2.RoleBasedGroupSet{}).
 		Owns(&workloadsv1alpha2.RoleBasedGroup{}).
+		Watches(&workloadsv1alpha2.RoleBasedGroup{}, handler.EnqueueRequestsFromMapFunc(groupSetForOrphanRBG)).
 		Named("rbgset-controller").
 		Complete(r)
 }

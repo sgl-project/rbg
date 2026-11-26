@@ -22,11 +22,13 @@ import (
 	"fmt"
 	"maps"
 	"reflect"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/runtime"
@@ -38,6 +40,48 @@ import (
 	"sigs.k8s.io/rbgs/pkg/discovery"
 	wrappersv2 "sigs.k8s.io/rbgs/test/wrappers/v1alpha2"
 )
+
+func TestPodTemplateSpecEqualIgnoresManagedMarker(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		before map[string]string
+		after  map[string]string
+	}{
+		{name: "added", before: map[string]string{}, after: map[string]string{constants.ManagedLabelKey: "true"}},
+		{name: "changed", before: map[string]string{constants.ManagedLabelKey: "true"}, after: map[string]string{constants.ManagedLabelKey: "false"}},
+		{name: "removed", before: map[string]string{constants.ManagedLabelKey: "true"}, after: map[string]string{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			beforeLabels, afterLabels := maps.Clone(tc.before), maps.Clone(tc.after)
+			before := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: tc.before}}
+			after := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: tc.after}}
+			equal, err := podTemplateSpecEqual(before, after)
+			assert.True(t, equal)
+			assert.NoError(t, err)
+			assert.Equal(t, beforeLabels, before.Labels)
+			assert.Equal(t, afterLabels, after.Labels)
+		})
+	}
+}
+
+func TestPodTemplateSpecEqualDetectsGroupNameDrift(t *testing.T) {
+	before := corev1.PodTemplateSpec{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{constants.GroupNameLabelKey: "group"}}}
+	after := before.DeepCopy()
+	after.Labels[constants.GroupNameLabelKey] = "other-group"
+	after.Labels[constants.ManagedLabelKey] = constants.ManagedLabelValue
+	equal, err := podTemplateSpecEqual(before, *after)
+	assert.False(t, equal)
+	assert.Error(t, err)
+}
+
+func TestServiceEqualDetectsManagedMarkerDrift(t *testing.T) {
+	before := &corev1.Service{ObjectMeta: metav1.ObjectMeta{Labels: map[string]string{constants.GroupNameLabelKey: "group"}}}
+	after := before.DeepCopy()
+	after.Labels[constants.ManagedLabelKey] = constants.ManagedLabelValue
+	equal, err := semanticallyEqualService(before, after)
+	assert.False(t, equal)
+	assert.Error(t, err)
+}
 
 func Test_podSpecEqual(t *testing.T) {
 	type args struct {
@@ -1618,4 +1662,91 @@ func Test_applyStrategicMergePatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestContainersEqualDoesNotMutateInputs(t *testing.T) {
+	makeContainers := func() []corev1.Container {
+		return []corev1.Container{
+			{
+				Name:  "app",
+				Image: "nginx:1.20",
+				Ports: []corev1.ContainerPort{
+					{ContainerPort: 8080},
+				},
+				Resources: corev1.ResourceRequirements{
+					Limits: corev1.ResourceList{
+						corev1.ResourceCPU:    resource.MustParse("1"),
+						corev1.ResourceMemory: resource.MustParse("1Gi"),
+					},
+					Requests: corev1.ResourceList{
+						corev1.ResourceMemory: resource.MustParse("512Mi"),
+					},
+				},
+				LivenessProbe: &corev1.Probe{
+					ProbeHandler: corev1.ProbeHandler{
+						HTTPGet: &corev1.HTTPGetAction{Path: "/healthz"},
+					},
+				},
+				Env: []corev1.EnvVar{
+					{
+						Name: "POD_IP",
+						ValueFrom: &corev1.EnvVarSource{
+							FieldRef: &corev1.ObjectFieldSelector{FieldPath: "status.podIP"},
+						},
+					},
+				},
+			},
+		}
+	}
+
+	c1 := makeContainers()
+	c2 := makeContainers()
+	c1Before := []corev1.Container{*c1[0].DeepCopy()}
+	c2Before := []corev1.Container{*c2[0].DeepCopy()}
+
+	equal, err := containersEqual(c1, c2)
+	require.NoError(t, err)
+	assert.True(t, equal)
+	assert.Equal(t, c1Before, c1, "containersEqual must not mutate its first input slice")
+	assert.Equal(t, c2Before, c2, "containersEqual must not mutate its second input slice")
+}
+
+func TestContainersEqualConcurrentNoRace(t *testing.T) {
+	shared := []corev1.Container{
+		{
+			Name:  "app",
+			Image: "nginx:1.20",
+			Ports: []corev1.ContainerPort{{ContainerPort: 8080}},
+			Resources: corev1.ResourceRequirements{
+				Limits: corev1.ResourceList{
+					corev1.ResourceCPU:    resource.MustParse("1"),
+					corev1.ResourceMemory: resource.MustParse("1Gi"),
+				},
+				Requests: corev1.ResourceList{
+					corev1.ResourceMemory: resource.MustParse("512Mi"),
+				},
+			},
+			LivenessProbe: &corev1.Probe{
+				ProbeHandler: corev1.ProbeHandler{
+					HTTPGet: &corev1.HTTPGetAction{Path: "/healthz"},
+				},
+			},
+		},
+	}
+
+	const workers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			<-start
+			equal, err := containersEqual(shared, shared)
+			assert.NoError(t, err)
+			assert.True(t, equal)
+		}()
+	}
+	close(start)
+	wg.Wait()
 }

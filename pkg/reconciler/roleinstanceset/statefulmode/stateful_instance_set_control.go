@@ -27,6 +27,7 @@ import (
 
 	apps "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/types"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/apimachinery/pkg/util/sets"
@@ -35,9 +36,11 @@ import (
 	"k8s.io/kubernetes/pkg/controller/history"
 	"k8s.io/utils/lru"
 	"k8s.io/utils/ptr"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
+	setprogressing "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
 )
@@ -269,6 +272,22 @@ func (ssc *defaultStatefulInstanceSetControl) performUpdate(
 	if getStatusErr != nil && currentStatus == nil {
 		return currentRevision, updateRevision, getStatusErr
 	}
+
+	// Apply the KEP-502 Progressing condition before the status write; instances are
+	// needed to map lower-level blockers and recovery facts. A failure from this
+	// controller's own operations is classified and carried as the blocker.
+	if getStatusErr != nil && currentStatus != nil {
+		scaleReason := setprogressing.ClassifySetOperationError(getStatusErr)
+		setprogressing.EmitOperationFailureEvent(ssc.recorder, set, scaleReason, getStatusErr)
+		currentStatus.Conditions = append(currentStatus.Conditions, workloadsv1alpha2.RoleInstanceSetCondition{
+			Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+			Status:             corev1.ConditionTrue,
+			LastTransitionTime: metav1.Now(),
+			Reason:             scaleReason,
+			Message:            getStatusErr.Error(),
+		})
+	}
+	setprogressing.ApplySetProgressingCondition(set, currentStatus, instances)
 
 	// make sure to update the latest status even if there is an error with non-nil currentStatus
 	updateStatusErr := ssc.updateInstanceSetStatus(ctx, set, currentStatus)
@@ -514,6 +533,10 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 		return &status, err
 	}
 
+	if err := ssc.restoreRetainedInstances(replicas, topo, updateRevision.Name); err != nil {
+		return &status, err
+	}
+
 	// Refresh in-place readiness condition for all created instances. Without
 	// this, freshly created instances would carry InPlaceUpdateReady=False
 	// from the instance controller and could deadlock processReplica in
@@ -542,7 +565,7 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 		// target, run a restricted update for only that ordinal. This keeps
 		// OrderedReady ordering for other replicas while allowing the rollout
 		// to recover after the unhealthy window instead of waiting forever.
-		if err == nil && shouldExit && monotonic {
+		if err == nil && monotonic {
 			if updateErr := ssc.progressOrderedReadyUnhealthyTarget(ctx, set, &status,
 				currentRevision, updateRevision, revisions, instances, replicas,
 				minReadySeconds, topo); updateErr != nil {
@@ -772,6 +795,19 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 		}
 		if isTerminating(target) {
 			continue
+		}
+		if set.Spec.UpdateStrategy.Type == workloadsv1alpha2.RecreatePodUpdateStrategyType {
+			blocked, err := ssc.prepareDelete(set, target)
+			if err != nil {
+				return status, err
+			}
+			if blocked {
+				// Reserve a slot for a draining target not already counted as unavailable.
+				if !isFree && !baseUnavail.Has(target.Name) {
+					newlyUnavail++
+				}
+				continue
+			}
 		}
 
 		decrement, err := ssc.applyTargetUpdate(ctx, set, status, target, currentRevision, updateRevision, revisions, isSurgeSlot, isFree)
@@ -1208,20 +1244,48 @@ func (ssc *defaultStatefulInstanceSetControl) processCondemned(
 	condemned []*workloadsv1alpha2.RoleInstance,
 	i int) (bool, error) {
 
-	if !isCreated(condemned[i]) {
+	instance := condemned[i]
+	if !isCreated(instance) {
 		return false, nil
 	}
 
-	if monotonic && condemned[i] != firstUnhealthyInstance && !isHealthy(condemned[i]) {
+	// The drain itself may have marked the instance NotReady before the hook was removed.
+	preparingDelete := instancelifecycle.GetRoleInstanceLifecycleState(instance) == constants.RoleInstanceLifecycleStatePreparingDelete
+	if monotonic && !preparingDelete && instance != firstUnhealthyInstance && !isHealthy(instance) {
 		return true, nil
 	}
+	if isTerminating(instance) {
+		return false, nil
+	}
 
-	klog.V(2).InfoS("InstanceSet terminating condemned Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(condemned[i]))
-	if err := ssc.instanceControl.DeleteStatefulInstance(set, condemned[i]); err != nil {
+	klog.V(2).InfoS("InstanceSet terminating condemned Instance", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance))
+	_, deleting, err := ssc.deleteInstance(set, instance)
+	if err != nil {
 		return monotonic, err
 	}
 
-	return false, nil
+	// Only a pending hook holds the next ordinal. Once deletion starts, rollout can proceed.
+	return monotonic && !deleting, nil
+}
+
+// restoreRetainedInstances cancels a drain when the desired topology again
+// includes the instance and a rolling update does not still need to replace it.
+func (ssc *defaultStatefulInstanceSetControl) restoreRetainedInstances(
+	replicas []*workloadsv1alpha2.RoleInstance, topo topology, updateRev string,
+) error {
+	for i, instance := range replicas {
+		if !isCreated(instance) || isTerminating(instance) ||
+			instancelifecycle.GetRoleInstanceLifecycleState(instance) != constants.RoleInstanceLifecycleStatePreparingDelete {
+			continue
+		}
+		if topo.updatePending && i+topo.startOrdinal >= topo.partition && getInstanceRevision(instance) != updateRev {
+			continue
+		}
+		if _, _, err := ssc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStateNormal, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (ssc *defaultStatefulInstanceSetControl) updateInstanceSetStatus(
@@ -1342,6 +1406,9 @@ func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
 	if isTerminating(instance) {
 		return false, false, nil
 	}
+	if blocked, err := ssc.prepareDelete(set, instance); err != nil || blocked {
+		return false, false, err
+	}
 
 	err := ssc.instanceControl.DeleteStatefulInstance(set, instance)
 	if err != nil {
@@ -1349,4 +1416,16 @@ func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
 	}
 
 	return true, true, nil
+}
+
+func (ssc *defaultStatefulInstanceSetControl) prepareDelete(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance) (bool, error) {
+	if set.Spec.Lifecycle == nil || set.Spec.Lifecycle.PreDelete == nil || isTerminating(instance) {
+		return false, nil
+	}
+	hook := set.Spec.Lifecycle.PreDelete
+	if instancelifecycle.GetRoleInstanceLifecycleState(instance) != constants.RoleInstanceLifecycleStatePreparingDelete {
+		_, _, err := ssc.lifecycleControl.UpdateRoleInstanceLifecycle(instance, constants.RoleInstanceLifecycleStatePreparingDelete, hook.MarkNotReady)
+		return true, err
+	}
+	return instancelifecycle.IsRoleInstanceHooked(hook, instance), nil
 }
