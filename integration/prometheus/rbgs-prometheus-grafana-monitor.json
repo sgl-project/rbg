@@ -108,7 +108,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "up{job=~\"$job\", namespace=~\"$namespace\"} or up{job=\"rbgs-controller\"}",
+          "expr": "up{rbgs_controller=\"true\", job=~\"$job\", namespace=~\"$namespace\"}",
           "legendFormat": "{{namespace}}/{{pod}}",
           "range": true,
           "refId": "A"
@@ -2018,7 +2018,7 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(controller_runtime_reconcile_total{controller=\"workloads-rolebasedgroup\"}, job)",
+        "definition": "label_values(up{rbgs_controller=\"true\"}, job)",
         "hide": 0,
         "includeAll": false,
         "label": "Prometheus job that scrapes the RBG controller",
@@ -2026,7 +2026,7 @@
         "name": "job",
         "options": [],
         "query": {
-          "query": "label_values(controller_runtime_reconcile_total{controller=\"workloads-rolebasedgroup\"}, job)",
+          "query": "label_values(up{rbgs_controller=\"true\"}, job)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,
@@ -2050,14 +2050,14 @@
           "type": "prometheus",
           "uid": "${datasource}"
         },
-        "definition": "label_values(controller_runtime_reconcile_total{job=~\"$job\"}, namespace)",
+        "definition": "label_values(up{rbgs_controller=\"true\", job=~\"$job\"}, namespace)",
         "hide": 0,
         "includeAll": true,
         "multi": true,
         "name": "namespace",
         "options": [],
         "query": {
-          "query": "label_values(controller_runtime_reconcile_total{job=~\"$job\"}, namespace)",
+          "query": "label_values(up{rbgs_controller=\"true\", job=~\"$job\"}, namespace)",
           "refId": "PrometheusVariableQueryEditor-VariableQuery"
         },
         "refresh": 2,

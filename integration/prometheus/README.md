@@ -14,8 +14,10 @@ controller Deployment; apply it next to your existing Prometheus and Grafana.
 
 ## How the scrape works
 
-The RBG controller serves metrics on the `--metrics-bind-address` port (`8443` by
-default) with HTTPS. Unlike a plain HTTP metrics endpoint, every request is
+The RBG controller serves metrics on the `--metrics-bind-address` port with
+HTTPS. The shipped Helm chart and Kustomize manifests set
+`--metrics-bind-address=:8443`; the binary flag itself defaults to `0`, which
+disables the metrics server. Unlike a plain HTTP metrics endpoint, every request is
 authenticated with `TokenReview` and authorized with `SubjectAccessReview`
 against the Kubernetes API server, and the `role: pod` service discovery
 needs its own permissions. Three consequences:
@@ -43,6 +45,10 @@ The scrape config discovers controller pods by the `control-plane:
 rbgs-controller` label, adds `namespace` and `pod` labels to every series, and
 rebuilds the scrape address as `pod-ip:8443` because the metrics port is not
 declared as a container port in the chart.
+It also stamps every series from this job, including the `up` series that
+Prometheus maintains even when a scrape fails, with `rbgs_controller="true"`,
+so the dashboard can resolve the job and namespace before the first successful
+scrape and after a scrape job rename.
 
 The config assumes the default secure metrics serving. Controllers started
 with `--metrics-secure=false`, or with `--enable-webhooks=none` (which forces
@@ -95,8 +101,9 @@ controller pod.
 
 - Check the Prometheus web UI (`/targets`) for the `rbgs-controller` job.
   The target's last error distinguishes the failure mode: `401`/`403` means
-  authentication or authorization failed (the token, the `/metrics` RBAC, or
-  the controller's TokenReview permissions), `x509` errors mean TLS, and
+  the Prometheus token or its `get /metrics` RBAC is wrong, `500` usually
+  means the controller cannot create `TokenReview` or `SubjectAccessReview`
+  (check the controller RBAC), `x509` errors mean TLS, and
   `connection refused` usually means the port.
 - Query `up{job="rbgs-controller"}` (or your renamed job) in Prometheus:
   `1` is a healthy scrape, `0` is a failed one.
@@ -129,10 +136,13 @@ The dashboard is built from the metrics controller-runtime exposes on
 - Controller process: leader election status, goroutines, resident memory and
   CPU usage.
 
-The `job`, `namespace` and `controller` variables are label-based. Every
-panel query filters on the scrape `job`, so the dashboard stays scoped to the
-RBG controller even when the same Prometheus scrapes other components, and it
-keeps working if you rename the scrape job.
+The `job` and `namespace` variables are derived from the `up` metric, which
+Prometheus maintains for every discovered target even while scrapes are
+failing, so the dashboard resolves them before the first successful scrape and
+after a scrape job rename. Every panel query filters on the scrape `job`, so
+the dashboard stays scoped to the RBG controller even when the same Prometheus
+scrapes other components. The `controller` variable is derived from the
+reconcile metrics.
 
 ## Security note
 
@@ -162,3 +172,10 @@ who can create or update Pods in the controller namespace can add the
 account token. Keep the controller namespace restricted to trusted operators
 and workloads, and use the NetworkPolicy or certificate options above when
 that assumption does not hold.
+
+The captured token is a Kubernetes service-account credential, not just a
+metrics token: an attacker can replay it against the Kubernetes API and
+inherits the Prometheus service account's full RBAC, which may be broader than
+this integration requires. Where possible, point the scrape job at a dedicated,
+minimally privileged Prometheus service account instead of a highly privileged
+default one.

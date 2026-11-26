@@ -11,7 +11,9 @@ scrape_configs:
   - job_name: rbgs-controller
     scrape_interval: 30s
     # The RBG controller serves metrics over HTTPS on the
-    # --metrics-bind-address port (8443 by default). Requests are
+    # --metrics-bind-address port. The shipped Helm chart and Kustomize
+    # manifests set :8443; the binary flag itself defaults to 0, which
+    # disables the metrics server. Requests are
     # authenticated (TokenReview) and authorized (SubjectAccessReview)
     # by the controller, so Prometheus must present its own service
     # account token. See rbac.yaml for the required RBAC: a ClusterRole
@@ -73,4 +75,11 @@ scrape_configs:
       - source_labels: [__meta_kubernetes_pod_name]
         target_label: pod
         replacement: $1
+        action: replace
+      # Mark every series from this job, including the up series that
+      # Prometheus maintains even when a scrape fails, so the Grafana
+      # dashboard can resolve the job and namespace before the first
+      # successful scrape and after a scrape job rename.
+      - target_label: rbgs_controller
+        replacement: "true"
         action: replace
