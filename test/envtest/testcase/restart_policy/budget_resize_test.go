@@ -174,7 +174,7 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 						return nil, 0
 					}
 					for i := range live.Status.Conditions {
-						if live.Status.Conditions[i].Type == v2.RoleInstanceProgressing && live.Status.Conditions[i].Status == v1.ConditionTrue {
+						if live.Status.Conditions[i].Type == v2.RoleInstanceProgressing {
 							return &live.Status.Conditions[i], live.Generation
 						}
 					}
@@ -186,7 +186,7 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 						return nil, 0
 					}
 					for i := range list.Items[0].Status.Conditions {
-						if list.Items[0].Status.Conditions[i].Type == v2.RoleInstanceSetProgressing && list.Items[0].Status.Conditions[i].Status == v1.ConditionTrue {
+						if list.Items[0].Status.Conditions[i].Type == v2.RoleInstanceSetProgressing {
 							return &list.Items[0].Status.Conditions[i], list.Items[0].Generation
 						}
 					}
@@ -198,7 +198,7 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 						return nil, 0
 					}
 					for i := range live.Status.Conditions {
-						if live.Status.Conditions[i].Type == string(v2.RoleBasedGroupProgressing) && live.Status.Conditions[i].Status == metav1.ConditionTrue {
+						if live.Status.Conditions[i].Type == string(v2.RoleBasedGroupProgressing) {
 							return &live.Status.Conditions[i], live.Generation
 						}
 					}
@@ -237,13 +237,13 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 					live.Annotations[constants.RoleInstanceRecoverAnnotationKey] = "true"
 					return cli.Update(ctx, live)
 				})).To(Succeed())
-				Eventually(func() bool {
+				Eventually(func() error {
 					if readyInstances() != 2 {
-						return false
+						return fmt.Errorf("ready instances: %d", readyInstances())
 					}
 					live := &v2.RoleInstance{}
 					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
-						return false
+						return err
 					}
 					instanceProgressing, instanceGeneration := instanceProgressingCondition()
 					setProgressing, setGeneration := setProgressingCondition()
@@ -260,10 +260,10 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 						groupProgressing.Status != metav1.ConditionFalse ||
 						groupProgressing.Reason != constants.ProgressingReasonConverged ||
 						groupProgressing.ObservedGeneration != groupGeneration {
-						return false
+						return fmt.Errorf("RI=%+v RIS=%+v RBG=%+v", instanceProgressing, setProgressing, groupProgressing)
 					}
-					return true
-				}, timeout, interval).Should(BeTrue(), "recover=true must clear budget exhaustion at RI, RIS, and RBG")
+					return nil
+				}, timeout, interval).Should(Succeed(), "recover=true must clear budget exhaustion at RI, RIS, and RBG")
 				return
 			}
 			if !exhausted {
