@@ -14,7 +14,8 @@ scrape_configs:
     # --metrics-bind-address port (8443 by default). Requests are
     # authenticated (TokenReview) and authorized (SubjectAccessReview)
     # by the controller, so Prometheus must present its own service
-    # account token. See rbac.yaml for the required ClusterRoles.
+    # account token. See rbac.yaml for the required RBAC: a ClusterRole
+    # for /metrics and a namespaced Role for pod discovery.
     # If the controller runs with --metrics-secure=false or
     # --enable-webhooks=none, metrics are served over plain HTTP; change
     # scheme to http and remove the authorization block in that case

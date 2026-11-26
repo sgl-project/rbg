@@ -108,7 +108,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "up{job=~\"$job\", namespace=~\"$namespace\"}",
+          "expr": "up{job=~\"$job\", namespace=~\"$namespace\"} or up{job=\"rbgs-controller\"}",
           "legendFormat": "{{namespace}}/{{pod}}",
           "range": true,
           "refId": "A"
@@ -2110,4 +2110,3 @@
   "version": 1,
   "weekStart": ""
 }
-

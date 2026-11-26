@@ -22,8 +22,10 @@ roleRef:
 subjects:
   # Adjust to the service account used by your Prometheus instance.
   # prometheus-k8s/monitoring matches a default kube-prometheus (jsonnet)
-  # install. kube-prometheus-stack names the account <release>-prometheus,
-  # and its default ClusterRole already allows get on /metrics, so
+  # install. With kube-prometheus-stack the name comes from the Helm
+  # fullname (typically <release>-kube-prometheus-stack-prometheus; check
+  # the serviceAccountName of your Prometheus pod), and its default
+  # ClusterRole already allows get on /metrics, so
   # kube-prometheus-stack users can skip this file entirely.
   - kind: ServiceAccount
     name: prometheus-k8s
@@ -63,8 +65,10 @@ roleRef:
 subjects:
   # Adjust to the service account used by your Prometheus instance.
   # prometheus-k8s/monitoring matches a default kube-prometheus (jsonnet)
-  # install. kube-prometheus-stack names the account <release>-prometheus,
-  # and its default ClusterRole already grants cluster-wide pod discovery,
+  # install. With kube-prometheus-stack the name comes from the Helm
+  # fullname (typically <release>-kube-prometheus-stack-prometheus; check
+  # the serviceAccountName of your Prometheus pod), and its default
+  # ClusterRole already grants cluster-wide pod discovery,
   # so kube-prometheus-stack users can skip this file entirely.
   - kind: ServiceAccount
     name: prometheus-k8s

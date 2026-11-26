@@ -55,8 +55,10 @@ send the service-account token in cleartext to the pod IP on every scrape.
 
 1. Adjust `rbac.yaml` to bind the service account your Prometheus runs as,
    then apply it. The default subject matches a kube-prometheus (jsonnet)
-   install (`prometheus-k8s` in `monitoring`); kube-prometheus-stack names
-   the account `<release>-prometheus`, and its default ClusterRole already
+   install (`prometheus-k8s` in `monitoring`); with kube-prometheus-stack the
+   name comes from the Helm fullname (typically
+   `<release>-kube-prometheus-stack-prometheus`; check the
+   `serviceAccountName` of your Prometheus pod), and its default ClusterRole already
    grants both discovery and `/metrics`, so kube-prometheus-stack users can
    skip this file entirely. Also adjust the `rbgs-prometheus-discovery` Role
    and RoleBinding to the controller's namespace, and the `namespaces`
@@ -91,7 +93,7 @@ scrape chain has not succeeded yet, not that the controller is broken. The
 Scrape Health panel at the top of the dashboard shows the `up` metric per
 controller pod.
 
-- Check the Prometheus web UI (`/-/targets`) for the `rbgs-controller` job.
+- Check the Prometheus web UI (`/targets`) for the `rbgs-controller` job.
   The target's last error distinguishes the failure mode: `401`/`403` means
   authentication or authorization failed (the token, the `/metrics` RBAC, or
   the controller's TokenReview permissions), `x509` errors mean TLS, and
@@ -103,6 +105,8 @@ controller pod.
 - Verify the Prometheus service account can discover pods and read
   `/metrics`:
   `kubectl auth can-i list pods -n <controller-namespace> --as=system:serviceaccount:<prometheus-namespace>:<prometheus-sa>`
+  and
+  `kubectl auth can-i watch pods -n <controller-namespace> --as=system:serviceaccount:<prometheus-namespace>:<prometheus-sa>`
   and
   `kubectl auth can-i get /metrics --as=system:serviceaccount:<prometheus-namespace>:<prometheus-sa>`.
 - If you changed `--metrics-bind-address`, update the `8443` port in the
@@ -151,3 +155,10 @@ namespace-scoped discovery limits where that token is sent, but clusters that
 do not fully trust pod-to-pod traffic should additionally restrict access to
 the metrics port (for example with a NetworkPolicy) or provision a real
 certificate for the metrics server and remove `insecure_skip_verify`.
+
+Namespace scoping is a trust boundary, not an authentication boundary: anyone
+who can create or update Pods in the controller namespace can add the
+`control-plane=rbgs-controller` label and receive the Prometheus service
+account token. Keep the controller namespace restricted to trusted operators
+and workloads, and use the NetworkPolicy or certificate options above when
+that assumption does not hold.
