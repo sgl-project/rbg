@@ -56,7 +56,8 @@ func rbgReferencing(name, namespace, profileName string) *RoleBasedGroup {
 		}}},
 	}
 	// Every admitted write carries the label the webhook's scoped lookup
-	// selects on (see the defaulters and SetHasEngineRuntimesLabel).
+	// selects on; v1alpha1 writes reach the same defaulter through
+	// Equivalent matchPolicy.
 	SetHasEngineRuntimesLabel(rbg)
 	return rbg
 }

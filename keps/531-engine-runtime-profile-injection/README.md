@@ -967,7 +967,8 @@ profile, the non-zero result scales with the number of referencing objects
 rather than with the cluster: profile writes are rare platform operations,
 and skipping the informer cache removes the stale-cache variant of the window
 below. The RoleBasedGroup and
-RoleBasedGroupSet admission defaulters maintain the label on every write
+RoleBasedGroupSet admission defaulters maintain the label on every write; v1alpha1
+writes reach the same webhook through Equivalent matchPolicy.
 (derived from the roles' `engineRuntimes`), and the profile controller
 backfills it onto referencing objects written before the label existed. Until
 that backfill converges after an upgrade or restart, the webhook falls back
