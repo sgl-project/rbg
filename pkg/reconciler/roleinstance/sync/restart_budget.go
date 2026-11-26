@@ -148,9 +148,17 @@ func EnforceRestartBudgetConditions(instance *workloadsv1alpha2.RoleInstance) {
 	}
 	// Keep a more specific drain-progress message written by the budget
 	// lifecycle when generic status calculation enforces suppression again.
-	if !slices.ContainsFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+	if slices.ContainsFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
 		return cond.Type == workloadsv1alpha2.RoleInstanceDegraded && cond.Status == v1.ConditionTrue && cond.Reason == GroupRestartBudgetExceeded
 	}) {
+		for i := range instance.Status.Conditions {
+			if instance.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceDegraded &&
+				instance.Status.Conditions[i].Status == v1.ConditionTrue &&
+				instance.Status.Conditions[i].Reason == GroupRestartBudgetExceeded {
+				instance.Status.Conditions[i].ObservedGeneration = instance.Generation
+			}
+		}
+	} else {
 		setBudgetCondition(instance, workloadsv1alpha2.RoleInstanceDegraded, v1.ConditionTrue)
 	}
 	setBudgetCondition(instance, workloadsv1alpha2.RoleInstanceReady, v1.ConditionFalse)

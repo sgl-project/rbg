@@ -147,6 +147,29 @@ func TestEnforceRestartBudgetConditionsClearsAfterReset(t *testing.T) {
 	}), "a live reset must clear budget-owned Ready and Progressing facts")
 }
 
+func TestEnforceRestartBudgetConditionsRefreshesDegradedGeneration(t *testing.T) {
+	now := metav1.Now()
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Generation: 4},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			RestartBudgetExhausted: true,
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{{
+				Type:               workloadsv1alpha2.RoleInstanceDegraded,
+				Status:             v1.ConditionTrue,
+				Reason:             workloadsv1alpha2.ReasonGroupRestartBudgetExceeded,
+				Message:            "Recovery is waiting for 2 old owned Pod object(s) to disappear",
+				LastTransitionTime: now,
+				ObservedGeneration: 3,
+			}},
+		},
+	}
+	EnforceRestartBudgetConditions(instance)
+	degraded := instance.Status.Conditions[0]
+	require.EqualValues(t, 4, degraded.ObservedGeneration)
+	require.Equal(t, "Recovery is waiting for 2 old owned Pod object(s) to disappear", degraded.Message)
+	require.Equal(t, now, degraded.LastTransitionTime)
+}
+
 func TestRestartBudgetUnsetAndHealthyZero(t *testing.T) {
 	ctx := context.Background()
 	t.Run("unset needs no reader and does not block scale", func(t *testing.T) {

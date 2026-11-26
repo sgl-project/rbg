@@ -180,18 +180,21 @@ func (r *RoleBasedGroupReconciler) reportRBGProgressingBlocker(
 	// quota failure must not hide a RoleInstanceSet's current permission denial.
 	// The historical entry blocker keeps its stricter generation confirmation;
 	// the new own-operation failure is a current fact without one.
-	// A failed runtime observation keeps the plain own-blocker condition: an
-	// incomplete observation must not replace a confirmed controller-owned
-	// failure with Unknown.
-	if observations, readErr := r.collectRISObservations(ctx, rbg); readErr == nil {
-		facts := r.observeRuntimeFacts(ctx, rbg)
-		if facts.observationError() == nil {
-			if computed := computeRBGProgressingCondition(
-				rbg, rbg.Status.RoleStatuses, observations, nil, facts,
-				entryBlocker, &rbgOwnBlocker{reason: reason, message: message},
-			); isRBGBlockerFamily(computed.Reason) && computed.Status == metav1.ConditionTrue {
-				condition = computed
-			}
+	// A failed observation keeps a higher-priority child-derived restart-budget
+	// blocker, because an incomplete read is not evidence that the child fact
+	// cleared; a lower-priority own blocker still loses the family race.
+	observations, readErr := r.collectRISObservations(ctx, rbg)
+	facts := r.observeRuntimeFacts(ctx, rbg)
+	observationErr := stderrors.Join(readErr, facts.observationError())
+	childBlocker := childDerivedBlockerForObservationFailure(rbg, observationErr)
+	if childBlocker != nil && rbgBlockerFamilyRank(childBlocker.Reason) < rbgBlockerFamilyRank(reason) {
+		condition = *childBlocker
+	} else if readErr == nil {
+		if computed := computeRBGProgressingCondition(
+			rbg, rbg.Status.RoleStatuses, observations, nil, facts,
+			entryBlocker, &rbgOwnBlocker{reason: reason, message: message},
+		); isRBGBlockerFamily(computed.Reason) && computed.Status == metav1.ConditionTrue {
+			condition = computed
 		}
 	}
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, condition)
@@ -263,12 +266,23 @@ func isRBGBlockerFamily(reason string) bool {
 	return false
 }
 
+func rbgBlockerFamilyRank(reason string) int {
+	for rank, family := range rbgBlockerFamilyPriority {
+		if family == reason {
+			return rank
+		}
+	}
+	return len(rbgBlockerFamilyPriority)
+}
+
 // isRBGRecomputedBlockerFamily reports whether the family is a blocker fact the
 // RBG re-observes on every reconcile from child or runtime state (restart
 // budgets, gang waiting, and dependencies). Such facts must not be carried as
-// entry blockers or retained across unclassified errors: once the fresh
-// observation clears, a carried condition would keep reporting the family — with
-// an empty role list — instead of letting the status move on.
+// controller-owned entry blockers or retained across unclassified errors: once
+// the fresh observation clears, a carried condition would keep reporting the
+// family — with an empty role list — instead of letting the status move on. A
+// failed observation is the exception: it is not evidence that the child-derived
+// restart-budget fact cleared.
 func isRBGRecomputedBlockerFamily(reason string) bool {
 	return reason == constants.ProgressingReasonRestartBudgetExceeded ||
 		reason == constants.ProgressingReasonWaitingForGang ||
@@ -326,13 +340,34 @@ func rbgEntryOwnBlocker(rbg *workloadsv1alpha2.RoleBasedGroup) *metav1.Condition
 		condition.Status != metav1.ConditionTrue ||
 		condition.ObservedGeneration != rbg.Generation ||
 		condition.Reason == constants.ProgressingReasonUnclassifiedBlocker ||
-		// Gang waiting and dependencies are re-observed every reconcile; a
-		// persisted entry copy of them must not outlive the fresh observation.
+		// Restart budgets, gang waiting, and dependencies are re-observed every
+		// reconcile; a persisted entry copy of them must not outlive a successful
+		// fresh observation.
 		isRBGRecomputedBlockerFamily(condition.Reason) ||
 		!isRBGBlockerFamily(condition.Reason) {
 		return nil
 	}
 	return condition.DeepCopy()
+}
+
+// childDerivedBlockerForObservationFailure returns a persisted restart-budget
+// blocker that must survive an incomplete observation. Unlike a controller-owned
+// entry blocker, this fact is re-observed from children on every successful
+// reconcile; a failed read is therefore not evidence that it cleared.
+func childDerivedBlockerForObservationFailure(rbg *workloadsv1alpha2.RoleBasedGroup, observationErr error) *metav1.Condition {
+	if observationErr == nil {
+		return nil
+	}
+	condition := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing))
+	if condition == nil ||
+		condition.Status != metav1.ConditionTrue ||
+		condition.ObservedGeneration != rbg.Generation ||
+		condition.Reason != constants.ProgressingReasonRestartBudgetExceeded {
+		return nil
+	}
+	retained := condition.DeepCopy()
+	retained.Message = fmt.Sprintf("%s; observation incomplete: %v", retained.Message, observationErr)
+	return retained
 }
 
 // collectRISObservations reads each role's RoleInstanceSet. A missing RIS is a fact

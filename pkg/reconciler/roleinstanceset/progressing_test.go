@@ -758,6 +758,23 @@ func TestCurrentSetBlockerPriority(t *testing.T) {
 	}
 }
 
+func TestRestartBudgetMessageSortsInstanceNames(t *testing.T) {
+	instance := func(name string) *workloadsv1alpha2.RoleInstance {
+		instance := instanceWithProgressing(workloadsv1alpha2.ReasonGroupRestartBudgetExceeded, workloadsv1alpha2.RoleInstancePhaseRecovering)
+		instance.Name = name
+		instance.Generation = 2
+		instance.Status.ObservedGeneration = 2
+		instance.Status.Conditions[0].ObservedGeneration = 2
+		return instance
+	}
+	instances := []*workloadsv1alpha2.RoleInstance{instance("router-9"), instance("router-1"), instance("router-5")}
+	_, message := currentSetBlocker(nil, nil, instances)
+	want := "restart budget exhausted for RoleInstances router-1, router-5, router-9"
+	if message != want {
+		t.Fatalf("got %q, want %q", message, want)
+	}
+}
+
 func TestCurrentSetBlockerRetainsPriorFamily(t *testing.T) {
 	prior := &SetBlocker{
 		Reason:  workloadconstants.ProgressingReasonPermissionDenied,
@@ -940,6 +957,70 @@ func TestFreshBlockedSetDoesNotUseEstablishmentFallback(t *testing.T) {
 	got := ComputeSetProgressingCondition(persisted, resumedStatus, instances, nil, nil)
 	if got.Status != corev1.ConditionTrue || got.Reason != workloadconstants.ProgressingReasonCreating {
 		t.Fatalf("got status=%s reason=%s, want Creating", got.Status, got.Reason)
+	}
+}
+
+func TestFirstConvergedWriteRecordsEstablishment(t *testing.T) {
+	set := newTestSet(3)
+	newStatus := &workloadsv1alpha2.RoleInstanceSetStatus{
+		Replicas: 3, ReadyReplicas: 3, AvailableReplicas: 3,
+		CurrentRevision: "rev", UpdateRevision: "rev", UpdatedReplicas: 3, ExpectedUpdatedReplicas: 3,
+	}
+	ApplySetProgressingCondition(set, newStatus, bareInstances(3))
+	var established *workloadsv1alpha2.RoleInstanceSetCondition
+	for i := range newStatus.Conditions {
+		if newStatus.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetEstablished {
+			established = &newStatus.Conditions[i]
+		}
+	}
+	if established == nil || established.Status != corev1.ConditionTrue {
+		t.Fatalf("first Converged write must record Established, got %+v", established)
+	}
+}
+
+func TestFirstActivityWriteDoesNotRecordEstablishment(t *testing.T) {
+	set := newTestSet(1)
+	set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+		Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+		Status:             corev1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonCreating,
+		ObservedGeneration: set.Generation,
+	}}
+	newStatus := &workloadsv1alpha2.RoleInstanceSetStatus{
+		Replicas: 2, ReadyReplicas: 2, AvailableReplicas: 2,
+		CurrentRevision: "rev", UpdateRevision: "rev", UpdatedReplicas: 2, ExpectedUpdatedReplicas: 2,
+	}
+	instances := []*workloadsv1alpha2.RoleInstance{
+		{ObjectMeta: metav1.ObjectMeta{Generation: 1}, Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 1, Phase: workloadsv1alpha2.RoleInstancePhaseRunning,
+		}},
+		{ObjectMeta: metav1.ObjectMeta{Generation: 1}, Status: workloadsv1alpha2.RoleInstanceStatus{
+			ObservedGeneration: 1, Phase: workloadsv1alpha2.RoleInstancePhaseRunning,
+		}},
+	}
+	ApplySetProgressingCondition(set, newStatus, instances)
+	for _, condition := range newStatus.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetEstablished {
+			t.Fatalf("first activity write must not record Established, got %+v", condition)
+		}
+	}
+}
+
+func TestStaleBlockerDoesNotDisableLegacyEstablishmentFallback(t *testing.T) {
+	set := newTestSet(3)
+	set.Status.Conditions = []workloadsv1alpha2.RoleInstanceSetCondition{{
+		Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+		Status:             corev1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonPermissionDenied,
+		ObservedGeneration: set.Generation - 1,
+	}}
+	instances := []*workloadsv1alpha2.RoleInstance{
+		{ObjectMeta: metav1.ObjectMeta{Generation: 3}, Status: workloadsv1alpha2.RoleInstanceStatus{
+			LastReadyGeneration: 3,
+		}},
+	}
+	if !setEstablished(set, instances) {
+		t.Fatal("stale blocker must not disable the legacy establishment fallback")
 	}
 }
 

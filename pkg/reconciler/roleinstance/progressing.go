@@ -57,10 +57,11 @@ type roleInstancePhaseFacts struct {
 	newInstance bool
 }
 
-// instanceBlockerReasons are the RI Progressing reasons that report a confirmed
-// current-blocker family. Activity reasons (Creating, Updating, Recovering) and the
-// child-readiness reason (PodsNotReady) are not blockers and must never be retained in
-// place of a newly unclassifiable error.
+// instanceBlockerReasons are the RI operation-failure reasons that report a
+// confirmed current-blocker family. Restart-budget exhaustion is handled earlier
+// because it suppresses all Pod operations. Activity reasons (Creating, Updating,
+// Recovering) and the child-readiness reason (PodsNotReady) are not blockers and
+// must never be retained in place of a newly unclassifiable error.
 var instanceBlockerReasons = map[string]bool{
 	workloadsv1alpha2.ReasonPodCreateForbidden:            true,
 	workloadsv1alpha2.ReasonPodUpdateForbidden:            true,

@@ -264,7 +264,6 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 					}
 					return nil
 				}, timeout, interval).Should(Succeed(), "recover=true must clear budget exhaustion at RI, RIS, and RBG")
-				return
 			}
 			if !exhausted {
 				Eventually(readyInstances, timeout, interval).Should(Equal(2))
