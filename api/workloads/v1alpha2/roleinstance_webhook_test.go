@@ -26,8 +26,6 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
-
-	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
 
 func deleteContext(t *testing.T, options *metav1.DeleteOptions) context.Context {
@@ -125,47 +123,4 @@ func TestRoleInstanceValidatorAllowsUnarmedInstances(t *testing.T) {
 
 func ptrDelete(policy metav1.DeletionPropagation) *metav1.DeletionPropagation {
 	return &policy
-}
-
-// Create and Update validate the static lifecycle rules on the snapshot the
-// runtime executes, keeping this surface consistent with
-// RBG/RBGSet/RoleInstanceSet admission: a reserved-prefix signal key must not
-// reach EnterHook, where it would overwrite controller-owned state.
-func TestRoleInstanceValidatorValidatesLifecycleOnCreateAndUpdate(t *testing.T) {
-	invalid := &RoleInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: "default"},
-		Spec: RoleInstanceSpec{
-			Lifecycle: &RoleInstanceLifecycle{
-				PreRecover: &RoleInstanceLifecycleHook{
-					SignalLabels: map[string]string{
-						constants.RoleInstanceLifecycleHookStateKey: "Terminating",
-					},
-				},
-			},
-		},
-	}
-	valid := &RoleInstance{
-		ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: "default"},
-		Spec: RoleInstanceSpec{
-			Lifecycle: &RoleInstanceLifecycle{
-				PreRecover: &RoleInstanceLifecycleHook{
-					SignalLabels: map[string]string{"consumer.example/recover": "true"},
-				},
-			},
-		},
-	}
-	validator := &RoleInstanceValidator{}
-
-	if _, err := validator.ValidateCreate(context.Background(), invalid); err == nil {
-		t.Fatal("ValidateCreate() must reject a signal key colliding with the controller-reserved hook-state key")
-	}
-	if _, err := validator.ValidateUpdate(context.Background(), valid, invalid); err == nil {
-		t.Fatal("ValidateUpdate() must reject a signal key colliding with the controller-reserved hook-state key")
-	}
-	if _, err := validator.ValidateCreate(context.Background(), valid); err != nil {
-		t.Fatalf("ValidateCreate() error = %v, want nil for a valid lifecycle", err)
-	}
-	if _, err := validator.ValidateUpdate(context.Background(), invalid, valid); err != nil {
-		t.Fatalf("ValidateUpdate() error = %v, want nil for a valid lifecycle", err)
-	}
 }

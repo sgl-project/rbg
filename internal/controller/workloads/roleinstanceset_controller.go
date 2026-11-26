@@ -88,12 +88,10 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		return reconcile.Result{}, err
 	}
 	if set.DeletionTimestamp != nil {
-		// KEP-527: a deleting set must hand its preDelete-protected
-		// RoleInstances to the drain path before anything returns early. GC
-		// cascades the set's propagation policy down to the RIs, and the RI
-		// guard rejects Foreground for armed instances; without this delete
-		// the owner wedges in foregroundDeletion forever (RBGSet rollouts,
-		// Argo CD's default cascade, and kubectl --cascade=foreground).
+		// KEP-527: a Foreground cascade is the only deletion that can wedge.
+		// The drain (gated on the foregroundDeletion finalizer) hands the
+		// finalizer-held RoleInstances to the Background path; Background and
+		// Orphan deletes keep their requested semantics.
 		if err := r.drainPreDeleteInstances(ctx, set); err != nil {
 			return reconcile.Result{}, err
 		}
@@ -154,6 +152,16 @@ func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx conte
 	// RoleInstanceSets, and removes it when the last hook is removed.
 	if err := r.syncLifecycleRoutingLabel(ctx, set, HasLifecycleHooks(desired)); err != nil {
 		return err
+	}
+	if HasLifecycleHooks(desired) {
+		// Admission validates the same static rules, but the controller must
+		// fail safely when admission is bypassed: a standalone set is created
+		// before the routing label can land, and --enable-webhooks=none skips
+		// admission entirely. Validation must precede snapshot propagation and
+		// set-side arming, which write the hook's signal labels directly.
+		if err := v1alpha2.ValidateRoleInstanceSetLifecycle(set); err != nil {
+			return err
+		}
 	}
 	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
 	if err != nil {
@@ -353,11 +361,20 @@ func (r *RoleInstanceSetReconciler) validateCommittedMembership(ctx context.Cont
 // that don't belong to the current pattern. Returns true if any instance was deleted
 // (caller should requeue to wait for deletion and let the new reconciler create fresh instances).
 // drainPreDeleteInstances starts deletion for every owned RoleInstance that
-// holds the reserved preDelete finalizer but is not deleting yet. The delete
+// holds the reserved preDelete finalizer but is not deleting yet. It runs only
+// for a Foreground cascade of the set (the foregroundDeletion finalizer), the
+// one case that can wedge: GC then sends Foreground deletes down to the RIs,
+// which the RI guard rejects for armed instances. Background cascades are
+// accepted by the guard and drain on their own; an Orphan delete deliberately
+// keeps the children, so this must not delete anything for it. The delete
 // uses Background propagation and a UID precondition: the GC skips items that
 // are already deleting without Foreground, so the drains run undisturbed while
-// every Foreground cascade above the set completes only after them.
+// the Foreground cascade above the set completes only after them.
 func (r *RoleInstanceSetReconciler) drainPreDeleteInstances(ctx context.Context, set *v1alpha2.RoleInstanceSet) error {
+	if set.DeletionTimestamp == nil ||
+		!controllerutil.ContainsFinalizer(set, metav1.FinalizerDeleteDependents) {
+		return nil
+	}
 	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
 	if err != nil {
 		return err
