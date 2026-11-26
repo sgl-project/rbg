@@ -309,7 +309,19 @@ func (r *RoleInstanceSetReconciler) cleanupStaleInstances(ctx context.Context, s
 			continue
 		}
 		klog.InfoS("Deleting stale RoleInstance from different pattern", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance), "currentPattern", pattern)
-		if err := r.client.Delete(ctx, instance); err != nil && !apierrors.IsNotFound(err) {
+		// Finalizer-held RIs are deleted with Background propagation and a UID
+		// precondition, so any Foreground cascade above completes only after
+		// the preDelete drain.
+		deleteOptions := []client.DeleteOption{}
+		if controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
+			background := metav1.DeletePropagationBackground
+			deleteOptions = append(deleteOptions,
+				&client.DeleteOptions{
+					PropagationPolicy: &background,
+					Preconditions:     &metav1.Preconditions{UID: &instance.UID},
+				})
+		}
+		if err := r.client.Delete(ctx, instance, deleteOptions...); err != nil && !apierrors.IsNotFound(err) {
 			return false, err
 		}
 		deleted = true

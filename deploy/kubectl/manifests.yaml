@@ -100394,6 +100394,28 @@ webhooks:
     service:
       name: rbgs-webhook-service
       namespace: rbgs-system
+      path: /validate-workloads-x-k8s-io-v1alpha2-roleinstance
+  failurePolicy: Fail
+  name: vroleinstance.kb.io
+  objectSelector:
+    matchLabels:
+      rbg.workloads.x-k8s.io/role-instance-pre-delete-armed: "true"
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - DELETE
+    resources:
+    - roleinstances
+  sideEffects: None
+- admissionReviewVersions:
+  - v1
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: rbgs-system
       path: /validate-workloads-x-k8s-io-v1alpha2-roleinstanceset
   failurePolicy: Fail
   name: vroleinstanceset.kb.io

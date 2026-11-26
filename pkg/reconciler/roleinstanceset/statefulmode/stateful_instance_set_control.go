@@ -1455,7 +1455,20 @@ func (ssc *defaultStatefulInstanceSetControl) deleteInstance(
 		return false, false, err
 	}
 
-	err := ssc.instanceControl.DeleteStatefulInstance(set, instance)
+	// Finalizer-held RIs are deleted with Background propagation and a UID
+	// precondition: the GC skips items already deleting without Foreground,
+	// so any Foreground cascade above this instance completes only after the
+	// preDelete drain.
+	var deleteOptions []sigsclient.DeleteOption
+	if controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
+		background := metav1.DeletePropagationBackground
+		deleteOptions = append(deleteOptions,
+			&sigsclient.DeleteOptions{
+				PropagationPolicy: &background,
+				Preconditions:     &metav1.Preconditions{UID: &instance.UID},
+			})
+	}
+	err := ssc.instanceControl.DeleteStatefulInstance(set, instance, deleteOptions...)
 	if err != nil {
 		return false, false, err
 	}

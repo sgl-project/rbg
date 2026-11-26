@@ -198,6 +198,45 @@ func TestHookControlFinalizerPatchConflictsOnConcurrentWriter(t *testing.T) {
 	}
 }
 
+// The guard label routes the RI DELETE webhook, so it must land in the same
+// write as the finalizer and leave with it.
+func TestHookControlFinalizerManagesGuardLabel(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "instance", Namespace: "default"},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
+	control := NewHookControl(c)
+
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := control.EnsurePreDeleteFinalizer(ctx, instance); err != nil {
+		t.Fatalf("EnsurePreDeleteFinalizer() error = %v", err)
+	}
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if got := live.Labels[constants.RoleInstancePreDeleteGuardLabelKey]; got != "true" {
+		t.Fatalf("guard label = %q, want true", got)
+	}
+
+	if _, err := control.RemovePreDeleteFinalizer(ctx, live); err != nil {
+		t.Fatalf("RemovePreDeleteFinalizer() error = %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := live.Labels[constants.RoleInstancePreDeleteGuardLabelKey]; exists {
+		t.Fatal("the guard label must leave with the finalizer")
+	}
+}
+
 func TestPendingSignalsRequiresLabelPresence(t *testing.T) {
 	hook := &workloadsv1alpha2.RoleInstanceLifecycleHook{
 		SignalLabels: map[string]string{"example.com/drain": ""},

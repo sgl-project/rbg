@@ -27,6 +27,7 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
@@ -345,6 +346,68 @@ func TestStatefulRecreateUpdateWaitsForPreDeleteFinalizer(t *testing.T) {
 	target.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
 	h.reconcile(t, target)
 	h.assertDeleted(t, target.Name)
+}
+
+// Finalizer-held RIs are deleted with Background propagation and a UID
+// precondition, so a Foreground cascade above this instance completes only
+// after the preDelete drain.
+func TestStatefulDeleteUsesBackgroundAndUIDForFinalizerHeldInstances(t *testing.T) {
+	h := newRollbackTestHarness(t, "kep527-background-delete", 1, 0, 0)
+	h.set.Spec.Replicas = ptr.To(int32(0))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/drain": "true"},
+		},
+	}
+	instance := h.instance(0, h.current.Name, true)
+	instance.ResourceVersion = "1"
+	instance.UID = types.UID("background-delete-uid")
+	instance.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
+	instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(constants.RoleInstanceHookStateTerminating)
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(instance).
+		Build()
+	recordingManager := &recordingDeleteObjectManager{inner: h.objects}
+	h.control.instanceControl = NewStatefulInstanceControlFromManager(
+		recordingManager, record.NewFakeRecorder(10))
+	h.control.hookControl = roleinstancelifecycle.NewHookControl(c)
+	h.control.client = c
+
+	h.reconcile(t, instance)
+	h.assertDeleted(t, instance.Name)
+	require.NotEmpty(t, recordingManager.options, "the manager must observe the instance deletion")
+	last := recordingManager.options[len(recordingManager.options)-1]
+	require.NotNil(t, last.PropagationPolicy, "finalizer-held RI deletion must carry a propagation policy")
+	require.Equal(t, metav1.DeletePropagationBackground, *last.PropagationPolicy,
+		"finalizer-held RI deletion must use Background propagation")
+	require.NotNil(t, last.Preconditions, "finalizer-held RI deletion must carry a UID precondition")
+	require.Equal(t, instance.UID, *last.Preconditions.UID)
+}
+
+type recordingDeleteObjectManager struct {
+	inner   *fakeInstanceObjectManager
+	options []client.DeleteOptions
+}
+
+func (r *recordingDeleteObjectManager) CreateInstance(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) error {
+	return r.inner.CreateInstance(ctx, instance)
+}
+func (r *recordingDeleteObjectManager) GetInstance(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+	return r.inner.GetInstance(namespace, name)
+}
+func (r *recordingDeleteObjectManager) UpdateInstance(instance *workloadsv1alpha2.RoleInstance) error {
+	return r.inner.UpdateInstance(instance)
+}
+func (r *recordingDeleteObjectManager) DeleteInstance(instance *workloadsv1alpha2.RoleInstance, opts ...client.DeleteOption) error {
+	options := client.DeleteOptions{}
+	options.ApplyOptions(opts)
+	r.options = append(r.options, options)
+	return r.inner.DeleteInstance(instance)
 }
 
 // Without lifecycle hooks, OrderedReady scale-down keeps main's one-pass

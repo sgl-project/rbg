@@ -114,6 +114,31 @@ webhooks:
     - UPDATE
     resources:
     - roleinstancesets
+- name: vroleinstance.kb.io
+  admissionReviewVersions:
+  - v1
+  sideEffects: None
+  failurePolicy: Fail
+  # Only preDelete-armed RoleInstances route here: the controller writes this
+  # label in the same patch as the reserved finalizer, so ordinary deletes
+  # never depend on webhook availability.
+  objectSelector:
+    matchLabels:
+      rbg.workloads.x-k8s.io/role-instance-pre-delete-armed: "true"
+  clientConfig:
+    service:
+      name: rbgs-webhook-service
+      namespace: {{ .Release.Namespace }}
+      path: /validate-workloads-x-k8s-io-v1alpha2-roleinstance
+  rules:
+  - apiGroups:
+    - workloads.x-k8s.io
+    apiVersions:
+    - v1alpha2
+    operations:
+    - DELETE
+    resources:
+    - roleinstances
 ---
 # MutatingWebhookConfiguration defaulting legacy update-strategy type values
 # ("" and the v1alpha1 "Recreate" spelling) so objects stored before the

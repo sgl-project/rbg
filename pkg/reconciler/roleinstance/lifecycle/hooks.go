@@ -195,6 +195,13 @@ func (c *HookControl) EnsurePreDeleteFinalizer(
 	}
 	base := instance.DeepCopy()
 	controllerutil.AddFinalizer(instance, constants.RoleInstancePreDeleteFinalizer)
+	if instance.Labels == nil {
+		instance.Labels = make(map[string]string)
+	}
+	// The guard label routes the RI DELETE webhook to exactly the instances
+	// the finalizer protects. It must land in the same write as the finalizer
+	// so webhook routing never lags the protection.
+	instance.Labels[constants.RoleInstancePreDeleteGuardLabelKey] = "true"
 	// The optimistic lock keeps a plain merge patch from replacing the whole
 	// finalizer array when another writer adds a finalizer concurrently.
 	if err := c.Patch(ctx, instance,
@@ -215,6 +222,9 @@ func (c *HookControl) RemovePreDeleteFinalizer(
 	}
 	base := instance.DeepCopy()
 	controllerutil.RemoveFinalizer(instance, constants.RoleInstancePreDeleteFinalizer)
+	if instance.Labels != nil {
+		delete(instance.Labels, constants.RoleInstancePreDeleteGuardLabelKey)
+	}
 	// The optimistic lock keeps a plain merge patch from replacing the whole
 	// finalizer array when another writer adds a finalizer concurrently.
 	if err := c.Patch(ctx, instance,

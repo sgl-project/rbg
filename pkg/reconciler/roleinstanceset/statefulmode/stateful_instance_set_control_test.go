@@ -36,6 +36,7 @@ import (
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/utils/ptr"
+	sigsclient "sigs.k8s.io/controller-runtime/pkg/client"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -534,7 +535,7 @@ func (f *fakeInstanceObjectManager) GetInstance(_, _ string) (*workloadsv1alpha2
 func (f *fakeInstanceObjectManager) UpdateInstance(_ *workloadsv1alpha2.RoleInstance) error {
 	return nil
 }
-func (f *fakeInstanceObjectManager) DeleteInstance(instance *workloadsv1alpha2.RoleInstance) error {
+func (f *fakeInstanceObjectManager) DeleteInstance(instance *workloadsv1alpha2.RoleInstance, _ ...sigsclient.DeleteOption) error {
 	if f.beforeDelete != nil {
 		if err := f.beforeDelete(instance); err != nil {
 			return err

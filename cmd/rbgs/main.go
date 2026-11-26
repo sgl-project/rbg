@@ -626,6 +626,9 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool,
 	if err = (&workloadsv1alpha2.RoleInstanceSet{}).SetupWebhookWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("unable to create admission webhook for RoleInstanceSet: %w", err)
 	}
+	if err = (&workloadsv1alpha2.RoleInstance{}).SetupWebhookWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("unable to create admission webhook for RoleInstance: %w", err)
+	}
 
 	return &webhookBootstrapResult{certMgr: certMgr, caCert: caCert}, nil
 }

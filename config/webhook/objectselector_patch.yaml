@@ -1,0 +1,14 @@
+# controller-gen v0.17.2 cannot express objectSelector in the
+# kubebuilder:webhook marker, so the preDelete guard routing is patched here.
+# The label is written by the controller in the same patch as the reserved
+# preDelete finalizer: only preDelete-armed RoleInstances route to the
+# webhook, and ordinary deletes never depend on webhook availability.
+# The test op fails the build if regeneration reorders the webhook list.
+- op: test
+  path: /webhooks/4/name
+  value: vroleinstance.kb.io
+- op: add
+  path: /webhooks/4/objectSelector
+  value:
+    matchLabels:
+      rbg.workloads.x-k8s.io/role-instance-pre-delete-armed: "true"

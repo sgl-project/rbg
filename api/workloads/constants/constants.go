@@ -89,6 +89,12 @@ const (
 	// RoleInstancePreDeleteFinalizer holds a RoleInstance while its preDelete
 	// hook and final Pod cleanup are in progress.
 	RoleInstancePreDeleteFinalizer = RBGPrefix + "role-instance-pre-delete"
+
+	// RoleInstancePreDeleteGuardLabelKey marks a RoleInstance as holding the
+	// reserved preDelete finalizer. The RI DELETE webhook selects on this
+	// label so only preDelete-armed RIs route to it, keeping ordinary deletes
+	// independent of webhook availability.
+	RoleInstancePreDeleteGuardLabelKey = RBGPrefix + "role-instance-pre-delete-armed"
 )
 
 const (
