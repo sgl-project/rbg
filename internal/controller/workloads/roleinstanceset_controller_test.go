@@ -705,3 +705,63 @@ func TestSyncRoleInstanceLifecycleSnapshotsUpdatesDeletingInstances(t *testing.T
 		t.Fatal("removing the preDelete hook must reach the deleting instance so its deletion can continue")
 	}
 }
+
+// The controller must fail safely when admission is bypassed: lifecycle
+// configuration on a Stateless set is rejected and never propagated to its
+// instances.
+func TestSyncRoleInstanceLifecycleSnapshotsRejectsStatelessPattern(t *testing.T) {
+	setUID := types.UID("stateless-set-uid")
+	matchLabels := map[string]string{"app": "stateless-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "stateless-set",
+			Namespace:   "default",
+			UID:         setUID,
+			Annotations: map[string]string{constants.RoleInstancePatternKey: string(constants.StatelessPattern)},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			Replicas: ptr.To(int32(1)),
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/recover": "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "stateless-0",
+			Namespace: "default",
+			Labels:    matchLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+	}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithRuntimeObjects(set, instance).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	err := r.syncRoleInstanceLifecycleSnapshots(context.Background(), set)
+	if err == nil {
+		t.Fatal("syncRoleInstanceLifecycleSnapshots() must reject lifecycle hooks on a Stateless set")
+	}
+
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Spec.Lifecycle != nil {
+		t.Fatalf("the Stateless instance must not receive lifecycle configuration, got %+v", live.Spec.Lifecycle)
+	}
+}

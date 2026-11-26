@@ -39,7 +39,44 @@ type lifecycleOperationResult struct {
 }
 
 func (r *reconciler) lifecycleEnabled(instance *workloadsv1alpha2.RoleInstance) bool {
-	return instance != nil && workloadsv1alpha2.HasRoleInstanceLifecycleHooks(instance.Spec.Lifecycle)
+	if instance == nil || !workloadsv1alpha2.HasRoleInstanceLifecycleHooks(instance.Spec.Lifecycle) {
+		return false
+	}
+	// The controller must fail safely when admission is bypassed: validate
+	// the effective snapshot before executing any part of the protocol.
+	if err := workloadsv1alpha2.ValidateRoleInstanceLifecycle(
+		"spec.lifecycle", instance.Spec.Lifecycle, nil); err != nil {
+		return false
+	}
+	return true
+}
+
+// staleHookStates lists states whose owning hook is no longer configured but
+// whose state label would still block other operations.
+func staleHookStates(instance *workloadsv1alpha2.RoleInstance) []constants.RoleInstanceLifecycleHookStateType {
+	if instance == nil || instance.Spec.Lifecycle == nil {
+		return nil
+	}
+	state := lifecycle.HookState(instance)
+	switch state {
+	case constants.RoleInstanceHookStatePreUpdate, constants.RoleInstanceHookStateUpdating:
+		if instance.Spec.Lifecycle.PreUpdate == nil {
+			return []constants.RoleInstanceLifecycleHookStateType{state}
+		}
+	case constants.RoleInstanceHookStatePreRecover, constants.RoleInstanceHookStateRecovering:
+		if instance.Spec.Lifecycle.PreRecover == nil {
+			return []constants.RoleInstanceLifecycleHookStateType{state}
+		}
+	case constants.RoleInstanceHookStatePostReady:
+		if instance.Spec.Lifecycle.PostReady == nil {
+			return []constants.RoleInstanceLifecycleHookStateType{state}
+		}
+	case constants.RoleInstanceHookStatePreDelete, constants.RoleInstanceHookStateTerminating:
+		if instance.Spec.Lifecycle.PreDelete == nil {
+			return []constants.RoleInstanceLifecycleHookStateType{state}
+		}
+	}
+	return nil
 }
 
 func (r *reconciler) reconcileLifecycleDeletion(
@@ -151,6 +188,12 @@ func (r *reconciler) prepareLifecycleOperation(
 			return lifecycleOperationResult{}, err
 		}
 		return lifecycleOperationResult{}, nil
+	}
+	// Clear states whose owning hook was removed while other hooks remain.
+	if len(staleHookStates(instance)) > 0 {
+		if err := r.hookControl.SetHookState(ctx, instance, "", pods); err != nil {
+			return lifecycleOperationResult{}, err
+		}
 	}
 	lifecycleConfig := instance.Spec.Lifecycle
 	if err := r.hookControl.SyncRuntimeLabels(ctx, instance, lifecycleConfig, pods); err != nil {

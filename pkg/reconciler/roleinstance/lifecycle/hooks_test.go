@@ -304,3 +304,78 @@ func contains(obj metav1.Object, finalizer string) bool {
 	}
 	return false
 }
+
+func TestHookControlCleanupPostReady(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	if err := corev1.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "instance",
+			Namespace: "default",
+			Labels: map[string]string{
+				constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStatePostReady),
+			},
+			Annotations: map[string]string{
+				constants.RoleInstanceLifecycleHookSignalLabelKeys: "example.com/ready",
+			},
+		},
+	}
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "pod",
+			Namespace: "default",
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
+				instance, workloadsv1alpha2.GroupVersion.WithKind("RoleInstance"))},
+		},
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance, pod).Build()
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), instance); err != nil {
+		t.Fatal(err)
+	}
+	control := NewHookControl(c)
+	hook := &workloadsv1alpha2.RoleInstanceLifecycleHook{
+		SignalLabels: map[string]string{"example.com/ready": "true"},
+	}
+	lifecycle := &workloadsv1alpha2.RoleInstanceLifecycle{PostReady: hook}
+
+	// The signal label is still present: the executor has not acknowledged.
+	if err := control.EnterHook(
+		ctx, instance, constants.RoleInstanceHookStatePostReady, hook, []*corev1.Pod{}); err != nil {
+		t.Fatalf("EnterHook() error = %v", err)
+	}
+	if err := control.CleanupPostReady(ctx, instance, lifecycle, []*corev1.Pod{pod}); err != nil {
+		t.Fatalf("CleanupPostReady() error = %v", err)
+	}
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if got := HookState(live); got != constants.RoleInstanceHookStatePostReady {
+		t.Fatalf("HookState() = %q while the signal is still present, want PostReady", got)
+	}
+
+	// The executor removed the signal label: the state must clear once.
+	delete(live.Labels, "example.com/ready")
+	if err := c.Update(ctx, live); err != nil {
+		t.Fatal(err)
+	}
+	if err := control.CleanupPostReady(ctx, live, lifecycle, []*corev1.Pod{pod}); err != nil {
+		t.Fatalf("CleanupPostReady() error = %v", err)
+	}
+	if err := c.Get(ctx, client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if got := HookState(live); got != "" {
+		t.Fatalf("HookState() = %q after release, want empty", got)
+	}
+	if _, exists := live.Annotations[constants.RoleInstanceLifecycleHookSignalLabelKeys]; exists {
+		t.Fatal("the recorded signal keys must be removed after the postReady release")
+	}
+}

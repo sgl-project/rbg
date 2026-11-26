@@ -133,6 +133,11 @@ func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx conte
 		return nil
 	}
 	desired := set.Spec.RoleInstanceTemplate.Lifecycle
+	if HasLifecycleHooks(desired) && !isStatefulPattern(set) {
+		// The Alpha scope is Stateful-only. Admission rejects this, but the
+		// controller must fail safely when admission is bypassed.
+		return fmt.Errorf("spec.roleInstanceTemplate.lifecycle requires the Stateful RoleInstanceSet pattern")
+	}
 	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
 	if err != nil {
 		return err
@@ -195,6 +200,20 @@ func (r *RoleInstanceSetReconciler) patchLifecycleSnapshot(
 		}
 		*instance = *latest
 	}
+}
+
+// hasLifecycleHooks reports whether any KEP-527 hook is configured.
+func HasLifecycleHooks(lifecycle *v1alpha2.RoleInstanceLifecycle) bool {
+	return v1alpha2.HasRoleInstanceLifecycleHooks(lifecycle)
+}
+
+// isStatefulPattern reports whether the set uses the Stateful pattern.
+func isStatefulPattern(set *v1alpha2.RoleInstanceSet) bool {
+	if set == nil {
+		return false
+	}
+	pattern := constants.InstancePatternType(set.Annotations[constants.RoleInstancePatternKey])
+	return pattern == "" || pattern == constants.StatefulPattern
 }
 
 const invalidCommittedOrdinalsReason = "InvalidCommittedOrdinals"

@@ -503,9 +503,13 @@ func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newSta
 }
 
 // lifecycleOnlyGenerationBump reports whether the current generation was
-// created by a lifecycle snapshot sync: the sync writes the generation marker
-// in the same optimistic-lock patch as the lifecycle spec, so the bump changes
-// no workload-relevant spec and must not reclassify the instance as updating.
+// created by a lifecycle snapshot sync that landed on an already-confirmed
+// generation. The sync writes the generation marker in the same
+// optimistic-lock patch as the lifecycle spec, so the bump changes no
+// workload-relevant spec and must not reclassify the instance as updating.
+// The pre-snapshot generation must have been phase-confirmed: if an update
+// was already in flight (a size change is not in the revision), a lifecycle
+// change must not mask that update.
 func lifecycleOnlyGenerationBump(instance *workloadsv1alpha2.RoleInstance) bool {
 	if instance == nil || instance.Annotations == nil {
 		return false
@@ -515,7 +519,13 @@ func lifecycleOnlyGenerationBump(instance *workloadsv1alpha2.RoleInstance) bool 
 		return false
 	}
 	generation, err := strconv.ParseInt(value, 10, 64)
-	return err == nil && generation == instance.Generation
+	if err != nil || generation != instance.Generation {
+		return false
+	}
+	// The generation before the snapshot must have been confirmed: only then
+	// is the current bump purely the lifecycle snapshot write.
+	confirmedGeneration := lastConfirmedPhaseGeneration(instance)
+	return confirmedGeneration == generation-1
 }
 
 // podPhaseRuntimeReady reports controller-observed runtime readiness: the Pod

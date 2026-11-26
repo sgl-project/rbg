@@ -101,7 +101,12 @@ func (c *HookControl) EnterHook(
 	instance.Annotations[constants.RoleInstanceLifecycleHookSignalLabelKeys] =
 		formatSignalKeys(unionSignalKeys(recordedSignalKeys(instance), hook.SignalLabels))
 
-	if err := c.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
+	// The optimistic lock makes hook-state transitions compare-and-swap: two
+	// controllers (the RoleInstance reconciler and the set reconciler) write
+	// the same label, and a stale read must not silently overwrite the other
+	// writer's state.
+	if err := c.Patch(ctx, instance,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return err
 	}
 	return c.mirrorSignalLabels(ctx, instance, pods)
@@ -129,7 +134,8 @@ func (c *HookControl) SetHookState(
 		}
 		instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(state)
 	}
-	if err := c.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
+	if err := c.Patch(ctx, instance,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return err
 	}
 	return c.mirrorSignalLabels(ctx, instance, pods)
@@ -179,7 +185,8 @@ func (c *HookControl) CancelHook(
 			delete(instance.Labels, key)
 		}
 	}
-	if err := c.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
+	if err := c.Patch(ctx, instance,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 		return err
 	}
 	return c.mirrorSignalLabels(ctx, instance, pods)
@@ -265,7 +272,8 @@ func (c *HookControl) SyncRuntimeLabels(
 		}
 	}
 	if changed {
-		if err := c.Patch(ctx, instance, client.MergeFrom(base)); err != nil {
+		if err := c.Patch(ctx, instance,
+			client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
 			return err
 		}
 	}
@@ -312,7 +320,13 @@ func (c *HookControl) mirrorSignalLabels(
 			}
 		}
 		if podChanged {
-			if err := c.Patch(ctx, pod, client.MergeFrom(podBase)); err != nil {
+			// The optimistic lock protects against a stale cached Pod hitting
+			// a same-name replacement (the new object has a different
+			// resourceVersion). It is more conservative than the convention's
+			// UID-only suggestion, but controller-runtime cannot express a UID
+			// precondition on patch calls.
+			if err := c.Patch(ctx, pod,
+				client.MergeFromWithOptions(podBase, client.MergeFromWithOptimisticLock{})); err != nil {
 				return err
 			}
 		}
@@ -346,7 +360,8 @@ func (c *HookControl) mirrorSignalLabels(
 	} else {
 		instance.Annotations[constants.RoleInstanceLifecycleHookSignalLabelKeys] = formatSignalKeys(remaining)
 	}
-	return c.Patch(ctx, instance, client.MergeFrom(base))
+	return c.Patch(ctx, instance,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 }
 
 // CleanupPostReady clears the asynchronous postReady state after its executor

@@ -199,6 +199,9 @@ func TestPrepareLifecycleOperationSkipsPreRecoverForNewInstance(t *testing.T) {
 	ctx := context.Background()
 	instance := newReadinessTestInstance()
 	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+		},
 		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
 			SignalLabels: map[string]string{"consumer.example/recover": "true"},
 		},
@@ -263,6 +266,12 @@ func TestPrepareLifecycleOperationDefersPreRecoverForArmedPreUpdate(t *testing.T
 	instance := newReadinessTestInstance()
 	instance.Status.ObservedGeneration = 1
 	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		// A preUpdate armed by the set controller is always paired with a
+		// configured preUpdate hook; otherwise the state is stale and cleanup
+		// correctly clears it before preRecover may enter.
+		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+		},
 		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
 			SignalLabels: map[string]string{"consumer.example/recover": "true"},
 		},
@@ -355,4 +364,256 @@ func TestPrepareLifecycleOperationCleansStaleLifecycleState(t *testing.T) {
 	storedPod := &v1.Pod{}
 	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), storedPod))
 	require.NotContains(t, storedPod.Labels, "consumer.example/update")
+}
+
+// A controlled operation that reaches readiness with postReady configured
+// enters the asynchronous hook: the state label is armed and the signal labels
+// are mirrored to the workload Pod.
+func TestFinishLifecycleOperationEntersPostReady(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PostReady: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/ready": "true"},
+		},
+	}
+	pod := lifecycleTestPod(instance)
+	c := newLifecycleTestClient(t, instance, pod)
+	r := newLifecycleTestReconciler(t, c)
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+		UpdateRevision:  "rev-1",
+		CurrentRevision: "rev-1",
+	}
+	err := r.finishLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent:    true,
+		readySatisfied: true,
+	}, true, []*v1.Pod{pod})
+	require.NoError(t, err)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Equal(t, constants.RoleInstanceHookStatePostReady, roleinstancelifecycle.HookState(live))
+	require.Equal(t, "true", live.Labels["consumer.example/ready"])
+	storedPod := &v1.Pod{}
+	require.NoError(t, c.Get(ctx, client.ObjectKeyFromObject(pod), storedPod))
+	require.Equal(t, "true", storedPod.Labels["consumer.example/ready"])
+}
+
+// postReady must not overwrite a pre-operation barrier armed by the other
+// controller writer on the shared hook-state label.
+func TestFinishLifecycleOperationDefersPostReadyBehindArmedPreUpdate(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+		},
+		PostReady: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/ready": "true"},
+		},
+	}
+	instance.Labels = map[string]string{
+		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStatePreUpdate),
+		"consumer.example/update":                   "blocked",
+	}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+		UpdateRevision:  "rev-1",
+		CurrentRevision: "rev-1",
+	}
+	err := r.finishLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent:    true,
+		readySatisfied: true,
+	}, true, nil)
+	require.NoError(t, err)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Equal(t, constants.RoleInstanceHookStatePreUpdate, roleinstancelifecycle.HookState(live))
+	require.NotContains(t, live.Labels, "consumer.example/ready")
+}
+
+// Without postReady, resolving a controlled operation clears the grant state
+// so a cancelled or already-applied update cannot linger forever.
+func TestFinishLifecycleOperationClearsStateWithoutPostReadyHook(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/recover": "true"},
+		},
+	}
+	instance.Labels = map[string]string{
+		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStateUpdating),
+	}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+		UpdateRevision:  "rev-1",
+		CurrentRevision: "rev-1",
+	}
+	err := r.finishLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent:    true,
+		readySatisfied: true,
+	}, false, nil)
+	require.NoError(t, err)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Empty(t, roleinstancelifecycle.HookState(live))
+}
+
+// A steady, already-ready instance with no observed operation must not enter
+// postReady on every reconcile; the hook fires on transitions only.
+func TestFinishLifecycleOperationSkipsSteadyReadyInstance(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Status.Phase = workloadsv1alpha2.RoleInstancePhaseRunning
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PostReady: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/ready": "true"},
+		},
+	}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+		UpdateRevision:  "rev-1",
+		CurrentRevision: "rev-1",
+	}
+	err := r.finishLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent:    true,
+		readySatisfied: true,
+	}, false, nil)
+	require.NoError(t, err)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Empty(t, roleinstancelifecycle.HookState(live))
+}
+
+// After the postReady executor removes the signal label, reconciliation
+// clears the asynchronous state instead of re-arming it on every pass.
+func TestPrepareLifecycleOperationCleansReleasedPostReady(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Status.Phase = workloadsv1alpha2.RoleInstancePhaseRunning
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PostReady: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/ready": "true"},
+		},
+	}
+	instance.Labels = map[string]string{
+		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStatePostReady),
+	}
+	instance.Annotations = map[string]string{
+		constants.RoleInstanceLifecycleHookSignalLabelKeys: "consumer.example/ready",
+	}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+	_, err := r.prepareLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent: true,
+	}, nil)
+	require.NoError(t, err)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Empty(t, roleinstancelifecycle.HookState(live))
+	require.NotContains(t, live.Annotations, constants.RoleInstanceLifecycleHookSignalLabelKeys)
+}
+
+// A state whose owning hook was removed from the configuration is stale even
+// when other hooks remain: it must be cleared before the remaining protocol
+// can proceed, instead of blocking the instance forever.
+func TestPrepareLifecycleOperationClearsStaleStateWhenOwningHookRemoved(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/recover": "true"},
+		},
+	}
+	instance.Labels = map[string]string{
+		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStatePreUpdate),
+		"consumer.example/update":                   "blocked",
+	}
+	instance.Annotations = map[string]string{
+		constants.RoleInstanceLifecycleHookSignalLabelKeys: "consumer.example/update",
+	}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+	_, err := r.prepareLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent: false,
+	}, nil)
+	require.NoError(t, err)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.NotContains(t, live.Labels, "consumer.example/update")
+	require.Equal(t, constants.RoleInstanceHookStatePreRecover, roleinstancelifecycle.HookState(live))
+	require.Contains(t, live.Labels, "consumer.example/recover")
+}
+
+// The controller must fail safely when admission is bypassed: a reserved-prefix
+// signal key cannot execute the protocol or forge protocol state, and any
+// existing state is cleaned up instead.
+func TestLifecycleEnabledRejectsReservedSignalKeys(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{
+				constants.RBGPrefix + "fake-state": "Terminating",
+			},
+		},
+	}
+	instance.Labels = map[string]string{
+		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStateTerminating),
+		"consumer.example/drain":                    "true",
+	}
+	instance.Annotations = map[string]string{
+		constants.RoleInstanceLifecycleHookSignalLabelKeys: "consumer.example/drain",
+	}
+	instance.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+	require.False(t, r.lifecycleEnabled(instance))
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+	_, err := r.prepareLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent: false,
+	}, nil)
+	require.NoError(t, err)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Empty(t, roleinstancelifecycle.HookState(live))
+	require.NotContains(t, live.Labels, "consumer.example/drain")
+	require.NotContains(t, live.Finalizers, constants.RoleInstancePreDeleteFinalizer)
+}
+
+// A lifecycle-only generation bump is only masked when the pre-snapshot
+// generation was phase-confirmed; an in-flight workload update must not be
+// misclassified as recovery.
+func TestLifecycleOnlyGenerationBumpRequiresConfirmedGeneration(t *testing.T) {
+	confirmed := newReadinessTestInstance()
+	confirmed.Generation = 2
+	confirmed.Status.ObservedGeneration = 1
+	confirmed.Status.LastPhaseCompleteGeneration = 1
+	confirmed.Annotations = map[string]string{
+		constants.RoleInstanceLifecycleSnapshotGenerationAnnotationKey: "2",
+	}
+	require.True(t, lifecycleOnlyGenerationBump(confirmed))
+
+	inFlight := confirmed.DeepCopy()
+	inFlight.Status.LastPhaseCompleteGeneration = 0
+	require.False(t, lifecycleOnlyGenerationBump(inFlight))
 }
