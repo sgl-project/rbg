@@ -1298,6 +1298,15 @@ past; those hooks are triggered by controlled operations. When `preDelete`
 is enabled, the controller adds the reserved finalizer to existing stable
 RIs as described above.
 
+Objects written before this KEP may carry an unrecognized `lifecycle` field.
+The protocol starts only when the typed hook fields (`preUpdate`,
+`preRecover`, `postReady`, or `preDelete`) decode to a non-nil value; unknown
+keys alone do not enable it, and the controller never writes `lifecycle` for
+workloads that do not use it. An object whose stored `lifecycle` content
+already matches one of these hook fields is treated the same as a user
+configuration: enabling the feature is the operator's explicit act, and the
+reserved validation must pass before the protocol executes.
+
 Before enabling lifecycle hooks, deploy a compatible executor and verify its
 RBAC permissions, then allow hook configuration. Writing a pre-operation
 `signalLabel` before a consumer is available leaves the corresponding update,

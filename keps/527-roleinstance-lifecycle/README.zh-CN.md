@@ -957,6 +957,13 @@ preDelete 的 RI。存量 RI 启用功能不会仅因当前
 Ready 或历史更新而重放 postReady／preUpdate；这些 hooks 只由受控操作触发。
 启用 preDelete 时，controller 按前述规则为存量稳定 RI 补充保留 finalizer。
 
+本 KEP 之前的对象可能已经带有无法识别的 `lifecycle` 字段。协议只有在
+类型化的 hook 字段（`preUpdate`、`preRecover`、`postReady` 或 `preDelete`）
+解码为非 nil 时才会启动；仅存在未知 key 不会启用协议，controller 也不会
+为不使用该功能的 workload 写入 `lifecycle`。若存量 `lifecycle` 内容已经
+匹配某个 hook 字段，则等同于用户配置：启用功能属于操作者的显式行为，
+协议执行前必须通过保留字段的校验。
+
 启用 lifecycle 前，先部署兼容 executor 并确认 RBAC 权限，再开放 hook 配置。
 如果先写入前置 `signalLabel` 而没有可用消费者，对应更新、恢复或删除会持续等待。
 executor 不需要初始登记 `signalLabel`。
