@@ -156,10 +156,9 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "Refine mode mounts shared configmap for stateful role",
+			name: "Mounts shared configmap for stateful role",
 			rbg: func() *workloadsv1alpha2.RoleBasedGroup {
 				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-				rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 				return rbg
 			}(),
 			initialPodSpec: &corev1.PodTemplateSpec{
@@ -199,10 +198,9 @@ func TestDefaultInjector_InjectConfig(t *testing.T) {
 			},
 		},
 		{
-			name: "Refine mode skips config injection for stateless role",
+			name: "Skips config injection for stateless role",
 			rbg: func() *workloadsv1alpha2.RoleBasedGroup {
 				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").Obj()
-				rbg.SetDiscoveryConfigMode(constants.RefineDiscoveryConfigMode)
 				if rbg.Spec.Roles[0].Annotations == nil {
 					rbg.Spec.Roles[0].Annotations = make(map[string]string)
 				}

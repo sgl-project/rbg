@@ -18,11 +18,98 @@ package v1alpha2
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	admissionv1 "k8s.io/api/admission/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"sigs.k8s.io/controller-runtime/pkg/webhook/admission"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 )
+
+func defaultingContext(t *testing.T, operation admissionv1.Operation) context.Context {
+	t.Helper()
+	return admission.NewContextWithRequest(context.Background(), admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{Operation: operation},
+	})
+}
+
+func updateDefaultingContext(t *testing.T, old runtime.Object) context.Context {
+	t.Helper()
+	raw, err := json.Marshal(old)
+	require.NoError(t, err)
+	return admission.NewContextWithRequest(context.Background(), admission.Request{
+		AdmissionRequest: admissionv1.AdmissionRequest{
+			Operation: admissionv1.Update,
+			OldObject: runtime.RawExtension{Raw: raw},
+		},
+	})
+}
+
+func TestRoleBasedGroupDefaulterDiscoveryConfigVersion(t *testing.T) {
+	t.Run("CREATE defaults a missing annotation to v1", func(t *testing.T) {
+		rbg := &RoleBasedGroup{}
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(defaultingContext(t, admissionv1.Create), rbg))
+		assert.Equal(t, "v1", rbg.Annotations["rbg.workloads.x-k8s.io/discovery-config-version"])
+	})
+
+	t.Run("CREATE keeps an explicit v1alpha1 opt-out", func(t *testing.T) {
+		rbg := &RoleBasedGroup{}
+		rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(defaultingContext(t, admissionv1.Create), rbg))
+		assert.Equal(t, "v1alpha1", rbg.Annotations["rbg.workloads.x-k8s.io/discovery-config-version"])
+	})
+
+	t.Run("CREATE defaults a deprecated stateful role to v1alpha1", func(t *testing.T) {
+		rbg := &RoleBasedGroup{
+			Spec: RoleBasedGroupSpec{
+				Roles: []RoleSpec{{
+					Name: "worker",
+					Annotations: map[string]string{
+						constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType,
+					},
+				}},
+			},
+		}
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(defaultingContext(t, admissionv1.Create), rbg))
+		assert.Equal(t, "v1alpha1", rbg.Annotations["rbg.workloads.x-k8s.io/discovery-config-version"])
+	})
+
+	t.Run("UPDATE never defaults a missing annotation", func(t *testing.T) {
+		rbg := &RoleBasedGroup{}
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(defaultingContext(t, admissionv1.Update), rbg))
+		assert.NotContains(t, rbg.Annotations, "rbg.workloads.x-k8s.io/discovery-config-version")
+	})
+
+	t.Run("UPDATE carries a stored version when the request omits the key", func(t *testing.T) {
+		old := &RoleBasedGroup{}
+		old.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1)
+		rbg := &RoleBasedGroup{}
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(updateDefaultingContext(t, old), rbg))
+		assert.Equal(t, constants.DiscoveryConfigVersionV1, rbg.GetDiscoveryConfigVersion())
+	})
+
+	t.Run("UPDATE keeps the selected version", func(t *testing.T) {
+		rbg := &RoleBasedGroup{}
+		rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1)
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(defaultingContext(t, admissionv1.Update), rbg))
+		assert.Equal(t, "v1", rbg.Annotations["rbg.workloads.x-k8s.io/discovery-config-version"])
+	})
+
+	t.Run("an UPDATE object without a creation timestamp is not defaulted", func(t *testing.T) {
+		rbg := &RoleBasedGroup{}
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(defaultingContext(t, admissionv1.Update), rbg))
+		assert.NotContains(t, rbg.Annotations, "rbg.workloads.x-k8s.io/discovery-config-version")
+	})
+
+	t.Run("a context without an admission request never defaults", func(t *testing.T) {
+		rbg := &RoleBasedGroup{}
+		require.NoError(t, (&RoleBasedGroupDefaulter{}).Default(context.Background(), rbg))
+		assert.NotContains(t, rbg.Annotations, "rbg.workloads.x-k8s.io/discovery-config-version")
+	})
+}
 
 func TestRoleBasedGroupDefaulter_Default(t *testing.T) {
 	tests := []struct {
@@ -131,4 +218,91 @@ func TestRoleBasedGroupSetDefaulter_Default(t *testing.T) {
 	roles := rbgset.Spec.GroupTemplate.Spec.Roles
 	assert.Equal(t, RecreatePodUpdateStrategyType, roles[0].RolloutStrategy.RollingUpdate.Type)
 	assert.Equal(t, InPlaceIfPossibleUpdateStrategyType, roles[1].RolloutStrategy.RollingUpdate.Type)
+}
+
+func TestRoleBasedGroupSetDefaulterDiscoveryConfigVersion(t *testing.T) {
+	t.Run("CREATE defaults the template annotation to v1", func(t *testing.T) {
+		rbgset := &RoleBasedGroupSet{}
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(defaultingContext(t, admissionv1.Create), rbgset))
+		assert.Equal(
+			t,
+			"v1",
+			rbgset.Spec.GroupTemplate.Annotations["rbg.workloads.x-k8s.io/discovery-config-version"],
+		)
+	})
+
+	t.Run("CREATE keeps an explicit v1alpha1 opt-out", func(t *testing.T) {
+		rbgset := &RoleBasedGroupSet{}
+		rbgset.Spec.GroupTemplate.Annotations = map[string]string{
+			"rbg.workloads.x-k8s.io/discovery-config-version": "v1alpha1",
+		}
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(defaultingContext(t, admissionv1.Create), rbgset))
+		assert.Equal(
+			t,
+			"v1alpha1",
+			rbgset.Spec.GroupTemplate.Annotations["rbg.workloads.x-k8s.io/discovery-config-version"],
+		)
+	})
+
+	t.Run("CREATE defaults a deprecated stateful template role to v1alpha1", func(t *testing.T) {
+		rbgset := &RoleBasedGroupSet{
+			Spec: RoleBasedGroupSetSpec{
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Spec: RoleBasedGroupSpec{
+						Roles: []RoleSpec{{
+							Name: "worker",
+							Annotations: map[string]string{
+								constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType,
+							},
+						}},
+					},
+				},
+			},
+		}
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(defaultingContext(t, admissionv1.Create), rbgset))
+		assert.Equal(
+			t,
+			"v1alpha1",
+			rbgset.Spec.GroupTemplate.Annotations["rbg.workloads.x-k8s.io/discovery-config-version"],
+		)
+	})
+
+	t.Run("UPDATE never defaults a missing template annotation", func(t *testing.T) {
+		rbgset := &RoleBasedGroupSet{}
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(defaultingContext(t, admissionv1.Update), rbgset))
+		assert.Nil(t, rbgset.Spec.GroupTemplate.Annotations)
+	})
+
+	t.Run("UPDATE carries a stored template version when the request omits the key", func(t *testing.T) {
+		old := &RoleBasedGroupSet{}
+		old.Spec.GroupTemplate.Annotations = map[string]string{
+			constants.DiscoveryConfigVersionAnnotationKey: string(constants.DiscoveryConfigVersionV1),
+		}
+		rbgset := &RoleBasedGroupSet{}
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(updateDefaultingContext(t, old), rbgset))
+		assert.Equal(
+			t,
+			string(constants.DiscoveryConfigVersionV1),
+			rbgset.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey],
+		)
+	})
+
+	t.Run("a context without an admission request never defaults", func(t *testing.T) {
+		rbgset := &RoleBasedGroupSet{}
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(context.Background(), rbgset))
+		assert.Nil(t, rbgset.Spec.GroupTemplate.Annotations)
+	})
+
+	t.Run("CREATE defaults an explicitly empty template annotation", func(t *testing.T) {
+		rbgset := &RoleBasedGroupSet{}
+		rbgset.Spec.GroupTemplate.Annotations = map[string]string{
+			"rbg.workloads.x-k8s.io/discovery-config-version": "",
+		}
+		require.NoError(t, (&RoleBasedGroupSetDefaulter{}).Default(defaultingContext(t, admissionv1.Create), rbgset))
+		assert.Equal(
+			t,
+			"v1",
+			rbgset.Spec.GroupTemplate.Annotations["rbg.workloads.x-k8s.io/discovery-config-version"],
+		)
+	})
 }

@@ -242,7 +242,8 @@ Service 兼容逻辑位于：
 4. 动态端口分配维持现有环境变量和注解机制。
 5. 将 legacy RBG 迁移到单一 discovery 实现。
 6. 新增自定义存储对象 guardrail。API server 已强制 ConfigMap 的 1 MiB
-   限制。
+   限制；控制器只在写入前拒绝序列化后的 `config.yaml` 数据，使超限回滚
+   保留紧凑内容，而不是反复在 API server 写入时失败。
 7. 弃用或移除 v1alpha1。本 KEP 只定义两个版本共存。
 
 ## 方案
@@ -316,11 +317,15 @@ metadata:
 2. 支持的取值是 `v1alpha1` 和 `v1`。
 3. mutating webhook 只在 `CREATE` 时把 annotation 默认为 `v1`。
    它不会在 `UPDATE` 时为缺失的 annotation 补默认值；没有 annotation 的
-   存量 RBG 保持 `v1alpha1`。
+   存量 RBG 保持 `v1alpha1`，重建对象但省略该键的 `UPDATE` 会保留已
+   存储版本。显式空值在 `CREATE` 时按缺失处理。
+   含 deprecated stateful role、无法序列化紧凑内容的对象默认为
+   `v1alpha1`；对这些 role，`v1` 仍会被拒绝。
 4. 创建时显式设置 `v1alpha1` 是文档化的 opt-out。
 5. 对 RBGSet，webhook 在 `spec.groupTemplate.annotations` 中写默认值。
-   child RBG 继承该值。直接修改 child annotation 会被 RBGSet controller
-   覆盖。
+   child RBG 继承该值；早于该 annotation 的 set 保持历史默认
+   `v1alpha1`。直接修改 child annotation 会被覆盖，省略该键的模板
+   `UPDATE` 会保留已存储版本；如需回滚，请显式设置 `v1alpha1`。
 6. Admission 拒绝 `v1alpha1` 和 `v1` 以外的取值。
 7. Admission 对包含 deprecated stateful role 的 RBG 拒绝 `v1`。
 8. `RBGPredicate` 监听该 annotation，因此只修改 annotation 也会让 RBG
@@ -594,8 +599,11 @@ excludedOrdinals: "1,3"
 回退步骤：
 
 1. 将 annotation 改回 `v1alpha1`。
-2. controller 估算 v1alpha1 序列化大小。如果超过 1 MiB，拒绝回滚并保留
-   v1 内容。
+2. controller 序列化 v1alpha1 内容。如果超过 1 MiB，拒绝回滚并保留 v1
+   内容。controller 会报告配置类 blocker；只有当每个 stateful role 的
+   目标 ordinal 都在保留内容之内、且其余内容不变时，才继续 role
+   reconcile，因此缩减成员规模可以让后续重试重新满足大小限制。与回滚
+   一起做的其他变更需要先撤回，或继续使用 `v1`。
 3. 否则，等待 reconcile 完成，确认 ConfigMap 恢复为 v1alpha1。
 
 ### 测试计划
@@ -605,7 +613,8 @@ excludedOrdinals: "1,3"
 - v1 字段完整性。
 - annotation 缺失、`v1alpha1` 和 `v1` 的行为。
 - 新 RBG 的默认值行为，包括 `v1alpha1` opt-out。
-- webhook 只在 CREATE 时默认；UPDATE 不会为缺失 annotation 补默认值。
+- webhook 只在 CREATE 时默认；UPDATE 不会为缺失 annotation 补 `v1`
+  默认值，重建对象的 UPDATE 会保留已存储版本。
 - RBGSet 通过 `spec.groupTemplate.annotations` 传播 annotation。
 - `RBGPredicate` 对仅修改 annotation 的变化入队。
 - Admission 拒绝非法 annotation 取值，并对 deprecated stateful role 拒绝
@@ -783,7 +792,10 @@ Alpha 阶段未识别。
 
 #### 启用该功能是否新增 API 调用？
 
-只有现有 ConfigMap reconcile。
+现有 ConfigMap reconcile，以及一次 ConfigMap list/watch。控制器会为每个
+discovery ConfigMap 打上 group-name label，并把 cache 限制在该 label 上，
+因此不会缓存无关 ConfigMap。稳态 reconcile 不发起 ConfigMap 请求；内容变化时
+执行一次非缓存 ownership 读取，随后执行 server-side apply。
 
 #### 启用该功能是否引入新 API 类型？
 

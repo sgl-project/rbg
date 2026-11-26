@@ -1785,3 +1785,108 @@ func TestRestartBudgetWorkloadCompatibility(t *testing.T) {
 		}
 	}
 }
+
+func TestValidateDiscoveryConfigVersion(t *testing.T) {
+	tests := []struct {
+		name        string
+		version     constants.DiscoveryConfigVersion
+		workload    string
+		errContains string
+	}{
+		{
+			name:     "missing version is historical v1alpha1",
+			version:  "",
+			workload: constants.RoleInstanceSetWorkloadType,
+		},
+		{
+			name:     "v1alpha1 is accepted",
+			version:  constants.DiscoveryConfigVersionV1Alpha1,
+			workload: constants.RoleInstanceSetWorkloadType,
+		},
+		{
+			name:     "v1 accepts RoleInstanceSet",
+			version:  constants.DiscoveryConfigVersionV1,
+			workload: constants.RoleInstanceSetWorkloadType,
+		},
+		{
+			name:     "v1 accepts a stateless deprecated workload",
+			version:  constants.DiscoveryConfigVersionV1,
+			workload: constants.DeploymentWorkloadType,
+		},
+		{
+			name:        "v1 rejects a deprecated stateful workload",
+			version:     constants.DiscoveryConfigVersionV1,
+			workload:    constants.StatefulSetWorkloadType,
+			errContains: "v1 is not supported for deprecated stateful workload type",
+		},
+		{
+			name:        "invalid version is rejected",
+			version:     "v2",
+			workload:    constants.RoleInstanceSetWorkloadType,
+			errContains: "unsupported value",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rbg := &RoleBasedGroup{
+				Spec: RoleBasedGroupSpec{
+					Roles: []RoleSpec{{
+						Name: "worker",
+						Annotations: map[string]string{
+							constants.RoleWorkloadTypeAnnotationKey: tt.workload,
+						},
+					}},
+				},
+			}
+			rbg.SetDiscoveryConfigVersion(tt.version)
+
+			err := ValidateDiscoveryConfigVersion(rbg)
+			if tt.errContains == "" {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				assert.Contains(t, err.Error(), tt.errContains)
+			}
+		})
+	}
+}
+
+func TestValidateRBGSetDiscoveryConfigVersion(t *testing.T) {
+	t.Run("v1 with a RoleInstanceSet template is accepted", func(t *testing.T) {
+		rbgs := &RoleBasedGroupSet{
+			Spec: RoleBasedGroupSetSpec{
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Annotations: map[string]string{
+						constants.DiscoveryConfigVersionAnnotationKey: "v1",
+					},
+					Spec: RoleBasedGroupSpec{
+						Roles: []RoleSpec{{Name: "worker"}},
+					},
+				},
+			},
+		}
+		require.NoError(t, validateRBGSetDiscoveryConfigVersion(rbgs))
+	})
+
+	t.Run("v1 with a deprecated stateful template role is rejected", func(t *testing.T) {
+		rbgs := &RoleBasedGroupSet{
+			Spec: RoleBasedGroupSetSpec{
+				GroupTemplate: RoleBasedGroupTemplateSpec{
+					Annotations: map[string]string{
+						constants.DiscoveryConfigVersionAnnotationKey: "v1",
+					},
+					Spec: RoleBasedGroupSpec{
+						Roles: []RoleSpec{{
+							Name: "worker",
+							Annotations: map[string]string{
+								constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType,
+							},
+						}},
+					},
+				},
+			},
+		}
+		require.Error(t, validateRBGSetDiscoveryConfigVersion(rbgs))
+	})
+}

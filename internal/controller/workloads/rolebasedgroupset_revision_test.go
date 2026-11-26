@@ -323,20 +323,25 @@ func TestPruneGroupSetRevisionsRejectsChangedDeleteTarget(t *testing.T) {
 	assert.Equal(t, types.UID("foreign"), metav1.GetControllerOf(got).UID)
 }
 
-// TestGroupSetMatchesRevision_IgnoresControllerOwnedAnnotations pins the recreate-loop
-// regression: a child carrying discovery-config-mode must still match a revision whose template
-// has no annotations, or the group gets recreated every time the RBG controller rewrites it.
-func TestGroupSetMatchesRevision_IgnoresControllerOwnedAnnotations(t *testing.T) {
+// TestGroupSetMatchesRevision_IgnoresLiveSyncedAnnotations pins the recreate-loop
+// regression: a child carrying a controller-synced annotation must still match a
+// revision whose template has no annotations. This covers the retired
+// discovery-config-mode key still stored on children written by older
+// controllers and the KEP-576 discovery-config-version key.
+func TestGroupSetMatchesRevision_IgnoresLiveSyncedAnnotations(t *testing.T) {
 	r := &RoleBasedGroupSetReconciler{}
 	revision := &groupSetRevision{name: "rbgs-x", template: revisionTestTemplate(nil)}
 
-	assert.True(
-		t,
-		r.groupSetMatchesRevision(
-			revisionTestChild(map[string]string{constants.DiscoveryConfigModeAnnotationKey: "refine"}), revision,
-		),
-		"a controller-owned annotation must not read as template drift",
-	)
+	for key, value := range map[string]string{
+		constants.DiscoveryConfigModeAnnotationKey:    "refine",
+		constants.DiscoveryConfigVersionAnnotationKey: "v1",
+	} {
+		assert.True(
+			t,
+			r.groupSetMatchesRevision(revisionTestChild(map[string]string{key: value}), revision),
+			"a controller-synced annotation must not read as template drift",
+		)
+	}
 	assert.True(
 		t,
 		r.groupSetMatchesRevision(revisionTestChild(nil), revision),
@@ -399,13 +404,16 @@ func TestGroupSetMatchesRevision_EmptyCollectionsJSONRoundTrip(t *testing.T) {
 	}
 }
 
-// TestGroupSetOnlyReplicasChanged_IgnoresControllerOwnedAnnotations keeps the scale path on the
-// same rule: a replicas-only change must route to the in-place update even when the child carries
-// discovery-config-mode.
-func TestGroupSetOnlyReplicasChanged_IgnoresControllerOwnedAnnotations(t *testing.T) {
+// TestGroupSetOnlyReplicasChanged_IgnoresLiveSyncedAnnotations keeps the scale
+// path on the same rule: a replicas-only change must route to the in-place
+// update even when the child carries a controller-synced annotation.
+func TestGroupSetOnlyReplicasChanged_IgnoresLiveSyncedAnnotations(t *testing.T) {
 	template := revisionTestTemplate(nil)
 	template.Spec.Roles[0].Replicas = ptr.To(int32(3))
-	child := revisionTestChild(map[string]string{constants.DiscoveryConfigModeAnnotationKey: "legacy"})
+	child := revisionTestChild(map[string]string{
+		constants.DiscoveryConfigModeAnnotationKey:    "legacy",
+		constants.DiscoveryConfigVersionAnnotationKey: "v1alpha1",
+	})
 	assert.True(t, groupSetOnlyReplicasChanged(child, template))
 }
 
@@ -420,7 +428,8 @@ func TestNormalizedGroupSetTemplate_DropsControllerOwnedKeys(t *testing.T) {
 			"tier":                             "backend",
 		},
 		Annotations: map[string]string{
-			constants.DiscoveryConfigModeAnnotationKey: "refine",
+			constants.DiscoveryConfigModeAnnotationKey:    "refine",
+			constants.DiscoveryConfigVersionAnnotationKey: "v1",
 			"app.io/env": "prod",
 		},
 		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
@@ -484,7 +493,6 @@ func TestGroupSetConversionAnnotationsExcludedFromRevision(t *testing.T) {
 
 func TestGroupSetTemplateAnnotationDirection(t *testing.T) {
 	for _, key := range []string{
-		constants.DiscoveryConfigModeAnnotationKey,
 		constants.ConversionV1alpha1CoordinationAnnotationKey,
 		constants.ConversionV1alpha1PodGroupPolicyAnnotationKey,
 		constants.ConversionV1alpha2RolloutStrategyAnnotationKey,
@@ -519,18 +527,156 @@ func TestGroupSetTemplateAnnotationDirection(t *testing.T) {
 	}
 }
 
+func TestGroupSetDiscoveryConfigVersionAnnotationDirection(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		template    map[string]string
+		child       map[string]string
+		wantValue   string
+		wantPresent bool
+		changed     bool
+	}{
+		// The template owns the key: a child-only value is removed, and a
+		// template value overwrites a direct child edit.
+		{name: "child-only value returns to v1alpha1", child: map[string]string{"k": "child"}, wantValue: "v1alpha1", wantPresent: true, changed: true},
+		{name: "missing value is added", template: map[string]string{"k": "template"}, wantValue: "template", wantPresent: true, changed: true},
+		{name: "direct child edit is overwritten", template: map[string]string{"k": "template"}, child: map[string]string{"k": "child"}, wantValue: "template", wantPresent: true, changed: true},
+		{name: "matching value stays", template: map[string]string{"k": "same"}, child: map[string]string{"k": "same"}, wantValue: "same", wantPresent: true},
+		{name: "explicit empty template value returns to v1alpha1", template: map[string]string{"k": ""}, wantValue: "v1alpha1", wantPresent: true, changed: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			key := constants.DiscoveryConfigVersionAnnotationKey
+			rewrite := func(annotations map[string]string) map[string]string {
+				if annotations == nil {
+					return nil
+				}
+				return map[string]string{key: annotations["k"]}
+			}
+			r := &RoleBasedGroupSetReconciler{}
+			set := &workloadsv1alpha2.RoleBasedGroupSet{Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+				GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{Annotations: rewrite(tt.template)},
+			}}
+			child := revisionTestChild(rewrite(tt.child))
+			assert.Equal(t, tt.changed, r.needsTemplateAnnotationUpdate(set, child))
+			r.syncRBGMetadata(set, child)
+			if tt.wantPresent {
+				assert.Equal(t, map[string]string{key: tt.wantValue}, child.Annotations)
+			} else {
+				assert.Nil(t, child.Annotations)
+			}
+			assert.False(t, r.needsTemplateAnnotationUpdate(set, child), "sync must converge")
+		})
+	}
+}
+
 func TestNewRBGForSetRevision_SystemAnnotations(t *testing.T) {
 	key := constants.ConversionV1alpha1CoordinationAnnotationKey
 	revision := &groupSetRevision{name: "old", template: revisionTestTemplate(map[string]string{"version": "old"})}
 	set := revisionTestRollingSet(1, revision)
 	set.Spec.GroupTemplate.Annotations = map[string]string{"version": "new", key: "latest-coordination"}
 	child := newRBGForSetRevision(set, 0, revision)
-	assert.Equal(t, map[string]string{"version": "old", key: "latest-coordination"}, child.Annotations)
+	assert.Equal(t, map[string]string{
+		"version": "old", key: "latest-coordination",
+		constants.DiscoveryConfigVersionAnnotationKey: "v1alpha1",
+	}, child.Annotations)
 	assert.Equal(t, revision.template.Spec, child.Spec)
 	assert.Equal(t, revision.name, child.Labels[constants.GroupSetRevisionLabelKey])
 	child.Annotations[key] = "mutated"
 	assert.Equal(t, "latest-coordination", set.Spec.GroupTemplate.Annotations[key])
 	assert.Equal(t, map[string]string{"version": "old"}, revision.template.Annotations)
+}
+
+func TestNewRBGForSetRevisionDiscoveryConfigVersion(t *testing.T) {
+	for _, tt := range []struct {
+		name             string
+		templateVersion  string
+		deprecated       bool
+		wantChildVersion string
+	}{
+		{name: "explicit v1 template is inherited", templateVersion: "v1", wantChildVersion: "v1"},
+		{name: "explicit v1alpha1 opt-out is inherited", templateVersion: "v1alpha1", wantChildVersion: "v1alpha1"},
+		{name: "missing template keeps the historical default", wantChildVersion: "v1alpha1"},
+		{
+			name:             "v1 template is downgraded for a deprecated held revision",
+			templateVersion:  "v1",
+			deprecated:       true,
+			wantChildVersion: "v1alpha1",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			revision := &groupSetRevision{name: "old", template: revisionTestTemplate(nil)}
+			set := revisionTestRollingSet(1, revision)
+			if tt.templateVersion != "" {
+				set.Spec.GroupTemplate.Annotations = map[string]string{
+					constants.DiscoveryConfigVersionAnnotationKey: tt.templateVersion,
+				}
+			}
+			if tt.deprecated {
+				set.Spec.GroupTemplate.Spec.Roles[0].Annotations = map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType,
+				}
+				revision.template.Spec.Roles[0].Annotations = map[string]string{
+					constants.RoleWorkloadTypeAnnotationKey: constants.StatefulSetWorkloadType,
+				}
+			}
+			child := newRBGForSetRevision(set, 0, revision)
+			assert.Equal(t, tt.wantChildVersion, child.Annotations[constants.DiscoveryConfigVersionAnnotationKey])
+		})
+	}
+}
+
+func TestSyncRollingGroupSetDiscoveryConfigVersionConvergence(t *testing.T) {
+	for _, tt := range []struct {
+		name            string
+		templateVersion string
+		childVersion    string
+		want            string
+	}{
+		{
+			name:            "template value overwrites a direct child edit",
+			templateVersion: "v1",
+			childVersion:    "v1alpha1",
+			want:            "v1",
+		},
+		{
+			name:         "template removal returns the child to v1alpha1",
+			childVersion: "v1",
+			want:         "v1alpha1",
+		},
+		{
+			name: "implicit legacy children stay implicit",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			update := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+			set := revisionTestRollingSet(1, update)
+			if tt.templateVersion != "" {
+				set.Spec.GroupTemplate.Annotations = map[string]string{
+					constants.DiscoveryConfigVersionAnnotationKey: tt.templateVersion,
+				}
+			}
+			child := revisionTestReadyChild(set, 0, update)
+			key := constants.DiscoveryConfigVersionAnnotationKey
+			if tt.childVersion == "" {
+				delete(child.Annotations, key)
+			} else {
+				child.Annotations[key] = tt.childVersion
+			}
+			r, _ := revisionTestRollingReconciler(t, set, child)
+
+			changed, _ := revisionTestSync(t, r, set, update, update)
+			assert.Equal(t, tt.want != "", changed, "convergence must report a change only when it writes")
+			got := revisionTestGetChild(t, r, set, 0)
+			if tt.want == "" {
+				assert.NotContains(t, got.Annotations, key)
+			} else {
+				assert.Equal(t, tt.want, got.Annotations[key])
+			}
+
+			changed, _ = revisionTestSync(t, r, set, update, update)
+			assert.False(t, changed, "convergence must not write a second time")
+		})
+	}
 }
 
 func TestSyncRollingGroupSet_SystemAnnotations(t *testing.T) {
@@ -1421,7 +1567,8 @@ func TestSyncRollingGroupSet_InPlaceUpdateFullSpecAndMetadata(t *testing.T) {
 	}, child.Labels)
 	assert.Equal(t, map[string]string{
 		"changed": "new", "added": "new", constants.DiscoveryConfigModeAnnotationKey: "refine",
-		constants.RolloutRequestAnnotationKey: "1",
+		constants.DiscoveryConfigVersionAnnotationKey: "v1alpha1",
+		constants.RolloutRequestAnnotationKey:         "1",
 	}, child.Annotations)
 	assert.Equal(t, original.Name, child.Name)
 	assert.Equal(t, original.Namespace, child.Namespace)
@@ -1450,6 +1597,7 @@ func TestSyncRollingGroupSet_InPlaceUpdateFullSpecAndMetadata(t *testing.T) {
 	}, child.Labels)
 	assert.Equal(t, map[string]string{
 		constants.DiscoveryConfigModeAnnotationKey: "refine", constants.RolloutRequestAnnotationKey: "2",
+		constants.DiscoveryConfigVersionAnnotationKey: "v1alpha1",
 	}, child.Annotations)
 	assert.Equal(t, cleared.template.Spec, child.Spec)
 	assert.Equal(t, original.UID, child.UID)
@@ -1698,6 +1846,7 @@ func TestSyncRollingGroupSet_RecreateToInPlaceUpdateReclaimsStoredSurgeWithinBud
 func revisionTestUserAnnotations(annotations map[string]string) map[string]string {
 	result := maps.Clone(annotations)
 	delete(result, constants.RolloutRequestAnnotationKey)
+	delete(result, constants.DiscoveryConfigVersionAnnotationKey)
 	return result
 }
 

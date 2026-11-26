@@ -139,7 +139,14 @@ const (
 	// Example: rbg.workloads.x-k8s.io/role-instance-gang-scheduling: "true"
 	RoleInstanceGangSchedulingAnnotationKey = RBGPrefix + "role-instance-gang-scheduling"
 
-	// DiscoveryConfigModeAnnotationKey identifies discovery config handling mode.
+	// DiscoveryConfigVersionAnnotationKey selects the serialized content version
+	// of the RBG discovery ConfigMap. Supported values are v1alpha1 and v1.
+	DiscoveryConfigVersionAnnotationKey = RBGPrefix + "discovery-config-version"
+
+	// DiscoveryConfigModeAnnotationKey is the retired v0.7 discovery mode
+	// selector. The controller no longer reads or writes it. The key remains
+	// defined so RBGSet revision matching can keep ignoring the value already
+	// stored on children written by older controllers.
 	DiscoveryConfigModeAnnotationKey = RBGPrefix + "discovery-config-mode"
 
 	// RolloutRequestAnnotationKey carries an opaque token a managing controller changes with every
@@ -161,6 +168,11 @@ const (
 	// ConversionV1alpha2RolloutStatusAnnotationKey stores v1alpha2-only rollout status on the
 	// v1alpha1 view during conversion.
 	ConversionV1alpha2RolloutStatusAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-rollout-status"
+
+	// ConversionV1alpha2DiscoveryConfigVersionAnnotationKey stores the KEP-576
+	// discovery-config-version on the v1alpha1 view of RoleBasedGroupSet, whose
+	// schema has no spec.groupTemplate.annotations field.
+	ConversionV1alpha2DiscoveryConfigVersionAnnotationKey = "conversion.workloads.x-k8s.io/v1alpha2-discovery-config-version"
 )
 
 // Lifecycle management annotations

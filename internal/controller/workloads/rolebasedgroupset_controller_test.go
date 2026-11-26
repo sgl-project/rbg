@@ -701,6 +701,20 @@ func TestRoleBasedGroupSetReconciler_needsTemplateAnnotationUpdate(t *testing.T)
 			},
 			expectedUpdate: false,
 		},
+		{
+			name: "RBG carries a template-owned annotation the template lacks",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Annotations: map[string]string{constants.DiscoveryConfigVersionAnnotationKey: "v1"},
+				},
+			},
+			expectedUpdate: true,
+		},
 	}
 
 	for _, tt := range tests {
@@ -865,10 +879,13 @@ func TestNewRBGForSet_MetadataPropagation(t *testing.T) {
 				"tier":                          "backend",
 				"env":                           "prod",
 			},
-			expectedAnnotations: map[string]string{"app.io/config": "v1"},
+			expectedAnnotations: map[string]string{
+				"app.io/config": "v1",
+				constants.DiscoveryConfigVersionAnnotationKey: string(constants.DiscoveryConfigVersionV1Alpha1),
+			},
 		},
 		{
-			name: "Empty template metadata produces only system labels and no annotations",
+			name: "Empty template metadata produces system labels and the historical discovery version",
 			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset", Namespace: "default"},
 				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
@@ -884,7 +901,9 @@ func TestNewRBGForSet_MetadataPropagation(t *testing.T) {
 				constants.GroupSetNameLabelKey:  "test-rbgset",
 				constants.GroupSetIndexLabelKey: "0",
 			},
-			expectedAnnotations: nil,
+			expectedAnnotations: map[string]string{
+				constants.DiscoveryConfigVersionAnnotationKey: string(constants.DiscoveryConfigVersionV1Alpha1),
+			},
 		},
 		{
 			name: "Template label does not override system-managed labels",
@@ -910,7 +929,9 @@ func TestNewRBGForSet_MetadataPropagation(t *testing.T) {
 				constants.GroupSetIndexLabelKey: "1", // system label wins, index is 1 not 99
 				"tier":                          "backend",
 			},
-			expectedAnnotations: nil,
+			expectedAnnotations: map[string]string{
+				constants.DiscoveryConfigVersionAnnotationKey: string(constants.DiscoveryConfigVersionV1Alpha1),
+			},
 		},
 	}
 
@@ -1213,6 +1234,64 @@ func TestSyncRBGMetadata(t *testing.T) {
 				constants.GroupSetIndexLabelKey: "0",
 			},
 			expectedAnnotations: map[string]string{constants.DiscoveryConfigModeAnnotationKey: "legacy"},
+		},
+		{
+			name: "Returns a template-owned annotation to v1alpha1 when the template lacks it",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{constants.DiscoveryConfigVersionAnnotationKey: "v1"},
+				},
+			},
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "0",
+			},
+			expectedAnnotations: map[string]string{
+				constants.DiscoveryConfigVersionAnnotationKey: string(constants.DiscoveryConfigVersionV1Alpha1),
+			},
+		},
+		{
+			name: "Overwrites a direct child edit of a template-owned annotation",
+			rbgset: &workloadsv1alpha2.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbgset"},
+				Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+					GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+						Annotations: map[string]string{
+							constants.DiscoveryConfigVersionAnnotationKey: "v1",
+							"app.io/env": "prod",
+						},
+					},
+				},
+			},
+			rbg: &workloadsv1alpha2.RoleBasedGroup{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: map[string]string{
+						constants.GroupSetNameLabelKey:  "test-rbgset",
+						constants.GroupSetIndexLabelKey: "0",
+					},
+					Annotations: map[string]string{
+						constants.DiscoveryConfigVersionAnnotationKey: "v1alpha1",
+					},
+				},
+			},
+			expectedLabels: map[string]string{
+				constants.GroupSetNameLabelKey:  "test-rbgset",
+				constants.GroupSetIndexLabelKey: "0",
+			},
+			expectedAnnotations: map[string]string{
+				constants.DiscoveryConfigVersionAnnotationKey: "v1",
+				"app.io/env": "prod",
+			},
 		},
 	}
 

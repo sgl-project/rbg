@@ -131,6 +131,15 @@ func (src *RoleBasedGroupSet) ConvertTo(dstRaw conversion.Hub) error {
 	// native fields, so the conversion-only keys must not leak into storage.
 	delete(dst.Annotations, annotationV1alpha2RolloutStrategy)
 	delete(dst.Annotations, annotationV1alpha2RolloutStatus)
+	// v1alpha1 has no spec.groupTemplate.annotations, so the KEP-576 discovery
+	// version travels in a conversion stash instead of being dropped.
+	if raw := src.Annotations[constants.ConversionV1alpha2DiscoveryConfigVersionAnnotationKey]; raw != "" {
+		if dst.Spec.GroupTemplate.Annotations == nil {
+			dst.Spec.GroupTemplate.Annotations = make(map[string]string)
+		}
+		dst.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey] = raw
+	}
+	delete(dst.Annotations, constants.ConversionV1alpha2DiscoveryConfigVersionAnnotationKey)
 
 	return nil
 }
@@ -173,13 +182,21 @@ func (dst *RoleBasedGroupSet) ConvertFrom(srcRaw conversion.Hub) error {
 		Conditions:         src.Status.Conditions,
 	}
 
-	// Stash v1alpha2-only fields on the v1alpha1 view. The stash covers the strategy and
-	// rollout status only: v1alpha1 has no representation for groupTemplate labels and
-	// annotations, so such a write still drops them and thereby changes revision identity.
+	// Stash v1alpha2-only fields on the v1alpha1 view. The stash covers the
+	// rollout strategy, rollout status, and discovery-config-version: v1alpha1
+	// has no representation for groupTemplate labels and annotations, so any
+	// other annotation is still dropped on a v1alpha1 write.
 	// removeConversionAnnotations only strips v1alpha1 stash keys, so these must be added
 	// after it; clear any stale copies first.
 	delete(dst.Annotations, annotationV1alpha2RolloutStrategy)
 	delete(dst.Annotations, annotationV1alpha2RolloutStatus)
+	delete(dst.Annotations, constants.ConversionV1alpha2DiscoveryConfigVersionAnnotationKey)
+	if version := src.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigVersionAnnotationKey]; version != "" {
+		if dst.Annotations == nil {
+			dst.Annotations = make(map[string]string)
+		}
+		dst.Annotations[constants.ConversionV1alpha2DiscoveryConfigVersionAnnotationKey] = version
+	}
 	if src.Spec.RolloutStrategy != nil {
 		data, err := json.Marshal(src.Spec.RolloutStrategy)
 		if err != nil {

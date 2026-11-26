@@ -18,6 +18,8 @@ package v1alpha2
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/onsi/ginkgo/v2"
 	"github.com/onsi/gomega"
@@ -26,6 +28,7 @@ import (
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
+	"sigs.k8s.io/rbgs/api/workloads/ordinals"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/pkg/discovery"
 	"sigs.k8s.io/rbgs/test/e2e/framework"
@@ -40,6 +43,9 @@ func RunDiscoveryConfigMapTestCases(f *framework.Framework) {
 	ginkgo.Describe("discovery ConfigMap for mixed role patterns", ginkgo.Label("feature"), func() {
 		ginkgo.It("should expose component-level addresses for multi-pod patterns and keep native behavior for StandalonePattern", func() {
 			rbg := buildDiscoveryConfigMapRBG(f.Namespace)
+			// New RBGs default to v1 through the webhook, but pin the version
+			// explicitly so this test does not depend on webhook deployment.
+			rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1)
 
 			f.RegisterDebugFn(func() {
 				dumpDebugInfo(f, rbg)
@@ -61,6 +67,32 @@ func RunDiscoveryConfigMapTestCases(f *framework.Framework) {
 			// their addresses are not expected to resolve.
 			ginkgo.By("Verifying prefill leader address is reachable through cluster DNS")
 			verifyPrefillLeaderAddressReachable(f, rbg)
+		})
+
+		ginkgo.It("should honor an explicit v1alpha1 opt-out", func() {
+			rbg := wrappersv2.BuildBasicRoleBasedGroup("discovery-v1alpha1-optout", f.Namespace).
+				WithRoles([]workloadsv1alpha2.RoleSpec{
+					wrappersv2.BuildStandaloneRole("router").WithReplicas(1).Obj(),
+				}).Obj()
+			rbg.SetDiscoveryConfigVersion(constants.DiscoveryConfigVersionV1Alpha1)
+
+			f.RegisterDebugFn(func() {
+				dumpDebugInfo(f, rbg)
+				dumpDiscoveryConfigMapDebugInfo(f, rbg)
+			})
+			gomega.Expect(f.Client.Create(f.Ctx, rbg)).Should(gomega.Succeed())
+			f.ExpectRbgV2Equal(rbg)
+
+			cm := &corev1.ConfigMap{}
+			gomega.Eventually(func() error {
+				return f.Client.Get(f.Ctx, client.ObjectKey{Name: rbg.Name, Namespace: rbg.Namespace}, cm)
+			}, testutils.Timeout, testutils.Interval).Should(gomega.Succeed())
+
+			var cfg discovery.ClusterConfig
+			gomega.Expect(yaml.Unmarshal([]byte(cm.Data["config.yaml"]), &cfg)).Should(gomega.Succeed())
+			gomega.Expect(cm.Data["config.yaml"]).Should(gomega.Not(gomega.ContainSubstring("apiVersion:")))
+			gomega.Expect(cfg.Roles["router"].Size).Should(gomega.Equal(1))
+			gomega.Expect(cfg.Roles["router"].Instances).Should(gomega.HaveLen(1))
 		})
 	})
 }
@@ -112,8 +144,8 @@ func buildDiscoveryConfigMapRBG(namespace string) *workloadsv1alpha2.RoleBasedGr
 	return rbg
 }
 
-// verifyDiscoveryConfigMap fetches the ConfigMap and verifies that every Pod of
-// each role appears as its own Instance entry with the correct FQDN address.
+// verifyDiscoveryConfigMap fetches the ConfigMap and verifies that the compact
+// v1 content decodes to the same address set the v1alpha1 builder emitted.
 func verifyDiscoveryConfigMap(f *framework.Framework, rbg *workloadsv1alpha2.RoleBasedGroup) {
 	cm := &corev1.ConfigMap{}
 	gomega.Eventually(func() error {
@@ -127,55 +159,77 @@ func verifyDiscoveryConfigMap(f *framework.Framework, rbg *workloadsv1alpha2.Rol
 	configData, ok := cm.Data["config.yaml"]
 	gomega.Expect(ok).To(gomega.BeTrue(), "ConfigMap should contain config.yaml key")
 
-	var cfg discovery.ClusterConfig
+	var cfg discovery.CompactConfig
 	gomega.Expect(yaml.Unmarshal([]byte(configData), &cfg)).Should(gomega.Succeed(),
 		"config.yaml should be valid YAML")
+	gomega.Expect(cfg.APIVersion).Should(gomega.Equal("v1"), "config.yaml should select the compact v1 format")
+	gomega.Expect(cfg.Group).Should(gomega.Equal(rbg.Name))
 
 	// Verify the router role (StandalonePattern): 2 replicas × 1 pod = 2 instances.
 	ginkgo.By("Verifying router (StandalonePattern) instances")
-	routerInfo, ok := cfg.Roles["router"]
-	gomega.Expect(ok).To(gomega.BeTrue(), "config should contain 'router' role")
-	gomega.Expect(routerInfo.Size).To(gomega.Equal(2), "router role size should be 2")
-	gomega.Expect(routerInfo.Instances).To(gomega.HaveLen(2), "router should have 2 instances")
-	for i, inst := range routerInfo.Instances {
-		gomega.Expect(inst.Address).To(gomega.Equal(
-			fmt.Sprintf("%s-router-%d.s-%s-router", rbg.Name, i, rbg.Name),
-		), fmt.Sprintf("router instance %d address should match pod name", i))
-	}
+	router := compactRoleByName(cfg.Roles, "router")
+	gomega.Expect(router.Members).To(gomega.Equal(2), "router role should have 2 members")
+	gomega.Expect(expandCompactRole(router)).To(gomega.Equal([]string{
+		fmt.Sprintf("%s-router-0.s-%s-router", rbg.Name, rbg.Name),
+		fmt.Sprintf("%s-router-1.s-%s-router", rbg.Name, rbg.Name),
+	}))
 
 	// Verify the prefill role (LeaderWorkerPattern on RoleInstanceSet):
 	// 1 replica × size 2 = 2 flat instances (leader-0, worker-0).
 	ginkgo.By("Verifying prefill (LeaderWorkerPattern) flat per-pod instances")
-	prefillInfo, ok := cfg.Roles["prefill"]
-	gomega.Expect(ok).To(gomega.BeTrue(), "config should contain 'prefill' role")
-	gomega.Expect(prefillInfo.Size).To(gomega.Equal(2), "prefill role size should be 2 (1 replica × 2 pods)")
-	gomega.Expect(prefillInfo.Instances).To(gomega.HaveLen(2), "prefill should have 2 flat instances (leader + worker)")
-
-	expectedPrefillAddresses := []string{
+	prefill := compactRoleByName(cfg.Roles, "prefill")
+	gomega.Expect(prefill.Members).To(gomega.Equal(1), "prefill role should have 1 member")
+	gomega.Expect(expandCompactRole(prefill)).To(gomega.Equal([]string{
 		fmt.Sprintf("%s-prefill-0-0.s-%s-prefill", rbg.Name, rbg.Name),
 		fmt.Sprintf("%s-prefill-0-1.s-%s-prefill", rbg.Name, rbg.Name),
-	}
-	for i, inst := range prefillInfo.Instances {
-		gomega.Expect(inst.Address).To(gomega.Equal(expectedPrefillAddresses[i]),
-			fmt.Sprintf("prefill instance %d address mismatch", i))
-	}
+	}))
 
 	// Verify the decode role (CustomComponentsPattern):
 	// 1 replica × (leader×1 + worker×1) = 2 flat instances.
 	ginkgo.By("Verifying decode (CustomComponentsPattern) flat per-pod instances")
-	decodeInfo, ok := cfg.Roles["decode"]
-	gomega.Expect(ok).To(gomega.BeTrue(), "config should contain 'decode' role")
-	gomega.Expect(decodeInfo.Size).To(gomega.Equal(2), "decode role size should be 2 (1 replica × 2 components)")
-	gomega.Expect(decodeInfo.Instances).To(gomega.HaveLen(2), "decode should have 2 flat instances (leader + worker)")
-
-	expectedDecodeAddresses := []string{
+	decode := compactRoleByName(cfg.Roles, "decode")
+	gomega.Expect(decode.Members).To(gomega.Equal(1), "decode role should have 1 member")
+	gomega.Expect(expandCompactRole(decode)).To(gomega.Equal([]string{
 		fmt.Sprintf("%s-decode-0-leader-0.s-%s-decode", rbg.Name, rbg.Name),
 		fmt.Sprintf("%s-decode-0-worker-0.s-%s-decode", rbg.Name, rbg.Name),
+	}))
+}
+
+func compactRoleByName(roles []discovery.CompactRole, name string) discovery.CompactRole {
+	for _, role := range roles {
+		if role.Name == name {
+			return role
+		}
 	}
-	for i, inst := range decodeInfo.Instances {
-		gomega.Expect(inst.Address).To(gomega.Equal(expectedDecodeAddresses[i]),
-			fmt.Sprintf("decode instance %d address mismatch", i))
+	panic(fmt.Sprintf("compact config should contain role %q", name))
+}
+
+// expandCompactRole is the KEP-576 reference consumer: it decodes membership
+// by jumping over excluded ranges, then expands component templates.
+func expandCompactRole(role discovery.CompactRole) []string {
+	excluded, err := ordinals.Parse(role.ExcludedOrdinals)
+	gomega.Expect(err).NotTo(gomega.HaveOccurred())
+
+	members := make([]int, 0, role.Members)
+	for next := 0; len(members) < role.Members; {
+		ordinal, err := excluded.Next(next)
+		gomega.Expect(err).NotTo(gomega.HaveOccurred())
+		members = append(members, ordinal)
+		next = ordinal + 1
 	}
+
+	addresses := make([]string, 0, role.Members)
+	for _, member := range members {
+		for _, component := range role.Components {
+			for i := 0; i < component.Size; i++ {
+				address := component.Base
+				address = strings.ReplaceAll(address, "{roleIndex}", strconv.Itoa(member))
+				address = strings.ReplaceAll(address, "{componentIndex}", strconv.Itoa(component.Offset+i))
+				addresses = append(addresses, address)
+			}
+		}
+	}
+	return addresses
 }
 
 // verifyPrefillLeaderAddressReachable asserts the prefill leader address from

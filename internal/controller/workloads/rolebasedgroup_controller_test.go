@@ -2545,6 +2545,9 @@ func TestReconcileIncompatibleGangConfig(t *testing.T) {
 	assert.Nil(t, gangConfigured())
 
 	require.NoError(t, fakeClient.Get(ctx, request.NamespacedName, current))
+	if current.Annotations == nil {
+		current.Annotations = map[string]string{}
+	}
 	current.Annotations[constants.GangSchedulingAnnotationKey] = gangAnnotation
 	require.NoError(t, fakeClient.Update(ctx, current))
 

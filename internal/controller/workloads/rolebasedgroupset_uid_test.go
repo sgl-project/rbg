@@ -339,42 +339,25 @@ func TestGroupSetDoesNotReadoptChildrenReleasedByItsOrphanDelete(t *testing.T) {
 	}
 }
 
-// An orphan derives the legacy discovery config mode while it has no controller, and
-// the metadata sync keeps the mode a child carries, so the adoption is the one place
-// that can undo it (#603). An orphan adopted before that derivation has no mode, and
-// an owner reference change alone does not enqueue the RoleBasedGroup, so the
-// adoption pins that one too. A mode the template declares is stamped by the same
-// write. A legacy that was set rather than derived, here by the template of the set
-// that owned the orphan before, cannot be told apart and is replaced too; the
-// adopting set has to declare legacy to keep it. Both paths adopt through
-// claimGroupSetOrphan.
-func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
-	modeKey := constants.DiscoveryConfigModeAnnotationKey
-	legacy := string(constants.LegacyDiscoveryConfigMode)
-	refine := string(constants.RefineDiscoveryConfigMode)
+// Adoption stamps the template-owned discovery-config-version in the same write as
+// ownership. An owner reference alone does not enqueue the RoleBasedGroup
+// controller, so a matching orphan's ConfigMap could otherwise stay stale (#603).
+// The retired mode annotation is compatibility metadata and must not select behavior.
+func TestGroupSetAdoptionStampsDiscoveryConfigVersion(t *testing.T) {
+	versionKey := constants.DiscoveryConfigVersionAnnotationKey
+	v1alpha1 := string(constants.DiscoveryConfigVersionV1Alpha1)
+	v1 := string(constants.DiscoveryConfigVersionV1)
 
 	tests := []struct {
-		name         string
-		templateMode string
-		// previousTemplateMode builds the orphan from the template of the set that
-		// owned it before, so its mode was set by that template, not derived.
-		previousTemplateMode string
-		orphanMode           string
-		wantMode             string
-		wantPresent          bool
+		name            string
+		templateVersion string
+		orphanVersion   string
+		wantVersion     string
 	}{
-		{name: "legacy becomes refine when the template declares no mode", orphanMode: legacy, wantMode: refine, wantPresent: true},
-		{name: "legacy the previous set's template declared becomes refine when the template declares no mode", previousTemplateMode: legacy, wantMode: refine, wantPresent: true},
-		{name: "legacy the previous set's template declared is kept when the template declares it too", templateMode: legacy, previousTemplateMode: legacy, wantMode: legacy, wantPresent: true},
-		{name: "legacy declared by the template is kept", templateMode: legacy, orphanMode: legacy, wantMode: legacy, wantPresent: true},
-		{name: "refine on the orphan is kept", orphanMode: refine, wantMode: refine, wantPresent: true},
-		// The claim is the only write: nothing else would make the RoleBasedGroup
-		// controller look at an orphan that otherwise matches the template.
-		{name: "an orphan without a mode is pinned to refine", wantMode: refine, wantPresent: true},
-		// Stamped by the claim, not left to the metadata sync: the rolling subtest
-		// runs the claim alone.
-		{name: "an orphan without a mode gets the legacy its template declares", templateMode: legacy, wantMode: legacy, wantPresent: true},
-		{name: "refine on the orphan gives way to the legacy its template declares", templateMode: legacy, orphanMode: refine, wantMode: legacy, wantPresent: true},
+		{name: "implicit historical content is stamped", wantVersion: v1alpha1},
+		{name: "template version wins", templateVersion: v1, wantVersion: v1},
+		{name: "orphan version converges to the template", templateVersion: v1, orphanVersion: v1alpha1, wantVersion: v1},
+		{name: "missing template returns the orphan to historical content", orphanVersion: v1, wantVersion: v1alpha1},
 	}
 
 	for _, tt := range tests {
@@ -392,22 +375,16 @@ func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
 					},
 				},
 			}
-			if tt.templateMode != "" {
-				set.Spec.GroupTemplate.Annotations[modeKey] = tt.templateMode
+			if tt.templateVersion != "" {
+				set.Spec.GroupTemplate.Annotations[versionKey] = tt.templateVersion
 			}
 			orphan := newRBGForSet(set, 0)
-			delete(orphan.Annotations, modeKey)
-			if tt.previousTemplateMode != "" {
-				previous := set.DeepCopy()
-				previous.UID = "previous-set-uid"
-				previous.Spec.GroupTemplate.Annotations[modeKey] = tt.previousTemplateMode
-				orphan = newRBGForSet(previous, 0)
-				require.Equal(t, tt.previousTemplateMode, orphan.Annotations[modeKey])
-			}
+			delete(orphan.Annotations, versionKey)
 			orphan.OwnerReferences = nil
-			if tt.orphanMode != "" {
-				orphan.Annotations[modeKey] = tt.orphanMode
+			if tt.orphanVersion != "" {
+				orphan.Annotations[versionKey] = tt.orphanVersion
 			}
+			orphan.Annotations[constants.DiscoveryConfigModeAnnotationKey] = "legacy"
 
 			c := fake.NewClientBuilder().WithScheme(scheme).WithStatusSubresource(set, orphan).WithObjects(set, orphan).Build()
 			r := &RoleBasedGroupSetReconciler{client: c, apiReader: c, scheme: scheme}
@@ -417,33 +394,27 @@ func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
 			adopted := &workloadsv1alpha2.RoleBasedGroup{}
 			require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(orphan), adopted))
 			require.True(t, metav1.IsControlledBy(adopted, set), "the orphan must be adopted")
-			mode, present := adopted.Annotations[modeKey]
-			assert.Equal(t, tt.wantPresent, present)
-			assert.Equal(t, tt.wantMode, mode)
+			assert.Equal(t, tt.wantVersion, adopted.Annotations[versionKey])
+			assert.Equal(t, "legacy", adopted.Annotations[constants.DiscoveryConfigModeAnnotationKey],
+				"the retired mode annotation must remain inert compatibility metadata")
 			assert.Equal(t, "a", adopted.Annotations["team"], "other annotations must survive the adoption")
 		})
 
 		t.Run("rolling/"+tt.name, func(t *testing.T) {
 			ctx := context.Background()
 			template := revisionTestTemplate(nil)
-			if tt.templateMode != "" {
-				template.Annotations = map[string]string{modeKey: tt.templateMode}
+			if tt.templateVersion != "" {
+				template.Annotations = map[string]string{versionKey: tt.templateVersion}
 			}
 			set := revisionTestRollingSet(1, &groupSetRevision{template: template})
 			orphan := revisionTestReadyChild(set, 0, &groupSetRevision{template: template})
-			delete(orphan.Annotations, modeKey)
-			if tt.previousTemplateMode != "" {
-				previous := revisionTestTemplate(nil)
-				previous.Annotations = map[string]string{modeKey: tt.previousTemplateMode}
-				orphan = revisionTestReadyChild(set, 0, &groupSetRevision{template: previous})
-				require.Equal(t, tt.previousTemplateMode, orphan.Annotations[modeKey])
-			}
+			delete(orphan.Annotations, versionKey)
 			orphan.OwnerReferences = nil
-			if tt.orphanMode != "" {
+			if tt.orphanVersion != "" {
 				if orphan.Annotations == nil {
 					orphan.Annotations = map[string]string{}
 				}
-				orphan.Annotations[modeKey] = tt.orphanMode
+				orphan.Annotations[versionKey] = tt.orphanVersion
 			}
 			r, _ := revisionTestRollingReconciler(t, set, orphan)
 			require.NoError(t, r.client.Get(ctx, client.ObjectKeyFromObject(set), set))
@@ -453,9 +424,7 @@ func TestGroupSetAdoptionPinsRefineDiscoveryMode(t *testing.T) {
 
 			adopted := revisionTestGetChild(t, r, set, 0)
 			require.True(t, metav1.IsControlledBy(adopted, set), "the orphan must be adopted")
-			mode, present := adopted.Annotations[modeKey]
-			assert.Equal(t, tt.wantPresent, present)
-			assert.Equal(t, tt.wantMode, mode)
+			assert.Equal(t, tt.wantVersion, adopted.Annotations[versionKey])
 		})
 	}
 }

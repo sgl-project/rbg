@@ -18,6 +18,7 @@ package ordinals
 
 import (
 	"reflect"
+	"strconv"
 	"testing"
 )
 
@@ -50,6 +51,200 @@ func TestParse(t *testing.T) {
 	if _, err := giant.Members(3); err == nil {
 		t.Fatal("expected ordinal exhaustion")
 	}
+}
+
+func TestCount(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  int
+	}{
+		{value: "", want: 0},
+		{value: "1", want: 1},
+		{value: "1,3", want: 2},
+		{value: "1-3,8-10", want: 6},
+	} {
+		r, err := Parse(tt.value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := r.Count(); got != tt.want {
+			t.Fatalf("Count(%q) = %d, want %d", tt.value, got, tt.want)
+		}
+	}
+}
+
+func TestSummarize(t *testing.T) {
+	for _, tc := range []struct {
+		ranges   string
+		replicas int
+		want     string
+	}{
+		{ranges: "", replicas: 0, want: ""},
+		{ranges: "", replicas: 5, want: ""},
+		{ranges: "1,3", replicas: 3, want: "1,3"},
+		{ranges: "1-3", replicas: 3, want: "1-3"},
+		{ranges: "0,2", replicas: 1, want: "0"},
+		{ranges: "1-2,5", replicas: 4, want: "1-2,5"},
+		{ranges: "0-2147483645", replicas: 1, want: "0-2147483645"},
+		{ranges: "3-2147483647", replicas: 3, want: ""},
+		{ranges: "1,3", replicas: 0, want: ""},
+		{ranges: "0-2147483645", replicas: 2, want: "0-2147483645"},
+	} {
+		t.Run(tc.ranges+"/"+strconv.Itoa(tc.replicas), func(t *testing.T) {
+			excluded, err := Parse(tc.ranges)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := Summarize(tc.replicas, excluded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("Summarize(%d, %q) = %q, want %q", tc.replicas, tc.ranges, got, tc.want)
+			}
+		})
+	}
+
+	if _, err := Summarize(-1, Ranges{}); err == nil {
+		t.Fatal("Summarize accepted a negative replica count")
+	}
+	// 2147483647 allowed ordinals cannot exist when everything below is excluded.
+	if _, err := Summarize(2147483647, mustParse(t, "0-2147483647")); err == nil {
+		t.Fatal("Summarize accepted an impossible replica count")
+	}
+	// Only two allowed ordinals remain after the giant exclusion.
+	if _, err := Summarize(3, mustParse(t, "0-2147483645")); err == nil {
+		t.Fatal("Summarize accepted an exhausted ordinal domain")
+	}
+}
+
+func TestSelectionSubset(t *testing.T) {
+	for _, tc := range []struct {
+		name             string
+		desiredReplicas  int
+		desiredExcluded  string
+		retainedReplicas int
+		retainedExcluded string
+		want             bool
+	}{
+		{
+			name:             "dense selection shrinks",
+			desiredReplicas:  1,
+			retainedReplicas: 3,
+			want:             true,
+		},
+		{
+			name:             "dense selection grows",
+			desiredReplicas:  4,
+			retainedReplicas: 3,
+			want:             false,
+		},
+		{
+			name:             "same count with different holes",
+			desiredReplicas:  2,
+			retainedReplicas: 2,
+			retainedExcluded: "1",
+			want:             false,
+		},
+		{
+			name:             "holes can shrink while the count stays the same",
+			desiredReplicas:  2,
+			desiredExcluded:  "1",
+			retainedReplicas: 2,
+			retainedExcluded: "1",
+			want:             true,
+		},
+		{
+			name:             "a smaller count can still select a new ordinal",
+			desiredReplicas:  1,
+			desiredExcluded:  "0",
+			retainedReplicas: 2,
+			retainedExcluded: "1",
+			want:             false,
+		},
+		{
+			name:             "several desired intervals fit in one retained interval",
+			desiredReplicas:  4,
+			desiredExcluded:  "1,3",
+			retainedReplicas: 6,
+			retainedExcluded: "6",
+			want:             true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			desired, err := Parse(tc.desiredExcluded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			retained, err := Parse(tc.retainedExcluded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, err := SelectionSubset(
+				tc.desiredReplicas, desired,
+				tc.retainedReplicas, retained,
+			)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("SelectionSubset() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	if _, err := SelectionSubset(-1, Ranges{}, 1, Ranges{}); err == nil {
+		t.Fatal("SelectionSubset accepted a negative desired replica count")
+	}
+	if _, err := SelectionSubset(1, Ranges{}, -1, Ranges{}); err == nil {
+		t.Fatal("SelectionSubset accepted a negative retained replica count")
+	}
+}
+
+// TestSummarizeMatchesMembersAndRecord cross-checks the range-only summary
+// against the expanded representation it replaces.
+func TestSummarizeMatchesMembersAndRecord(t *testing.T) {
+	for _, tc := range []struct {
+		ranges   string
+		replicas int
+	}{
+		{ranges: "", replicas: 0},
+		{ranges: "", replicas: 1},
+		{ranges: "", replicas: 9},
+		{ranges: "1", replicas: 5},
+		{ranges: "1,3", replicas: 3},
+		{ranges: "1-4", replicas: 2},
+		{ranges: "1-4,7-9", replicas: 6},
+		{ranges: "2,4,6", replicas: 4},
+	} {
+		t.Run(tc.ranges+"/"+strconv.Itoa(tc.replicas), func(t *testing.T) {
+			excluded, err := Parse(tc.ranges)
+			if err != nil {
+				t.Fatal(err)
+			}
+			members, err := excluded.Members(tc.replicas)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := Record(members)
+			got, err := Summarize(tc.replicas, excluded)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != want {
+				t.Fatalf("Summarize(%d, %q) = %q, want Members+Record %q", tc.replicas, tc.ranges, got, want)
+			}
+		})
+	}
+}
+
+func mustParse(t *testing.T, value string) Ranges {
+	t.Helper()
+	ranges, err := Parse(value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ranges
 }
 
 func TestMembership(t *testing.T) {

@@ -169,36 +169,18 @@ func (r *RoleBasedGroupSetReconciler) adoptGroupSetOrphans(
 // claimGroupSetOrphan makes the set the controller of an orphan in memory; the
 // caller writes it.
 //
-// The claim also decides the orphan's discovery config mode, so the ownership and
-// the mode land in one write and the RoleBasedGroup controller never sees a set
-// child without a mode:
-//
-//   - A mode the template declares is the user's choice and is stamped as it is.
-//     Left to the later metadata sync, a RoleBasedGroup reconcile in between would
-//     pin the child to refine and apply its discovery ConfigMap first.
-//   - Otherwise the child is pinned to refine, because a set child is never a
-//     legacy object (#603). That covers an orphan that derived legacy while it had
-//     no controller, which is how a child v0.7.0 or v0.8.0 left without the
-//     annotation ends up once it is orphaned, and an orphan adopted before that
-//     derivation, which a claim that only changed the owner reference would not
-//     enqueue. A legacy somebody set on the orphan, for example through the
-//     template of the set that owned it before, is replaced as well: it looks the
-//     same as a derived one, and keeping both would leave the derived case broken.
-//     A set that wants legacy on its children declares it in the template.
+// The claim also stamps the template-owned discovery-config-version, so ownership
+// and the value that selects ConfigMap content land in one write. An owner
+// reference alone is not enough to enqueue the RoleBasedGroup controller, which
+// would leave a matching orphan's discovery ConfigMap stale (#603).
 func (r *RoleBasedGroupSetReconciler) claimGroupSetOrphan(
 	set *workloadsv1alpha2.RoleBasedGroupSet, child *workloadsv1alpha2.RoleBasedGroup,
 ) error {
 	if err := controllerutil.SetControllerReference(set, child, r.scheme); err != nil {
 		return err
 	}
-	mode, declared := set.Spec.GroupTemplate.Annotations[constants.DiscoveryConfigModeAnnotationKey]
-	if !declared {
-		mode = string(constants.RefineDiscoveryConfigMode)
-	}
-	if child.Annotations == nil {
-		child.Annotations = map[string]string{}
-	}
-	child.Annotations[constants.DiscoveryConfigModeAnnotationKey] = mode
+	child.Annotations = withChildDiscoveryConfigVersion(
+		child.Annotations, child.Spec.Roles, set.Spec.GroupTemplate.Annotations)
 	return nil
 }
 
@@ -316,7 +298,8 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 		return changed, err
 	}
 
-	// Unversioned annotations must converge even on settled or partition-held groups.
+	// Unversioned and template-owned annotations must converge even on settled
+	// or partition-held groups.
 	for i := range children.Items {
 		child := &children.Items[i]
 		if !child.DeletionTimestamp.IsZero() {
@@ -335,6 +318,9 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 				updated.Annotations = make(map[string]string)
 			}
 			updated.Annotations[key] = value
+			annotationChanged = true
+		}
+		if convergeTemplateOwnedAnnotations(set, updated) {
 			annotationChanged = true
 		}
 		if r.groupSetMatchesRevision(child, update) {
@@ -368,6 +354,39 @@ func (r *RoleBasedGroupSetReconciler) syncRollingGroupSet(
 
 	updated, err := r.rolloutGroupSetChildren(ctx, set, children, existing, outdated, ready, replicas, limits, update)
 	return changed || updated, err
+}
+
+// convergeTemplateOwnedAnnotations converges revision-independent,
+// template-owned annotations (currently discovery-config-version) on one
+// child: the live template value wins, and a template without the key keeps
+// the historical v1alpha1 content. A v1 template never overwrites a child
+// whose current roles cannot serialize compact content; that child keeps
+// v1alpha1 until its spec rolls forward.
+func convergeTemplateOwnedAnnotations(
+	set *workloadsv1alpha2.RoleBasedGroupSet,
+	child *workloadsv1alpha2.RoleBasedGroup,
+) bool {
+	changed := false
+	for key := range templateOwnedAnnotationKeys {
+		_, templatePresent := set.Spec.GroupTemplate.Annotations[key]
+		_, childPresent := child.Annotations[key]
+		// Legacy children without the annotation and a template without the
+		// key already agree on the implicit v1alpha1 content; do not stamp it.
+		if !templatePresent && !childPresent {
+			continue
+		}
+		desired := desiredDiscoveryConfigVersion(set.Spec.GroupTemplate.Annotations, child.Spec.Roles)
+		old, present := child.Annotations[key]
+		if present && old == desired {
+			continue
+		}
+		if child.Annotations == nil {
+			child.Annotations = make(map[string]string, 1)
+		}
+		child.Annotations[key] = desired
+		changed = true
+	}
+	return changed
 }
 
 // deleteOutOfRangeGroupSetChildren removes children with a broken ordinal label or an ordinal at

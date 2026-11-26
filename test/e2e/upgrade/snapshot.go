@@ -141,11 +141,11 @@ type RBGSnapshot struct {
 	// ownerFacts.Spec: a generation bump on the root is reported with the diff.
 	Spec        map[string]any
 	ReadyByRole map[string]int32
-	// DiscoveryConfigMode is the value of the discovery-config-mode annotation on a
-	// RoleBasedGroup, empty when it has none. It lives in metadata, so neither the
-	// spec comparison nor the generation sees it change, and it decides whether the
-	// controller reconciles the group's discovery ConfigMap at all.
-	DiscoveryConfigMode string
+	// DiscoveryConfigVersion is the value of the discovery-config-version annotation
+	// on a RoleBasedGroup, empty when it has none. It lives in metadata, so neither
+	// the spec comparison nor the generation sees it change, and it selects the
+	// content of the group's discovery ConfigMap.
+	DiscoveryConfigVersion string
 	// RBGReady is the RBG's Ready condition being True.
 	RBGReady bool
 }
@@ -230,7 +230,7 @@ func captureRBG(g gomega.Gomega, f *framework.Framework, rbg *workloadsv1alpha2.
 		RevisionNames: listRevisionsForRBG(g, f, rbg),
 		ReadyByRole:   make(map[string]int32, len(rbg.Spec.Roles)),
 
-		DiscoveryConfigMode: string(rbg.GetDiscoveryConfigMode()),
+		DiscoveryConfigVersion: string(rbg.GetDiscoveryConfigVersion()),
 	}
 
 	for _, role := range rbg.Spec.Roles {
@@ -572,7 +572,7 @@ func checkSnapshotDiff(fs *findings, f *framework.Framework, before, after map[s
 	checkServicesStable(fs, before, after, rec.leaderOnlyServices)
 	checkOwnersStable(fs, before, after, rec.specRewrites)
 	checkNoRevisionExplosion(fs, f, before, after, rec.revisionAdds)
-	checkDiscoveryModeStable(fs, before, after, rec.discoveryModePins)
+	checkDiscoveryConfigVersionStable(fs, before, after)
 	checkStillReady(fs, before, after)
 }
 
@@ -942,11 +942,16 @@ type recordedRewrites struct {
 	// endpoint that left must belong to a pod that is not a leader.
 	leaderOnlyServices map[string]bool
 
-	// discoveryModePins are the RoleBasedGroupSet children the upgrade pins to the
-	// refine discovery config mode. The entry asserts in both directions: the child
-	// must have no mode before, and refine afterwards. Every other RoleBasedGroup
-	// has to keep the mode it had, a missing one included.
-	discoveryModePins map[string]bool
+	// discoveryConfigChildren are the RoleBasedGroupSet children whose discovery
+	// ConfigMap phase 3 and phase 4 observe directly. They are not a recorded
+	// metadata rewrite: KEP-576 removes the mode selector and existing children
+	// without the version annotation keep their historical content.
+	discoveryConfigChildren map[string]bool
+
+	// discoveryConfigRBGs are the direct legacy RoleBasedGroups whose ConfigMap
+	// phase 1 and phase 3 observe. The from-release leaves them without a
+	// ConfigMap; the upgraded controller must create, label, and own it.
+	discoveryConfigRBGs map[string]bool
 }
 
 // healStoredStrategyType is the rewrite the mutating webhook performs on a stored
@@ -1221,38 +1226,19 @@ func checkNoRevisionExplosion(fs *findings, f *framework.Framework, before, afte
 	fs.add("ControllerRevisions changed across the upgrade", problems)
 }
 
-// checkDiscoveryModeStable fails when the discovery config mode of a RoleBasedGroup
-// changed without being recorded, or when a recorded pin did not happen.
-//
-// The mode is an annotation, so a change to it moves no generation, no spec and no
-// revision, and none of the other detectors can see it. It still decides whether the
-// controller keeps the group's discovery ConfigMap current, which is why it is
-// compared on its own.
-//
-// A recorded child must have no mode beforehand. One that already has a mode is not
-// pinned by the upgrade: refine means the from-release keeps the annotation and the
-// recording is stale, and legacy is an explicit value the controller leaves alone.
-func checkDiscoveryModeStable(fs *findings, before, after map[string]RBGSnapshot, pins map[string]bool) {
-	refine := string(constants.RefineDiscoveryConfigMode)
-
+// checkDiscoveryConfigVersionStable fails when the discovery-config-version of a
+// RoleBasedGroup changes. Existing objects without the annotation keep the
+// historical v1alpha1 content, so an upgrade must not stamp a new value onto them.
+func checkDiscoveryConfigVersionStable(fs *findings, before, after map[string]RBGSnapshot) {
 	var problems []string
 	for name, beforeSnap := range before {
 		afterSnap, ok := after[name]
 		if !ok || beforeSnap.Kind != kindRBG {
 			continue
 		}
-		was, is := beforeSnap.DiscoveryConfigMode, afterSnap.DiscoveryConfigMode
-		switch {
-		case !pins[name]:
-			if was != is {
-				problems = append(problems, fmt.Sprintf("%s: %q -> %q", name, was, is))
-			}
-		case was != "":
-			problems = append(problems, fmt.Sprintf(
-				"%s: already had mode %q before (now %q), so the recorded pin is stale", name, was, is))
-		case is != refine:
-			problems = append(problems, fmt.Sprintf(
-				"%s: %q -> %q, but the recorded pin to %q did not happen", name, was, is, refine))
+		was, is := beforeSnap.DiscoveryConfigVersion, afterSnap.DiscoveryConfigVersion
+		if was != is {
+			problems = append(problems, fmt.Sprintf("%s: %q -> %q", name, was, is))
 		}
 	}
 	sort.Strings(problems)
