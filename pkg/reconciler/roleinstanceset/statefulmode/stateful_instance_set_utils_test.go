@@ -205,3 +205,60 @@ func TestReplacementScopeRetainsFormerBaseAsSurgeAfterScaleDown(t *testing.T) {
 		t.Fatalf("topology=%+v, want surge released after remaining replacement is ready", topo)
 	}
 }
+
+func TestInstanceUpdatePolicyFromStrategy(t *testing.T) {
+	grace := int32(30)
+	tests := []struct {
+		name     string
+		strategy *workloadsv1alpha2.RoleInstanceSetUpdateStrategy
+		want     *workloadsv1alpha2.RoleInstanceUpdatePolicy
+	}{
+		{
+			name:     "nil strategy keeps the policy unset",
+			strategy: nil,
+			want:     nil,
+		},
+		{
+			name:     "default strategy keeps the policy unset",
+			strategy: &workloadsv1alpha2.RoleInstanceSetUpdateStrategy{},
+			want:     nil,
+		},
+		{
+			name:     "RecreatePod stamps the recreate policy",
+			strategy: &workloadsv1alpha2.RoleInstanceSetUpdateStrategy{Type: workloadsv1alpha2.RecreatePodUpdateStrategyType},
+			want: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+			},
+		},
+		{
+			name: "grace period stamps the in-place policy",
+			strategy: &workloadsv1alpha2.RoleInstanceSetUpdateStrategy{
+				Type:                  workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
+				InPlaceUpdateStrategy: &workloadsv1alpha2.RoleInstanceSetInPlaceUpdateStrategy{GracePeriodSeconds: grace},
+			},
+			want: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type:                workloadsv1alpha2.RoleInstanceUpdatePolicyInPlaceIfPossible,
+				InPlaceUpdatePolicy: &workloadsv1alpha2.RoleInstanceInPlaceUpdatePolicy{GracePeriodSeconds: grace},
+			},
+		},
+		{
+			name: "RecreatePod with grace period carries both",
+			strategy: &workloadsv1alpha2.RoleInstanceSetUpdateStrategy{
+				Type:                  workloadsv1alpha2.RecreatePodUpdateStrategyType,
+				InPlaceUpdateStrategy: &workloadsv1alpha2.RoleInstanceSetInPlaceUpdateStrategy{GracePeriodSeconds: grace},
+			},
+			want: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type:                workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+				InPlaceUpdatePolicy: &workloadsv1alpha2.RoleInstanceInPlaceUpdatePolicy{GracePeriodSeconds: grace},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := instanceUpdatePolicyFromStrategy(tt.strategy)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("instanceUpdatePolicyFromStrategy() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}

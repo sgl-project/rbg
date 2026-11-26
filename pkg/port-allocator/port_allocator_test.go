@@ -350,6 +350,62 @@ func TestMultiplePodsPodScopedPorts(t *testing.T) {
 	assert.Len(t, portMap, 5, "Each pod should get a unique port")
 }
 
+func TestEnsurePortsForInstanceKeepsExistingAssignments(t *testing.T) {
+	portAllocator = newTestAllocator(30000, 2768)
+
+	configJSON := `{"allocations":[
+		{"name":"pod-port","env":"POD_PORT","scope":"PodScoped"},
+		{"name":"role-port","env":"ROLE_PORT","scope":"RoleScoped"}
+	]}`
+	size := int32(2)
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "s-0", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{
+					Name: "comp",
+					Size: &size,
+					Template: corev1.PodTemplateSpec{
+						ObjectMeta: metav1.ObjectMeta{
+							Annotations: map[string]string{PortAllocatorAnnotationKey: configJSON},
+						},
+					},
+				},
+			},
+		},
+	}
+	instance.Annotations = map[string]string{
+		// Already assigned by the original instance render; it must survive a
+		// spec move that fills in only the missing pod.
+		FormatPodScopedPortKey("s-0-comp-0", "pod-port"): "31000",
+	}
+	instanceSet := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "s",
+			Namespace: "default",
+			Annotations: map[string]string{
+				FormatRoleScopedPortKey("comp", "role-port"): "32000",
+			},
+		},
+	}
+
+	EnsurePortsForInstance(instance, instanceSet)
+
+	if got := instance.Annotations[FormatPodScopedPortKey("s-0-comp-0", "pod-port")]; got != "31000" {
+		t.Fatalf("existing pod-scoped port changed: got %q, want 31000", got)
+	}
+	if got := instance.Annotations[FormatRoleScopedPortKey("comp", "role-port")]; got != "32000" {
+		t.Fatalf("role-scoped port not copied: got %q, want 32000", got)
+	}
+	newPort := instance.Annotations[FormatPodScopedPortKey("s-0-comp-1", "pod-port")]
+	if newPort == "" {
+		t.Fatal("missing pod-scoped port was not allocated")
+	}
+	if newPort == "31000" {
+		t.Fatalf("new pod-scoped port reused an existing assignment: %q", newPort)
+	}
+}
+
 func TestParsePortAllocatorConfigFromAnnotations(t *testing.T) {
 	tests := []struct {
 		name        string

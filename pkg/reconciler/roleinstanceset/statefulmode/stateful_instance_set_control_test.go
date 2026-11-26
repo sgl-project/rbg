@@ -576,10 +576,13 @@ func (f *fakeInplaceControl) CanUpdateInPlace(_, _ *apps.ControllerRevision, _ *
 	f.canUpdateCalls++
 	return f.canUpdateInPlace
 }
-func (f *fakeInplaceControl) Update(_ *workloadsv1alpha2.RoleInstance, _, _ *apps.ControllerRevision, _ *instanceinplace.UpdateOptions) instanceinplace.UpdateResult {
+func (f *fakeInplaceControl) Update(instance *workloadsv1alpha2.RoleInstance, _, _ *apps.ControllerRevision, opts *instanceinplace.UpdateOptions) instanceinplace.UpdateResult {
 	f.updateCalls++
 	if f.beforeUpdate != nil {
 		f.beforeUpdate()
+	}
+	for _, fn := range opts.PostPatchSpecFuncs {
+		fn(instance)
 	}
 	return instanceinplace.UpdateResult{InPlaceUpdate: f.canUpdateInPlace}
 }
@@ -587,12 +590,14 @@ func (f *fakeInplaceControl) Refresh(_ *workloadsv1alpha2.RoleInstance, _ *insta
 	return instanceinplace.RefreshResult{}
 }
 
-func TestApplyTargetUpdateRecreatePodSkipsInPlace(t *testing.T) {
-	set := buildSet("s", 1, nil, nil)
+func TestApplyTargetUpdateRecreatePodMovesSpecInPlace(t *testing.T) {
+	// A unique set name keeps updateExpectations isolated from other tests
+	// that reuse the "s" key.
+	set := buildSet("policy-move", 1, nil, nil)
 	set.Spec.UpdateStrategy.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType
-	target := buildInst("s", 0, testOldRev, true, true)
+	target := buildInst("policy-move", 0, testOldRev, true, true)
 	objectManager := &fakeInstanceObjectManager{}
-	inplaceControl := &fakeInplaceControl{}
+	inplaceControl := &fakeInplaceControl{canUpdateInPlace: true}
 	control := &defaultStatefulInstanceSetControl{
 		instanceControl: NewStatefulInstanceControlFromManager(objectManager, record.NewFakeRecorder(10)),
 		inplaceControl:  inplaceControl,
@@ -611,7 +616,45 @@ func TestApplyTargetUpdateRecreatePodSkipsInPlace(t *testing.T) {
 		t.Fatalf("applyTargetUpdate() error = %v", err)
 	}
 	if !transitioned {
-		t.Fatal("expected target to transition via recreate")
+		t.Fatal("expected target to transition via spec move")
+	}
+	if inplaceControl.canUpdateCalls != 1 || inplaceControl.updateCalls != 1 {
+		t.Fatalf("expected in-place control called once, got canUpdate=%d update=%d", inplaceControl.canUpdateCalls, inplaceControl.updateCalls)
+	}
+	if len(objectManager.deleted) != 0 {
+		t.Fatalf("expected target not deleted, got %v", objectManager.deleted)
+	}
+	if target.Spec.GetUpdatePolicy().Type != workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod {
+		t.Fatalf("expected RecreatePod policy stamped on instance, got %+v", target.Spec.UpdatePolicy)
+	}
+}
+
+func TestApplyTargetUpdateLegacyLifecycleKeepsReplacement(t *testing.T) {
+	set := buildSet("legacy-replace", 1, nil, nil)
+	set.Spec.UpdateStrategy.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType
+	set.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceSetLifecycle{}
+	target := buildInst("legacy-replace", 0, testOldRev, true, true)
+	objectManager := &fakeInstanceObjectManager{}
+	inplaceControl := &fakeInplaceControl{canUpdateInPlace: true}
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objectManager, record.NewFakeRecorder(10)),
+		inplaceControl:  inplaceControl,
+	}
+
+	transitioned, err := control.applyTargetUpdate(
+		context.Background(), set, &workloadsv1alpha2.RoleInstanceSetStatus{},
+		target,
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testOldRev}},
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testUpdateRev}},
+		[]*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: testOldRev}}},
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("applyTargetUpdate() error = %v", err)
+	}
+	if !transitioned {
+		t.Fatal("expected target to transition via replacement")
 	}
 	if inplaceControl.canUpdateCalls != 0 || inplaceControl.updateCalls != 0 {
 		t.Fatalf("expected in-place control not called, got canUpdate=%d update=%d", inplaceControl.canUpdateCalls, inplaceControl.updateCalls)

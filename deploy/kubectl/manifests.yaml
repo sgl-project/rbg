@@ -99069,6 +99069,31 @@ spec:
                     recreate policy
                   rule: '!has(self.maxGroupRestarts) || (has(self.type) && self.type
                     != ''None'')'
+              updatePolicy:
+                description: |-
+                  UpdatePolicy is the update policy snapshot propagated to this RoleInstance
+                  by the owning RoleInstanceSet controller.
+                properties:
+                  inPlaceUpdatePolicy:
+                    description: InPlaceUpdatePolicy configures in-place Pod updates.
+                    properties:
+                      gracePeriodSeconds:
+                        description: |-
+                          GracePeriodSeconds is the timespan between setting the Pod status to
+                          not-ready and updating container images in the Pod spec. It is only used
+                          when Pods are updated in place.
+                        format: int32
+                        type: integer
+                    type: object
+                  type:
+                    description: |-
+                      Type selects the Pod update behavior for this RoleInstance.
+                      Default is InPlaceIfPossible.
+                    enum:
+                    - InPlaceIfPossible
+                    - RecreatePod
+                    type: string
+                type: object
             required:
             - components
             type: object

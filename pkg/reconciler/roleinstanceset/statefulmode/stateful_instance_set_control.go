@@ -40,6 +40,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
+	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	setprogressing "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
@@ -934,8 +935,12 @@ func buildUpdateTargets(
 	return out
 }
 
-// applyTargetUpdate performs a single target's update — in-place when possible,
-// otherwise delete-and-recreate via Phase B on the next reconcile. Returns
+// applyTargetUpdate performs a single target's update. Without the legacy
+// RoleInstanceSet lifecycle protocol, the target's spec always moves to
+// updateRevision in place and the RoleInstance controller converges member
+// Pods under the update policy stamped on the instance. Sets that still use
+// the legacy lifecycle protocol keep the established semantics: in-place when
+// possible, otherwise delete-and-recreate via Phase B. Returns
 // `decrementCurrent=true` when the operation actually transitioned the target
 // away from currentRevision (so caller can decrement status.CurrentReplicas).
 func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
@@ -961,8 +966,13 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 	}
 	var inplacing bool
 	var err error
-	if set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
-		inplacing, err = ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions)
+	if set.Spec.Lifecycle == nil {
+		inplacing, err = ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions, true)
+		if err != nil {
+			return false, err
+		}
+	} else if set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
+		inplacing, err = ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions, false)
 		if err != nil {
 			return false, err
 		}
@@ -1346,12 +1356,26 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 	instance *workloadsv1alpha2.RoleInstance,
 	updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision,
+	moveSpec bool,
 ) (bool, error) {
-	opts := &instanceinplace.UpdateOptions{}
+	opts := &instanceinplace.UpdateOptions{
+		AllowShapeChange: moveSpec,
+	}
 	opts = instanceinplace.SetOptionsDefaults(opts)
 
 	if set.Spec.UpdateStrategy.InPlaceUpdateStrategy != nil {
 		opts.GracePeriodSeconds = set.Spec.UpdateStrategy.InPlaceUpdateStrategy.GracePeriodSeconds
+	}
+	if moveSpec {
+		// The revision template does not carry the set-level update strategy, so
+		// the propagated snapshot must be re-stamped after the spec replacement,
+		// and ports for components or replicas added by the new revision must be
+		// filled without disturbing ports already assigned to running Pods.
+		policy := instanceUpdatePolicyFromStrategy(&set.Spec.UpdateStrategy)
+		opts.PostPatchSpecFuncs = append(opts.PostPatchSpecFuncs, func(updated *workloadsv1alpha2.RoleInstance) {
+			updated.Spec.UpdatePolicy = policy.DeepCopy()
+			portallocator.EnsurePortsForInstance(updated, set)
+		})
 	}
 
 	// Find old revision for this instance

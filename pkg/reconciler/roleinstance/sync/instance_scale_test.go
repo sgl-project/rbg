@@ -3462,6 +3462,70 @@ func TestScaleErrorsAndCreatesAfterOrphanPodGC(t *testing.T) {
 	assert.True(t, metav1.IsControlledBy(&podList.Items[0], instance))
 }
 
+func TestScaleDeletesPodsOfRemovedComponents(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+	assert.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "role-0",
+			Namespace: "default",
+			UID:       "role-instance-uid",
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{{
+				Name: "keep",
+				Size: ptr.To(int32(1)),
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "main", Image: "rbg:latest"}},
+					},
+				},
+			}},
+		},
+	}
+
+	newPod := func(name string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: instance.Namespace,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: workloadsv1alpha2.SchemeGroupVersion.String(),
+					Kind:       "RoleInstance",
+					Name:       instance.Name,
+					UID:        instance.UID,
+					Controller: ptr.To(true),
+				}},
+			},
+		}
+	}
+	keepPod := newPod("role-0-keep-0")
+	orphanPod := newPod("role-0-gone-0")
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(keepPod, orphanPod).
+		Build()
+	ctrl := &realControl{
+		Client:    fakeClient,
+		apiReader: fakeClient,
+		recorder:  record.NewFakeRecorder(10),
+	}
+	revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+
+	scaling, _, err := ctrl.Scale(ctx, instance, revision, revision, nil, []*corev1.Pod{keepPod, orphanPod}, nil)
+	assert.NoError(t, err)
+	assert.True(t, scaling)
+
+	podList := &corev1.PodList{}
+	assert.NoError(t, fakeClient.List(ctx, podList, client.InNamespace(instance.Namespace)))
+	assert.Len(t, podList.Items, 1, "the Pod of the removed component must be deleted")
+	assert.Equal(t, keepPod.Name, podList.Items[0].Name)
+}
+
 func TestScaleCreatesNonCollidingSiblingsDuringNameCollision(t *testing.T) {
 	ctx := context.Background()
 	scheme := runtime.NewScheme()

@@ -166,7 +166,9 @@ func (c *commonControl) setComponentPodIdentity(component *workloadsv1alpha2.Rol
 func (c *commonControl) GetUpdateOptions() *podinplaceupdate.UpdateOptions {
 	opts := &podinplaceupdate.UpdateOptions{}
 	podinplaceupdate.SetOptionsDefaults(opts)
-	if v, ok := c.Annotations[constants.RoleInplaceUpdateGracePeriodSecondsKey]; ok {
+	if seconds := c.Spec.GetUpdatePolicy().GetInPlaceUpdateGracePeriodSeconds(); seconds > 0 {
+		opts.GracePeriodSeconds = seconds
+	} else if v, ok := c.Annotations[constants.RoleInplaceUpdateGracePeriodSecondsKey]; ok {
 		if seconds, err := strconv.Atoi(v); err == nil {
 			opts.GracePeriodSeconds = int32(seconds)
 		}

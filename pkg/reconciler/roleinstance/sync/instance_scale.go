@@ -198,6 +198,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 					"recreate all pods of instance: %v", instanceutil.GetPodComponentName(pods[i]), klog.KObj(updateInstance)))
 				return &expectationDiff{toDeleteNum: len(pods), toDeletePod: pods}, nil
 			}
+
 		}
 	}
 
@@ -222,6 +223,8 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	if err != nil {
 		return nil, err
 	}
+
+	toDeleteNum, toDeletePods = appendOrphanComponentDeletions(toDeleteNum, toDeletePods, prt.Components, pods)
 
 	// Build the per-component dependency graphs from template annotations.
 	startDeps, deleteDeps, err := componentdiscovery.ParseAllComponentDependencies(updateInstance.Spec.Components)
@@ -292,6 +295,23 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 		toScaleRoleIDS: toScaleRoleIDS,
 		toDeletePod:    toDeletePods,
 	}, nil
+}
+
+// appendOrphanComponentDeletions returns the delete diff extended with Pods of
+// components that no longer exist in the spec. Those Pods belong to no topology
+// group, so the per-component diff never selects them. Without this cleanup a
+// component removal leaves orphan Pods behind, and the instance never reports
+// update completion because the Pod count stays above the sum of component
+// sizes.
+func appendOrphanComponentDeletions(toDeleteNum int, toDeletePods []*v1.Pod, components sets.Set[string], pods []*v1.Pod) (int, []*v1.Pod) {
+	for componentName, orphanPods := range instanceutil.GroupPodsByComponentName(pods) {
+		if componentName == "" || components.Has(componentName) {
+			continue
+		}
+		toDeleteNum += len(orphanPods)
+		toDeletePods = append(toDeletePods, orphanPods...)
+	}
+	return toDeleteNum, toDeletePods
 }
 
 func (c *realControl) calculateRestartDiff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, allPods, activePods, inactivePods []*v1.Pod, fresh *workloadsv1alpha2.RoleInstance, target *apps.ControllerRevision) (*expectationDiff, error) {

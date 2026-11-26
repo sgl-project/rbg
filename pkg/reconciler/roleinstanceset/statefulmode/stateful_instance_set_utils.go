@@ -155,6 +155,12 @@ func newVersionedInstance(currentSet, updateSet *workloadsv1alpha2.RoleInstanceS
 		Spec: *setToUse.Spec.RoleInstanceTemplate.RoleInstanceSpec.DeepCopy(),
 	}
 
+	// The update policy is a snapshot of the set-level update strategy, not part
+	// of the revision template: changing the strategy must not cut a new
+	// ControllerRevision. It is stamped only when it changes Pod behavior, so
+	// default-strategy sets render exactly as before.
+	instance.Spec.UpdatePolicy = instanceUpdatePolicyFromStrategy(&setToUse.Spec.UpdateStrategy)
+
 	// Set basic identity
 	instance.Name = getInstanceName(currentSet, ordinal)
 	instance.Namespace = currentSet.Namespace
@@ -219,6 +225,34 @@ func newVersionedInstance(currentSet, updateSet *workloadsv1alpha2.RoleInstanceS
 	portallocator.AllocatePortsForInstance(instance, currentSet)
 
 	return instance
+}
+
+// instanceUpdatePolicyFromStrategy renders the RoleInstance update-policy
+// snapshot from the RoleInstanceSet update strategy. It returns nil when the
+// strategy is the default and carries no grace period, so existing objects are
+// not rewritten on upgrade.
+func instanceUpdatePolicyFromStrategy(strategy *workloadsv1alpha2.RoleInstanceSetUpdateStrategy) *workloadsv1alpha2.RoleInstanceUpdatePolicy {
+	if strategy == nil {
+		return nil
+	}
+	policy := &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+		Type: workloadsv1alpha2.RoleInstanceUpdatePolicyInPlaceIfPossible,
+	}
+	stamp := false
+	if strategy.Type == workloadsv1alpha2.RecreatePodUpdateStrategyType {
+		policy.Type = workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod
+		stamp = true
+	}
+	if strategy.InPlaceUpdateStrategy != nil && strategy.InPlaceUpdateStrategy.GracePeriodSeconds > 0 {
+		policy.InPlaceUpdatePolicy = &workloadsv1alpha2.RoleInstanceInPlaceUpdatePolicy{
+			GracePeriodSeconds: strategy.InPlaceUpdateStrategy.GracePeriodSeconds,
+		}
+		stamp = true
+	}
+	if !stamp {
+		return nil
+	}
+	return policy
 }
 
 // topology captures all the rolling-update sizing decisions for a single

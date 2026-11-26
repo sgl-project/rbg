@@ -330,3 +330,63 @@ func AllocatePortsForInstance(instance *workloadsv1alpha2.RoleInstance, instance
 		}
 	}
 }
+
+// EnsurePortsForInstance fills in missing port annotations for an existing
+// RoleInstance. Existing keys are never overwritten: pod-scoped ports are
+// stable per pod name, and re-allocating them would change the environment of
+// running Pods. It is used when the RoleInstanceSet controller moves an
+// existing RoleInstance to a revision that adds components or pod replicas.
+func EnsurePortsForInstance(instance *workloadsv1alpha2.RoleInstance, instanceSet *workloadsv1alpha2.RoleInstanceSet) {
+	if instance.Annotations == nil {
+		instance.Annotations = make(map[string]string)
+	}
+
+	for _, component := range instance.Spec.Components {
+		if !HasPortAllocatorConfig(&component.Template) {
+			continue
+		}
+		config, err := ParsePortAllocatorConfigFromTemplate(&component.Template)
+		if err != nil {
+			continue
+		}
+
+		// RoleScoped ports are shared across the role and copied from the
+		// InstanceSet annotations, so filling a missing key is deterministic.
+		for _, alloc := range config.GetRoleScopedAllocations() {
+			key := FormatRoleScopedPortKey(component.Name, alloc.Name)
+			if port, exists := instanceSet.Annotations[key]; exists {
+				if _, alreadySet := instance.Annotations[key]; !alreadySet {
+					instance.Annotations[key] = port
+				}
+			}
+		}
+
+		// PodScoped ports are stable per pod name; allocate only keys that are
+		// still missing so existing Pods keep their assigned ports.
+		size := instanceutil.GetComponentSize(&component)
+		for id := int32(0); id < size; id++ {
+			roleTemplateType := instance.GetRoleTemplateType()
+			podName := roleinstanceutil.FormatComponentPodName(instance.Name, component.Name, id, roleTemplateType)
+			podScopedAllocs := config.GetPodScopedAllocations()
+			if len(podScopedAllocs) == 0 {
+				continue
+			}
+			missing := make([]PortAllocation, 0, len(podScopedAllocs))
+			for _, alloc := range podScopedAllocs {
+				if _, exists := instance.Annotations[FormatPodScopedPortKey(podName, alloc.Name)]; !exists {
+					missing = append(missing, alloc)
+				}
+			}
+			if len(missing) == 0 {
+				continue
+			}
+			ports, err := AllocateBatch(int32(len(missing)))
+			if err != nil {
+				continue
+			}
+			for i, alloc := range missing {
+				instance.Annotations[FormatPodScopedPortKey(podName, alloc.Name)] = strconv.Itoa(int(ports[i]))
+			}
+		}
+	}
+}

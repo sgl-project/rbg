@@ -195,6 +195,66 @@ func TestUpdatePod(t *testing.T) {
 	}
 }
 
+func TestUpdatePodRecreatePolicyRecreates(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-instance",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			UpdatePolicy: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+			},
+		},
+	}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "test-pod",
+			Namespace:       "default",
+			UID:             "test-pod-uid",
+			ResourceVersion: "1",
+			Labels: map[string]string{
+				apps.ControllerRevisionHashLabelKey: "rev-abc123",
+			},
+		},
+	}
+	updateRevision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "rev-def456", Namespace: "default"}}
+	revisions := []*apps.ControllerRevision{
+		{ObjectMeta: metav1.ObjectMeta{Name: "rev-abc123", Namespace: "default"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "rev-def456", Namespace: "default"}},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+	ctrl := &realControl{
+		Client: fakeClient,
+		inplaceControl: &fakeInplaceControl{updateFn: func(_ context.Context, _ *v1.Pod, _, _ *apps.ControllerRevision, _ *podinplaceupdate.UpdateOptions) podinplaceupdate.UpdateResult {
+			t.Fatal("inplaceControl.Update should not be called under the RecreatePod policy")
+			return podinplaceupdate.UpdateResult{}
+		}},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+
+	_, err := ctrl.updatePod(context.Background(), instance, &workloadsv1alpha2.RoleInstanceStatus{}, updateRevision, revisions, pod)
+	if err != nil {
+		t.Fatalf("updatePod returned unexpected error: %v", err)
+	}
+	gotPod := &v1.Pod{}
+	getErr := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(pod), gotPod)
+	if !apierrors.IsNotFound(getErr) {
+		t.Fatalf("expected pod deleted, got err=%v pod=%+v", getErr, gotPod)
+	}
+}
+
 func TestRecordInPlaceUpdateBaselines(t *testing.T) {
 	t.Run("records baselines only for updated containers", func(t *testing.T) {
 		pod := &v1.Pod{

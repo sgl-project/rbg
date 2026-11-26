@@ -211,6 +211,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.RoleInstanceComponentStatusApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceCondition"):
 		return &workloadsv1alpha2.RoleInstanceConditionApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceInPlaceUpdatePolicy"):
+		return &workloadsv1alpha2.RoleInstanceInPlaceUpdatePolicyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceReadinessGate"):
 		return &workloadsv1alpha2.RoleInstanceReadinessGateApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceSet"):
@@ -237,6 +239,8 @@ func ForKind(kind schema.GroupVersionKind) interface{} {
 		return &workloadsv1alpha2.RoleInstanceStatusApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceTemplate"):
 		return &workloadsv1alpha2.RoleInstanceTemplateApplyConfiguration{}
+	case v1alpha2.SchemeGroupVersion.WithKind("RoleInstanceUpdatePolicy"):
+		return &workloadsv1alpha2.RoleInstanceUpdatePolicyApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleSpec"):
 		return &workloadsv1alpha2.RoleSpecApplyConfiguration{}
 	case v1alpha2.SchemeGroupVersion.WithKind("RoleStatus"):

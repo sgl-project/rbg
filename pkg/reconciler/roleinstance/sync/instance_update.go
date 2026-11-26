@@ -24,6 +24,7 @@ import (
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
@@ -45,6 +46,10 @@ func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.Ro
 	coreControl := instancecore.New(instance)
 
 	waitUpdateComponentPods := make(map[string][]*v1.Pod)
+	componentNames := sets.New[string]()
+	for _, component := range instance.Spec.Components {
+		componentNames.Insert(component.Name)
+	}
 	for i := range pods {
 		if res := c.inplaceControl.Refresh(ctx, pods[i], coreControl.GetUpdateOptions()); res.RefreshErr != nil {
 			logger.Error(res.RefreshErr, "Instance failed to update pod condition for inplace", "pod", pods[i].Name)
@@ -52,8 +57,15 @@ func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.Ro
 		} else if res.DelayDuration > 0 {
 			requeueDuration.Update(res.DelayDuration)
 		}
+		componentName := instanceutil.GetPodComponentName(pods[i])
+		if componentName != "" && !componentNames.Has(componentName) {
+			// The component no longer exists in the spec; the scale diff owns
+			// deleting these pods. Updating them would fail because the new
+			// template has no matching component.
+			continue
+		}
 		if !instanceutil.EqualToRevisionHash("", pods[i], updateRevision.Name) {
-			waitUpdateComponentPods[instanceutil.GetPodComponentName(pods[i])] = append(waitUpdateComponentPods[instanceutil.GetPodComponentName(pods[i])], pods[i])
+			waitUpdateComponentPods[componentName] = append(waitUpdateComponentPods[componentName], pods[i])
 		}
 	}
 	for componentName := range waitUpdateComponentPods {
@@ -86,6 +98,17 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 			"revisionHash", pod.Labels[apps.ControllerRevisionHashLabelKey])
 		c.recorder.Eventf(instance, v1.EventTypeWarning, "RevisionNotFound",
 			"no matching revision found for pod %s, falling back to recreate", pod.Name)
+		if err := c.Delete(ctx, pod); err != nil {
+			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate",
+				"failed to delete pod %s for update: %v", pod.Name, err)
+			return 0, err
+		}
+		return 0, nil
+	}
+	if instance.Spec.GetUpdatePolicy().RecreatesPods() {
+		// RecreatePod policy: replace the Pod instead of updating it in place,
+		// even when an in-place update would be possible.
+		logger.Info("Instance update policy is RecreatePod, so it will back off to ReCreate", "pod", klog.KObj(pod))
 		if err := c.Delete(ctx, pod); err != nil {
 			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate",
 				"failed to delete pod %s for update: %v", pod.Name, err)
