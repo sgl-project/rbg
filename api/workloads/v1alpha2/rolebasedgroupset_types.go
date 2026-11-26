@@ -142,21 +142,21 @@ type RoleBasedGroupSetStatus struct {
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas" protobuf:"varint,3,opt,name=readyReplicas"`
 
-	// CurrentReplicas is the number of child RoleBasedGroups at ordinals below Replicas
-	// that do not match the current GroupTemplate, i.e. the groups the rollout
-	// has not moved onto the new template yet. Surge groups are not counted.
+	// CurrentReplicas is the number of non-terminating base groups (ordinals below
+	// spec.replicas) that do not match the update revision, including held-back
+	// old groups. Surge groups are excluded.
 	// +optional
 	CurrentReplicas int32 `json:"currentReplicas,omitempty"`
 
-	// UpdatedReplicas is the number of child RoleBasedGroups at ordinals below Replicas
-	// that match the current GroupTemplate, whether they are ready or not.
-	// Surge groups are not counted.
+	// UpdatedReplicas is the number of non-terminating base groups (ordinals below
+	// spec.replicas) that match the update revision, ready or not. Surge groups
+	// are excluded.
 	// +optional
 	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
 
-	// UpdatedReadyReplicas is the number of child RoleBasedGroups at ordinals below
-	// Replicas that match the current GroupTemplate and are also ready.
-	// Surge groups are not counted.
+	// UpdatedReadyReplicas is the number of non-terminating base groups (ordinals
+	// below spec.replicas) that match the update revision and are ready. Surge
+	// groups are excluded.
 	// +optional
 	UpdatedReadyReplicas int32 `json:"updatedReadyReplicas,omitempty"`
 
