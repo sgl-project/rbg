@@ -28,10 +28,12 @@ import (
 )
 
 // RoleInstanceValidator implements admission.CustomValidator for
-// RoleInstance. Its only rule is the KEP-527 preDelete deletion guard: a
+// RoleInstance. It enforces the static KEP-527 lifecycle rules on
+// spec.lifecycle — the same validation RBG, RBGSet, and RoleInstanceSet
+// admission applies to the same struct — and the preDelete deletion guard: a
 // Foreground or Orphan delete of a preDelete-armed RoleInstance bypasses the
-// reserved finalizer — GC cascades Foreground down to the member Pods while
-// the hook is still draining — so those propagation policies are rejected
+// reserved finalizer (GC cascades Foreground down to the member Pods while
+// the hook is still draining), so those propagation policies are rejected
 // with a pointer to retry with background propagation.
 type RoleInstanceValidator struct{}
 
@@ -49,14 +51,26 @@ func (r *RoleInstance) SetupWebhookWithManager(mgr ctrl.Manager) error {
 		Complete()
 }
 
-// ValidateCreate is a no-op: RoleInstances are controller-managed.
-func (v *RoleInstanceValidator) ValidateCreate(_ context.Context, _ runtime.Object) (admission.Warnings, error) {
-	return nil, nil
+// ValidateCreate validates the static lifecycle rules on the snapshot the
+// runtime executes. RoleInstances are normally controller-managed, but a
+// reserved-key signal would overwrite controller-owned state in EnterHook, so
+// this surface stays consistent with the parent resources.
+func (v *RoleInstanceValidator) ValidateCreate(_ context.Context, obj runtime.Object) (admission.Warnings, error) {
+	return validateRoleInstanceSpecLifecycle(obj)
 }
 
-// ValidateUpdate is a no-op: RoleInstances are controller-managed.
-func (v *RoleInstanceValidator) ValidateUpdate(_ context.Context, _, _ runtime.Object) (admission.Warnings, error) {
-	return nil, nil
+// ValidateUpdate validates the static lifecycle rules on the updated
+// snapshot the runtime executes.
+func (v *RoleInstanceValidator) ValidateUpdate(_ context.Context, _, newObj runtime.Object) (admission.Warnings, error) {
+	return validateRoleInstanceSpecLifecycle(newObj)
+}
+
+func validateRoleInstanceSpecLifecycle(obj runtime.Object) (admission.Warnings, error) {
+	instance, ok := obj.(*RoleInstance)
+	if !ok {
+		return nil, fmt.Errorf("expected *RoleInstance but got %T", obj)
+	}
+	return nil, ValidateRoleInstanceLifecycle("spec.lifecycle", instance.Spec.Lifecycle, nil)
 }
 
 // ValidateDelete rejects Foreground and Orphan propagation for RoleInstances

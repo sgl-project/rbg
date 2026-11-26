@@ -99,6 +99,13 @@ webhooks:
   - v1
   sideEffects: None
   failurePolicy: Fail
+  # Only lifecycle-configured sets route here: the controller writes this
+  # label in the same write as the lifecycle configuration, so ordinary
+  # RoleInstanceSet writes never depend on webhook availability during a
+  # mixed version rollout.
+  objectSelector:
+    matchLabels:
+      rbg.workloads.x-k8s.io/role-instance-lifecycle-configured: "true"
   clientConfig:
     service:
       name: rbgs-webhook-service

@@ -112,6 +112,54 @@ func (c *HookControl) EnterHook(
 	return c.mirrorSignalLabels(ctx, instance, pods)
 }
 
+// SupersedeHook arms the given hook over a RoleInstance-owned state. The
+// superseded hooks' signal labels that the new hook does not share are removed
+// in the same optimistic-lock write, so an executor watching them stops
+// instead of acting on an operation that was interrupted. The removed keys
+// stay in the record until mirrorSignalLabels confirms their absence from
+// every member Pod, mirroring the ordinary release path.
+func (c *HookControl) SupersedeHook(
+	ctx context.Context,
+	instance *workloadsv1alpha2.RoleInstance,
+	state constants.RoleInstanceLifecycleHookStateType,
+	hook *workloadsv1alpha2.RoleInstanceLifecycleHook,
+	superseded []*workloadsv1alpha2.RoleInstanceLifecycleHook,
+	pods []*v1.Pod,
+) error {
+	if instance == nil || hook == nil {
+		return nil
+	}
+	base := instance.DeepCopy()
+	if instance.Labels == nil {
+		instance.Labels = make(map[string]string)
+	}
+	if instance.Annotations == nil {
+		instance.Annotations = make(map[string]string)
+	}
+	instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(state)
+	owned := unionSignalKeys(recordedSignalKeys(instance), hook.SignalLabels)
+	for key, value := range hook.SignalLabels {
+		instance.Labels[key] = value
+	}
+	for _, candidate := range superseded {
+		if candidate == nil {
+			continue
+		}
+		for key := range candidate.SignalLabels {
+			if _, shared := hook.SignalLabels[key]; shared {
+				continue
+			}
+			delete(instance.Labels, key)
+		}
+	}
+	instance.Annotations[constants.RoleInstanceLifecycleHookSignalLabelKeys] = formatSignalKeys(owned)
+	if err := c.Patch(ctx, instance,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{})); err != nil {
+		return err
+	}
+	return c.mirrorSignalLabels(ctx, instance, pods)
+}
+
 // SetHookState writes only the runtime hook state and then syncs Pod mirrors.
 func (c *HookControl) SetHookState(
 	ctx context.Context,

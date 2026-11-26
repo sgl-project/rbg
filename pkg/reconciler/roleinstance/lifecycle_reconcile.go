@@ -240,12 +240,13 @@ func (r *reconciler) prepareLifecycleOperation(
 		return lifecycleOperationResult{operation: true}, nil
 	}
 	hookState := lifecycle.HookState(instance)
-	if hookState == constants.RoleInstanceHookStatePreUpdate ||
-		hookState == constants.RoleInstanceHookStateUpdating {
-		// Mirror of the set-side arbitration: the owning RoleInstanceSet
-		// controller is gating an update on preUpdate. Entering preRecover
-		// would overwrite its state and the two writers would flip-flop. The
-		// recovery is folded into the update once it applies.
+	if hookState == constants.RoleInstanceHookStatePreUpdate {
+		// Mirror of the set-side arbitration: an armed preUpdate gates the
+		// next workload change, and entering preRecover would overwrite it
+		// while the two writers flip-flop. Updating is deliberately not
+		// blocking: the update mutation already applied, so recovery may
+		// proceed (preRecover gates it) instead of deadlocking until a Pod
+		// that may never come back becomes Ready.
 		return lifecycleOperationResult{blocked: true, operation: true}, nil
 	}
 	// Recovering is durable authorization: preRecover has already been
@@ -329,9 +330,13 @@ func (r *reconciler) finishLifecycleOperation(
 			// backstop that keeps grants from lingering forever.
 			hookState == constants.RoleInstanceHookStateUpdating ||
 			hookState == constants.RoleInstanceHookStateRecovering ||
-			instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseCreating ||
-			instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseUpdating ||
-			instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseRecovering
+			// The phase must be this pass's verdict, not the persisted one:
+			// a stale Updating/Recovering status (the status write after
+			// arming postReady failed, or a controller restart) would
+			// re-enter postReady right after CleanupPostReady released it.
+			newStatus.Phase == workloadsv1alpha2.RoleInstancePhaseCreating ||
+			newStatus.Phase == workloadsv1alpha2.RoleInstancePhaseUpdating ||
+			newStatus.Phase == workloadsv1alpha2.RoleInstancePhaseRecovering
 		if !controlledOperation {
 			return nil
 		}

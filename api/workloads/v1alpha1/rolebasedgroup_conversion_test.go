@@ -1600,3 +1600,19 @@ func TestRestartBudgetV2OnlyConversion(t *testing.T) {
 		}
 	}
 }
+
+// A present-but-empty lifecycle stash must still delete the conversion-only
+// annotation: leaking the key into the persisted v1alpha2 object would let a
+// later full-object write carry conversion state as user data.
+func TestRoleBasedGroup_EmptyLifecycleStashStillDeletesAnnotation(t *testing.T) {
+	legacy := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "empty-stash",
+			Namespace:   "ns",
+			Annotations: map[string]string{constants.ConversionV1alpha2RoleLifecycleAnnotationKey: ""},
+		},
+	}
+	require.NoError(t, restoreV2RoleLifecycle(&v2.RoleBasedGroupSpec{}, legacy.Annotations))
+	assert.NotContains(t, legacy.Annotations, constants.ConversionV1alpha2RoleLifecycleAnnotationKey,
+		"the conversion-only key must be deleted even when its value is empty")
+}

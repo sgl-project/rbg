@@ -443,6 +443,26 @@ func (ssc *defaultStatefulInstanceSetControl) getInstanceSetRevisions(
 	return currentRevision, updateRevision, collisionCount, nil
 }
 
+// refreshInstancesReadiness refreshes the in-place readiness condition for
+// every created instance and collects the resulting retry durations.
+func (ssc *defaultStatefulInstanceSetControl) refreshInstancesReadiness(
+	set *workloadsv1alpha2.RoleInstanceSet,
+	replicas []*workloadsv1alpha2.RoleInstance,
+	updateRevision string,
+) error {
+	for i := range replicas {
+		if replicas[i] == nil || !isCreated(replicas[i]) {
+			continue
+		}
+		if _, duration, err := ssc.refreshInstanceState(set, replicas[i], updateRevision); err != nil {
+			return err
+		} else if duration > 0 {
+			durationStore.Push(getInstanceSetKey(set), duration)
+		}
+	}
+	return nil
+}
+
 // updateStatefulInstanceSet drives a single reconcile pass over the
 // RoleInstanceSet, in four ordered phases that each have a clear contract:
 //
@@ -549,15 +569,18 @@ func (ssc *defaultStatefulInstanceSetControl) updateStatefulInstanceSet(
 	// this, freshly created instances would carry InPlaceUpdateReady=False
 	// from the instance controller and could deadlock processReplica in
 	// OrderedReady mode (which gates on isHealthy).
-	for i := range replicas {
-		if replicas[i] == nil || !isCreated(replicas[i]) {
-			continue
-		}
-		if _, duration, err := ssc.refreshInstanceState(set, replicas[i], updateRevision.Name); err != nil {
-			return &status, err
-		} else if duration > 0 {
-			durationStore.Push(getInstanceSetKey(set), duration)
-		}
+	if err := ssc.refreshInstancesReadiness(set, replicas, updateRevision.Name); err != nil {
+		return &status, err
+	}
+
+	// End preUpdate for armed instances that are no longer update targets even
+	// when no rollout is in progress: after a full revert the sweep inside
+	// progressUpdate never runs and the armed state would linger forever. The
+	// sweep is a no-op when no hook is armed, and an instance that is still a
+	// target — including one paused by a raised partition — is not cancelled.
+	if err := ssc.cancelUntargetedPreUpdateHooks(ctx, set, replicas,
+		buildUpdateTargets(replicas, topo, updateRevision.Name)); err != nil {
+		return &status, err
 	}
 
 	scaleMaxUnavailable, err := getScaleMaxUnavailable(set)
@@ -762,9 +785,6 @@ func (ssc *defaultStatefulInstanceSetControl) progressUpdate(
 	baseUnavail := ssc.collectBaseUnavailable(set, replicas, topo, minReadySeconds)
 	initialBaseUnavail := len(baseUnavail)
 	targets := buildUpdateTargets(replicas, topo, updateRevision.Name)
-	if err := ssc.cancelUntargetedPreUpdateHooks(ctx, set, replicas, targets); err != nil {
-		return status, err
-	}
 
 	klog.InfoS("Progress rolling update", "instanceSet", klog.KObj(set),
 		"targets", targets, "maxUnavailable", topo.maxUnavailable,
@@ -1487,30 +1507,66 @@ func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleUpdate(
 		// so a mutation retry proceeds without a second acknowledgement.
 		return false, nil
 	}
-	switch hookState {
-	case constants.RoleInstanceHookStatePreRecover,
-		constants.RoleInstanceHookStateRecovering,
-		constants.RoleInstanceHookStatePostReady,
-		constants.RoleInstanceHookStatePreDelete,
-		constants.RoleInstanceHookStateTerminating:
-		// The RoleInstance controller owns an in-flight operation on the same
-		// hook-state label. Entering preUpdate would overwrite it and the two
-		// writers would flip-flop forever; wait for it to resolve instead.
+	if hookState == constants.RoleInstanceHookStatePreDelete ||
+		hookState == constants.RoleInstanceHookStateTerminating {
+		// preDelete owns the instance until its drain finishes; an update
+		// target in this state is deleting, so wait instead of racing it.
 		return true, nil
 	}
 	var hook *workloadsv1alpha2.RoleInstanceLifecycleHook
 	if set.Spec.RoleInstanceTemplate.Lifecycle != nil {
 		hook = set.Spec.RoleInstanceTemplate.Lifecycle.PreUpdate
 	}
+	if hook == nil {
+		// Without a preUpdate hook this controller writes no hook-state, so
+		// there is nothing to arbitrate: per the KEP an update interrupts
+		// recovery and never waits on the asynchronous postReady.
+		return false, nil
+	}
+	if hookState == constants.RoleInstanceHookStatePreRecover ||
+		hookState == constants.RoleInstanceHookStateRecovering ||
+		hookState == constants.RoleInstanceHookStatePostReady {
+		// An armed preUpdate supersedes the RoleInstance-owned state: the
+		// update that follows is the operation that fixes the workload, and
+		// waiting would stall the rollout on an executor that may never
+		// acknowledge. Signal labels the preUpdate hook does not share are
+		// cleared so the superseded executor stops watching them.
+		if ssc.hookControl == nil {
+			return false, nil
+		}
+		pods, err := ssc.lifecyclePods(ctx, instance)
+		if err != nil {
+			return true, err
+		}
+		// The superseded hooks come from the instance's effective snapshot:
+		// its executor arms preRecover/postReady from spec.lifecycle, which
+		// the snapshot sync keeps aligned with the set template.
+		superseded := instance.Spec.Lifecycle
+		if superseded == nil {
+			superseded = set.Spec.RoleInstanceTemplate.Lifecycle
+		}
+		if err := ssc.hookControl.SupersedeHook(ctx, instance,
+			constants.RoleInstanceHookStatePreUpdate, hook,
+			[]*workloadsv1alpha2.RoleInstanceLifecycleHook{superseded.PreRecover, superseded.PostReady},
+			pods); err != nil {
+			return true, err
+		}
+		if ssc.recorder != nil {
+			ssc.recorder.Eventf(set, corev1.EventTypeNormal, "LifecycleHookEntered",
+				"preUpdate lifecycle hook entered for instance %s; it supersedes the %s state and waits for signal labels to be removed",
+				instance.Name, hookState)
+		}
+		return true, nil
+	}
 	return ssc.prepareLifecycleHook(ctx, set, instance, hook, constants.RoleInstanceHookStatePreUpdate)
 }
 
 // cancelUntargetedPreUpdateHooks ends preUpdate for armed instances that are
-// no longer update targets (a reverted or re-partitioned rollout). The
-// signals are removed and the instance moves to Updating, which the
-// RoleInstance controller resolves once the workload is Ready again. Without
-// this, a reverted update leaves the instance drained and holding a stale
-// grant that a later unrelated update would consume without a drain.
+// no longer update targets (a reverted or re-partitioned rollout). The signals
+// are removed and the state is cleared: a cancelled hook must leave no
+// authorization behind, or a later unrelated update would consume it without
+// a fresh acknowledgement from the executor. Without this, a reverted update
+// leaves the instance drained and holding a stale grant.
 func (ssc *defaultStatefulInstanceSetControl) cancelUntargetedPreUpdateHooks(
 	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
@@ -1543,13 +1599,13 @@ func (ssc *defaultStatefulInstanceSetControl) cancelUntargetedPreUpdateHooks(
 		if err != nil {
 			return err
 		}
-		if err := ssc.hookControl.CancelHook(ctx, instance,
-			constants.RoleInstanceHookStateUpdating, hook, pods); err != nil {
+		if err := ssc.hookControl.CancelHook(ctx, instance, "", hook, pods); err != nil {
 			return err
 		}
 		if ssc.recorder != nil {
 			ssc.recorder.Eventf(set, corev1.EventTypeNormal, "LifecycleHookCancelled",
-				"preUpdate lifecycle hook cancelled; instance is no longer an update target")
+				"preUpdate lifecycle hook cancelled for instance %s; it is no longer an update target",
+				instance.Name)
 		}
 	}
 	return nil
@@ -1575,7 +1631,8 @@ func (ssc *defaultStatefulInstanceSetControl) prepareLifecycleHook(
 		}
 		if ssc.recorder != nil {
 			ssc.recorder.Eventf(set, corev1.EventTypeNormal, "LifecycleHookEntered",
-				"%s lifecycle hook entered; waiting for signal labels to be removed", state)
+				"%s lifecycle hook entered for instance %s; waiting for signal labels to be removed",
+				state, instance.Name)
 		}
 		return true, nil
 	}

@@ -100419,6 +100419,9 @@ webhooks:
       path: /validate-workloads-x-k8s-io-v1alpha2-roleinstanceset
   failurePolicy: Fail
   name: vroleinstanceset.kb.io
+  objectSelector:
+    matchLabels:
+      rbg.workloads.x-k8s.io/role-instance-lifecycle-configured: "true"
   rules:
   - apiGroups:
     - workloads.x-k8s.io

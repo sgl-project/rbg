@@ -617,3 +617,80 @@ func TestLifecycleOnlyGenerationBumpRequiresConfirmedGeneration(t *testing.T) {
 	inFlight.Status.LastPhaseCompleteGeneration = 0
 	require.False(t, lifecycleOnlyGenerationBump(inFlight))
 }
+
+// Updating means the preUpdate mutation already applied. Recovery must not
+// block on it: the instance's Pod may never come back Ready, so preRecover
+// proceeds and gates the rebuild instead of deadlocking until readiness.
+func TestPrepareLifecycleOperationRecoversWhileUpdatingGrantApplied(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+		},
+		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/recover": "true"},
+		},
+	}
+	instance.Labels = map[string]string{
+		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStateUpdating),
+	}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{}
+	result, err := r.prepareLifecycleOperation(ctx, instance, newStatus, roleInstancePhaseFacts{
+		podsPresent: false,
+	}, nil)
+	require.NoError(t, err)
+	require.True(t, result.blocked)
+	require.True(t, result.operation)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Equal(t, constants.RoleInstanceHookStatePreRecover, roleinstancelifecycle.HookState(live),
+		"recovery must enter preRecover once the update mutation applied")
+	require.Contains(t, live.Labels, "consumer.example/recover")
+}
+
+// A stale Updating status (the status write after arming postReady failed, or
+// a controller restart) must not re-enter postReady after the executor
+// released it: the phase verdict of this pass, not the persisted phase, proves
+// whether a controlled operation is still in flight.
+func TestFinishLifecycleOperationDoesNotRearmReleasedPostReadyOnStalePhase(t *testing.T) {
+	ctx := context.Background()
+	instance := newReadinessTestInstance()
+	instance.Status.ObservedGeneration = 1
+	instance.Status.Phase = workloadsv1alpha2.RoleInstancePhaseUpdating
+	instance.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PostReady: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/ready": "true"},
+		},
+	}
+	instance.Labels = map[string]string{
+		constants.RoleInstanceLifecycleHookStateKey: string(constants.RoleInstanceHookStatePostReady),
+	}
+	instance.Annotations = map[string]string{
+		constants.RoleInstanceLifecycleHookSignalLabelKeys: "consumer.example/ready",
+	}
+	c := newLifecycleTestClient(t, instance)
+	r := newLifecycleTestReconciler(t, c)
+
+	facts := roleInstancePhaseFacts{podsPresent: true, readySatisfied: true}
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+		UpdateRevision:  "rev-1",
+		CurrentRevision: "rev-1",
+	}
+	// The executor already removed the signal: the prepare pass releases
+	// postReady, and this pass's phase machine reports convergence.
+	_, err := r.prepareLifecycleOperation(ctx, instance, newStatus, facts, nil)
+	require.NoError(t, err)
+	newStatus.Phase = workloadsv1alpha2.RoleInstancePhaseRunning
+	err = r.finishLifecycleOperation(ctx, instance, newStatus, facts, false, nil)
+	require.NoError(t, err)
+
+	live := requireLifecycleInstance(t, c, instance)
+	require.Empty(t, roleinstancelifecycle.HookState(live),
+		"a released postReady must not be re-armed from a stale Updating phase")
+	require.NotContains(t, live.Labels, "consumer.example/ready")
+}

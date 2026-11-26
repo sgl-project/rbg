@@ -473,8 +473,8 @@ func TestStatefulPreUpdateGrantConsumedByInPlaceUpdate(t *testing.T) {
 }
 
 // A reverted update cancels its armed preUpdate: the signals are removed and
-// the instance moves to Updating so the RoleInstance controller can resolve
-// it once the workload is Ready again.
+// the state is cleared, leaving no authorization a later unrelated update
+// could consume without a fresh acknowledgement.
 func TestStatefulRevertedUpdateCancelsPreUpdate(t *testing.T) {
 	h := newRollbackTestHarness(t, "kep527-cancel", 2, 0, 0)
 	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
@@ -521,8 +521,8 @@ func TestStatefulRevertedUpdateCancelsPreUpdate(t *testing.T) {
 	require.NoError(t, c.Update(context.Background(), armed))
 
 	h.reconcile(t, armed, stillTarget)
-	require.Equal(t, constants.RoleInstanceHookStateUpdating, roleinstancelifecycle.HookState(armed),
-		"an untargeted armed instance is cancelled to Updating")
+	require.Empty(t, roleinstancelifecycle.HookState(armed),
+		"an untargeted armed instance is cancelled with no state left behind")
 	require.NotContains(t, armed.Labels, "consumer.example/update")
 	storedPod := &corev1.Pod{}
 	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pod), storedPod))
@@ -534,18 +534,23 @@ func TestStatefulRevertedUpdateCancelsPreUpdate(t *testing.T) {
 }
 
 // The hook-state label has two writers. When the RoleInstance controller owns
-// an in-flight preRecover, the set controller must wait instead of entering
-// preUpdate and overwriting it.
-func TestStatefulPreUpdateWaitsForArmedPreRecover(t *testing.T) {
+// an in-flight preRecover, an armed preUpdate supersedes it: the update is the
+// operation that fixes the workload, so waiting would stall the rollout on an
+// executor that may never acknowledge.
+func TestStatefulPreUpdateSupersedesArmedPreRecover(t *testing.T) {
 	h := newRollbackTestHarness(t, "kep527-arbitration", 1, 0, 0)
 	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
 	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
 		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
 			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
 		},
+		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/recover": "true"},
+		},
 	}
 	instance := h.instance(0, h.intermediate.Name, true)
 	instance.ResourceVersion = "1"
+	instance.Spec.Lifecycle = h.set.Spec.RoleInstanceTemplate.Lifecycle.DeepCopy()
 	instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(constants.RoleInstanceHookStatePreRecover)
 	instance.Labels["consumer.example/recover"] = "true"
 	pod := &corev1.Pod{
@@ -570,10 +575,17 @@ func TestStatefulPreUpdateWaitsForArmedPreRecover(t *testing.T) {
 
 	h.reconcile(t, instance)
 	h.assertDeleted(t)
-	require.Equal(t, constants.RoleInstanceHookStatePreRecover, roleinstancelifecycle.HookState(instance),
-		"an armed preRecover must not be overwritten by a preUpdate entry")
-	require.NotContains(t, instance.Labels, "consumer.example/update",
-		"the set controller must not install preUpdate signals over an armed preRecover")
+	require.Equal(t, constants.RoleInstanceHookStatePreUpdate, roleinstancelifecycle.HookState(instance),
+		"an armed preUpdate supersedes the preRecover state")
+	require.Contains(t, instance.Labels, "consumer.example/update",
+		"the set controller installs the preUpdate signal")
+	require.NotContains(t, instance.Labels, "consumer.example/recover",
+		"the superseded preRecover signal is cleared in the same write")
+	storedPod := &corev1.Pod{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pod), storedPod))
+	require.Contains(t, storedPod.Labels, "consumer.example/update")
+	require.NotContains(t, storedPod.Labels, "consumer.example/recover",
+		"the superseded Pod mirror is removed")
 }
 
 func TestStatefulPreDeleteWaitsForFinalizer(t *testing.T) {
@@ -859,4 +871,151 @@ func TestStaleSurgeDrainPreservesBaseRolloutBudget(t *testing.T) {
 	require.NoError(t, c.Update(context.Background(), staleSurge))
 	h.reconcile(t, base0, base1, readySurge, staleSurge)
 	h.assertDeleted(t, staleSurge.Name)
+}
+
+// A full revert leaves no update targets, so the rollout is not active. The
+// armed preUpdate must still be cancelled: without the hoisted sweep the
+// instance keeps its state and signals indefinitely, and a later unrelated
+// update would consume the stale grant without a fresh drain.
+func TestStatefulFullRevertCancelsArmedPreUpdate(t *testing.T) {
+	h := newRollbackTestHarness(t, "kep527-full-revert", 1, 0, 0)
+	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+		},
+	}
+	// The instance is back at the update revision: no update targets remain.
+	armed := h.instance(0, h.current.Name, true)
+	pod := &corev1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      armed.Name,
+			Namespace: armed.Namespace,
+			Labels: map[string]string{
+				constants.RoleInstanceNameLabelKey: armed.Name,
+				"consumer.example/update":          "blocked",
+			},
+			OwnerReferences: []metav1.OwnerReference{*metav1.NewControllerRef(
+				armed, workloadsv1alpha2.GroupVersion.WithKind("RoleInstance"))},
+		},
+	}
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	require.NoError(t, corev1.AddToScheme(scheme))
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(armed, pod).
+		Build()
+	h.control.hookControl = roleinstancelifecycle.NewHookControl(c)
+	h.control.client = c
+
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(armed), armed))
+	armed.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(constants.RoleInstanceHookStatePreUpdate)
+	armed.Labels["consumer.example/update"] = "blocked"
+	armed.Annotations = map[string]string{
+		constants.RoleInstanceLifecycleHookSignalLabelKeys: "consumer.example/update",
+	}
+	require.NoError(t, c.Update(context.Background(), armed))
+
+	h.reconcile(t, armed)
+	require.Empty(t, roleinstancelifecycle.HookState(armed),
+		"an armed preUpdate with no remaining update targets must be cancelled")
+	require.NotContains(t, armed.Labels, "consumer.example/update")
+	storedPod := &corev1.Pod{}
+	require.NoError(t, c.Get(context.Background(), client.ObjectKeyFromObject(pod), storedPod))
+	require.NotContains(t, storedPod.Labels, "consumer.example/update",
+		"cancellation must remove the Pod mirrors")
+	h.assertDeleted(t)
+}
+
+// Without a preUpdate hook the set controller writes no hook-state, so an
+// RI-owned postReady must not block the rollout: the update proceeds.
+func TestStatefulUpdateSkipsArbitrationWithoutPreUpdateHook(t *testing.T) {
+	h := newRollbackTestHarness(t, "kep527-no-preupdate", 1, 0, 0)
+	h.set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(1))
+	h.set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PostReady: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/ready": "true"},
+		},
+	}
+	instance := h.instance(0, h.intermediate.Name, true)
+	instance.Labels[constants.RoleInstanceLifecycleHookStateKey] = string(constants.RoleInstanceHookStatePostReady)
+
+	h.reconcile(t, instance)
+	h.assertDeleted(t, instance.Name)
+}
+
+// The set-side update arbitration is minimal: Updating is the durable grant,
+// preDelete/Terminating own the drain, and without a preUpdate hook there is
+// nothing to arbitrate at all.
+func TestPrepareLifecycleUpdateArbitration(t *testing.T) {
+	preUpdate := &workloadsv1alpha2.RoleInstanceLifecycleHook{
+		SignalLabels: map[string]string{"consumer.example/update": "blocked"},
+	}
+	tests := []struct {
+		name      string
+		hookState constants.RoleInstanceLifecycleHookStateType
+		preUpdate *workloadsv1alpha2.RoleInstanceLifecycleHook
+		wantBlock bool
+	}{
+		{name: "updating grant proceeds", hookState: constants.RoleInstanceHookStateUpdating, preUpdate: preUpdate},
+		{name: "preDelete waits", hookState: constants.RoleInstanceHookStatePreDelete, preUpdate: preUpdate, wantBlock: true},
+		{name: "terminating waits", hookState: constants.RoleInstanceHookStateTerminating, preUpdate: preUpdate, wantBlock: true},
+		{
+			name:      "postReady without preUpdate proceeds",
+			hookState: constants.RoleInstanceHookStatePostReady,
+		},
+		{
+			name:      "preRecover without preUpdate proceeds",
+			hookState: constants.RoleInstanceHookStatePreRecover,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			set := newRevisionTestSet("nginx:1.0")
+			set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+				PreUpdate: test.preUpdate,
+			}
+			instance := &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "instance-0",
+					Namespace: "default",
+					Labels: map[string]string{
+						constants.RoleInstanceLifecycleHookStateKey: string(test.hookState),
+					},
+				},
+			}
+			ssc := &defaultStatefulInstanceSetControl{}
+			blocked, err := ssc.prepareLifecycleUpdate(context.Background(), set, instance)
+			require.NoError(t, err)
+			require.Equal(t, test.wantBlock, blocked)
+		})
+	}
+}
+
+// A lifecycle-only template change is controller-propagated metadata, not a
+// rollout input: it must reuse the existing ControllerRevision (getPatch
+// deletes lifecycle) and ApplyRevision must restore the live snapshot, or
+// every hook-only change would roll all instances.
+func TestLifecycleOnlyTemplateChangeReusesRevision(t *testing.T) {
+	set := newRevisionTestSet("nginx:1.0")
+	without, err := newRevision(set, 1, ptr.To[int32](0))
+	require.NoError(t, err)
+
+	set.Spec.RoleInstanceTemplate.Lifecycle = &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/recover": "true"},
+		},
+	}
+	with, err := newRevision(set, 1, ptr.To[int32](0))
+	require.NoError(t, err)
+	require.Equal(t, without.Name, with.Name,
+		"a lifecycle-only template change must not cut a new revision")
+	require.Equal(t, without.Data.Raw, with.Data.Raw)
+
+	restored, err := ApplyRevision(set, without)
+	require.NoError(t, err)
+	require.Equal(t, set.Spec.RoleInstanceTemplate.Lifecycle, restored.Spec.RoleInstanceTemplate.Lifecycle,
+		"ApplyRevision must preserve the live lifecycle snapshot")
 }

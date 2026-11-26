@@ -12,3 +12,15 @@
   value:
     matchLabels:
       rbg.workloads.x-k8s.io/role-instance-pre-delete-armed: "true"
+# The RoleInstanceSet validation webhook only matters for lifecycle-configured
+# sets. The routing label is written by the controller in the same write as
+# the lifecycle configuration, so ordinary RoleInstanceSet writes never
+# depend on webhook availability during a mixed version rollout.
+- op: test
+  path: /webhooks/5/name
+  value: vroleinstanceset.kb.io
+- op: add
+  path: /webhooks/5/objectSelector
+  value:
+    matchLabels:
+      rbg.workloads.x-k8s.io/role-instance-lifecycle-configured: "true"

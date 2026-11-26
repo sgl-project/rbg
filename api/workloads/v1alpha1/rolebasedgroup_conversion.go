@@ -758,7 +758,14 @@ func stashV2RoleLifecycle(spec *v2.RoleBasedGroupSpec, annotations map[string]st
 // annotations that will be written to storage.
 func restoreV2RoleLifecycle(spec *v2.RoleBasedGroupSpec, annotations map[string]string) error {
 	raw, ok := annotations[annotationV1alpha2RoleLifecycle]
-	if !ok || raw == "" {
+	if !ok {
+		return nil
+	}
+	// The key is conversion-only state: remove it before any early return so
+	// a present-but-empty value cannot leak it into the persisted v1alpha2
+	// object on a full-object v1alpha1 write.
+	delete(annotations, annotationV1alpha2RoleLifecycle)
+	if raw == "" {
 		return nil
 	}
 	lifecycles := map[string]*v2.RoleInstanceLifecycle{}
@@ -770,6 +777,5 @@ func restoreV2RoleLifecycle(spec *v2.RoleBasedGroupSpec, annotations map[string]
 			spec.Roles[i].Lifecycle = lifecycle
 		}
 	}
-	delete(annotations, annotationV1alpha2RoleLifecycle)
 	return nil
 }

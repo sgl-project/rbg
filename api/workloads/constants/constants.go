@@ -95,6 +95,12 @@ const (
 	// label so only preDelete-armed RIs route to it, keeping ordinary deletes
 	// independent of webhook availability.
 	RoleInstancePreDeleteGuardLabelKey = RBGPrefix + "role-instance-pre-delete-armed"
+	// RoleInstanceLifecycleConfiguredLabelKey routes the RoleInstanceSet
+	// validating webhook to sets that configure lifecycle hooks. The new
+	// controller writes it together with the lifecycle configuration, so
+	// ordinary writes never depend on webhook availability during a mixed
+	// version rollout.
+	RoleInstanceLifecycleConfiguredLabelKey = RBGPrefix + "role-instance-lifecycle-configured"
 )
 
 const (

@@ -278,6 +278,14 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 		roleInstanceSetLabel[constants.RBGOwnerUIDLabelKey] = string(rbg.UID)
 	}
 
+	// Route the RoleInstanceSet validating webhook only to sets that use the
+	// new lifecycle feature: the label lands in the same write as the
+	// lifecycle configuration, so ordinary writes from an old controller
+	// never depend on webhook availability during a mixed version rollout.
+	if workloadsv1alpha2.HasRoleInstanceLifecycleHooks(role.Lifecycle) {
+		roleInstanceSetLabel[constants.RoleInstanceLifecycleConfiguredLabelKey] = "true"
+	}
+
 	// set default instance pattern annotation to Stateful only if not explicitly set in role.Annotations
 	roleInstanceSetAnnotation := maps.Clone(rbg.GetCommonAnnotationsFromRole(role))
 	if role.Annotations[constants.RoleInstancePatternKey] == "" {
