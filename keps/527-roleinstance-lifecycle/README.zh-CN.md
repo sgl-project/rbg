@@ -84,8 +84,8 @@ executor 负责业务重试、退避和幂等恢复。hook `signalLabel` 不参�
 - 前置 hooks 的未清除 `signalLabel` 阻塞实际负载操作，controller 不执行业务动作或调度业务重试。
 - `postReady` 统一覆盖创建、恢复和更新后的实例验收与业务注册，但不阻塞 phase、RI Ready 或后续操作。
 - 保留旧 RIS lifecycle 协议，并新增 RoleInstance lifecycle 协议。
-- 未配置 lifecycle hooks 的负载保持现有行为，唯一例外是集群级拒绝
-  Foreground 删除。
+- 未配置 lifecycle hooks 的负载保持现有行为，唯一例外是自身配置了
+  preDelete 的对象会拒绝 Foreground 和 Orphan 删除。
 
 ### 非目标
 
@@ -353,9 +353,10 @@ DNS subdomain，name 部分不超过 63 字符。`signalLabel` value 必须是�
 label value，且不超过 63 字符。准入在配置被接受前拒绝非法 `signalLabel` key 或
 value。controller 不会为了可写而截断、改写或丢弃配置的 `signalLabel`。
 
-`signalLabel` key 的作用域限定在单个 hook 挂载点内。任何一个 key 被多个已配置 hook 使用时，
-准入校验必须拒绝，包括 postReady 和 preDelete 共用 key 的情况；
-否则一个 hook 的迟到取消清理可能删除另一个 hook 的 `signalLabel`。
+`signalLabel` key 可以被多个已配置 hook 共用。executor 的条件写删除
+防护了迟到取消的风险：删除是测试当前 `hook-state` 的条件写，迟到的
+postReady 清理无法删除现在属于 pending preDelete 或其他调用的
+`signalLabel`。
 信号标签 key 也不能等于固定的 hook-state key 或使用保留的
 `rbg.workloads.x-k8s.io/` 前缀；hook `signalLabel` 本身是运行时 label，
 但不得与 controller 保留的状态 key 冲突。
@@ -620,25 +621,32 @@ Update 或 Recovery 需要替换 Pod 时，controller 在各自前置 hook 放�
 不触发 preDelete；成员 Pod 不需要 lifecycle finalizer。
 
 受支持的删除路径是 controller 发起的删除和默认 background 级联。
-`RoleInstanceLifecycleHooks` 开启期间，准入拒绝 RBGSet、RBG、RIS 和 RI
-所有使用 `Foreground` 和 `Orphan` 传播的删除请求，包括已废弃的
-`orphanDependents` 选项：foreground GC 可能在 hook 放行前删除 dependent
-Pods；orphan 删除会在保留 RI finalizer 仍存在时剥离成员 Pod 的
-ownerReferences，使成员发现和文档规定的 hook 后 Pod 删除失去定义。webhook
-检查 `DeleteOptions`，且不依赖 informer 缓存：cache miss 和成功 lookup
-都无法证明没有可达 RI 启用 preDelete，因为新建 RI 或刚启用的 hook 可能
-已提交而 watch 事件尚未到达。客户端可以改用 background 传播重试。webhook
-以 `failurePolicy=Fail` 注册，必须在 gate 启用前完成部署和注册，并保持
-注册到 gate 关闭之后：webhook 不可用时删除请求被拒绝而不是绕过屏障，
-gate 切换期间不会出现 webhook 缺失或 fail-open 并存的状态。该拒绝在
-gate 开启期间是集群级的：同样作用于未配置 hooks 的
-负载，这些负载其余行为不变，gate 关闭后恢复 Foreground 删除。
-foreground GC 可能在 hook 放行前删除 dependent Pods。
+准入只对「对象自身配置了 preDelete」的删除请求拒绝 `Foreground` 和
+`Orphan` 传播（包括已废弃的 `orphanDependents` 选项）：RBG/RBGSet 请求
+以其 roles 是否配置 hooks 判定，RIS/RI 请求以其生效 lifecycle 是否配置
+preDelete 判定。webhook 从 admission request 读取 `DeleteOptions`，
+保持静态——不做跨资源查询、不依赖 informer 缓存；并通过 controller
+写入 label 上的 `objectSelector` 收窄作用范围，使普通对象的删除不依赖
+webhook 可用性；被拒绝的删除可改用 background 传播重试。
+
+收窄是安全边界。foreground GC 可能在 hook 放行前删除 dependent Pods——
+已在 Kubernetes v1.37 集群上实测：前台删除在数秒内穿过被 finalizer
+持有的中间对象删掉叶子。而全集群拒绝会破坏所有合法的前台用户，包括
+Argo CD 的默认级联和 RBGSet rolling controller 自身。orphan 删除会在
+保留 RI finalizer 仍存在时剥离成员 Pod 的 ownerReferences，使成员发现
+和文档规定的 hook 后 Pod 删除失去定义，因此在同一范围内被拒绝。
+
+RBGSet rolling controller 对配置了 preDelete 的子对象使用 background
+传播删除，并保留旧子对象（例如用 drain finalizer）直到其
+RoleInstances 消失，替换对象仍然等待旧子对象的 drain 而不是绕过它。
+
 namespace 删除不在存活引擎保证范围内：namespace controller 可能直接删除
 成员 Pods。删除包含生效 preDelete RI 的 namespace 之前，运维必须停止新操作、
 让在途 hooks 完成、确认没有保留 RI finalizer 残留后再删除 namespace；
 teardown 已开始且 finalizer 残留时，运维需要使用 break-glass 流程。经过
-测试的 namespace teardown 流程是进入 Beta 的前置条件。
+测试的 namespace teardown 流程是进入 Beta 的前置条件。Argo CD 用户
+对包含 preDelete 资源的应用必须使用 background 级联 finalizer
+（`resources-finalizer.argocd.argoproj.io/background`）。
 外部直接删除 Pod 后 deletionTimestamp 无法撤销，该路径仍属于 Recovery，
 不触发 preDelete，也不提供存活引擎屏障。
 
@@ -778,7 +786,12 @@ Update 和 Recovery 内部替换 Pod 时不执行 preDelete，成员 Pod 不需�
 Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS lifecycle 互斥；
 旧协议保持原有字段不变；新协议只暴露 `signalLabels`。
 
-上述设计已确定；进入 `implementable` 前需要的是完成与验证，而不是重新设计：
+Alpha 范围也已确认：native Stateful RoleInstanceSet pattern 是唯一支持的
+后端。准入拒绝 Stateless pattern 角色和已废弃 workload 后端
+（StatefulSet、Deployment、LeaderWorkerSet）上的 lifecycle 配置——前者
+需要独立的屏障与预算设计，后者不渲染协议。
+
+上述设计已确定。实现评审（#633）重新提出了进入 Beta 前需要解决的问题：
 
 1. KEP-502 的 `RoleInstance.status.phase` schema 被接受，后续修订删除
    其遗留的 `markPodNotReady` 引用，以及 Alpha 后
@@ -787,6 +800,10 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 3. 验证已确定的 preDelete 屏障：保留 RI finalizer 时的默认
    background GC 行为、foreground 级联删除的准入拒绝，
    以及 controller 有序删除成员 Pod。
+4. preUpdate grant 模型：把已释放的授权与消费它的变更绑定，实例不再是
+   更新目标时取消 preUpdate，实例 Ready 后清除 `Updating`。
+5. lifecycle snapshot 在 RI 上的存放方式，以及所有 hooks 统一的重配置
+   规则（key/value 变更时 re-arm，移除 hook 时释放）。
 
 超时预算、人工跳过和不同失败策略作为后续能力讨论。
 
@@ -797,7 +814,7 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 #### 前置测试补充
 
 建立未配置 lifecycle hooks 时的创建、更新、component 扩缩容、Recovery、Ready 和删除回归基线，
-并注明 gate 开启期间对这类负载的唯一变化是 Foreground 删除被拒绝。
+并注明这类负载观察不到任何行为变化。
 保留旧 RIS lifecycle 行为测试，并区分工作负载后端。
 
 #### 单元测试
@@ -874,8 +891,9 @@ Alpha 兼容规则也已确认：新 lifecycle 协议与用户配置的旧 RIS l
 - 前置 executor 延迟启动时 `signalLabel` 保持匹配，controller 持续等待；executor 不需要首次登记。
 - 前置业务多次失败后自行退避成功，期间 controller 不推进受阻操作。
 - controller／executor 重启、watch 重连、PATCH 冲突和业务成功但 `signalLabel` 清除失败。
-- RBGSet、RBG、RIS 和 RI 的 foreground 删除均被拒绝，
-  包括与 RI 创建或 preDelete 启用并发的请求。
+- Foreground 和 Orphan 删除仅对自身配置了 preDelete 的对象被拒绝；
+  普通对象不受影响，webhook 不做跨资源查询地读取 `DeleteOptions`，
+  RBGSet rollout 对配置 preDelete 的子对象使用 background 传播删除。
 - RIS metadata 同步不覆盖运行时 `signalLabel`，controller 不在同一前置阶段重复写入。
 - RI 信号标签变化在不修改 revision 的情况下到达成员 Pod；RI 上清除
   `signalLabel` 会移除 Pod 上的镜像 label。
@@ -925,8 +943,8 @@ controller 写入与 executor 清除的信号标签协作，完成核心测试�
 
 ### 升级与降级策略
 
-未配置 lifecycle hooks 时保持行为不变，唯一例外是
-Foreground 删除被拒绝。存量 RI 启用功能不会仅因当前
+未配置 lifecycle hooks 时保持行为不变，唯一例外是自身配置了 preDelete 的
+对象会拒绝 Foreground 和 Orphan 删除。存量 RI 启用功能不会仅因当前
 Ready 或历史更新而重放 postReady／preUpdate；这些 hooks 只由受控操作触发。
 启用 preDelete 时，controller 按前述规则为存量稳定 RI 补充保留 finalizer。
 
@@ -970,8 +988,8 @@ RI controller 必须 fail safe：拒绝在该对象上执行新协议并报告�
 hook 在公布弃用版本前继续支持 standalone RIS 用户。
 不理解当前协议的版本不接管未完成操作。
 preDelete 需要确认 executor 在业务 Pod 删除前可用，并验证所支持删除路径的屏障。
-foreground 级联删除不是受支持路径。RBGSet、RBG、RIS 和
-RI 删除入口的 Foreground 传播一律被准入拒绝。
+foreground 级联删除对配置了 preDelete 的对象不是受支持路径：其
+删除入口的 Foreground/Orphan 传播被按前述范围准入拒绝。
 执行不兼容回滚时，应先移除 hook 配置，再移除兼容 controller。
 只有 RI 已稳定且兼容 controller 已清理全部保留的 preDelete RI finalizer 后，
 禁用才算完成；配置删除启动该收敛过程，但不能替代等待其完成。
