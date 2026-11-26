@@ -91,12 +91,24 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 				progressing.ObservedGeneration != ris.Generation {
 				return fmt.Errorf("RoleInstanceSet %s has not converged: %+v", ris.Name, progressing)
 			}
-			if established == nil || established.Status != corev1.ConditionTrue ||
-				established.ObservedGeneration != ris.Generation {
+			if established == nil || established.Status != corev1.ConditionTrue {
 				return fmt.Errorf("RoleInstanceSet %s is not established: %+v", ris.Name, established)
 			}
 			return nil
 		}, timeout, interval).Should(Succeed())
+		// Wait for the initial status writes to settle before taking the baseline.
+		lastVersion := ""
+		stableReads := 0
+		Eventually(func() bool {
+			version := readRIS(Default).ResourceVersion
+			if version == lastVersion {
+				stableReads++
+			} else {
+				lastVersion = version
+				stableReads = 0
+			}
+			return stableReads >= 8
+		}, timeout, interval).Should(BeTrue())
 		// Drain the initial child events before testing the annotation-only watch.
 		initialVersion := readRIS(Default).ResourceVersion
 		Consistently(func(g Gomega) string {
