@@ -87,7 +87,7 @@ mutating webhook 会把新建 RBG 默认为 `v1`；没有该注解的存量 RBG 
 
 RoleBasedGroupSet 应把注解放在 `spec.groupTemplate.annotations`：子 RBG 会继承该值，直接改子对象注解会被覆盖，省略该键的模板 UPDATE 会保留已存储版本。如需让 set 及其子对象回滚，请把模板注解显式设为 `v1alpha1`。
 
-把注解回滚为 `v1alpha1` 的前提是序列化后的枚举仍能放进 API server 的 1 MiB ConfigMap 限制。控制器会在写入前拒绝超限回滚，保留当前紧凑内容，并重试失败的 reconcile；如果枚举已放不下，请缩减拓扑或继续使用 `v1`。
+把注解回滚为 `v1alpha1` 的前提是序列化后的枚举仍能放进 API server 的 1 MiB ConfigMap 限制。控制器会在写入前拒绝超限回滚并保留当前紧凑内容；只有当每个 stateful role 的目标 ordinal 都在保留内容之内、且其余内容不变时，才继续 role reconcile。请缩减拓扑让后续重试重新满足大小限制，或继续使用 `v1`；与回滚一起做的其他变更需要先撤回。
 
 迁移 stateful role 前，确认 RBG 级 ConfigMap 已存在：
 

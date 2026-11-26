@@ -632,10 +632,13 @@ rejected write follows the existing reconcile error and retry path.
 Rollback:
 
 1. Change the annotation back to `v1alpha1`.
-2. The controller estimates the serialized v1alpha1 size. If it exceeds
-   1 MiB, the rollback is rejected and v1 content is retained. The controller
-   reports the configuration blocker and continues role reconciliation, so
-   reducing membership can make a retry fit.
+2. The controller serializes the v1alpha1 content. If it exceeds 1 MiB, the
+   rollback is rejected and the v1 content is retained. The controller reports
+   the configuration blocker and keeps reconciling roles only while each
+   stateful role's target ordinals stay within the retained content and nothing
+   else in it changes, so reducing membership can make a retry fit. Other
+   changes made together with the rollback must be reverted first, or stay on
+   `v1`.
 3. Otherwise, wait for reconcile and verify that ConfigMap content is
    v1alpha1.
 

@@ -28,10 +28,12 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	clientgoscheme "k8s.io/client-go/kubernetes/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	schev1alpha1 "sigs.k8s.io/scheduler-plugins/apis/scheduling/v1alpha1"
 )
@@ -56,6 +58,23 @@ func TestInitFunction(t *testing.T) {
 	assert.NoError(t, lwsv1.AddToScheme(scheme))
 	assert.NoError(t, schev1alpha1.AddToScheme(scheme))
 	assert.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+}
+
+func TestCacheOptionsConfigMapSelector(t *testing.T) {
+	found := false
+	for object, config := range cacheOptions().ByObject {
+		if _, ok := object.(*corev1.ConfigMap); !ok {
+			continue
+		}
+		found = true
+		selector := config.Label
+		assert.NotNil(t, selector, "the ConfigMap cache must be label-scoped")
+		assert.False(t, selector.Matches(labels.Set{}),
+			"an unlabeled ConfigMap must not enter the controller cache")
+		assert.True(t, selector.Matches(labels.Set{constants.GroupNameLabelKey: "test"}),
+			"a ConfigMap carrying the group-name label must enter the controller cache")
+	}
+	assert.True(t, found, "cacheOptions has no ConfigMap entry")
 }
 
 func TestPrintVersion(t *testing.T) {

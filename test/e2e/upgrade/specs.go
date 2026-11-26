@@ -1485,6 +1485,16 @@ func expectDirectRBGDiscoveryConfig(f *framework.Framework, name string) {
 	roleName := rbg.Spec.Roles[0].Name
 	gomega.Expect(config.Roles).To(gomega.HaveKey(roleName))
 	gomega.Expect(config.Roles[roleName].Size).To(gomega.Equal(int(*rbg.Spec.Roles[0].Replicas)))
+
+	gomega.Eventually(func(g gomega.Gomega) {
+		pods := listPodFactsForRole(g, f, rbg, roleName)
+		g.Expect(pods).To(gomega.HaveLen(int(*rbg.Spec.Roles[0].Replicas)))
+		for pod, facts := range pods {
+			g.Expect(facts.Phase).To(
+				gomega.Equal(corev1.PodRunning), "pod %s is %s", pod, facts.Phase,
+			)
+		}
+	}, utils.Timeout, utils.Interval).Should(gomega.Succeed())
 }
 
 // expectSetChildrenMaintainDiscoveryConfig runs

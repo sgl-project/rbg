@@ -379,13 +379,8 @@ func TestRBGPredicateDiscoveryConfigVersion(t *testing.T) {
 
 func TestDiscoveryConfigValueLimit(t *testing.T) {
 	exact := []byte(strings.Repeat("x", maxDiscoveryConfigMapBytes))
-	assert.False(t, discoveryConfigValueWithinLimit(exact),
-		"the config.yaml key is part of the ConfigMap data limit")
-
-	fits := []byte(strings.Repeat(
-		"x", maxDiscoveryConfigMapBytes-len(discoveryConfigKey),
-	))
-	assert.True(t, discoveryConfigValueWithinLimit(fits))
+	assert.True(t, discoveryConfigValueWithinLimit(exact),
+		"the API server counts value bytes, not key bytes")
 
 	over := append(exact, 'x')
 	assert.False(t, discoveryConfigValueWithinLimit(over))

@@ -599,9 +599,11 @@ excludedOrdinals: "1,3"
 回退步骤：
 
 1. 将 annotation 改回 `v1alpha1`。
-2. controller 估算 v1alpha1 序列化大小。如果超过 1 MiB，拒绝回滚并保留
-   v1 内容。controller 会报告配置类 blocker，并继续 role reconcile，
-   因此缩减成员规模可以让后续重试重新满足大小限制。
+2. controller 序列化 v1alpha1 内容。如果超过 1 MiB，拒绝回滚并保留 v1
+   内容。controller 会报告配置类 blocker；只有当每个 stateful role 的
+   目标 ordinal 都在保留内容之内、且其余内容不变时，才继续 role
+   reconcile，因此缩减成员规模可以让后续重试重新满足大小限制。与回滚
+   一起做的其他变更需要先撤回，或继续使用 `v1`。
 3. 否则，等待 reconcile 完成，确认 ConfigMap 恢复为 v1alpha1。
 
 ### 测试计划

@@ -87,7 +87,7 @@ The mutating webhook defaults new RBGs to `v1`; existing RBGs without the annota
 
 For a RoleBasedGroupSet, put the annotation in `spec.groupTemplate.annotations`: child RBGs inherit it, direct edits to a child annotation are overwritten, and a template update that omits the key preserves the stored version. Set the template annotation to `v1alpha1` explicitly to roll the set and its children back.
 
-Rolling the annotation back to `v1alpha1` is allowed only when the serialized enumeration still fits the API server's 1 MiB ConfigMap limit. The controller rejects an oversized rollback before writing, retains the current compact content, and retries the failed reconcile; reduce the topology or stay on `v1` if the enumeration no longer fits.
+Rolling the annotation back to `v1alpha1` is allowed only when the serialized enumeration still fits the API server's 1 MiB ConfigMap limit. The controller rejects an oversized rollback before writing, retains the current compact content, and keeps reconciling roles only while each stateful role's target ordinals stay within the retained content and nothing else in it changes. Reduce the topology to make a retry fit, or stay on `v1`; other changes made together with the rollback must be reverted first.
 
 Before migrating a stateful role, confirm the RBG-level ConfigMap exists:
 

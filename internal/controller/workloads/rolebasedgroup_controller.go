@@ -556,9 +556,10 @@ const maxDiscoveryConfigMapBytes = 1 << 20
 const legacyMemorySafetyFactor int64 = 16
 
 // discoveryConfigValueWithinLimit reports whether the single data entry fits the
-// Kubernetes ConfigMap limit. The API server counts both the key and the value.
+// Kubernetes ConfigMap limit. The API server sums the value bytes and does not
+// count the key.
 func discoveryConfigValueWithinLimit(value []byte) bool {
-	return len(value)+len(discoveryConfigKey) <= maxDiscoveryConfigMapBytes
+	return len(value) <= maxDiscoveryConfigMapBytes
 }
 
 // isRecoverableDiscoveryRollback reports whether the RBG can continue to
@@ -812,7 +813,7 @@ func (r *RoleBasedGroupReconciler) reconcileDiscoveryConfigMap(
 			return estimateErr
 		} else if upperBound > int64(maxDiscoveryConfigMapBytes)*legacyMemorySafetyFactor {
 			return fmt.Errorf(
-				"%w: estimated legacy discovery materialization is at least %d bytes, exceeding the %d-byte safety guard",
+				"%w: estimated legacy discovery materialization is up to %d bytes, exceeding the %d-byte safety guard",
 				errOversizedDiscoveryConfig, upperBound, int64(maxDiscoveryConfigMapBytes)*legacyMemorySafetyFactor,
 			)
 		}
