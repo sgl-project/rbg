@@ -676,6 +676,15 @@ func TestUnreadyDependencies(t *testing.T) {
 	if len(coordinated) != 0 || coordinatedErr != nil {
 		t.Fatalf("coordinated rolling dependency must satisfy the gate, got blocked=%v err=%v", coordinated, coordinatedErr)
 	}
+
+	// A coordinated rolling dependency with zero ready replicas must still report
+	// dependents as blocked so KEP-502 matches CheckDependencyReady's readiness floor.
+	zeroReadyRIS := rollingRIS.DeepCopy()
+	zeroReadyRIS.Status.ReadyReplicas = 0
+	blocked, blockedErr := newReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(zeroReadyRIS, policy).Build()).unreadyDependencies(ctx, rbg)
+	if len(blocked) != 1 || blocked[0] != "decode" || blockedErr != nil {
+		t.Fatalf("coordinated rolling dependency with readyReplicas=0 must stay blocked, got blocked=%v err=%v", blocked, blockedErr)
+	}
 }
 
 func TestGangObservationReadErrorReportsIncomplete(t *testing.T) {

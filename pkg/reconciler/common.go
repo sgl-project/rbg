@@ -205,10 +205,10 @@ func RecreateObj(ctx context.Context, c client.Client, rbg *workloadsv1alpha2.Ro
 }
 
 // checkWorkloadReady returns true when readyReplicas matches desiredReplicas, or
-// when the workload is mid-rolling-update (inRollout) and its role participates
-// in a CoordinatedPolicy maxSkew rule. CoordinatedPolicy is only read when
-// inRollout is true, avoiding lookups on steady-state, initial-creation, and
-// pure scale-up paths.
+// when the workload is mid-rolling-update (inRollout), its role participates in
+// a CoordinatedPolicy maxSkew rule, and at least one replica is still ready
+// (readyReplicas > 0). CoordinatedPolicy is only read when inRollout is true,
+// avoiding lookups on steady-state, initial-creation, and pure scale-up paths.
 func checkWorkloadReady(
 	ctx context.Context,
 	reader client.Reader,
@@ -224,7 +224,7 @@ func checkWorkloadReady(
 			return false, err
 		}
 		if inMaxSkew {
-			return true, nil
+			return readyReplicas > 0, nil
 		}
 	}
 	return readyReplicas == ptr.Deref(desiredReplicas, 1), nil

@@ -327,6 +327,16 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 			expectReady: false,
 		},
 		{
+			name: "dependency rolling with maxSkew and readyReplicas 0 blocks downstream",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbg-role2", Namespace: "default", OwnerReferences: []metav1.OwnerReference{ownerRef}},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
+				Status:     appsv1.StatefulSetStatus{ReadyReplicas: 0, Replicas: 2, CurrentRevision: "r1", UpdateRevision: "r2"},
+			},
+			policy:      maxSkewPolicy,
+			expectReady: false,
+		},
+		{
 			name: "dependency rolling with maxSkew unblocks downstream",
 			sts: &appsv1.StatefulSet{
 				ObjectMeta: metav1.ObjectMeta{Name: "test-rbg-role2", Namespace: "default", OwnerReferences: []metav1.OwnerReference{ownerRef}},

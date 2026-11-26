@@ -242,7 +242,9 @@ func RoleInMaxSkewCoordinationV2(_ *workloadsv1alpha2.RoleBasedGroup, _ string) 
 }
 
 // RoleInMaxSkewCoordinationV2WithClient reports whether roleName belongs to a
-// multi-role CoordinatedPolicy rule configuring rollingUpdate.maxSkew for rbg.
+// multi-role CoordinatedPolicy rule configuring rollingUpdate.maxSkew for rbg,
+// matching calculateRollingUpdateForPolicyRule's active-role scope (both
+// roleName and at least one distinct peer must resolve in rbg with replicas > 0).
 func RoleInMaxSkewCoordinationV2WithClient(
 	ctx context.Context,
 	reader client.Reader,
@@ -250,6 +252,9 @@ func RoleInMaxSkewCoordinationV2WithClient(
 	roleName string,
 ) (bool, error) {
 	if rbg == nil || reader == nil || roleName == "" || rbg.Name == "" {
+		return false, nil
+	}
+	if GetRoleReplicasV2(rbg, roleName) <= 0 {
 		return false, nil
 	}
 
@@ -265,14 +270,14 @@ func RoleInMaxSkewCoordinationV2WithClient(
 		if rule.Strategy.RollingUpdate == nil || rule.Strategy.RollingUpdate.MaxSkew == nil {
 			continue
 		}
-		var hasRole, hasPeer bool
+		var hasRole, hasActivePeer bool
 		for _, r := range rule.Roles {
 			if r == roleName {
 				hasRole = true
-			} else if r != "" {
-				hasPeer = true
+			} else if GetRoleReplicasV2(rbg, r) > 0 {
+				hasActivePeer = true
 			}
-			if hasRole && hasPeer {
+			if hasRole && hasActivePeer {
 				return true, nil
 			}
 		}

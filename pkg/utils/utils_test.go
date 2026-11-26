@@ -709,7 +709,17 @@ func TestRoleInMaxSkewCoordinationV2WithClient(t *testing.T) {
 	scheme := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
 
-	rbg := &workloadsv1alpha2.RoleBasedGroup{ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default"}}
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleBasedGroupSpec{
+			Roles: []workloadsv1alpha2.RoleSpec{
+				{Name: "roleA", Replicas: ptrToInt32(2)},
+				{Name: "roleB", Replicas: ptrToInt32(2)},
+				{Name: "roleDefault"},
+				{Name: "roleZero", Replicas: ptrToInt32(0)},
+			},
+		},
+	}
 	makePolicy := func(roles []string, ru *workloadsv1alpha2.RollingUpdateCoordinationStrategy) client.Reader {
 		p := &workloadsv1alpha2.CoordinatedPolicy{
 			ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default"},
@@ -749,10 +759,14 @@ func TestRoleInMaxSkewCoordinationV2WithClient(t *testing.T) {
 		{name: "single role", reader: makePolicy([]string{"roleA"}, withMaxSkew), rbg: rbg, roleName: "roleA"},
 		{name: "duplicate same role only", reader: makePolicy([]string{"roleA", "roleA"}, withMaxSkew), rbg: rbg, roleName: "roleA"},
 		{name: "empty peer ignored", reader: makePolicy([]string{"roleA", ""}, withMaxSkew), rbg: rbg, roleName: "roleA"},
+		{name: "unknown peer not in RBG", reader: makePolicy([]string{"roleA", "roleNotInRBG"}, withMaxSkew), rbg: rbg, roleName: "roleA"},
+		{name: "zero-replica peer", reader: makePolicy([]string{"roleA", "roleZero"}, withMaxSkew), rbg: rbg, roleName: "roleA"},
+		{name: "zero-replica target role", reader: makePolicy([]string{"roleZero", "roleA"}, withMaxSkew), rbg: rbg, roleName: "roleZero"},
 		{name: "nil rolling update", reader: makePolicy([]string{"roleA", "roleB"}, nil), rbg: rbg, roleName: "roleA"},
 		{name: "nil maxSkew", reader: makePolicy([]string{"roleA", "roleB"}, &workloadsv1alpha2.RollingUpdateCoordinationStrategy{}), rbg: rbg, roleName: "roleA"},
-		{name: "matching role in maxSkew rule", reader: makePolicy([]string{"roleA", "roleB"}, withMaxSkew), rbg: rbg, roleName: "roleA", expected: true},
-		{name: "non-matching role", reader: makePolicy([]string{"roleA", "roleB"}, withMaxSkew), rbg: rbg, roleName: "roleC"},
+		{name: "matching role with active peer", reader: makePolicy([]string{"roleA", "roleB"}, withMaxSkew), rbg: rbg, roleName: "roleA", expected: true},
+		{name: "matching role with default-replica peer", reader: makePolicy([]string{"roleA", "roleDefault"}, withMaxSkew), rbg: rbg, roleName: "roleA", expected: true},
+		{name: "non-matching role", reader: makePolicy([]string{"roleA", "roleB"}, withMaxSkew), rbg: rbg, roleName: "roleDefault"},
 	}
 
 	for _, tt := range tests {

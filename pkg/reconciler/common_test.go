@@ -727,8 +727,14 @@ func TestWorkloadReconcilers_CheckWorkloadReady_MaxSkewCoordination(t *testing.T
 			wantReady:  false,
 		},
 		{
-			name:       "rolling update with maxSkew policy unblocks dependents",
-			st:         state{specReplicas: ptr.To(int32(3)), replicas: 3, readyReplicas: 2, updatedReplicas: 1, currentRev: "r1", updateRev: "r2"},
+			name:       "rolling update with maxSkew policy and readyReplicas 0 stays not ready",
+			st:         state{specReplicas: ptr.To(int32(3)), replicas: 3, readyReplicas: 0, updatedReplicas: 1, currentRev: "r1", updateRev: "r2"},
+			withPolicy: true,
+			wantReady:  false,
+		},
+		{
+			name:       "rolling update with maxSkew policy and readyReplicas > 0 unblocks dependents",
+			st:         state{specReplicas: ptr.To(int32(3)), replicas: 3, readyReplicas: 1, updatedReplicas: 1, currentRev: "r1", updateRev: "r2"},
 			withPolicy: true,
 			wantReady:  true,
 		},
@@ -745,12 +751,13 @@ func TestWorkloadReconcilers_CheckWorkloadReady_MaxSkewCoordination(t *testing.T
 		},
 	}
 
+	peerRole := wrappersv2.BuildStandaloneRole("peer").WithReplicas(1).Obj()
 	for _, wl := range claimTestWorkloads() {
 		for _, tc := range cases {
 			t.Run(wl.kind+"/"+tc.name, func(t *testing.T) {
 				role := wl.role
 				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
-					WithRoles([]workloadsv1alpha2.RoleSpec{role}).Obj()
+					WithRoles([]workloadsv1alpha2.RoleSpec{role, peerRole}).Obj()
 				meta := metav1.ObjectMeta{
 					Name:            rbg.GetWorkloadName(&role),
 					Namespace:       rbg.Namespace,
