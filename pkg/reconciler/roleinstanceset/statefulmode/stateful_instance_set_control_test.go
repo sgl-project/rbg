@@ -582,7 +582,9 @@ func (f *fakeInplaceControl) Update(instance *workloadsv1alpha2.RoleInstance, _,
 		f.beforeUpdate()
 	}
 	for _, fn := range opts.PostPatchSpecFuncs {
-		fn(instance)
+		if err := fn(instance); err != nil {
+			return instanceinplace.UpdateResult{InPlaceUpdate: f.canUpdateInPlace, UpdateErr: err}
+		}
 	}
 	return instanceinplace.UpdateResult{InPlaceUpdate: f.canUpdateInPlace}
 }

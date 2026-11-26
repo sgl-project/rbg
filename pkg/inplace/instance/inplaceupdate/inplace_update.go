@@ -50,17 +50,12 @@ type UpdateOptions struct {
 	GracePeriodSeconds int32
 	AdditionalFuncs    []func(instance *workloadsv1alpha2.RoleInstance)
 
-	// AllowShapeChange permits moving a RoleInstance to a revision whose
-	// component set or component sizes differ. The RoleInstance controller then
-	// converges member Pods by creating and deleting them. It is only meaningful
-	// for the spec-moving path; image-only in-place updates do not need it.
-	AllowShapeChange bool
-
 	// PostPatchSpecFuncs run after the new template replaces the RoleInstance
 	// spec and before the object is persisted. They are the supported place to
 	// re-stamp controller-owned spec fields that the revision template does not
-	// carry, such as the propagated update policy.
-	PostPatchSpecFuncs []func(instance *workloadsv1alpha2.RoleInstance)
+	// carry, such as the propagated update policy. A returned error aborts the
+	// persistence of the replaced spec so the caller can retry the whole move.
+	PostPatchSpecFuncs []func(instance *workloadsv1alpha2.RoleInstance) error
 
 	InjectRoleInstanceIdentity       func(instance *workloadsv1alpha2.RoleInstance)
 	CalculateSpec                    func(oldRevision, newRevision *apps.ControllerRevision, opts *UpdateOptions) *UpdateSpec
@@ -196,7 +191,9 @@ func (c *realControl) updateRoleInstanceInPlace(instance *workloadsv1alpha2.Role
 			return err
 		}
 		for _, f := range opts.PostPatchSpecFuncs {
-			f(clone)
+			if err := f(clone); err != nil {
+				return err
+			}
 		}
 
 		newInstance, updateErr := c.clientAdapter.UpdateRoleInstance(clone)

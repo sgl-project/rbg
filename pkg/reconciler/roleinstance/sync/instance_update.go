@@ -18,17 +18,21 @@ package sync
 
 import (
 	"context"
+	"sort"
 	"time"
 
 	"github.com/openkruise/kruise/pkg/util/requeueduration"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	componentdiscovery "sigs.k8s.io/rbgs/pkg/component-discovery"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
@@ -51,24 +55,24 @@ func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.Ro
 		componentNames.Insert(component.Name)
 	}
 	for i := range pods {
+		componentName := instanceutil.GetPodComponentName(pods[i])
+		if componentName != "" && !componentNames.Has(componentName) {
+			// The component no longer exists in the spec; the scale diff owns
+			// deleting these pods. Refreshing or updating them would act on
+			// pods that are already scheduled for deletion.
+			continue
+		}
 		if res := c.inplaceControl.Refresh(ctx, pods[i], coreControl.GetUpdateOptions()); res.RefreshErr != nil {
 			logger.Error(res.RefreshErr, "Instance failed to update pod condition for inplace", "pod", pods[i].Name)
 			return requeueDuration.Get(), res.RefreshErr
 		} else if res.DelayDuration > 0 {
 			requeueDuration.Update(res.DelayDuration)
 		}
-		componentName := instanceutil.GetPodComponentName(pods[i])
-		if componentName != "" && !componentNames.Has(componentName) {
-			// The component no longer exists in the spec; the scale diff owns
-			// deleting these pods. Updating them would fail because the new
-			// template has no matching component.
-			continue
-		}
 		if !instanceutil.EqualToRevisionHash("", pods[i], updateRevision.Name) {
 			waitUpdateComponentPods[componentName] = append(waitUpdateComponentPods[componentName], pods[i])
 		}
 	}
-	for componentName := range waitUpdateComponentPods {
+	for _, componentName := range orderedUpdateComponents(instance, waitUpdateComponentPods) {
 		componentPods := waitUpdateComponentPods[componentName]
 		for i := range componentPods {
 			if duration, err := c.updatePod(ctx, instance, newStatus, updateRevision, revisions, componentPods[i]); err != nil {
@@ -98,23 +102,13 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 			"revisionHash", pod.Labels[apps.ControllerRevisionHashLabelKey])
 		c.recorder.Eventf(instance, v1.EventTypeWarning, "RevisionNotFound",
 			"no matching revision found for pod %s, falling back to recreate", pod.Name)
-		if err := c.Delete(ctx, pod); err != nil {
-			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate",
-				"failed to delete pod %s for update: %v", pod.Name, err)
-			return 0, err
-		}
-		return 0, nil
+		return 0, c.deletePodForUpdate(ctx, instance, pod)
 	}
 	if instance.Spec.GetUpdatePolicy().RecreatesPods() {
 		// RecreatePod policy: replace the Pod instead of updating it in place,
 		// even when an in-place update would be possible.
 		logger.Info("Instance update policy is RecreatePod, so it will back off to ReCreate", "pod", klog.KObj(pod))
-		if err := c.Delete(ctx, pod); err != nil {
-			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate",
-				"failed to delete pod %s for update: %v", pod.Name, err)
-			return 0, err
-		}
-		return 0, nil
+		return 0, c.deletePodForUpdate(ctx, instance, pod)
 	}
 	coreControl := instancecore.New(instance)
 	opts := coreControl.GetUpdateOptions()
@@ -137,11 +131,86 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 		return res.DelayDuration, res.UpdateErr
 	}
 	logger.Info("Instance can not update Pod in-place, so it will back off to ReCreate", "pod", klog.KObj(pod))
-	if err := c.Delete(ctx, pod); err != nil {
-		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate", "failed to delete pod %s for update: %v", pod.Name, err)
-		return 0, err
+	return 0, c.deletePodForUpdate(ctx, instance, pod)
+}
+
+// deletePodForUpdate removes one member Pod so it is recreated from the
+// current instance spec. The delete is addressed by the observed Pod UID: a
+// same-name replacement created by a concurrent reconcile must never be
+// removed, and an already-deleted incarnation counts as handled.
+func (c *realControl) deletePodForUpdate(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, pod *v1.Pod) error {
+	opts := &client.DeleteOptions{}
+	if pod.UID != "" {
+		uid := pod.UID
+		opts.Preconditions = &metav1.Preconditions{UID: &uid}
 	}
-	return 0, nil
+	if err := c.Delete(ctx, pod, opts); err != nil {
+		if apierrors.IsNotFound(err) {
+			return nil
+		}
+		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate",
+			"failed to delete pod %s for update: %v", pod.Name, err)
+		return err
+	}
+	return nil
+}
+
+// orderedUpdateComponents returns the components holding outdated Pods in the
+// component-depends-on deletion order: a component is only handed to the
+// update path after the components that gate its deletion — its dependents —
+// have been emitted. Components without dependencies keep their map order.
+func orderedUpdateComponents(instance *workloadsv1alpha2.RoleInstance, updatePods map[string][]*v1.Pod) []string {
+	names := make([]string, 0, len(updatePods))
+	for name := range updatePods {
+		names = append(names, name)
+	}
+	if len(names) <= 1 {
+		return names
+	}
+	sort.Strings(names)
+	startDeps, deleteDeps, err := componentdiscovery.ParseAllComponentDependencies(instance.Spec.Components)
+	if err != nil || !componentdiscovery.HasAnyDependency(instance.Spec.Components) {
+		return names
+	}
+	gates := componentdiscovery.BuildDeletionGates(startDeps, deleteDeps)
+	if componentdiscovery.DetectCycle(startDeps) || componentdiscovery.DetectCycle(gates) {
+		return names
+	}
+	remaining := sets.New(names...)
+	emitted := sets.New[string]()
+	ordered := make([]string, 0, len(names))
+	for len(ordered) < len(names) {
+		progressed := false
+		for _, name := range names {
+			if emitted.Has(name) {
+				continue
+			}
+			blocked := false
+			for _, dependent := range gates[name] {
+				if remaining.Has(dependent) && !emitted.Has(dependent) {
+					blocked = true
+					break
+				}
+			}
+			if blocked {
+				continue
+			}
+			emitted.Insert(name)
+			ordered = append(ordered, name)
+			progressed = true
+		}
+		if !progressed {
+			// The cycle checks above make this unreachable; keep a safe
+			// fallback so an ordering bug can never wedge the update path.
+			for _, name := range names {
+				if !emitted.Has(name) {
+					ordered = append(ordered, name)
+					emitted.Insert(name)
+				}
+			}
+		}
+	}
+	return ordered
 }
 
 // recordInPlaceUpdateBaselines records the pre-update RestartCount and ImageID

@@ -38,6 +38,34 @@ rolloutStrategy:
     maxUnavailable: 1
 ```
 
+For stateful RoleInstanceSets without the legacy `spec.lifecycle` protocol, a
+`RecreatePod` rollout keeps each **RoleInstance** object and replaces its
+member Pods: the RoleInstanceSet moves the instance spec to the update
+revision and the RoleInstance controller deletes and recreates the member
+Pods. The RoleInstance UID and its controller-owned annotations survive; only
+the Pod identities change.
+
+Two paths still replace the RoleInstance object itself:
+
+- Stateful sets that use the legacy `spec.lifecycle` protocol keep the
+  established delete-and-recreate behavior so the pre-update and pre-delete
+  hooks keep their original semantics.
+- Topology revisions — a changed component set or component replica count —
+  keep the replacement path so a new size revision receives fresh per-group
+  restart budgets and no member Pod runs with template state derived from the
+  old group size.
+
+The instance-level behavior is carried by `spec.updatePolicy` on each
+RoleInstance. It is a controller-owned snapshot rendered from the set-level
+update strategy, not part of the revision template, so changing the strategy
+does not create a new RoleInstanceSet ControllerRevision. It is stamped when
+the strategy is `RecreatePod` or a grace period is configured, and on the next
+propagated revision move otherwise.
+
+Stateless-pattern roles are not covered by this change: their `RecreatePod`
+rollouts still replace the RoleInstance objects through the specified-delete
+path. Aligning the two backends is a follow-up design decision.
+
 Stateful RoleInstanceSet recreate rollouts and scale-down honor
 `spec.lifecycle.preDelete`. To hold deletion, the consumer must add a label
 matching `labelsHandler` or a finalizer listed in `finalizersHandler` to the

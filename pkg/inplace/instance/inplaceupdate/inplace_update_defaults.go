@@ -93,9 +93,7 @@ func defaultCalculateInPlaceUpdateSpec(oldRevision, newRevision *apps.Controller
 	}
 
 	// some fields cannot be in-place update, fallback to ReCreate.
-	// A shape change is allowed when the caller moves the whole instance spec to
-	// the new revision and lets the RoleInstance controller converge member Pods.
-	if !opts.AllowShapeChange && canNotInPlaceUpdate(newTemp, oldTemp) {
+	if canNotInPlaceUpdate(newTemp, oldTemp) {
 		return nil
 	}
 

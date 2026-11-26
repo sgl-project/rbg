@@ -225,6 +225,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	}
 
 	toDeleteNum, toDeletePods = appendOrphanComponentDeletions(toDeleteNum, toDeletePods, prt.Components, pods)
+	toDeleteNum, toDeletePods = appendInactiveOrphanComponentDeletions(toDeleteNum, toDeletePods, prt.Components, inactivePods)
 
 	// Build the per-component dependency graphs from template annotations.
 	startDeps, deleteDeps, err := componentdiscovery.ParseAllComponentDependencies(updateInstance.Spec.Components)
@@ -312,6 +313,20 @@ func appendOrphanComponentDeletions(toDeleteNum int, toDeletePods []*v1.Pod, com
 		toDeletePods = append(toDeletePods, orphanPods...)
 	}
 	return toDeleteNum, toDeletePods
+}
+
+// appendInactiveOrphanComponentDeletions extends the delete diff with inactive
+// member Pods of components that no longer exist in the spec. Failed members
+// already queued for replacement and members that are terminating are skipped;
+// both are already handled by the caller.
+func appendInactiveOrphanComponentDeletions(toDeleteNum int, toDeletePods []*v1.Pod, components sets.Set[string], inactivePods []*v1.Pod) (int, []*v1.Pod) {
+	orphaned := make([]*v1.Pod, 0, len(inactivePods))
+	for _, pod := range inactivePods {
+		if pod.DeletionTimestamp == nil && pod.Status.Phase != v1.PodFailed {
+			orphaned = append(orphaned, pod)
+		}
+	}
+	return appendOrphanComponentDeletions(toDeleteNum, toDeletePods, components, orphaned)
 }
 
 func (c *realControl) calculateRestartDiff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, allPods, activePods, inactivePods []*v1.Pod, fresh *workloadsv1alpha2.RoleInstance, target *apps.ControllerRevision) (*expectationDiff, error) {

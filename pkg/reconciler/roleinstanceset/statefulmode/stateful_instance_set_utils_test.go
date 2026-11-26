@@ -17,11 +17,15 @@ limitations under the License.
 package statefulmode
 
 import (
+	"encoding/json"
 	"reflect"
 	"strconv"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
@@ -260,5 +264,85 @@ func TestInstanceUpdatePolicyFromStrategy(t *testing.T) {
 				t.Fatalf("instanceUpdatePolicyFromStrategy() = %+v, want %+v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRevisionChangesComponentShape(t *testing.T) {
+	two := int32(2)
+	template := func(sizes map[string]int32) workloadsv1alpha2.RoleInstanceTemplate {
+		components := make([]workloadsv1alpha2.RoleInstanceComponent, 0, len(sizes))
+		for _, name := range []string{"a", "b"} {
+			if s, ok := sizes[name]; ok {
+				sizeCopy := s
+				components = append(components, workloadsv1alpha2.RoleInstanceComponent{Name: name, Size: &sizeCopy})
+			}
+		}
+		return workloadsv1alpha2.RoleInstanceTemplate{
+			RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{Components: components},
+		}
+	}
+	makeRev := func(t *testing.T, tmpl workloadsv1alpha2.RoleInstanceTemplate) *apps.ControllerRevision {
+		data, err := json.Marshal(map[string]any{
+			"spec": map[string]any{
+				"roleInstanceTemplate": tmpl,
+			},
+		})
+		require.NoError(t, err)
+		return &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "rev"}, Data: runtime.RawExtension{Raw: data}}
+	}
+
+	tests := []struct {
+		name     string
+		oldSizes map[string]int32
+		newSizes map[string]int32
+		want     bool
+	}{
+		{name: "same shape", oldSizes: map[string]int32{"a": 1}, newSizes: map[string]int32{"a": 1}, want: false},
+		{name: "size change", oldSizes: map[string]int32{"a": 1}, newSizes: map[string]int32{"a": two}, want: true},
+		{name: "component added", oldSizes: map[string]int32{"a": 1}, newSizes: map[string]int32{"a": 1, "b": 1}, want: true},
+		{name: "component removed", oldSizes: map[string]int32{"a": 1, "b": 1}, newSizes: map[string]int32{"a": 1}, want: true},
+		{name: "nil revisions", oldSizes: nil, newSizes: map[string]int32{"a": 1}, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var oldRev, newRev *apps.ControllerRevision
+			if tt.oldSizes != nil {
+				oldRev = makeRev(t, template(tt.oldSizes))
+			}
+			newRev = makeRev(t, template(tt.newSizes))
+			if got := revisionChangesComponentShape(oldRev, newRev); got != tt.want {
+				t.Fatalf("revisionChangesComponentShape() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSyncSetOwnedInstanceAnnotations(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{
+		Name:      "s-0",
+		Namespace: "default",
+		Annotations: map[string]string{
+			constants.RoleInstanceGangSchedulingAnnotationKey: "true",
+			"user-annotation": "keep",
+		},
+	}}
+	set := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{
+		Name:      "s",
+		Namespace: "default",
+		Annotations: map[string]string{
+			constants.RoleInplaceSchedulingAnnotationKey: "true",
+		},
+	}}
+
+	syncSetOwnedInstanceAnnotations(instance, set)
+
+	if instance.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] != "" {
+		t.Fatal("annotation removed from the set must be removed from the instance")
+	}
+	if instance.Annotations[constants.RoleInplaceSchedulingAnnotationKey] != "true" {
+		t.Fatal("annotation present on the set must be copied to the instance")
+	}
+	if instance.Annotations["user-annotation"] != "keep" {
+		t.Fatal("annotations outside the set-owned set must be preserved")
 	}
 }

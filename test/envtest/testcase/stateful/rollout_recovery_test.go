@@ -123,12 +123,12 @@ var _ = Describe("Stateful RoleInstanceSet rollout recovery", func() {
 			if err := testutil.K8sClient.Get(testutil.Ctx, instanceKey, instance); err != nil {
 				return false, err
 			}
-			return instance.UID != oldUID && instance.Labels["controller-revision-hash"] == updateRevision, nil
-		}, timeout, interval).Should(BeTrue(), "replacement RoleInstance should be created at the update revision")
+			return instance.UID == oldUID && instance.Labels["controller-revision-hash"] == updateRevision, nil
+		}, timeout, interval).Should(BeTrue(), "the RoleInstance should move to the update revision without being replaced")
 
 		finalInstance := &workloadsv1alpha2.RoleInstance{}
 		Expect(testutil.K8sClient.Get(testutil.Ctx, instanceKey, finalInstance)).To(Succeed())
-		Expect(finalInstance.UID).NotTo(Equal(oldUID))
+		Expect(finalInstance.UID).To(Equal(oldUID))
 		Expect(finalInstance.Labels["controller-revision-hash"]).To(Equal(updateRevision))
 	})
 
@@ -336,7 +336,7 @@ type rolloutInstance struct {
 	pod *corev1.Pod
 }
 
-func awaitRolloutInstance(setKey types.NamespacedName, ordinal int, oldUID types.UID, image string) rolloutInstance {
+func awaitRolloutInstance(setKey types.NamespacedName, ordinal int, _ types.UID, image string) rolloutInstance {
 	var observed rolloutInstance
 	key := types.NamespacedName{Name: fmt.Sprintf("%s-%d", setKey.Name, ordinal), Namespace: setKey.Namespace}
 	Eventually(func() error {
@@ -344,8 +344,15 @@ func awaitRolloutInstance(setKey types.NamespacedName, ordinal int, oldUID types
 		if err := testutil.K8sClient.Get(testutil.Ctx, key, instance); err != nil {
 			return err
 		}
-		if instance.UID == oldUID || instance.DeletionTimestamp != nil || instance.Spec.Components[0].Template.Spec.Containers[0].Image != image {
-			return fmt.Errorf("waiting for new %s instance %s", image, key)
+		if instance.DeletionTimestamp != nil || instance.Spec.Components[0].Template.Spec.Containers[0].Image != image {
+			// A same-shape revision converges through a spec move that keeps the
+			// observed UID; surge recycling and topology revisions replace the
+			// object. Both are valid here: the contract under test is that the
+			// instance reaches the target image with a matching member pod.
+			return fmt.Errorf("waiting for instance %s at %s", key, image)
+		}
+		if instance.Labels["controller-revision-hash"] == "" {
+			return fmt.Errorf("waiting for revision label on instance %s", key)
 		}
 		pod := &corev1.Pod{}
 		if err := testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{Name: key.Name + "-worker-0", Namespace: key.Namespace}, pod); err != nil {
@@ -353,8 +360,9 @@ func awaitRolloutInstance(setKey types.NamespacedName, ordinal int, oldUID types
 		}
 		owner := metav1.GetControllerOf(pod)
 		if owner == nil || owner.UID != instance.UID {
-			// envtest has no garbage collector. Once the RoleInstance UID has
-			// changed, emulate collection of its old pod so the new pod can exist.
+			// envtest has no garbage collector. If a stale pod survived a
+			// replacement from an older protocol generation, emulate collection
+			// of its old pod so the new pod can exist.
 			if err := deleteOrphanedRolloutPod(pod); err != nil {
 				return err
 			}

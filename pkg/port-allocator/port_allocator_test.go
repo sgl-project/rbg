@@ -389,7 +389,7 @@ func TestEnsurePortsForInstanceKeepsExistingAssignments(t *testing.T) {
 		},
 	}
 
-	EnsurePortsForInstance(instance, instanceSet)
+	require.NoError(t, EnsurePortsForInstance(instance, instanceSet))
 
 	if got := instance.Annotations[FormatPodScopedPortKey("s-0-comp-0", "pod-port")]; got != "31000" {
 		t.Fatalf("existing pod-scoped port changed: got %q, want 31000", got)
@@ -464,4 +464,34 @@ func TestParsePortAllocatorConfigFromAnnotations(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestEnsurePortsForInstanceFailsWhenAllocatorUnavailable(t *testing.T) {
+	// The global allocator is disabled; requests fail instead of silently
+	// leaving a spec move without its port annotations.
+	portAllocator = &PortAllocator{enabled: false}
+
+	configJSON := `{"allocations":[{"name":"pod-port","env":"POD_PORT","scope":"PodScoped"}]}`
+	size := int32(1)
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "s-0", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{{
+				Name: "comp",
+				Size: &size,
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{PortAllocatorAnnotationKey: configJSON},
+					},
+				},
+			}},
+		},
+	}
+	instanceSet := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "s", Namespace: "default"},
+	}
+
+	err := EnsurePortsForInstance(instance, instanceSet)
+	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "failed to allocate pod-scoped ports")
 }

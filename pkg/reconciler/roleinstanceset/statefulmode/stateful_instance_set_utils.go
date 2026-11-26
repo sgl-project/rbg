@@ -34,6 +34,7 @@ import (
 	"sigs.k8s.io/rbgs/api/workloads/ordinals"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceutil "sigs.k8s.io/rbgs/pkg/inplace/instance"
+	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 )
 
@@ -253,6 +254,66 @@ func instanceUpdatePolicyFromStrategy(strategy *workloadsv1alpha2.RoleInstanceSe
 		return nil
 	}
 	return policy
+}
+
+// revisionChangesComponentShape reports whether moving from oldRevision to
+// newRevision changes the component set or a component's replica count.
+func revisionChangesComponentShape(oldRevision, newRevision *apps.ControllerRevision) bool {
+	if oldRevision == nil || newRevision == nil {
+		return false
+	}
+	oldTemplate, oldErr := instanceinplace.GetTemplateFromRevision(oldRevision)
+	newTemplate, newErr := instanceinplace.GetTemplateFromRevision(newRevision)
+	if oldErr != nil || newErr != nil || oldTemplate == nil || newTemplate == nil {
+		// An unparsable revision cannot be compared; let the normal update
+		// machinery reject it instead of guessing a shape change.
+		return false
+	}
+	return componentShapeChanges(newTemplate.Components, oldTemplate.Components)
+}
+
+func componentShapeChanges(newComponents, oldComponents []workloadsv1alpha2.RoleInstanceComponent) bool {
+	oldSizes := make(map[string]int32, len(oldComponents))
+	for i := range oldComponents {
+		oldSizes[oldComponents[i].Name] = inplaceutil.GetComponentSize(&oldComponents[i])
+	}
+	if len(oldSizes) != len(oldComponents) {
+		return true
+	}
+	for i := range newComponents {
+		size, ok := oldSizes[newComponents[i].Name]
+		if !ok || size != inplaceutil.GetComponentSize(&newComponents[i]) {
+			return true
+		}
+	}
+	return len(newComponents) != len(oldComponents)
+}
+
+// setOwnedInstanceAnnotations are the annotations the RoleInstanceSet
+// controller propagates from the set to each RoleInstance. They are synced on
+// every propagated spec move so an instance that keeps its identity no longer
+// carries controller configuration the set has removed.
+var setOwnedInstanceAnnotations = []string{
+	constants.RoleInstanceGangSchedulingAnnotationKey,
+	constants.RoleInplaceSchedulingAnnotationKey,
+	constants.RoleInplaceSchedulingGranularityAnnotationKey,
+	constants.RoleInplaceSchedulingAvoidAnnotationKey,
+	constants.RoleInplaceUpdateGracePeriodSecondsKey,
+}
+
+// syncSetOwnedInstanceAnnotations copies the current values of the set-owned
+// annotations onto the instance and removes keys the set no longer carries.
+func syncSetOwnedInstanceAnnotations(instance *workloadsv1alpha2.RoleInstance, set *workloadsv1alpha2.RoleInstanceSet) {
+	if instance.Annotations == nil {
+		instance.Annotations = make(map[string]string)
+	}
+	for _, key := range setOwnedInstanceAnnotations {
+		if v, ok := set.Annotations[key]; ok {
+			instance.Annotations[key] = v
+		} else {
+			delete(instance.Annotations, key)
+		}
+	}
 }
 
 // topology captures all the rolling-update sizing decisions for a single

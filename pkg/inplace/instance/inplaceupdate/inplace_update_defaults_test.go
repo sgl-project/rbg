@@ -255,20 +255,6 @@ func TestDefaultCalculateInPlaceUpdateSpec(t *testing.T) {
 			opts:     nil,
 			expected: false,
 		},
-		{
-			name:        "size changes allowed when the whole spec moves",
-			oldRevision: oldRev,
-			newRevision: makeControllerRevisionWithTemplate(t, "new3", workloadsv1alpha2.RoleInstanceTemplate{
-				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
-					Components: []workloadsv1alpha2.RoleInstanceComponent{
-						{Name: "a", Size: func() *int32 { s := int32(2); return &s }()},
-						{Name: "b", Size: func() *int32 { s := int32(1); return &s }()},
-					},
-				},
-			}),
-			opts:     &UpdateOptions{AllowShapeChange: true},
-			expected: true,
-		},
 	}
 
 	for _, tt := range tests {
