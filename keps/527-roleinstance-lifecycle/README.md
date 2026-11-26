@@ -111,8 +111,8 @@ RBG does not need to embed application logic or create a Job for every hook.
 - Preserve the legacy RIS lifecycle protocol while adding the new RoleInstance
   lifecycle protocol.
 - Preserve existing behavior for workloads that do not configure lifecycle
-  hooks, except that Foreground and Orphan deletion are rejected for the
-  objects that themselves configure `preDelete`.
+  hooks and RBGSet/RBG/RIS deletes, including Foreground cascades: only the
+  RoleInstance-level guard applies, and only to RIs that configure `preDelete`.
 
 ### Non-Goals
 
@@ -243,7 +243,7 @@ local instance is not sufficient evidence that it is safe to exit.
 | `signalLabel` keys reused by different hooks | Reject in admission |
 | Signal key overwrites controller state | Reject reserved keys in admission |
 | Retry duplicates | Use recoverable records or idempotency; no exactly-once |
-| Foreground/Orphan deletion bypass | Scoped admission rejection for preDelete-owning objects; direct is Recovery |
+| Foreground/Orphan deletion bypass | RI-level admission guard for preDelete-owning RIs; controllers delete held RIs with Background; direct is Recovery |
 | Executor outage blocks progress | Diagnostics; no automatic skip in Alpha |
 | Executor `signalLabel` writes | Documented Alpha risk; enforce before Beta |
 | Broad metadata permissions | Limit scope; use admission/proxy for fields |
@@ -802,30 +802,37 @@ replacement after the corresponding pre-operation hook is released, without
 triggering `preDelete`. No member Pod requires a lifecycle finalizer.
 
 Controller-initiated deletion and default background cascade are the supported
-deletion paths. Admission rejects `Foreground` and `Orphan` propagation,
-including the deprecated `orphanDependents` option, only for deletion requests
-whose own object configures `preDelete`: RBG and RBGSet requests whose roles
-configure hooks, and RIS or RI requests whose effective lifecycle configures
-`preDelete`. The webhook reads `DeleteOptions` from the admission request and
-stays static — no cross-resource lookups and no informer caches. It is scoped
-by an `objectSelector` on a controller-set label so deletes of ordinary
-objects do not depend on webhook availability; the client of a rejected
-delete may retry with background propagation.
+deletion paths. Only one admission guard exists, at the RoleInstance level:
+the RI DELETE webhook rejects `Foreground` and `Orphan` propagation,
+including the deprecated `orphanDependents` option, for RoleInstances whose
+own effective lifecycle configures `preDelete` — including RIs that are
+already being deleted. The webhook reads `DeleteOptions` from the admission
+request and stays static — no cross-resource lookups and no informer caches.
+It is scoped by an `objectSelector` on a label the controller writes in the
+same patch as the reserved finalizer, so webhook routing stays in step with
+the protection and deletes of ordinary objects never depend on webhook
+availability. No `matchConditions` are used: clusters older than 1.28 still
+run the guard, because `objectSelector` needs nothing newer.
 
-The narrow scope is the safe boundary. Foreground GC may delete dependent
-member Pods before the hook is released — cluster-verified on Kubernetes
-v1.37, where a foreground delete cascaded through a finalizer-held
-intermediate object to its leaf within seconds — and cluster-wide rejection
-would instead break every legitimate foreground user, including Argo CD's
-default cascade and the RBGSet rolling controller itself. Orphan deletion
-strips member Pod owner references while the reserved RI finalizer remains,
-leaving member discovery and the documented post-hook Pod deletion undefined,
-so it is rejected on the same narrow scope.
+Foreground GC can delete dependent member Pods before the hook is released —
+cluster-verified on Kubernetes v1.37, where a foreground delete cascaded
+through a finalizer-held intermediate object to its leaf within seconds, and
+where a Foreground delete sent to an RI already in Background deletion with
+`preDelete` pending still added `foregroundDeletion` and deleted its member
+Pods mid-drain. The RI guard covers both shapes. Orphan deletion strips
+member Pod owner references while the reserved RI finalizer remains, leaving
+member discovery and the documented post-hook Pod deletion undefined, so it
+is rejected on the same scope.
 
-The RBGSet rolling controller deletes children that configure `preDelete`
-with background propagation and keeps the old child — for example behind a
-drain finalizer — until its RoleInstances are gone, so a replacement still
-waits for the old child's drain instead of bypassing it.
+No RBG, RBGSet, or RIS-level rejection, drain finalizer, or label on user
+objects is needed. When an RIS is deleted — including with Foreground — its
+controller deletes the RIs that hold the reserved finalizer with Background
+propagation and a UID precondition. The GC skips items that are already being
+deleted without Foreground, so the drains run undisturbed, and the owners
+keep waiting for the whole subtree: Foreground deletes from anywhere
+complete with the drains honored. RBGSet rollouts, `kubectl delete
+--cascade=foreground`, and Argo CD's default cascade therefore work
+unchanged.
 
 Namespace teardown is outside the
 live-engine guarantee:
@@ -834,10 +841,7 @@ namespace that contains RIs with effective `preDelete`, an operator must stop
 new operations, let in-flight hooks finish, verify that no reserved RI
 finalizer remains, and only then delete the namespace; if a finalizer remains
 after teardown has started, the operator must use the break-glass procedure. A
-tested namespace-teardown procedure is a Beta graduation requirement. Argo CD
-users must use the background-cascade finalizer
-(`resources-finalizer.argocd.argoproj.io/background`) for applications whose
-resources configure `preDelete`. A direct
+tested namespace-teardown procedure is a Beta graduation requirement. A direct
 external Pod deletion cannot be undone by clearing its deletionTimestamp. That
 path still belongs to Recovery, does not trigger `preDelete`, and provides no
 live-engine barrier.
@@ -1195,10 +1199,15 @@ lifecycle and distinguish workload backends.
   operation.
 - Controller and executor restarts, watch reconnections, PATCH conflicts,
   and successful application actions followed by `signalLabel`-removal failures.
-- Foreground and Orphan deletion are rejected only for objects whose own spec
-  configures `preDelete`; ordinary objects are unaffected, the webhook reads
-  `DeleteOptions` without cross-resource lookups, and the RBGSet rollout
-  deletes preDelete-owning children with background propagation.
+- Foreground and Orphan deletion are rejected only for RoleInstances whose
+  own effective lifecycle configures `preDelete`, including RIs already being
+  deleted; the webhook reads `DeleteOptions` without cross-resource lookups,
+  and the RIS controller deletes finalizer-held RIs with Background
+  propagation and a UID precondition so Foreground cascades from anywhere
+  complete with the drains honored.
+- A Foreground delete of an owner completes only after finalizer-held RIs are
+  gone: the RIS controller's Background deletion makes the GC skip those RIs,
+  and the owners keep waiting for the whole subtree.
 - RIS metadata synchronization preserves runtime `signalLabels`, and the controller
   does not rewrite a `signalLabel` during the same pre-operation phase.
 - RI `signalLabel` changes reach member Pods without revision changes, and
@@ -1215,9 +1224,9 @@ lifecycle and distinguish workload backends.
   and an RI already being deleted never exposes the hook; that deletion
   continues without `preDelete`.
 - Default background deletion retains member Pods until `preDelete` is
-  released, admission rejects Foreground and Orphan deletion only for
-  preDelete-owning objects while the webhook is unavailable
-  (`failurePolicy=Fail`), and namespace
+  released, the RI DELETE guard rejects Foreground and Orphan for
+  preDelete-owning RIs (objectSelector keeps ordinary deletes independent of
+  webhook availability), and namespace
   teardown follows the documented operator procedure outside the live-engine
   guarantee.
 - Update and Recovery replace Pods during internal replacement without
@@ -1280,8 +1289,9 @@ This KEP does not assign a release milestone.
 ### Upgrade / Downgrade Strategy
 
 Workloads with no new hooks configured retain their existing behavior,
-except that Foreground and Orphan deletion are rejected for the objects that
-themselves configure `preDelete`. Enabling the feature on an existing RI does not replay
+including RBGSet/RBG/RIS deletes with Foreground cascades; only the
+RoleInstance-level guard applies, and only to RIs that configure `preDelete`.
+Enabling the feature on an existing RI does not replay
 `postReady` or
 `preUpdate` solely because the RI is currently Ready or was updated in the
 past; those hooks are triggered by controlled operations. When `preDelete`
@@ -1347,8 +1357,10 @@ A version that does not understand the current protocol does not take over an
 unfinished operation. `preDelete` requires an executor that is available
 before application Pod deletion and validation of the barrier across all
 supported deletion paths.
-Foreground cascading deletion is not a supported path. Admission rejects
-`Foreground` propagation at every RBGSet, RBG, RIS, and RI deletion entry.
+Foreground cascading deletion of an armed RoleInstance is not a supported
+path: the RI DELETE guard rejects Foreground and Orphan propagation for
+preDelete-owning RIs, and owners' Foreground cascades complete only after
+the RIS controller's Background deletion of the finalizer-held RIs.
 
 The `disable-supported` metadata field describes configuration rollback, not
 stable-boundary removal of individual hook configuration.
