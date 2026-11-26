@@ -61,11 +61,18 @@ send the service-account token in cleartext to the pod IP on every scrape.
    kubectl apply -f integration/prometheus/rbac.yaml
    ```
 
-2. Add the scrape job to your Prometheus. `scrape-config.yaml` contains only
-   a `scrape_configs` list, so it fits the common integration points: a
-   `scrape_config_files` include, the `additionalScrapeConfigs` secret of a
-   kube-prometheus-stack release or the Prometheus operator, or a plain copy
-   of the job into an existing configuration.
+2. Add the scrape job to your Prometheus. Consumers expect different shapes
+   of the same job:
+
+   - Prometheus `scrape_config_files` includes: reference `scrape-config.yaml`
+     as-is. The include format is a mapping with a single `scrape_configs`
+     key, which is exactly what the file contains.
+   - The Prometheus Operator's `additionalScrapeConfigs` secret, and
+     kube-prometheus-stack's `additionalScrapeConfigs` value: use the bare
+     list under `scrape_configs`, i.e. the single `- job_name:
+     rbgs-controller` entry, as the secret's or value's content.
+   - An existing full configuration: copy the job entry under
+     `scrape_configs`.
 
 3. Import `rbgs-prometheus-grafana-monitor.json` into Grafana (Dashboards ->
    New -> Import), select your Prometheus data source, and pick the

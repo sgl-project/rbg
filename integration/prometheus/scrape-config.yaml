@@ -1,10 +1,12 @@
 # Prometheus scrape config for the RBG controller.
 #
-# This file contains only a scrape_configs list, so it can be used as:
-#   - a scrape_config_files include from a Prometheus configuration file,
-#   - the additionalScrapeConfigs list of a kube-prometheus-stack release or
-#     the Prometheus operator's additionalScrapeConfigs secret,
-#   - a source to copy the single job from into an existing configuration.
+# The file format is what Prometheus expects for scrape_config_files
+# includes: a mapping with a single scrape_configs key. The Prometheus
+# Operator's additionalScrapeConfigs secret (and kube-prometheus-stack's
+# additionalScrapeConfigs value) instead expect a bare list of scrape jobs,
+# so for those use the single job entry under scrape_configs as the content.
+# The job can also be copied into an existing configuration under
+# scrape_configs.
 scrape_configs:
   - job_name: rbgs-controller
     scrape_interval: 30s

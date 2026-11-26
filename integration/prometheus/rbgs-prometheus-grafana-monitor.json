@@ -1573,8 +1573,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "sum by (webhook) (rate(controller_runtime_webhook_panics_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval]))",
-          "legendFormat": "{{webhook}}",
+          "expr": "sum by (pod) (rate(controller_runtime_webhook_panics_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
         }
