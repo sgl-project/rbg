@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"math"
 	"reflect"
 	"sort"
 	"strconv"
@@ -111,16 +112,27 @@ func groupSetChildReady(child *workloadsv1alpha2.RoleBasedGroup) bool {
 }
 
 // requestGroupSetChildRollout must be applied to every budgeted write of an existing child, so the
-// child keeps consuming budget until its controller acknowledges that write.
-func requestGroupSetChildRollout(child *workloadsv1alpha2.RoleBasedGroup) {
+// child keeps consuming budget until its controller acknowledges that write. The counter also moves
+// past the last acknowledgement: the annotation can be removed or reset while the acknowledgement
+// stays in status, and a request equal to it would count as acknowledged at once. A counter that
+// cannot be incremented is an error and leaves the child untouched.
+func requestGroupSetChildRollout(child *workloadsv1alpha2.RoleBasedGroup) error {
 	next := 1
-	if previous, err := strconv.Atoi(child.Annotations[constants.RolloutRequestAnnotationKey]); err == nil && previous >= 0 {
-		next = previous + 1
+	for _, value := range []string{child.Annotations[constants.RolloutRequestAnnotationKey], child.Status.ObservedRolloutRequest} {
+		previous, err := strconv.Atoi(value)
+		if err != nil || previous < 0 {
+			continue
+		}
+		if previous == math.MaxInt {
+			return fmt.Errorf("rollout request counter of RoleBasedGroup %s is exhausted", client.ObjectKeyFromObject(child))
+		}
+		next = max(next, previous+1)
 	}
 	if child.Annotations == nil {
 		child.Annotations = make(map[string]string)
 	}
 	child.Annotations[constants.RolloutRequestAnnotationKey] = strconv.Itoa(next)
+	return nil
 }
 
 func (r *RoleBasedGroupSetReconciler) listRollingGroupSetChildren(
@@ -592,7 +604,9 @@ func (r *RoleBasedGroupSetReconciler) updateRollingGroupSetChild(
 	}
 	r.syncRBGMetadata(set, updated)
 	updated.Labels[constants.GroupSetRevisionLabelKey] = update.name
-	requestGroupSetChildRollout(updated)
+	if err := requestGroupSetChildRollout(updated); err != nil {
+		return err
+	}
 	return r.client.Update(ctx, updated)
 }
 

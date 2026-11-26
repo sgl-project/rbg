@@ -734,6 +734,62 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Entry("stateless", constants.StatelessPattern),
 	)
 
+	// Removing the request annotation from a child leaves its acknowledgement in status. The next
+	// metadata-only write must not be answered by that old acknowledgement.
+	It("holds the budget for a metadata-only change after a child lost its rollout request", func() {
+		setName := "rbgs-request-removed"
+		set := buildRollingSet(setName, testNs, 2, 1, 1, 0, 0)
+		set.Spec.RolloutStrategy.Type = workloadsv1alpha2.InPlaceUpdateStrategyType
+		set.Spec.GroupTemplate.Spec.Roles[0].StandalonePattern.Template.Spec.TerminationGracePeriodSeconds = ptr.To(int64(0))
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		firstRevision := waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision
+
+		setTopology := func(topology string) {
+			updateSetTemplate(testNs, setName, func(set *workloadsv1alpha2.RoleBasedGroupSet) {
+				set.Spec.GroupTemplate.Annotations = map[string]string{constants.GroupExclusiveTopologyKey: topology}
+			})
+		}
+		setTopology("kubernetes.io/hostname")
+		secondRevision := waitUpdateRevision(testNs, setName, firstRevision)
+		for ordinal := 1; ordinal >= 0; ordinal-- {
+			waitChildReady(testNs, waitChildRevision(testNs, setName, ordinal, secondRevision).Name)
+		}
+		Expect(waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision).To(Equal(secondRevision))
+
+		upper := fetchChildren(testNs, setName)[1]
+		acknowledged := upper.Status.ObservedRolloutRequest
+		Expect(acknowledged).NotTo(BeEmpty())
+		Expect(upper.Annotations).To(HaveKeyWithValue(constants.RolloutRequestAnnotationKey, acknowledged))
+		stripped := upper.DeepCopy()
+		delete(stripped.Annotations, constants.RolloutRequestAnnotationKey)
+		Expect(testutil.K8sClient.Patch(testutil.Ctx, stripped, client.MergeFrom(upper))).To(Succeed())
+		Consistently(func(g Gomega) {
+			current := fetchChildren(testNs, setName)[1]
+			g.Expect(current.Annotations).NotTo(HaveKey(constants.RolloutRequestAnnotationKey))
+			g.Expect(current.Status.ObservedRolloutRequest).To(Equal(acknowledged))
+		}, 3*time.Second, interval).Should(Succeed())
+
+		setTopology("topology.kubernetes.io/zone")
+		thirdRevision := waitUpdateRevision(testNs, setName, secondRevision)
+		upper = waitChildRevision(testNs, setName, 1, thirdRevision)
+		Expect(upper.Annotations[constants.RolloutRequestAnnotationKey]).NotTo(Equal(acknowledged),
+			"the new request must not reuse the acknowledged value")
+		assertBlocked := func(g Gomega) {
+			children := fetchChildren(testNs, setName)
+			g.Expect(children).To(HaveLen(2))
+			g.Expect(children[0].Labels[constants.GroupSetRevisionLabelKey]).To(Equal(secondRevision))
+			current := children[1]
+			g.Expect(current.Status.ObservedRolloutRequest).To(Equal(acknowledged))
+			g.Expect(podConditionStatus(downstreamOf(g, current).pod, corev1.PodReady)).NotTo(Equal(corev1.ConditionTrue))
+		}
+		Eventually(assertBlocked, timeout, interval).Should(Succeed())
+		Consistently(assertBlocked, 3*time.Second, interval).Should(Succeed())
+
+		waitChildReady(testNs, upper.Name)
+		waitChildReady(testNs, waitChildRevision(testNs, setName, 0, thirdRevision).Name)
+		Expect(waitRollout(testNs, setName, rolloutComplete).Status.CurrentRevision).To(Equal(thirdRevision))
+	})
+
 	DescribeTable("upgrades a pre-annotation role hash without replacing running instances or Pods", func(pattern constants.InstancePatternType) {
 		rbg := wrappersv2.BuildBasicRoleBasedGroup("hash-upgrade", testNs).Obj()
 		rbg.Annotations = map[string]string{constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname"}

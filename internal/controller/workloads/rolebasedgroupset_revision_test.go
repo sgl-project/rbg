@@ -22,6 +22,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -1348,11 +1350,103 @@ func TestRolloutRequestCannotBeOverriddenByTemplate(t *testing.T) {
 	assert.False(t, r.needsTemplateAnnotationUpdate(set, child))
 	r.syncRBGMetadata(set, child)
 	assert.Equal(t, "2", child.Annotations[constants.RolloutRequestAnnotationKey])
-	requestGroupSetChildRollout(child)
+	require.NoError(t, requestGroupSetChildRollout(child))
 	assert.Equal(t, "3", child.Annotations[constants.RolloutRequestAnnotationKey])
 	assert.False(t, groupSetChildReady(child))
 	assert.NotContains(t, newRBGForSet(set, 0).Annotations, constants.RolloutRequestAnnotationKey)
 	assert.NotContains(t, normalizedGroupSetTemplate(set.Spec.GroupTemplate.DeepCopy()).Annotations, constants.RolloutRequestAnnotationKey)
+}
+
+func TestRequestGroupSetChildRollout(t *testing.T) {
+	for _, tt := range []struct {
+		name              string
+		request, observed string
+		hasRequest        bool
+		want              string
+	}{
+		{name: "never requested", want: "1"},
+		{name: "pending request", hasRequest: true, request: "2", observed: "1", want: "3"},
+		{name: "acknowledged request", hasRequest: true, request: "2", observed: "2", want: "3"},
+		{name: "annotation removed after acknowledgement", observed: "1", want: "2"},
+		{name: "annotation reset below acknowledgement", hasRequest: true, request: "0", observed: "3", want: "4"},
+		{name: "malformed annotation", hasRequest: true, request: "x", observed: "3", want: "4"},
+		{name: "malformed acknowledgement", hasRequest: true, request: "2", observed: "x", want: "3"},
+		{name: "negative annotation", hasRequest: true, request: "-2", observed: "3", want: "4"},
+		{name: "out-of-range annotation", hasRequest: true, request: "99999999999999999999", observed: "3", want: "4"},
+		{name: "out-of-range acknowledgement", hasRequest: true, request: "2", observed: "99999999999999999999", want: "3"},
+		{name: "last counter value", hasRequest: true, request: strconv.Itoa(math.MaxInt - 1), want: strconv.Itoa(math.MaxInt)},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			if tt.hasRequest {
+				child.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: tt.request}
+			}
+			child.Status.ObservedRolloutRequest = tt.observed
+			require.NoError(t, requestGroupSetChildRollout(child))
+			assert.Equal(t, tt.want, child.Annotations[constants.RolloutRequestAnnotationKey])
+			assert.NotEqual(t, child.Status.ObservedRolloutRequest, child.Annotations[constants.RolloutRequestAnnotationKey],
+				"a new request must never equal the last acknowledgement")
+		})
+	}
+}
+
+// A counter at its maximum cannot move ahead. Wrapping around could land on the acknowledged
+// value, so the write is refused instead.
+func TestRequestGroupSetChildRollout_ExhaustedCounter(t *testing.T) {
+	exhausted := strconv.Itoa(math.MaxInt)
+	for _, tt := range []struct{ name, request, observed string }{
+		{name: "annotation", request: exhausted, observed: "1"},
+		{name: "acknowledgement", request: "1", observed: exhausted},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			current := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+			update := &groupSetRevision{name: "v2", template: revisionTestTemplate(map[string]string{
+				constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname",
+			})}
+			set := revisionTestRollingSet(1, update)
+			child := revisionTestReadyChild(set, 0, current)
+			child.Annotations = map[string]string{constants.RolloutRequestAnnotationKey: tt.request}
+			child.Status.ObservedRolloutRequest = tt.observed
+			r, updates := revisionTestRollingReconciler(t, set, child)
+			before := revisionTestGetChild(t, r, set, 0)
+
+			err := r.updateRollingGroupSetChild(context.Background(), set, before.DeepCopy(), update)
+			require.ErrorContains(t, err, "rollout request counter")
+			assert.Empty(t, *updates)
+			assert.Equal(t, before, revisionTestGetChild(t, r, set, 0), "a refused request must not write the new template")
+		})
+	}
+}
+
+// The request annotation can be removed from a child while its acknowledgement stays in status.
+// The next metadata-only write must still hold its budget slot until the child acknowledges it.
+func TestSyncRollingGroupSet_MetadataOnlyUpdateAfterRequestRemovalHoldsBudget(t *testing.T) {
+	current := &groupSetRevision{name: "v1", template: revisionTestTemplate(nil)}
+	update := &groupSetRevision{name: "v2", template: revisionTestTemplate(map[string]string{
+		constants.GroupExclusiveTopologyKey: "kubernetes.io/hostname",
+	})}
+	set := revisionTestRollingSet(2, update)
+	upper := revisionTestReadyChild(set, 1, current)
+	// An earlier rollout was requested as "1" and acknowledged; the annotation was removed since.
+	upper.Status.ObservedRolloutRequest = "1"
+	r, updates := revisionTestRollingReconciler(t, set, revisionTestReadyChild(set, 0, current), upper)
+
+	changed, _ := revisionTestSync(t, r, set, current, update)
+	require.True(t, changed)
+	require.Equal(t, []string{"test-1"}, *updates)
+	upper = revisionTestGetChild(t, r, set, 1)
+	assert.Equal(t, "2", upper.Annotations[constants.RolloutRequestAnnotationKey])
+	assert.Equal(t, "1", upper.Status.ObservedRolloutRequest)
+	assert.False(t, groupSetChildReady(upper))
+
+	changed, _ = revisionTestSync(t, r, set, current, update)
+	assert.False(t, changed, "the old acknowledgement must not release the next ordinal")
+	assert.Equal(t, []string{"test-1"}, *updates)
+
+	revisionTestMarkReady(t, r, upper)
+	changed, _ = revisionTestSync(t, r, set, current, update)
+	require.True(t, changed)
+	assert.Equal(t, []string{"test-1", "test-0"}, *updates)
 }
 
 func TestGroupSetChildReady_RolloutRequest(t *testing.T) {

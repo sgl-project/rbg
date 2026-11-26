@@ -381,9 +381,12 @@ are still rolling.
 protected `Update` as the spec, metadata, and set revision label: an in-place template
 update, a user-metadata-only change, and a `Recreate` replicas-only update, which is
 availability-gated and acknowledged like any other rather than a shortcut. The value is
-a per-child decimal counter, starting at `"1"` when no previous counter exists;
-actual later writes increment it. Reconciles that make no change do not advance
-it. The key is excluded from template identity and preserved during metadata
+a per-child decimal counter, starting at `"1"` when no previous counter exists.
+Each later write uses one more than the larger of the annotation and
+`status.observedRolloutRequest`, so a child whose annotation was removed or reset
+never gets a request equal to its last acknowledgement. A counter that cannot be
+incremented fails the child write and leaves the child unchanged. Reconciles that
+make no change do not advance it. The key is excluded from template identity and preserved during metadata
 sync, but is never copied from the template. Repeated content such as `A -> B -> A`
 therefore receives a new request rather than reusing an old acknowledgement.
 

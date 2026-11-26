@@ -92315,7 +92315,8 @@ spec:
               currentReplicas:
                 description: |-
                   CurrentReplicas is the number of child RoleBasedGroups at ordinals below Replicas
-                  whose spec.roles do not match the current GroupTemplate, i.e.
+                  that do not match the current GroupTemplate, i.e. the groups the rollout
+                  has not moved onto the new template yet.
                 format: int32
                 type: integer
               currentRevision:
@@ -92351,14 +92352,14 @@ spec:
               updatedReadyReplicas:
                 description: |-
                   UpdatedReadyReplicas is the number of child RoleBasedGroups at ordinals below
-                  Replicas whose spec.roles match the current GroupTemplate and are also ready.
+                  Replicas that match the current GroupTemplate and are also ready.
                   Surge groups are not counted.
                 format: int32
                 type: integer
               updatedReplicas:
                 description: |-
                   UpdatedReplicas is the number of child RoleBasedGroups at ordinals below Replicas
-                  whose spec.roles match the current GroupTemplate, whether they are ready or not.
+                  that match the current GroupTemplate, whether they are ready or not.
                   Surge groups are not counted.
                 format: int32
                 type: integer
