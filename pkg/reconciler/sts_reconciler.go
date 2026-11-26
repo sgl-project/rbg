@@ -589,8 +589,18 @@ func (r *StatefulSetReconciler) CheckWorkloadReady(
 		return false, nil
 	}
 
-	inRollout := sts.Status.CurrentRevision != "" &&
-		sts.Status.CurrentRevision != sts.Status.UpdateRevision
+	desired := ptr.Deref(sts.Spec.Replicas, 1)
+	var partition int32
+	if sts.Spec.UpdateStrategy.RollingUpdate != nil && sts.Spec.UpdateStrategy.RollingUpdate.Partition != nil {
+		partition = max(*sts.Spec.UpdateStrategy.RollingUpdate.Partition, 0)
+	}
+	expectedUpdated := max(desired-partition, 0)
+	inRollout := sts.Spec.UpdateStrategy.Type != appsv1.OnDeleteStatefulSetStrategyType &&
+		sts.Status.CurrentRevision != "" &&
+		sts.Status.UpdateRevision != "" &&
+		sts.Status.CurrentRevision != sts.Status.UpdateRevision &&
+		expectedUpdated > 0 &&
+		(partition == 0 || sts.Status.UpdatedReplicas < expectedUpdated)
 	return checkWorkloadReady(ctx, r.client, rbg, role.Name, inRollout,
 		sts.Status.ReadyReplicas, sts.Spec.Replicas)
 }

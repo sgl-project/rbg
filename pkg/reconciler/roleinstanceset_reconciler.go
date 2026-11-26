@@ -664,8 +664,12 @@ func (r *RoleInstanceSetReconciler) CheckWorkloadReady(
 		return false, nil
 	}
 
-	inRollout := roleInstanceSet.Status.CurrentRevision != "" &&
-		roleInstanceSet.Status.CurrentRevision != roleInstanceSet.Status.UpdateRevision
+	inRollout := !roleInstanceSet.Spec.UpdateStrategy.Paused &&
+		roleInstanceSet.Status.CurrentRevision != "" &&
+		roleInstanceSet.Status.UpdateRevision != "" &&
+		roleInstanceSet.Status.CurrentRevision != roleInstanceSet.Status.UpdateRevision &&
+		(roleInstanceSet.Status.UpdatedReplicas < roleInstanceSet.Status.ExpectedUpdatedReplicas ||
+			roleInstanceSet.Status.UpdatedReadyReplicas < roleInstanceSet.Status.ExpectedUpdatedReplicas)
 	return checkWorkloadReady(ctx, r.client, rbg, role.Name, inRollout,
 		roleInstanceSet.Status.ReadyReplicas, roleInstanceSet.Spec.Replicas)
 }
