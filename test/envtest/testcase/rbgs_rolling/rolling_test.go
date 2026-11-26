@@ -328,6 +328,38 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Expect(set.Status.UpdateRevision).To(Equal(revision))
 	})
 
+	DescribeTable("repairs an identity label of a ready group in place", func(label string, maxUnavailable int32) {
+		setName := "rbgs-identity-label"
+		Expect(testutil.K8sClient.Create(testutil.Ctx,
+			buildRollingSet(setName, testNs, 2, 1, maxUnavailable, 1, 0))).Should(Succeed())
+		waitRollout(testNs, setName, rolloutComplete)
+		child := fetchChildren(testNs, setName)[1]
+		Expect(child).NotTo(BeNil())
+		uid := child.UID
+		want := child.Labels[label]
+		Expect(want).NotTo(BeEmpty())
+		base := child.DeepCopy()
+		delete(child.Labels, label)
+		Expect(testutil.K8sClient.Patch(testutil.Ctx, child, client.MergeFrom(base))).Should(Succeed())
+
+		Eventually(func(g Gomega) {
+			got := &workloadsv1alpha2.RoleBasedGroup{}
+			g.Expect(testutil.K8sClient.Get(testutil.Ctx,
+				client.ObjectKey{Namespace: testNs, Name: childName(setName, 1)}, got)).To(Succeed())
+			g.Expect(got.Labels).To(HaveKeyWithValue(label, want))
+			g.Expect(got.UID).To(Equal(uid))
+		}, timeout, interval).Should(Succeed())
+		set := waitRollout(testNs, setName, rolloutComplete)
+		Expect(set.Status.Replicas).To(Equal(int32(2)))
+		Expect(fetchChildren(testNs, setName)).To(HaveLen(2))
+	},
+		// maxUnavailable=0 keeps every ready group, so one with a broken ordinal label can't be deleted and rebuilt.
+		Entry("ordinal label, maxUnavailable 0", constants.GroupSetIndexLabelKey, int32(0)),
+		// Without the set-name label the group isn't listed at all, so no delete budget reaches it.
+		Entry("set-name label, maxUnavailable 0", constants.GroupSetNameLabelKey, int32(0)),
+		Entry("set-name label, maxUnavailable 1", constants.GroupSetNameLabelKey, int32(1)),
+	)
+
 	DescribeTable("paces role scaling until downstream workloads are ready", func(strategy workloadsv1alpha2.GroupUpdateStrategyType, pattern constants.InstancePatternType) {
 		setName := "rbgs-scaling"
 		set := buildRollingSet(setName, testNs, 3, 1, 1, 0, 1)

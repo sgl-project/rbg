@@ -1967,6 +1967,98 @@ func TestSyncRollingGroupSet_StrategiesRecoverMissingOrdinals(t *testing.T) {
 	}
 }
 
+// A child that lost or changed its ordinal or set-name label still has its deterministic name, so
+// fill tries to create that name again: without the set-name label the child isn't listed, and with
+// maxUnavailable=0 one with a broken ordinal label is too ready to delete. The set must repair the
+// existing child instead of reporting that create as progress on every pass.
+func TestSyncRollingGroupSet_RepairsChildOrdinalLabel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		key   string
+		value *string
+	}{
+		"missing":                 {constants.GroupSetIndexLabelKey, nil},
+		"not a number":            {constants.GroupSetIndexLabelKey, ptr.To("one")},
+		"another ordinal":         {constants.GroupSetIndexLabelKey, ptr.To("2")},
+		"set name missing":        {constants.GroupSetNameLabelKey, nil},
+		"set name of another set": {constants.GroupSetNameLabelKey, ptr.To("other")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			revision := &groupSetRevision{name: "v1", template: revisionTestTemplate(map[string]string{"version": "v1"})}
+			set := revisionTestRollingSet(3, revision)
+			set.Spec.RolloutStrategy = &workloadsv1alpha2.GroupSetRolloutStrategy{
+				Type:     workloadsv1alpha2.RecreateStrategyType,
+				MaxSurge: ptr.To(intstr.FromInt(1)), MaxUnavailable: ptr.To(intstr.FromInt(0)),
+			}
+			objects := []client.Object{set}
+			for index := 0; index < 3; index++ {
+				child := revisionTestReadyChild(set, index, revision)
+				if index == 1 {
+					if tc.value == nil {
+						delete(child.Labels, tc.key)
+					} else {
+						child.Labels[tc.key] = *tc.value
+					}
+				}
+				objects = append(objects, child)
+			}
+			r, updates := revisionTestRollingReconciler(t, objects...)
+
+			changed, children := revisionTestSync(t, r, set, revision, revision)
+			require.True(t, changed)
+			require.Len(t, children.Items, 3)
+			assert.Empty(t, *updates)
+			child := revisionTestGetChild(t, r, set, 1)
+			assert.Equal(t, "1", child.Labels[constants.GroupSetIndexLabelKey])
+			assert.Equal(t, set.Name, child.Labels[constants.GroupSetNameLabelKey])
+			assert.Equal(t, "v1", child.Labels[constants.GroupSetRevisionLabelKey])
+			index, valid := groupSetOrdinal(set, child)
+			assert.True(t, valid)
+			assert.Equal(t, 1, index)
+			assert.Equal(t, types.UID("original-test-1"), child.UID, "the ready child must be kept, not replaced")
+			assert.True(t, groupSetChildReady(child))
+
+			changed, children = revisionTestSync(t, r, set, revision, revision)
+			assert.False(t, changed, "the set must settle once the label is repaired")
+			assert.Len(t, children.Items, 3)
+		})
+	}
+}
+
+// The surge warm-up creates through the same path, so a surge group that lost its set-name label is
+// repaired as well, and the rollout it was created for goes on instead of recreating it every pass.
+func TestSyncRollingGroupSet_RepairsSurgeChildLabels(t *testing.T) {
+	current := &groupSetRevision{name: "v1", template: revisionTestTemplate(map[string]string{"version": "v1"})}
+	update := &groupSetRevision{name: "v2", template: revisionTestTemplate(map[string]string{"version": "v2"})}
+	set := revisionTestRollingSet(2, update)
+	set.Spec.RolloutStrategy = &workloadsv1alpha2.GroupSetRolloutStrategy{
+		Type:     workloadsv1alpha2.RecreateStrategyType,
+		MaxSurge: ptr.To(intstr.FromInt(1)), MaxUnavailable: ptr.To(intstr.FromInt(0)),
+	}
+	surge := revisionTestReadyChild(set, 2, update)
+	delete(surge.Labels, constants.GroupSetNameLabelKey)
+	r, updates := revisionTestRollingReconciler(t, set,
+		revisionTestReadyChild(set, 0, current), revisionTestReadyChild(set, 1, current), surge)
+
+	changed, children := revisionTestSync(t, r, set, current, update)
+	require.True(t, changed)
+	require.Len(t, children.Items, 3, "the repaired surge group must be listed again")
+	child := revisionTestGetChild(t, r, set, 2)
+	assert.Equal(t, set.Name, child.Labels[constants.GroupSetNameLabelKey])
+	assert.Equal(t, "2", child.Labels[constants.GroupSetIndexLabelKey])
+	assert.Equal(t, "v2", child.Labels[constants.GroupSetRevisionLabelKey])
+	assert.Equal(t, types.UID("original-test-2"), child.UID, "the ready surge group must be kept, not replaced")
+	assert.Empty(t, *updates)
+
+	changed, _ = revisionTestSync(t, r, set, current, update)
+	require.True(t, changed, "the ready surge group must let the rollout move a base group")
+	assert.Empty(t, *updates)
+	removed := &workloadsv1alpha2.RoleBasedGroup{}
+	err := r.client.Get(context.Background(), client.ObjectKey{Namespace: set.Namespace, Name: "test-1"}, removed)
+	assert.True(t, apierrors.IsNotFound(err), "Recreate replaces the highest outdated base group first")
+	assert.Equal(t, types.UID("original-test-0"), revisionTestGetChild(t, r, set, 0).UID)
+	assert.Equal(t, types.UID("original-test-2"), revisionTestGetChild(t, r, set, 2).UID)
+}
+
 func revisionTestPodGroupPolicyTemplate(timeout int) *workloadsv1alpha2.RoleBasedGroupTemplateSpec {
 	template := revisionTestTemplate(map[string]string{
 		constants.GangSchedulingAnnotationKey:             "true",

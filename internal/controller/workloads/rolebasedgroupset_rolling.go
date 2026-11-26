@@ -19,6 +19,7 @@ package workloads
 import (
 	"context"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strconv"
@@ -618,6 +619,23 @@ func (r *RoleBasedGroupSetReconciler) createRollingGroupSetChild(
 				return err
 			}
 			return r.adoptGroupSetChild(ctx, set, existing)
+		}
+		// The name is derived from the ordinal, so a child of this set that holds it is the one
+		// being created here. It was skipped because a label that identifies it is missing or
+		// wrong: the set-name label hides it from the listing, the ordinal label from
+		// groupSetOrdinal. Restore both, or every pass would retry this create and report
+		// progress. The revision label is left alone: it records what the child runs.
+		if existing.DeletionTimestamp.IsZero() {
+			repaired := existing.DeepCopy()
+			if repaired.Labels == nil {
+				repaired.Labels = make(map[string]string)
+			}
+			for _, key := range []string{constants.GroupSetNameLabelKey, constants.GroupSetIndexLabelKey} {
+				repaired.Labels[key] = child.Labels[key]
+			}
+			if !maps.Equal(existing.Labels, repaired.Labels) {
+				return r.client.Patch(ctx, repaired, client.MergeFromWithOptions(existing, client.MergeFromWithOptimisticLock{}))
+			}
 		}
 	}
 	return nil
