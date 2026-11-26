@@ -9,7 +9,7 @@ controller Deployment; apply it next to your existing Prometheus and Grafana.
 | File | Purpose |
 | ---- | ------- |
 | `scrape-config.yaml` | Bare Prometheus scrape config (`scrape_configs` only) for `rbgs-controller-manager` pods |
-| `rbac.yaml` | ClusterRoles and ClusterRoleBindings that let Prometheus discover controller pods and read the authenticated `/metrics` endpoint |
+| `rbac.yaml` | RBAC that lets Prometheus discover controller pods (a namespaced Role) and read the authenticated `/metrics` endpoint (a ClusterRole) |
 | `rbgs-prometheus-grafana-monitor.json` | Grafana dashboard for the controller-runtime metrics exposed by the RBG controller |
 
 ## How the scrape works
@@ -26,15 +26,18 @@ needs its own permissions. Three consequences:
    `/metrics`, which `rbac.yaml` grants.
 
 3. The `role: pod` service discovery requires `get`/`list`/`watch` on pods.
-   `rbac.yaml` also grants this via a separate `rbgs-prometheus-discovery`
-   ClusterRole. A default kube-prometheus-stack Prometheus already has both
-   permissions, so its users can skip `rbac.yaml` entirely. A kube-prometheus
-   (jsonnet) Prometheus, whose service account the default subject matches,
-   can list pods only in a few namespaces, so it needs the discovery
-   ClusterRole; without it the job silently discovers no targets. If you
-   know the namespace the controller runs in and prefer least privilege,
-   bind a namespaced Role with the same rules instead, and add a
-   `namespaces:` filter to the `kubernetes_sd_configs` entry.
+   `rbac.yaml` grants this via a `rbgs-prometheus-discovery` Role and
+   RoleBinding in `rbgs-system`, and the scrape config scopes discovery to
+   the same namespace. Adjust both to the namespace the controller runs in.
+   Scoping discovery matters for security: the scrape job sends the
+   Prometheus service account token to every discovered target, and the
+   `control-plane` label is not a security boundary, so without the namespace
+   filter any workload in the cluster could impersonate a controller pod and
+   capture the token. A default kube-prometheus-stack Prometheus already has
+   both permissions, so its users can skip `rbac.yaml` entirely. A
+   kube-prometheus (jsonnet) Prometheus, whose service account the default
+   subject matches, can list pods only in a few namespaces, so it needs the
+   discovery Role; without it the job silently discovers no targets.
 
 The scrape config discovers controller pods by the `control-plane:
 rbgs-controller` label, adds `namespace` and `pod` labels to every series, and
@@ -55,7 +58,9 @@ send the service-account token in cleartext to the pod IP on every scrape.
    install (`prometheus-k8s` in `monitoring`); kube-prometheus-stack names
    the account `<release>-prometheus`, and its default ClusterRole already
    grants both discovery and `/metrics`, so kube-prometheus-stack users can
-   skip this file entirely:
+   skip this file entirely. Also adjust the `rbgs-prometheus-discovery` Role
+   and RoleBinding to the controller's namespace, and the `namespaces`
+   filter in `scrape-config.yaml` to match:
 
    ```bash
    kubectl apply -f integration/prometheus/rbac.yaml
@@ -78,6 +83,31 @@ send the service-account token in cleartext to the pod IP on every scrape.
    New -> Import), select your Prometheus data source, and pick the
    controller namespace.
 
+## Troubleshooting
+
+If the dashboard shows no data, first check whether the scrape itself is
+healthy: empty `job`, `namespace` or `controller` variables usually mean the
+scrape chain has not succeeded yet, not that the controller is broken. The
+Scrape Health panel at the top of the dashboard shows the `up` metric per
+controller pod.
+
+- Check the Prometheus web UI (`/-/targets`) for the `rbgs-controller` job.
+  The target's last error distinguishes the failure mode: `401`/`403` means
+  authentication or authorization failed (the token, the `/metrics` RBAC, or
+  the controller's TokenReview permissions), `x509` errors mean TLS, and
+  `connection refused` usually means the port.
+- Query `up{job="rbgs-controller"}` (or your renamed job) in Prometheus:
+  `1` is a healthy scrape, `0` is a failed one.
+- Verify the controller pods are discovered:
+  `kubectl get pods -n <controller-namespace> -l control-plane=rbgs-controller -o wide`.
+- Verify the Prometheus service account can discover pods and read
+  `/metrics`:
+  `kubectl auth can-i list pods -n <controller-namespace> --as=system:serviceaccount:<prometheus-namespace>:<prometheus-sa>`
+  and
+  `kubectl auth can-i get /metrics --as=system:serviceaccount:<prometheus-namespace>:<prometheus-sa>`.
+- If you changed `--metrics-bind-address`, update the `8443` port in the
+  `__address__` relabel rules of `scrape-config.yaml` as well.
+
 ## Dashboard contents
 
 The dashboard is built from the metrics controller-runtime exposes on
@@ -89,7 +119,9 @@ The dashboard is built from the metrics controller-runtime exposes on
   indicators.
 - Kubernetes API client: request rate by status code, method and failed
   (4xx/5xx) requests.
-- Webhooks: request rate, latency quantiles, in-flight requests and panics.
+- Scrape health: the `up` metric per controller pod.
+- Webhooks: request rate, latency quantiles, in-flight requests, and
+  admission and conversion panics.
 - Controller process: leader election status, goroutines, resident memory and
   CPU usage.
 
@@ -110,3 +142,12 @@ note that the scrape targets are addressed by pod IP: set both
 `tls_config.ca_file` and `tls_config.server_name` (a DNS SAN of that
 certificate). Setting a CA without `server_name` fails, because the
 certificate's SANs are service DNS names, not pod IPs.
+
+`insecure_skip_verify: true` also means Prometheus does not verify the
+identity of the metrics server: an attacker who can intercept or redirect
+traffic between Prometheus and the controller pods can capture the
+Prometheus service account token, and read or forge the scraped metrics. The
+namespace-scoped discovery limits where that token is sent, but clusters that
+do not fully trust pod-to-pod traffic should additionally restrict access to
+the metrics port (for example with a NetworkPolicy) or provision a real
+certificate for the metrics server and remove `insecure_skip_verify`.

@@ -33,12 +33,22 @@ scrape_configs:
       # work.
       insecure_skip_verify: true
     # Pod discovery requires get/list/watch on pods for the Prometheus
-    # service account; see the discovery ClusterRole in rbac.yaml.
+    # service account; see the discovery Role in rbac.yaml. Discovery is
+    # scoped to the controller's namespace: the scrape job sends the
+    # Prometheus service account token to every discovered target, and the
+    # control-plane label is not a security boundary, so cluster-wide
+    # discovery would let any workload impersonate a controller pod and
+    # capture the token. Adjust the namespace to where the RBG controller
+    # runs.
     kubernetes_sd_configs:
       - role: pod
+        namespaces:
+          names:
+            - rbgs-system
     relabel_configs:
       # Only scrape rbgs-controller-manager pods. The metrics port is not
       # declared as a container port, so rebuild __address__ from the pod IP.
+      # IPv6 pod IPs must be bracketed in a host:port address.
       - source_labels: [__meta_kubernetes_pod_label_control_plane]
         regex: rbgs-controller
         action: keep
@@ -46,9 +56,14 @@ scrape_configs:
         regex: Running
         action: keep
       - source_labels: [__meta_kubernetes_pod_ip]
-        regex: (.+)
+        regex: ((?:[0-9]{1,3}\.){3}[0-9]{1,3})
         target_label: __address__
         replacement: $1:8443
+        action: replace
+      - source_labels: [__meta_kubernetes_pod_ip]
+        regex: ([0-9A-Fa-f:]*:[0-9A-Fa-f:]+)
+        target_label: __address__
+        replacement: "[$1]:8443"
         action: replace
       - source_labels: [__meta_kubernetes_namespace]
         target_label: namespace

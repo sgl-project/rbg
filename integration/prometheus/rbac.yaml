@@ -30,15 +30,18 @@ subjects:
     namespace: monitoring
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
+kind: Role
 metadata:
   name: rbgs-prometheus-discovery
+  # Adjust to the namespace where the RBG controller runs; it must match the
+  # namespaces filter in scrape-config.yaml.
+  namespace: rbgs-system
 rules:
   # The scrape config in scrape-config.yaml uses kubernetes_sd_configs with
-  # role: pod to find controller pods in any namespace, which requires
-  # get/list/watch on pods. A kube-prometheus-stack Prometheus already has
-  # this permission; a kube-prometheus (jsonnet) Prometheus does not, and
-  # without this role the job silently discovers no targets.
+  # role: pod, scoped to this namespace, to find controller pods, which
+  # requires get/list/watch on pods. A kube-prometheus-stack Prometheus
+  # already has this permission; a kube-prometheus (jsonnet) Prometheus does
+  # not, and without this role the job silently discovers no targets.
   - apiGroups:
       - ""
     resources:
@@ -49,12 +52,13 @@ rules:
       - watch
 ---
 apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRoleBinding
+kind: RoleBinding
 metadata:
   name: rbgs-prometheus-discovery
+  namespace: rbgs-system
 roleRef:
   apiGroup: rbac.authorization.k8s.io
-  kind: ClusterRole
+  kind: Role
   name: rbgs-prometheus-discovery
 subjects:
   # Adjust to the service account used by your Prometheus instance.

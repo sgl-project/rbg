@@ -29,6 +29,102 @@
         "x": 0,
         "y": 0
       },
+      "id": 106,
+      "panels": [],
+      "title": "Scrape Health",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "1 when the last scrape of the controller pod succeeded, 0 when it failed. DOWN usually means an authentication, authorization, TLS or connectivity problem; see the troubleshooting section of the README.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "mappings": [
+            {
+              "options": {
+                "0": {
+                  "color": "red",
+                  "index": 1,
+                  "text": "DOWN"
+                },
+                "1": {
+                  "color": "green",
+                  "index": 0,
+                  "text": "UP"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 1
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 4,
+        "w": 24,
+        "x": 0,
+        "y": 1
+      },
+      "id": 26,
+      "options": {
+        "colorMode": "background",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "textMode": "auto",
+        "wideLayout": true
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "up{job=~\"$job\", namespace=~\"$namespace\"}",
+          "legendFormat": "{{namespace}}/{{pod}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Scrape Health",
+      "type": "stat"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 5
+      },
       "id": 100,
       "panels": [],
       "title": "Reconciliation",
@@ -69,7 +165,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 1
+        "y": 6
       },
       "id": 1,
       "options": {
@@ -142,7 +238,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 1
+        "y": 6
       },
       "id": 2,
       "options": {
@@ -215,7 +311,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 9
+        "y": 14
       },
       "id": 3,
       "options": {
@@ -288,7 +384,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 9
+        "y": 14
       },
       "id": 4,
       "options": {
@@ -357,7 +453,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 9
+        "y": 14
       },
       "id": 5,
       "options": {
@@ -397,7 +493,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 17
+        "y": 22
       },
       "id": 101,
       "panels": [],
@@ -439,7 +535,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 18
+        "y": 23
       },
       "id": 6,
       "options": {
@@ -530,7 +626,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 18
+        "y": 23
       },
       "id": 7,
       "options": {
@@ -599,7 +695,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 18
+        "y": 23
       },
       "id": 8,
       "options": {
@@ -639,7 +735,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 26
+        "y": 31
       },
       "id": 102,
       "panels": [],
@@ -681,7 +777,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 27
+        "y": 32
       },
       "id": 9,
       "options": {
@@ -750,7 +846,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 27
+        "y": 32
       },
       "id": 10,
       "options": {
@@ -819,7 +915,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 27
+        "y": 32
       },
       "id": 11,
       "options": {
@@ -888,7 +984,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 35
+        "y": 40
       },
       "id": 12,
       "options": {
@@ -961,7 +1057,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 35
+        "y": 40
       },
       "id": 13,
       "options": {
@@ -1031,7 +1127,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 35
+        "y": 40
       },
       "id": 14,
       "options": {
@@ -1071,7 +1167,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 43
+        "y": 48
       },
       "id": 103,
       "panels": [],
@@ -1113,7 +1209,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 44
+        "y": 49
       },
       "id": 15,
       "options": {
@@ -1182,7 +1278,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 44
+        "y": 49
       },
       "id": 16,
       "options": {
@@ -1255,7 +1351,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 44
+        "y": 49
       },
       "id": 17,
       "options": {
@@ -1295,7 +1391,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 52
+        "y": 57
       },
       "id": 104,
       "panels": [],
@@ -1337,7 +1433,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 53
+        "y": 58
       },
       "id": 18,
       "options": {
@@ -1406,7 +1502,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 53
+        "y": 58
       },
       "id": 19,
       "options": {
@@ -1475,7 +1571,7 @@
         "h": 8,
         "w": 4,
         "x": 16,
-        "y": 53
+        "y": 58
       },
       "id": 20,
       "options": {
@@ -1500,7 +1596,7 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (webhook) (controller_runtime_webhook_requests_in_flight{job=~\"$job\", namespace=~\"$namespace\"})",
+          "expr": "sum by (webhook) (controller_runtime_webhook_requests_in_flight{job=~\"$job\", namespace=~\"$namespace\"})",
           "legendFormat": "{{webhook}}",
           "range": true,
           "refId": "A"
@@ -1548,7 +1644,7 @@
         "h": 8,
         "w": 4,
         "x": 20,
-        "y": 53
+        "y": 58
       },
       "id": 21,
       "options": {
@@ -1574,9 +1670,20 @@
           },
           "editorMode": "code",
           "expr": "sum by (pod) (rate(controller_runtime_webhook_panics_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval]))",
-          "legendFormat": "{{pod}}",
+          "legendFormat": "{{pod}} admission",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "editorMode": "code",
+          "expr": "sum by (pod) (rate(controller_runtime_conversion_webhook_panics_total{job=~\"$job\", namespace=~\"$namespace\"}[$__rate_interval]))",
+          "legendFormat": "{{pod}} conversion",
+          "range": true,
+          "refId": "B"
         }
       ],
       "title": "Webhook Panics",
@@ -1588,7 +1695,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 61
+        "y": 66
       },
       "id": 105,
       "panels": [],
@@ -1630,7 +1737,7 @@
         "h": 8,
         "w": 6,
         "x": 0,
-        "y": 62
+        "y": 67
       },
       "id": 22,
       "options": {
@@ -1654,8 +1761,8 @@
             "uid": "${datasource}"
           },
           "editorMode": "code",
-          "expr": "max by (name) (leader_election_master_status{job=~\"$job\", namespace=~\"$namespace\"})",
-          "legendFormat": "{{name}}",
+          "expr": "max by (pod, name) (leader_election_master_status{job=~\"$job\", namespace=~\"$namespace\"})",
+          "legendFormat": "{{pod}}",
           "range": true,
           "refId": "A"
         }
@@ -1699,7 +1806,7 @@
         "h": 8,
         "w": 6,
         "x": 6,
-        "y": 62
+        "y": 67
       },
       "id": 23,
       "options": {
@@ -1768,7 +1875,7 @@
         "h": 8,
         "w": 6,
         "x": 12,
-        "y": 62
+        "y": 67
       },
       "id": 24,
       "options": {
@@ -1837,7 +1944,7 @@
         "h": 8,
         "w": 6,
         "x": 18,
-        "y": 62
+        "y": 67
       },
       "id": 25,
       "options": {
@@ -2003,3 +2110,4 @@
   "version": 1,
   "weekStart": ""
 }
+
