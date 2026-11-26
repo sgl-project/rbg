@@ -962,10 +962,11 @@ Enforcement is a CERP validating webhook: on update it compares `old.spec` to
 `new.spec` and rejects a substantive change while a live reference exists. It
 consults references across RoleBasedGroups and RoleBasedGroupSets
 via an **uncached lookup**, scoped to the objects carrying the reserved
-`rbg.workloads.x-k8s.io/has-engine-runtimes` label so its cost scales with
-the number of referencing objects rather than with the cluster: profile
-writes are rare platform operations, and skipping the informer cache removes
-the stale-cache variant of the window below. The RoleBasedGroup and
+`rbg.workloads.x-k8s.io/has-engine-runtimes` label. For a referenced
+profile, the non-zero result scales with the number of referencing objects
+rather than with the cluster: profile writes are rare platform operations,
+and skipping the informer cache removes the stale-cache variant of the window
+below. The RoleBasedGroup and
 RoleBasedGroupSet admission defaulters maintain the label on every write
 (derived from the roles' `engineRuntimes`), and the profile controller
 backfills it onto referencing objects written before the label existed. Until

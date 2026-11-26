@@ -22,6 +22,7 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/singleflight"
 	corev1 "k8s.io/api/core/v1"
 	apiequality "k8s.io/apimachinery/pkg/api/equality"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -74,6 +75,7 @@ type ClusterEngineRuntimeProfileReconciler struct {
 	Recorder                          record.EventRecorder
 	warnedEngineRuntimeLabelBackfill  sync.Map
 	engineRuntimeLabelBackfillFailure sync.Map
+	engineRuntimeLabelBackfillFlight  singleflight.Group
 }
 
 type engineRuntimeLabelBackfillKey struct {
@@ -209,6 +211,20 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 // has-engine-runtimes deliberately requeue the referenced profiles so a
 // bypassed write is repaired.
 func (r *ClusterEngineRuntimeProfileReconciler) backfillHasEngineRuntimesLabels(ctx context.Context) (ctrl.Result, error) {
+	value, err, _ := r.engineRuntimeLabelBackfillFlight.Do(
+		"engine-runtime-label-backfill",
+		func() (interface{}, error) {
+			return r.runEngineRuntimeLabelBackfill(ctx)
+		},
+	)
+	result, ok := value.(ctrl.Result)
+	if !ok {
+		result = ctrl.Result{}
+	}
+	return result, err
+}
+
+func (r *ClusterEngineRuntimeProfileReconciler) runEngineRuntimeLabelBackfill(ctx context.Context) (ctrl.Result, error) {
 	if workloadsv1alpha2.EngineRuntimeLabelConverged() {
 		// Every admitted write maintains the label, so a converged process
 		// only re-scans on restart. Objects written with webhooks disabled

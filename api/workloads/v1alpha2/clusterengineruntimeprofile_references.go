@@ -307,8 +307,10 @@ func (r EngineRuntimeProfileReference) String() string {
 // deciding whether a profile is frozen (KEP-531 Profile Mutability).
 //
 // The Lists are scoped to objects carrying the has-engine-runtimes label,
-// so the lookup's cost scales with the number of referencing objects
-// rather than the size of the cluster. The label is maintained on every
+// so a non-zero result's cost scales with the number of referencing
+// objects rather than the size of the cluster. A zero result is confirmed
+// with the unscoped variant, which retains the cluster-wide cost. The label
+// is maintained on every
 // RoleBasedGroup and RoleBasedGroupSet write by the admission defaulters
 // (SetHasEngineRuntimesLabel) and backfilled by the profile controller for
 // objects that predate it; see ListAllEngineRuntimeProfileReferences for

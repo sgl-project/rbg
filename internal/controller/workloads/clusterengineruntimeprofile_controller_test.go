@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -87,7 +88,9 @@ func controllerRBGSet(name, namespace, profileName string) *workloadsv1alpha2.Ro
 					EngineRuntimes: []workloadsv1alpha2.EngineRuntime{{ProfileName: profileName}},
 				}}},
 			},
-			RolloutStrategy: &workloadsv1alpha2.GroupSetRolloutStrategy{},
+			RolloutStrategy: &workloadsv1alpha2.GroupSetRolloutStrategy{
+				Type: workloadsv1alpha2.InPlaceUpdateStrategyType,
+			},
 		},
 	}
 }
@@ -500,6 +503,8 @@ func TestClusterEngineRuntimeProfileLabelBackfillFailureKeysIncludeKind(t *testi
 	events := drainControllerEvents(recorder)
 	assert.Len(t, events, 2,
 		"an RBG and RBGSet with the same namespace/name must keep separate failure state")
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
+	assert.Contains(t, events[1], ReasonEngineRuntimeLabelBackfillFailed)
 }
 
 func TestClusterEngineRuntimeProfileLabelBackfillFailureResetsOnGeneration(t *testing.T) {
@@ -549,12 +554,62 @@ func TestClusterEngineRuntimeProfileLabelBackfillFailureStateIsConcurrencySafe(t
 		}()
 	}
 	wg.Wait()
+	_, _ = r.backfillHasEngineRuntimesLabels(ctx)
 	_, err := r.backfillHasEngineRuntimesLabels(ctx)
 	require.NoError(t, err)
 
 	events := drainControllerEvents(recorder)
 	assert.Len(t, events, 1)
 	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillDeduplicatesConcurrentSuccess(t *testing.T) {
+	ctx := context.Background()
+	unlabeled := controllerRBG("grp-old", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	var mu sync.Mutex
+	patches := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(unlabeled).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				mu.Lock()
+				patches++
+				mu.Unlock()
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	const workers = 10
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := r.backfillHasEngineRuntimesLabels(ctx)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, patches,
+		"concurrent profile reconciles must share one global backfill, not patch the same object repeatedly")
+	assert.True(t, workloadsv1alpha2.EngineRuntimeLabelConverged())
+	assert.Empty(t, drainControllerEvents(recorder),
+		"a successful shared backfill must not emit a failure warning")
 }
 
 func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategyObjects(t *testing.T) {
@@ -601,6 +656,7 @@ func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategyObjects(t *t
 func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategySets(t *testing.T) {
 	ctx := context.Background()
 	legacy := controllerRBGSet("set-legacy", "ns-a", "ik")
+	legacy.Spec.RolloutStrategy.Type = ""
 
 	scheme := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
@@ -633,6 +689,41 @@ func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategySets(t *test
 	events := drainControllerEvents(recorder)
 	assert.Len(t, events, 1)
 	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillSkipped)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillsZeroReplicaSets(t *testing.T) {
+	ctx := context.Background()
+	set := controllerRBGSet("set-zero", "ns-a", "ik")
+	set.Spec.Replicas = ptr.To(int32(0))
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	patches := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(set).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				patches++
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	result, err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	assert.Equal(t, 1, patches,
+		"a pre-label zero-replica RoleBasedGroupSet must be backfilled")
+
+	got := &workloadsv1alpha2.RoleBasedGroupSet{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "set-zero"}, got))
+	assert.Equal(t, constants.HasEngineRuntimesLabelValue, got.Labels[constants.HasEngineRuntimesLabelKey])
+	assert.True(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"the set's group template is the live reference, so zero replicas must still converge")
+	assert.Empty(t, drainControllerEvents(recorder))
 }
 
 func TestClusterEngineRuntimeProfileLabelBackfillWarningIsConcurrencySafe(t *testing.T) {

@@ -194,6 +194,13 @@ func v080Profile() *releaseProfile {
 // entirely, so neither belongs here.
 func strategyHealRewrites() recordedRewrites {
 	return recordedRewrites{
+		// Both supported from-releases store engineRuntimes without the reserved
+		// has-engine-runtimes label. The upgraded controller backfills that label on
+		// exactly these referencing objects and must not move anything else.
+		engineRuntimeLabelPins: map[string]bool{
+			fxScaling:          true,
+			fxEngineRuntimeSet: true,
+		},
 		specRewrites: map[string]func(map[string]any) error{
 			// The legacy-strategy fixture stores the v1alpha1 spelling "Recreate"
 			// of the update strategy type, which the old release copied verbatim

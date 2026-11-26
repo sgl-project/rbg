@@ -33,16 +33,17 @@ import (
 // Fixture names. Kept short because they prefix generated pod names, which have a
 // 63-character limit once role, instance and component suffixes are appended.
 const (
-	fxStandalone = "up-standalone"
-	fxDeploy     = "up-deploy"
-	fxSts        = "up-sts"
-	fxLws        = "up-lws"
-	fxLwp        = "up-lwp"
-	fxDeps       = "up-deps"
-	fxScaling    = "up-sa"
-	fxCustom     = "up-cc"
-	fxSet        = "up-set"
-	fxV1alpha1   = "up-v1a1"
+	fxStandalone       = "up-standalone"
+	fxDeploy           = "up-deploy"
+	fxSts              = "up-sts"
+	fxLws              = "up-lws"
+	fxLwp              = "up-lwp"
+	fxDeps             = "up-deps"
+	fxScaling          = "up-sa"
+	fxCustom           = "up-cc"
+	fxSet              = "up-set"
+	fxEngineRuntimeSet = "up-ert"
+	fxV1alpha1         = "up-v1a1"
 	// fxLegacyStrategy stores the v1alpha1 spelling "Recreate" of the update
 	// strategy type, and fxLegacyStrategyEmpty stores an explicit empty string.
 	// v0.7.0's CRDs had no enum on that field, so both are values only objects
@@ -468,6 +469,26 @@ func buildSetFixture(ns string) *workloadsv1alpha2.RoleBasedGroupSet {
 	set := wrappersv2.BuildBasicRoleBasedGroupSet(fxSet, ns).WithReplicas(1).Obj()
 	set.Spec.GroupTemplate.Spec.Roles = []workloadsv1alpha2.RoleSpec{
 		wrappersv2.BuildStandaloneRole("member").WithReplicas(1).Obj(),
+	}
+	return set
+}
+
+// buildEngineRuntimeSetFixture is a zero-replica RoleBasedGroupSet whose group
+// template references the pre-existing engine runtime profile. It exercises the
+// set-side label backfill without creating a workload whose pods the upgrade could
+// disturb.
+func buildEngineRuntimeSetFixture(ns string) *workloadsv1alpha2.RoleBasedGroupSet {
+	set := wrappersv2.BuildBasicRoleBasedGroupSet(fxEngineRuntimeSet, ns).WithReplicas(0).Obj()
+	set.Spec.GroupTemplate.Spec.Roles = []workloadsv1alpha2.RoleSpec{
+		wrappersv2.BuildStandaloneRole("member").
+			WithReplicas(0).
+			WithEngineRuntime([]workloadsv1alpha2.EngineRuntime{
+				{ProfileName: utils.DefaultEngineRuntimeProfileName},
+			}).
+			Obj(),
+	}
+	set.Spec.RolloutStrategy = &workloadsv1alpha2.GroupSetRolloutStrategy{
+		Type: workloadsv1alpha2.InPlaceUpdateStrategyType,
 	}
 	return set
 }

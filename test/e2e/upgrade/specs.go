@@ -64,9 +64,10 @@ const settleDuration = 30 * time.Second
 // run in isolation.
 func RunUpgradeSpecs(f *framework.Framework) {
 	var (
-		rbgs   []*workloadsv1alpha2.RoleBasedGroup
-		rbgSet *workloadsv1alpha2.RoleBasedGroupSet
-		legacy *workloadsv1alpha1.RoleBasedGroup
+		rbgs             []*workloadsv1alpha2.RoleBasedGroup
+		rbgSet           *workloadsv1alpha2.RoleBasedGroupSet
+		engineRuntimeSet *workloadsv1alpha2.RoleBasedGroupSet
+		legacy           *workloadsv1alpha1.RoleBasedGroup
 		// pending never becomes ready and legacySet is written through v1alpha1. Both
 		// are kept out of the rbgs list because phase 1 treats that list uniformly and
 		// neither of these is a plain ready-by-the-end RoleBasedGroup.
@@ -112,6 +113,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 		func() {
 			rbgs = buildFixtures(f.Namespace)
 			rbgSet = buildSetFixture(f.Namespace)
+			engineRuntimeSet = buildEngineRuntimeSetFixture(f.Namespace)
 			legacy = buildV1alpha1Fixture(f.Namespace)
 			pending = buildPendingFixture(f.Namespace)
 			legacyDiscovery = buildLegacyDiscoveryFixture(f.Namespace)
@@ -182,6 +184,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 				gomega.Expect(f.Client.Create(f.Ctx, rbg)).To(gomega.Succeed())
 			}
 			gomega.Expect(f.Client.Create(f.Ctx, rbgSet)).To(gomega.Succeed())
+			gomega.Expect(f.Client.Create(f.Ctx, engineRuntimeSet)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, legacy)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, legacySet)).To(gomega.Succeed())
 			gomega.Expect(f.Client.Create(f.Ctx, legacySetV2)).To(gomega.Succeed())
@@ -194,6 +197,7 @@ func RunUpgradeSpecs(f *framework.Framework) {
 			}
 			f.ExpectRbgV2ScalingAdapterEqual(findFixture(rbgs, fxScaling))
 			f.ExpectRbgSetV2Equal(rbgSet)
+			f.ExpectRbgSetV2Equal(engineRuntimeSet)
 			f.ExpectRbgSetV2Equal(legacySetV2)
 			f.ExpectRbgEqual(legacy)
 			f.ExpectRbgSetEqual(legacySet)
