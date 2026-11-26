@@ -291,6 +291,19 @@ func TestEngineRuntimeLabelDriftRequeuesReferencedProfiles(t *testing.T) {
 	}), "a label-only update must pass the watch predicate")
 }
 
+func TestEngineRuntimeLabelDriftRequeuesReferencedProfilesForSets(t *testing.T) {
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+
+	unlabeled := controllerRBGSet("set-old", "ns-a", "ik")
+	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+	requests := profilesReferencedByRBGSet(context.Background(), unlabeled)
+	require.Len(t, requests, 1)
+	assert.Equal(t, "ik", requests[0].Name)
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"an unlabeled referencing RoleBasedGroupSet must un-converge the gate before the queued reconcile runs")
+}
+
 // TestClusterEngineRuntimeProfileLabelBackfill pins the upgrade path of the
 // webhook's label-scoped reference lookup (#597): objects written before the
 // has-engine-runtimes label shipped — or past the admission defaulters —
@@ -523,6 +536,25 @@ func TestClusterEngineRuntimeProfileLabelBackfillFailureResetsOnGeneration(t *te
 	obj.Generation = 2
 	attempt, retryAfter = r.shouldAttemptEngineRuntimeLabelBackfill(obj, time.Now())
 	assert.True(t, attempt)
+	assert.Zero(t, retryAfter)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillFailureKeysIncludeUID(t *testing.T) {
+	r := &ClusterEngineRuntimeProfileReconciler{}
+	old := controllerRBG("grp-old", "ns-a", "ik")
+	old.UID = types.UID("old-uid")
+	old.Generation = 1
+	new := controllerRBG("grp-old", "ns-a", "ik")
+	new.UID = types.UID("new-uid")
+	new.Generation = 1
+	err := errors.New("webhook rejected the patch")
+
+	for i := 0; i < engineRuntimeLabelBackfillRetryLimit; i++ {
+		_, _ = r.recordEngineRuntimeLabelBackfillFailure(old, err)
+	}
+	attempt, retryAfter := r.shouldAttemptEngineRuntimeLabelBackfill(new, time.Now())
+	assert.True(t, attempt,
+		"a same-name replacement object must not inherit the deleted object's failure state")
 	assert.Zero(t, retryAfter)
 }
 

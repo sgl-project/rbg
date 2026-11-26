@@ -45,8 +45,9 @@ const (
 var engineRuntimeLabelConvergence struct {
 	mu sync.RWMutex
 
-	converged  bool
-	driftEpoch uint64
+	converged      bool
+	driftEpoch     uint64
+	completedEpoch uint64
 }
 
 // engineRuntimeLabelStartupScanner converges the process-local gate on every
@@ -61,9 +62,9 @@ type engineRuntimeLabelStartupScanner struct {
 }
 
 // SetEngineRuntimeLabelConverged records whether the has-engine-runtimes
-// label backfill has converged. The ClusterEngineRuntimeProfile controller
-// sets it after a full scan finds no mismatch; it resets on process
-// restart.
+// label backfill has converged. It is exported for tests; production code
+// drives the scanner through CompleteEngineRuntimeLabelScan, and the state
+// resets on process restart.
 func SetEngineRuntimeLabelConverged(converged bool) {
 	engineRuntimeLabelConvergence.mu.Lock()
 	defer engineRuntimeLabelConvergence.mu.Unlock()
@@ -95,6 +96,12 @@ func BeginEngineRuntimeLabelScan() uint64 {
 func CompleteEngineRuntimeLabelScan(epoch uint64) {
 	engineRuntimeLabelConvergence.mu.Lock()
 	defer engineRuntimeLabelConvergence.mu.Unlock()
+	if epoch < engineRuntimeLabelConvergence.completedEpoch {
+		// A newer scan has already completed; a stale overlapping scan must
+		// not demote its result.
+		return
+	}
+	engineRuntimeLabelConvergence.completedEpoch = epoch
 	if engineRuntimeLabelConvergence.driftEpoch != epoch {
 		engineRuntimeLabelConvergence.converged = false
 		return
@@ -308,13 +315,12 @@ func (r EngineRuntimeProfileReference) String() string {
 //
 // The Lists are scoped to objects carrying the has-engine-runtimes label,
 // so a non-zero result's cost scales with the number of referencing
-// objects rather than the size of the cluster. A zero result is confirmed
-// with the unscoped variant, which retains the cluster-wide cost. The label
-// is maintained on every
-// RoleBasedGroup and RoleBasedGroupSet write by the admission defaulters
-// (SetHasEngineRuntimesLabel) and backfilled by the profile controller for
-// objects that predate it; see ListAllEngineRuntimeProfileReferences for
-// the unscoped variant.
+// objects rather than the size of the cluster. The admission caller confirms
+// a zero result with the unscoped variant, which retains the cluster-wide
+// cost. The label is maintained on every RoleBasedGroup and
+// RoleBasedGroupSet write by the admission defaulters and backfilled by the
+// profile controller for objects that predate it; see
+// ListAllEngineRuntimeProfileReferences for the unscoped variant.
 func ListEngineRuntimeProfileReferences(
 	ctx context.Context,
 	reader client.Reader,

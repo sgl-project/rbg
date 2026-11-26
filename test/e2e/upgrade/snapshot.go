@@ -237,7 +237,7 @@ func captureRBG(g gomega.Gomega, f *framework.Framework, rbg *workloadsv1alpha2.
 		ReadyByRole:   make(map[string]int32, len(rbg.Spec.Roles)),
 
 		DiscoveryConfigVersion: string(rbg.GetDiscoveryConfigVersion()),
-		HasEngineRuntimeLabel: rbg.Labels[constants.HasEngineRuntimesLabelKey] == constants.HasEngineRuntimesLabelValue,
+		HasEngineRuntimeLabel:  rbg.Labels[constants.HasEngineRuntimesLabelKey] == constants.HasEngineRuntimesLabelValue,
 	}
 
 	for _, role := range rbg.Spec.Roles {

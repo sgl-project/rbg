@@ -526,8 +526,10 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 	return r.needsTemplateAnnotationUpdate(rbgset, rbg)
 }
 
-// needsTemplateLabelUpdate checks if the RBG labels need to be updated to match Template.Labels.
-// System-managed labels (GroupSetNameLabelKey, GroupSetIndexLabelKey) are excluded from comparison.
+// needsTemplateLabelUpdate checks if the RBG labels need to be updated to
+// match GroupTemplate.Labels. System-managed labels are excluded from the
+// comparison; in particular, the engine-runtime label is derived from the
+// child's own spec rather than copied from the set template.
 func (r *RoleBasedGroupSetReconciler) needsTemplateLabelUpdate(
 	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) bool {
@@ -618,6 +620,7 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 				); err != nil {
 					return err
 				}
+				base := latestRBG.DeepCopy()
 
 				// Update the spec from template, normalizing legacy update-strategy type
 				// values so a pre-webhook legacy template cannot poison the child.
@@ -627,8 +630,8 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 				// Sync labels and annotations from the template
 				r.syncRBGMetadata(rbgset, latestRBG)
 
-				// Perform the update
-				return r.client.Update(ctx, latestRBG)
+				return r.client.Patch(ctx, latestRBG,
+					client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 			},
 		)
 
@@ -645,8 +648,9 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 	return utilerrors.NewAggregate(allErrs)
 }
 
-// syncRBGMetadata syncs the labels and annotations from Template to the child RBG.
-// System-managed labels (GroupSetNameLabelKey, GroupSetIndexLabelKey) are preserved.
+// syncRBGMetadata syncs the labels and annotations from GroupTemplate to
+// the child RBG. System-managed labels are preserved or recomputed rather
+// than copied from the template.
 func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) {

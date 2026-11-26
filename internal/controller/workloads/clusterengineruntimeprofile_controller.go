@@ -30,6 +30,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilerrors "k8s.io/apimachinery/pkg/util/errors"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -82,6 +83,7 @@ type engineRuntimeLabelBackfillKey struct {
 	Kind      string
 	Namespace string
 	Name      string
+	UID       string
 }
 
 type engineRuntimeLabelBackfillFailureState struct {
@@ -199,7 +201,12 @@ func (r *ClusterEngineRuntimeProfileReconciler) Reconcile(ctx context.Context, r
 	// patch must not block status tracking or lose the one-shot bypass event.
 	// It still returns an error so the reconcile retries and the admission
 	// webhook keeps its unscoped fallback until the scan has completed cleanly.
-	return r.backfillHasEngineRuntimesLabels(ctx)
+	result, err := r.backfillHasEngineRuntimesLabels(ctx)
+	if err == nil && result.RequeueAfter > 0 {
+		logger.Info("scheduled engine runtime label backfill retry",
+			"requeueAfter", result.RequeueAfter)
+	}
+	return result, err
 }
 
 // backfillHasEngineRuntimesLabels converges the has-engine-runtimes label
@@ -289,6 +296,7 @@ func (r *ClusterEngineRuntimeProfileReconciler) backfillEngineRuntimeLabel(
 	key := engineRuntimeLabelBackfillKeyForObject(obj)
 	if engineRuntimeLabelMatches(obj.GetLabels(), engineRuntimeLabelObjectReferences(obj)) {
 		r.engineRuntimeLabelBackfillFailure.Delete(key)
+		r.warnedEngineRuntimeLabelBackfill.Delete(key)
 		return engineRuntimeLabelBackfillOutcome{}, nil
 	}
 	if engineRuntimeBackfillWouldChangeSpec(ctx, obj) {
@@ -408,6 +416,7 @@ func engineRuntimeLabelBackfillKeyForObject(obj client.Object) engineRuntimeLabe
 	key := engineRuntimeLabelBackfillKey{
 		Namespace: obj.GetNamespace(),
 		Name:      obj.GetName(),
+		UID:       string(obj.GetUID()),
 	}
 	key.Kind = engineRuntimeLabelObjectKind(obj)
 	return key
@@ -492,13 +501,97 @@ func (r *ClusterEngineRuntimeProfileReconciler) SetupWithManager(mgr ctrl.Manage
 		WithOptions(options).
 		For(&workloadsv1alpha2.ClusterEngineRuntimeProfile{}, builder.WithPredicates(predicate.GenerationChangedPredicate{})).
 		Watches(&workloadsv1alpha2.RoleBasedGroup{},
-			handler.EnqueueRequestsFromMapFunc(profilesReferencedByRBG),
+			r.engineRuntimeProfileRequestsForRBG(),
 			builder.WithPredicates(engineRuntimeLabelOrGenerationChanged())).
 		Watches(&workloadsv1alpha2.RoleBasedGroupSet{},
-			handler.EnqueueRequestsFromMapFunc(profilesReferencedByRBGSet),
+			r.engineRuntimeProfileRequestsForRBGSet(),
 			builder.WithPredicates(engineRuntimeLabelOrGenerationChanged())).
 		Named("clusterengineruntimeprofile-controller").
 		Complete(r)
+}
+
+func (r *ClusterEngineRuntimeProfileReconciler) engineRuntimeProfileRequestsForRBG() handler.EventHandler {
+	return handler.Funcs{
+		CreateFunc: func(_ context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			rbg, ok := e.Object.(*workloadsv1alpha2.RoleBasedGroup)
+			if !ok {
+				return
+			}
+			markEngineRuntimeLabelDrift(rbg.Labels, roleSpecHasEngineRuntimes(&rbg.Spec))
+			addProfileRequests(q, profilesReferencedBy(&rbg.Spec))
+		},
+		UpdateFunc: func(_ context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			oldRBG, oldOK := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroup)
+			newRBG, newOK := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroup)
+			if !oldOK || !newOK {
+				return
+			}
+			markEngineRuntimeLabelDrift(newRBG.Labels, roleSpecHasEngineRuntimes(&newRBG.Spec))
+			// Enqueue the union so removing the last reference still repairs a
+			// stale label left behind by a bypassed write.
+			addProfileRequests(q,
+				profilesReferencedBy(&oldRBG.Spec),
+				profilesReferencedBy(&newRBG.Spec))
+		},
+		DeleteFunc: func(_ context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			rbg, ok := e.Object.(*workloadsv1alpha2.RoleBasedGroup)
+			if !ok {
+				return
+			}
+			r.engineRuntimeLabelBackfillFailure.Delete(engineRuntimeLabelBackfillKeyForObject(rbg))
+			r.warnedEngineRuntimeLabelBackfill.Delete(engineRuntimeLabelBackfillKeyForObject(rbg))
+			addProfileRequests(q, profilesReferencedBy(&rbg.Spec))
+		},
+	}
+}
+
+func (r *ClusterEngineRuntimeProfileReconciler) engineRuntimeProfileRequestsForRBGSet() handler.EventHandler {
+	return handler.Funcs{
+		CreateFunc: func(_ context.Context, e event.CreateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			rbgs, ok := e.Object.(*workloadsv1alpha2.RoleBasedGroupSet)
+			if !ok {
+				return
+			}
+			markEngineRuntimeLabelDrift(rbgs.Labels, roleSpecHasEngineRuntimes(&rbgs.Spec.GroupTemplate.Spec))
+			addProfileRequests(q, profilesReferencedBy(&rbgs.Spec.GroupTemplate.Spec))
+		},
+		UpdateFunc: func(_ context.Context, e event.UpdateEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			oldRBGS, oldOK := e.ObjectOld.(*workloadsv1alpha2.RoleBasedGroupSet)
+			newRBGS, newOK := e.ObjectNew.(*workloadsv1alpha2.RoleBasedGroupSet)
+			if !oldOK || !newOK {
+				return
+			}
+			markEngineRuntimeLabelDrift(newRBGS.Labels, roleSpecHasEngineRuntimes(&newRBGS.Spec.GroupTemplate.Spec))
+			addProfileRequests(q,
+				profilesReferencedBy(&oldRBGS.Spec.GroupTemplate.Spec),
+				profilesReferencedBy(&newRBGS.Spec.GroupTemplate.Spec))
+		},
+		DeleteFunc: func(_ context.Context, e event.DeleteEvent, q workqueue.TypedRateLimitingInterface[reconcile.Request]) {
+			rbgs, ok := e.Object.(*workloadsv1alpha2.RoleBasedGroupSet)
+			if !ok {
+				return
+			}
+			r.engineRuntimeLabelBackfillFailure.Delete(engineRuntimeLabelBackfillKeyForObject(rbgs))
+			r.warnedEngineRuntimeLabelBackfill.Delete(engineRuntimeLabelBackfillKeyForObject(rbgs))
+			addProfileRequests(q, profilesReferencedBy(&rbgs.Spec.GroupTemplate.Spec))
+		},
+	}
+}
+
+func addProfileRequests(
+	q workqueue.TypedRateLimitingInterface[reconcile.Request],
+	requests ...[]reconcile.Request,
+) {
+	seen := make(map[reconcile.Request]struct{})
+	for _, group := range requests {
+		for _, request := range group {
+			if _, ok := seen[request]; ok {
+				continue
+			}
+			seen[request] = struct{}{}
+			q.Add(request)
+		}
+	}
 }
 
 // profilesReferencedByRBG maps a RoleBasedGroup to the cluster-scoped

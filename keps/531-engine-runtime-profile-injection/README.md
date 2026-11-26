@@ -968,9 +968,9 @@ rather than with the cluster: profile writes are rare platform operations,
 and skipping the informer cache removes the stale-cache variant of the window
 below. The RoleBasedGroup and
 RoleBasedGroupSet admission defaulters maintain the label on every write; v1alpha1
-writes reach the same webhook through Equivalent matchPolicy.
-(derived from the roles' `engineRuntimes`), and the profile controller
-backfills it onto referencing objects written before the label existed. Until
+writes reach the same webhook through Equivalent matchPolicy. The label is
+derived from the roles' `engineRuntimes`, and the profile controller backfills
+it onto referencing objects written before the label existed. Until
 that backfill converges after an upgrade or restart, the webhook falls back
 to the unscoped lookup, so pre-label references still block writes; once a
 clean scan converges, the scoped lookup takes over, and a zero-result scoped
@@ -1492,7 +1492,9 @@ Alpha (v0.9.0):
   object
 - [ ] Warning events: `UnaimedContainerPatch`, `EngineRuntimeRenderFailed`,
   `EngineRuntimeNameCollision`, `EngineRuntimeEnvCollision`,
-  `EngineRuntimeWrapShadowed`, the capability form-hazard warning
+  `EngineRuntimeWrapShadowed`, the capability form-hazard warning, and the
+  label-backfill diagnostics `EngineRuntimeLabelBackfillSkipped` and
+  `EngineRuntimeLabelBackfillFailed`
 - [ ] CERP immutability admission deployed with the controller, registered
   `failurePolicy: Fail` from the alpha: spec updates and DELETEs to
   referenced profiles rejected; no warning-window staging, opt-out flag, or
@@ -1557,9 +1559,11 @@ unvalidated — retry them once the upgrade has completed.
 referencing object gets the `has-engine-runtimes` label on the profile
 controller's first reconcile. Before patching, the controller runs the
 mutating defaulter on a copy; if that would also change `spec`, it skips the
-object, emits a Warning event, and leaves the object unlabeled so admission
-keeps the unscoped fallback. A later user write heals the stored spec and
-labels the object through the normal admission path.
+object, emits an `EngineRuntimeLabelBackfillSkipped` warning, and leaves the
+object unlabeled so admission keeps the unscoped fallback. Repeated patch
+failures emit `EngineRuntimeLabelBackfillFailed` and leave the gate
+unconverged. A later user write heals the stored spec and labels the object
+through the normal admission path.
 
 **Rollback.** `helm rollback` restores the previous controller and webhook
 configuration but keeps the new CRDs, because the CRD upgrader runs only on

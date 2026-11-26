@@ -48,6 +48,20 @@ func TestEngineRuntimeLabelConvergenceDriftEpoch(t *testing.T) {
 		"a scan with no intervening drift may converge")
 }
 
+func TestEngineRuntimeLabelConvergenceIgnoresStaleOverlappingScan(t *testing.T) {
+	SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { SetEngineRuntimeLabelConverged(false) })
+
+	staleEpoch := BeginEngineRuntimeLabelScan()
+	MarkEngineRuntimeLabelDrift()
+	currentEpoch := BeginEngineRuntimeLabelScan()
+	CompleteEngineRuntimeLabelScan(currentEpoch)
+	CompleteEngineRuntimeLabelScan(staleEpoch)
+
+	assert.True(t, EngineRuntimeLabelConverged(),
+		"a newer clean scan must not be demoted by an older overlapping scan")
+}
+
 func TestEngineRuntimeLabelStartupScanner(t *testing.T) {
 	SetEngineRuntimeLabelConverged(false)
 	t.Cleanup(func() { SetEngineRuntimeLabelConverged(false) })
@@ -115,6 +129,40 @@ func TestEngineRuntimeLabelStartupScannerMarksDrift(t *testing.T) {
 	default:
 		t.Fatal("a drift event must wake the startup scanner")
 	}
+}
+
+func TestEngineRuntimeLabelStartupScannerMarksDriftForSets(t *testing.T) {
+	SetEngineRuntimeLabelConverged(true)
+	t.Cleanup(func() { SetEngineRuntimeLabelConverged(false) })
+
+	scanner := &engineRuntimeLabelStartupScanner{drift: make(chan struct{}, 1)}
+	rbgs := rbgsReferencing("set-old", "ns-old", "ik", 0)
+	delete(rbgs.Labels, constants.HasEngineRuntimesLabelKey)
+
+	scanner.eventHandler().OnAdd(rbgs, false)
+	assert.False(t, EngineRuntimeLabelConverged(),
+		"an unlabeled referencing RoleBasedGroupSet must un-converge every webhook replica")
+	select {
+	case <-scanner.drift:
+	default:
+		t.Fatal("a RoleBasedGroupSet drift event must wake the startup scanner")
+	}
+}
+
+func TestEngineRuntimeLabelStartupScannerDoesNotConvergePreLabelSets(t *testing.T) {
+	SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { SetEngineRuntimeLabelConverged(false) })
+
+	unlabeled := rbgsReferencing("set-old", "ns-old", "ik", 0)
+	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+	scheme := runtime.NewScheme()
+	require.NoError(t, AddToScheme(scheme))
+	reader := fake.NewClientBuilder().WithScheme(scheme).WithObjects(unlabeled).Build()
+
+	converged, err := scanEngineRuntimeLabelState(context.Background(), reader)
+	require.NoError(t, err)
+	assert.False(t, converged,
+		"an unlabeled referencing RoleBasedGroupSet must keep the startup scan unconverged")
 }
 
 func TestEngineRuntimeLabelStartupScannerWaitsForLabelRepair(t *testing.T) {
