@@ -3895,3 +3895,76 @@ func TestDeletePodsTreatsGoneAndTerminatingMembersAsHandled(t *testing.T) {
 		})
 	}
 }
+
+func TestScaleDeletesInactiveOrphanPodsOfRemovedComponents(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+	assert.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "role-1",
+			Namespace: "default",
+			UID:       "role-instance-uid",
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{{
+				Name: "keep",
+				Size: ptr.To(int32(1)),
+				Template: corev1.PodTemplateSpec{
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "main", Image: "rbg:latest"}},
+					},
+				},
+			}},
+		},
+	}
+	newOwnedPod := func(name string, phase corev1.PodPhase) *corev1.Pod {
+		pod := &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: instance.Namespace,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: workloadsv1alpha2.SchemeGroupVersion.String(),
+					Kind:       "RoleInstance",
+					Name:       instance.Name,
+					UID:        instance.UID,
+					Controller: ptr.To(true),
+				}},
+			},
+		}
+		if phase != "" {
+			pod.Status.Phase = phase
+		}
+		return pod
+	}
+	keepPod := newOwnedPod("role-1-keep-0", corev1.PodRunning)
+	succeededOrphan := newOwnedPod("role-1-gone-0", corev1.PodSucceeded)
+	terminatingOrphan := newOwnedPod("role-1-gone-1", corev1.PodSucceeded)
+	terminatingOrphan.DeletionTimestamp = ptr.To(metav1.Now())
+	terminatingOrphan.Finalizers = []string{"example.com/hold"}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(keepPod, succeededOrphan, terminatingOrphan).
+		Build()
+	ctrl := &realControl{
+		Client:    fakeClient,
+		apiReader: fakeClient,
+		recorder:  record.NewFakeRecorder(10),
+	}
+	revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+
+	_, _, err := ctrl.Scale(ctx, instance, revision, revision, nil, []*corev1.Pod{keepPod}, []*corev1.Pod{succeededOrphan, terminatingOrphan})
+	assert.NoError(t, err)
+
+	podList := &corev1.PodList{}
+	assert.NoError(t, fakeClient.List(ctx, podList, client.InNamespace(instance.Namespace)))
+	names := make([]string, 0, len(podList.Items))
+	for _, pod := range podList.Items {
+		names = append(names, pod.Name)
+	}
+	assert.ElementsMatch(t, []string{keepPod.Name, terminatingOrphan.Name}, names,
+		"the Succeeded inactive orphan of the removed component must be deleted; terminating and kept members must remain")
+}

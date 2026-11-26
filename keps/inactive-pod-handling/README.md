@@ -102,9 +102,9 @@ Compatibility notes:
 - Explicitly setting or changing `activateAfter` changes the serialized RoleInstance
   template and can roll the role, even when setting `Ready` where previously omitted.
   `RecreatePod` rebuilds all member Pods; stateful sets that still use the legacy
-  RoleInstanceSet lifecycle protocol, and topology revisions, also replace the
-  RoleInstance objects themselves. `InPlaceIfPossible` updates RoleInstance specs in
-  place without Pod restarts for a policy-only change.
+  RoleInstanceSet lifecycle protocol, topology revisions, and stateless-pattern
+  roles also replace the RoleInstance objects themselves. `InPlaceIfPossible`
+  updates RoleInstance specs in place without Pod restarts for a policy-only change.
 - Both served APIs accept the existing policy, but only v1alpha2 can express `activateAfter`.
   A v1alpha1 GET omits it from the response without changing persisted configuration or
   running behavior. A v1alpha1 read-modify-write drops it and resolves to `Ready`, just as it

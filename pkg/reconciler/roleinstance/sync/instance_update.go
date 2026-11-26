@@ -18,6 +18,7 @@ package sync
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"time"
 
@@ -72,8 +73,19 @@ func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.Ro
 			waitUpdateComponentPods[componentName] = append(waitUpdateComponentPods[componentName], pods[i])
 		}
 	}
-	for _, componentName := range orderedUpdateComponents(instance, waitUpdateComponentPods) {
+	recreatesPods := instance.Spec.GetUpdatePolicy().RecreatesPods()
+	ordered, gates, err := orderedUpdateComponents(instance, waitUpdateComponentPods)
+	if err != nil {
+		return requeueDuration.Get(), err
+	}
+	for _, componentName := range ordered {
 		componentPods := waitUpdateComponentPods[componentName]
+		if recreatesPods && !updateDeletionGatesReleased(gates[componentName], waitUpdateComponentPods) {
+			// component-depends-on gates member deletion: wait until the Pods
+			// gating this component have actually disappeared. The next
+			// reconcile, triggered by those deletions, releases this layer.
+			continue
+		}
 		for i := range componentPods {
 			if duration, err := c.updatePod(ctx, instance, newStatus, updateRevision, revisions, componentPods[i]); err != nil {
 				return requeueDuration.Get(), err
@@ -156,25 +168,31 @@ func (c *realControl) deletePodForUpdate(ctx context.Context, instance *workload
 }
 
 // orderedUpdateComponents returns the components holding outdated Pods in the
-// component-depends-on deletion order: a component is only handed to the
-// update path after the components that gate its deletion — its dependents —
-// have been emitted. Components without dependencies keep their map order.
-func orderedUpdateComponents(instance *workloadsv1alpha2.RoleInstance, updatePods map[string][]*v1.Pod) []string {
+// component-depends-on deletion order together with the deletion gates. A
+// component is only handed to the update path after the components that gate
+// its deletion — its dependents — have been emitted. An unparsable
+// component-depends-on annotation fails closed, matching the scale path;
+// dependency cycles fall back to parallel deletion after logging.
+func orderedUpdateComponents(instance *workloadsv1alpha2.RoleInstance, updatePods map[string][]*v1.Pod) ([]string, map[string][]string, error) {
 	names := make([]string, 0, len(updatePods))
 	for name := range updatePods {
 		names = append(names, name)
 	}
 	if len(names) <= 1 {
-		return names
+		return names, nil, nil
 	}
 	sort.Strings(names)
 	startDeps, deleteDeps, err := componentdiscovery.ParseAllComponentDependencies(instance.Spec.Components)
-	if err != nil || !componentdiscovery.HasAnyDependency(instance.Spec.Components) {
-		return names
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse component dependencies for update: %w", err)
+	}
+	if !componentdiscovery.HasAnyDependency(instance.Spec.Components) {
+		return names, nil, nil
 	}
 	gates := componentdiscovery.BuildDeletionGates(startDeps, deleteDeps)
 	if componentdiscovery.DetectCycle(startDeps) || componentdiscovery.DetectCycle(gates) {
-		return names
+		klog.ErrorS(nil, "component-depends-on graph has a cycle; falling back to parallel update", "instance", klog.KObj(instance))
+		return names, nil, nil
 	}
 	remaining := sets.New(names...)
 	emitted := sets.New[string]()
@@ -210,7 +228,26 @@ func orderedUpdateComponents(instance *workloadsv1alpha2.RoleInstance, updatePod
 			}
 		}
 	}
-	return ordered
+	return ordered, gates, nil
+}
+
+// updateDeletionGatesReleased reports whether every component gating the
+// deletion of the named component has no remaining non-terminating Pods in
+// the update set. Deletion alone is not enough: the scale path's gate
+// contract waits for the gating members to be fully gone.
+func updateDeletionGatesReleased(gateComponents []string, updatePods map[string][]*v1.Pod) bool {
+	for _, gate := range gateComponents {
+		gatePods, ok := updatePods[gate]
+		if !ok {
+			continue
+		}
+		for _, pod := range gatePods {
+			if pod.DeletionTimestamp == nil {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // recordInPlaceUpdateBaselines records the pre-update RestartCount and ImageID

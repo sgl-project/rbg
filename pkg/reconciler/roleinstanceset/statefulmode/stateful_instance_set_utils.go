@@ -273,20 +273,29 @@ func revisionChangesComponentShape(oldRevision, newRevision *apps.ControllerRevi
 }
 
 func componentShapeChanges(newComponents, oldComponents []workloadsv1alpha2.RoleInstanceComponent) bool {
-	oldSizes := make(map[string]int32, len(oldComponents))
-	for i := range oldComponents {
-		oldSizes[oldComponents[i].Name] = inplaceutil.GetComponentSize(&oldComponents[i])
-	}
-	if len(oldSizes) != len(oldComponents) {
+	oldSizes := componentSizeMap(oldComponents)
+	newSizes := componentSizeMap(newComponents)
+	if len(oldSizes) != len(oldComponents) || len(newSizes) != len(newComponents) {
+		// A duplicated name on either side is not a valid topology.
 		return true
 	}
-	for i := range newComponents {
-		size, ok := oldSizes[newComponents[i].Name]
-		if !ok || size != inplaceutil.GetComponentSize(&newComponents[i]) {
+	if len(oldSizes) != len(newSizes) {
+		return true
+	}
+	for name, size := range oldSizes {
+		if newSizes[name] != size {
 			return true
 		}
 	}
-	return len(newComponents) != len(oldComponents)
+	return false
+}
+
+func componentSizeMap(components []workloadsv1alpha2.RoleInstanceComponent) map[string]int32 {
+	sizes := make(map[string]int32, len(components))
+	for i := range components {
+		sizes[components[i].Name] = inplaceutil.GetComponentSize(&components[i])
+	}
+	return sizes
 }
 
 // setOwnedInstanceAnnotations are the annotations the RoleInstanceSet

@@ -282,6 +282,60 @@ var _ = Describe("Stateful RoleInstanceSet rollout recovery", func() {
 		})
 	})
 
+	It("keeps base identities while RecreatePod rolls out with surge", func() {
+		set := newRolloutRecoverySet("recreate-surge", testNs)
+		set.Spec.Replicas = ptr.To[int32](2)
+		set.Spec.UpdateStrategy.MaxSurge = ptr.To(intstr.FromInt32(1))
+		set.Spec.UpdateStrategy.MaxUnavailable = ptr.To(intstr.FromInt32(0))
+		Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+		setKey := client.ObjectKeyFromObject(set)
+
+		By("bringing both initial instances to Ready")
+		base0 := awaitRolloutInstance(setKey, 0, "", "nginx:1.0")
+		makeRolloutPodReady(base0)
+		base1 := awaitRolloutInstance(setKey, 1, "", "nginx:1.0")
+		makeRolloutPodReady(base1)
+		awaitRolloutSet(setKey, func(current *workloadsv1alpha2.RoleInstanceSet) bool {
+			return current.Status.ReadyReplicas == 2 && current.Status.CurrentRevision == current.Status.UpdateRevision
+		})
+
+		By("rolling out a same-shape revision with RecreatePod and surge")
+		updateRolloutSpec(setKey, func(current *workloadsv1alpha2.RoleInstanceSet) {
+			current.Spec.RoleInstanceTemplate.Components[0].Template.Spec.Containers[0].Image = "nginx:2.0"
+		})
+		surge := awaitRolloutInstance(setKey, 2, "", "nginx:2.0")
+		makeRolloutPodReady(surge)
+
+		// Targets are processed in descending ordinal order, and the zero
+		// maxUnavailable budget releases ordinal 0 only after ordinal 1 is
+		// ready again.
+		moved1 := awaitRolloutInstance(setKey, 1, base1.UID, "nginx:2.0")
+		makeRolloutPodReady(moved1)
+		moved0 := awaitRolloutInstance(setKey, 0, base0.UID, "nginx:2.0")
+		makeRolloutPodReady(moved0)
+
+		Expect(moved0.UID).To(Equal(base0.UID), "base RoleInstance identities survive a RecreatePod rollout")
+		Expect(moved1.UID).To(Equal(base1.UID), "base RoleInstance identities survive a RecreatePod rollout")
+		Expect(moved0.pod.UID).NotTo(Equal(base0.pod.UID), "member Pods are rebuilt under RecreatePod")
+		Expect(moved1.pod.UID).NotTo(Equal(base1.pod.UID), "member Pods are rebuilt under RecreatePod")
+		Expect(moved0.Spec.GetUpdatePolicy().Type).To(Equal(workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod))
+		Expect(moved1.Spec.GetUpdatePolicy().Type).To(Equal(workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod))
+
+		By("releasing the surge once the rollout completes")
+		awaitRolloutSet(setKey, func(current *workloadsv1alpha2.RoleInstanceSet) bool {
+			return current.Status.ReadyReplicas == 2 &&
+				current.Status.CurrentRevision == current.Status.UpdateRevision &&
+				current.Status.UpdateRevision != ""
+		})
+		Eventually(func() int {
+			list := &workloadsv1alpha2.RoleInstanceList{}
+			if err := testutil.K8sClient.List(testutil.Ctx, list, client.InNamespace(testNs), client.MatchingLabels{"app": set.Name}); err != nil {
+				return -1
+			}
+			return len(list.Items)
+		}, timeout, interval).Should(Equal(2), "surge is released after the rollout completes")
+	})
+
 	It("restores the same ordinal when an in-progress scale-down is canceled", func() {
 		set := newRolloutRecoverySet("cancel-scale-down", testNs)
 		set.Spec.Replicas = ptr.To[int32](2)

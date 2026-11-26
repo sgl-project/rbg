@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -268,14 +269,19 @@ func TestInstanceUpdatePolicyFromStrategy(t *testing.T) {
 }
 
 func TestRevisionChangesComponentShape(t *testing.T) {
-	two := int32(2)
-	template := func(sizes map[string]int32) workloadsv1alpha2.RoleInstanceTemplate {
-		components := make([]workloadsv1alpha2.RoleInstanceComponent, 0, len(sizes))
-		for _, name := range []string{"a", "b"} {
-			if s, ok := sizes[name]; ok {
-				sizeCopy := s
-				components = append(components, workloadsv1alpha2.RoleInstanceComponent{Name: name, Size: &sizeCopy})
+	// Each entry is "name" or "name:size"; duplicated names are valid input
+	// for the comparison even though the API rejects them.
+	template := func(entries []string) workloadsv1alpha2.RoleInstanceTemplate {
+		components := make([]workloadsv1alpha2.RoleInstanceComponent, 0, len(entries))
+		for _, entry := range entries {
+			name, size, _ := strings.Cut(entry, ":")
+			if size == "" {
+				size = "1"
 			}
+			parsed, err := strconv.Atoi(size)
+			require.NoError(t, err)
+			s := int32(parsed)
+			components = append(components, workloadsv1alpha2.RoleInstanceComponent{Name: name, Size: &s})
 		}
 		return workloadsv1alpha2.RoleInstanceTemplate{
 			RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{Components: components},
@@ -292,24 +298,25 @@ func TestRevisionChangesComponentShape(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		oldSizes map[string]int32
-		newSizes map[string]int32
-		want     bool
+		name          string
+		oldComponents []string
+		newComponents []string
+		want          bool
 	}{
-		{name: "same shape", oldSizes: map[string]int32{"a": 1}, newSizes: map[string]int32{"a": 1}, want: false},
-		{name: "size change", oldSizes: map[string]int32{"a": 1}, newSizes: map[string]int32{"a": two}, want: true},
-		{name: "component added", oldSizes: map[string]int32{"a": 1}, newSizes: map[string]int32{"a": 1, "b": 1}, want: true},
-		{name: "component removed", oldSizes: map[string]int32{"a": 1, "b": 1}, newSizes: map[string]int32{"a": 1}, want: true},
-		{name: "nil revisions", oldSizes: nil, newSizes: map[string]int32{"a": 1}, want: false},
+		{name: "same shape", oldComponents: []string{"a"}, newComponents: []string{"a"}, want: false},
+		{name: "size change", oldComponents: []string{"a:1"}, newComponents: []string{"a:2"}, want: true},
+		{name: "component added", oldComponents: []string{"a"}, newComponents: []string{"a", "b"}, want: true},
+		{name: "component removed", oldComponents: []string{"a", "b"}, newComponents: []string{"a"}, want: true},
+		{name: "duplicated new name replacing a component", oldComponents: []string{"a", "b"}, newComponents: []string{"a", "a"}, want: true},
+		{name: "duplicated old name", oldComponents: []string{"a", "a"}, newComponents: []string{"a", "b"}, want: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			var oldRev, newRev *apps.ControllerRevision
-			if tt.oldSizes != nil {
-				oldRev = makeRev(t, template(tt.oldSizes))
+			if tt.oldComponents != nil {
+				oldRev = makeRev(t, template(tt.oldComponents))
 			}
-			newRev = makeRev(t, template(tt.newSizes))
+			newRev = makeRev(t, template(tt.newComponents))
 			if got := revisionChangesComponentShape(oldRev, newRev); got != tt.want {
 				t.Fatalf("revisionChangesComponentShape() = %v, want %v", got, tt.want)
 			}
@@ -323,6 +330,7 @@ func TestSyncSetOwnedInstanceAnnotations(t *testing.T) {
 		Namespace: "default",
 		Annotations: map[string]string{
 			constants.RoleInstanceGangSchedulingAnnotationKey: "true",
+			constants.RoleInplaceUpdateGracePeriodSecondsKey:  "30",
 			"user-annotation": "keep",
 		},
 	}}
@@ -341,6 +349,9 @@ func TestSyncSetOwnedInstanceAnnotations(t *testing.T) {
 	}
 	if instance.Annotations[constants.RoleInplaceSchedulingAnnotationKey] != "true" {
 		t.Fatal("annotation present on the set must be copied to the instance")
+	}
+	if instance.Annotations[constants.RoleInplaceUpdateGracePeriodSecondsKey] != "" {
+		t.Fatal("grace-period annotation removed from the set must be removed from the instance")
 	}
 	if instance.Annotations["user-annotation"] != "keep" {
 		t.Fatal("annotations outside the set-owned set must be preserved")

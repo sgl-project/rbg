@@ -625,3 +625,42 @@ func TestUpdateResult(t *testing.T) {
 		})
 	}
 }
+
+func TestUpdatePostPatchSpecFuncErrorAbortsRoleInstanceUpdate(t *testing.T) {
+	sentinel := errors.New("post-patch failed")
+	updateCalls := 0
+	adapter := &fakeClientAdapter{
+		getRoleInstanceFunc: func(namespace, name string) (*workloadsv1alpha2.RoleInstance, error) {
+			return &workloadsv1alpha2.RoleInstance{
+				ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+			}, nil
+		},
+		updateRoleInstanceFunc: func(instance *workloadsv1alpha2.RoleInstance) (*workloadsv1alpha2.RoleInstance, error) {
+			updateCalls++
+			return instance, nil
+		},
+	}
+	control := &realControl{clientAdapter: adapter, revisionAdapter: &fakeRevisionAdapter{}}
+	opts := SetOptionsDefaults(&UpdateOptions{
+		CalculateSpec: func(_, _ *apps.ControllerRevision, _ *UpdateOptions) *UpdateSpec {
+			return &UpdateSpec{Revision: "new-rev"}
+		},
+		PostPatchSpecFuncs: []func(*workloadsv1alpha2.RoleInstance) error{
+			func(*workloadsv1alpha2.RoleInstance) error { return sentinel },
+		},
+	})
+	instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{Name: "ri-0", Namespace: "default"}}
+	oldRev := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "old-rev"}}
+	newRev := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "new-rev"}}
+
+	result := control.Update(instance, oldRev, newRev, opts)
+	if !errors.Is(result.UpdateErr, sentinel) {
+		t.Fatalf("Update error = %v, want sentinel %v", result.UpdateErr, sentinel)
+	}
+	if result.NewResourceVersion != "" {
+		t.Fatalf("NewResourceVersion = %q, want empty because the replaced spec was not persisted", result.NewResourceVersion)
+	}
+	if updateCalls != 0 {
+		t.Fatalf("UpdateRoleInstance called %d times, want 0", updateCalls)
+	}
+}

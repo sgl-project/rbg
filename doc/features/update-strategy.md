@@ -128,9 +128,10 @@ rollingUpdate:
 
 For stateful RoleInstanceSets, an early rollback (A → B → A before B has
 finished rolling out) retains existing surge while base instances are being
-replaced. The controller records the replacement scope in
-`status.rolloutReplacementState` before replacing an instance when `maxSurge`
-is greater than zero. This protects the surge across controller restarts.
+moved to the rollback revision or replaced. The controller records the
+affected scope in `status.rolloutReplacementState` before moving or replacing
+an instance when `maxSurge` is greater than zero. This protects the surge
+across controller restarts.
 
 Surge is released once every base instance in the current update range is
 Ready at the rollback revision, is not terminating, and has observed its current

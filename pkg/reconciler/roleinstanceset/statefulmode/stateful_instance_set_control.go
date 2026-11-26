@@ -699,8 +699,8 @@ func countUnhealthy(replicas, condemned []*workloadsv1alpha2.RoleInstance) (int,
 	return unhealthy, firstUnhealthyInstance
 }
 
-// progressUpdate is Phase C: drive the rolling update by replacing base
-// instances at non-update revision with their updateRev counterparts (in-place
+// progressUpdate is Phase C: drive the rolling update by moving base instances
+// at non-update revision to their updateRev counterparts (in-place spec move
 // or delete-and-recreate).
 //
 // Budget model:

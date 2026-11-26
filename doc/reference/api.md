@@ -329,11 +329,12 @@ append onto a role-owned name is a render error.
 
 `status.rolloutReplacementState` is managed by the controller during an early
 rollback (A → B → A). It preserves existing surge instances across controller
-restarts while base instances are being replaced.
+restarts while base instances are being moved to the rollback revision or
+replaced.
 
 | Field | Description |
 |-------|-------------|
-| `updateRevision` | Target revision of the replacements |
+| `updateRevision` | Target revision of the rollout transitions |
 | `replicas` | Recorded exclusive upper position bound when replacement intent was persisted |
 | `partition` | Recorded inclusive lower position bound when replacement intent was persisted |
 

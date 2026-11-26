@@ -46,8 +46,9 @@ type StatusUpdaterInterface interface {
 	// Otherwise the stale status is discarded for the next reconciliation.
 	// Other errors fail without changing the reconcile snapshot.
 	UpdateInstanceSetStatus(ctx context.Context, set *workloadsv1alpha2.RoleInstanceSet, status *workloadsv1alpha2.RoleInstanceSetStatus) error
-	// PersistRolloutReplacementState writes replacement intent before destructive
-	// work. A stale resource version must fail rather than retry against a new spec.
+	// PersistRolloutReplacementState writes rollout transition intent before a
+	// base instance is moved to a new revision or replaced. A stale resource
+	// version must fail rather than retry against a new spec.
 	PersistRolloutReplacementState(ctx context.Context, set *workloadsv1alpha2.RoleInstanceSet, state *workloadsv1alpha2.RolloutReplacementState) error
 }
 
