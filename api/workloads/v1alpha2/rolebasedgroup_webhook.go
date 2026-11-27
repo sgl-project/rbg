@@ -100,10 +100,12 @@ func (r *RoleBasedGroupSet) SetupWebhookWithManager(mgr ctrl.Manager, enableDepr
 // SetupWebhookWithManager sets up the defaulting webhook for RoleInstanceSet
 // with the Manager.
 // +kubebuilder:webhook:path=/mutate-workloads-x-k8s-io-v1alpha2-roleinstanceset,mutating=true,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=roleinstancesets,verbs=create;update,versions=v1alpha2,name=mroleinstanceset.kb.io,admissionReviewVersions=v1
+// +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-roleinstanceset,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=roleinstancesets,verbs=create;update,versions=v1alpha2,name=vroleinstanceset.kb.io,admissionReviewVersions=v1
 
 func (r *RoleInstanceSet) SetupWebhookWithManager(mgr ctrl.Manager) error {
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
+		WithValidator(&RoleInstanceSetValidator{}).
 		WithDefaulter(&RoleInstanceSetDefaulter{}).
 		Complete()
 }

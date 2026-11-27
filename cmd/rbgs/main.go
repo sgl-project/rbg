@@ -232,7 +232,6 @@ func main() {
 			"Enabled by default during migration. New uses are rejected in both modes; existing roles are accepted "+
 			"only while this flag is true. Set false after every role has migrated to RoleInstanceSet.",
 	)
-
 	// Register logger flags before Parse so that zap flags (--zap-log-level etc.) are recognized.
 	opts := zap.Options{
 		Development: development,
@@ -626,6 +625,9 @@ func bootstrapWebhookCerts(mgr ctrl.Manager, enableDeprecatedWorkloadTypes bool,
 	}
 	if err = (&workloadsv1alpha2.RoleInstanceSet{}).SetupWebhookWithManager(mgr); err != nil {
 		return nil, fmt.Errorf("unable to create admission webhook for RoleInstanceSet: %w", err)
+	}
+	if err = (&workloadsv1alpha2.RoleInstance{}).SetupWebhookWithManager(mgr); err != nil {
+		return nil, fmt.Errorf("unable to create admission webhook for RoleInstance: %w", err)
 	}
 
 	return &webhookBootstrapResult{certMgr: certMgr, caCert: caCert}, nil

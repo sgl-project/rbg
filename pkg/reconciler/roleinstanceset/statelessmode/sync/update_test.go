@@ -93,7 +93,7 @@ func TestUpdateInstanceRecreatePodSkipsInPlace(t *testing.T) {
 	// coreControl with a minimal RoleInstanceSet (no UpdateStrategy.InPlaceUpdateStrategy)
 	coreCtrl := &fakeStatelessCoreControl{}
 
-	_, err := rc.updateInstance(set, coreCtrl, updateRevision, []*apps.ControllerRevision{oldRevision}, instance)
+	_, err := rc.updateInstance(context.Background(), set, coreCtrl, updateRevision, []*apps.ControllerRevision{oldRevision}, instance)
 	if err != nil {
 		t.Fatalf("updateInstance() error = %v", err)
 	}

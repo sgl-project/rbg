@@ -169,8 +169,10 @@ func ApplyRevision(
 	revision *appsv1.ControllerRevision) (*workloadsv1alpha2.RoleBasedGroup, error) {
 	currentRolesReplicas := make(map[string]int32)
 	currentExclusions := make(map[string]string)
+	currentLifecycle := make(map[string]*workloadsv1alpha2.RoleInstanceLifecycle)
 	for _, role := range rbg.Spec.Roles {
 		currentRolesReplicas[role.Name] = *role.Replicas
+		currentLifecycle[role.Name] = role.Lifecycle
 		if value, ok := role.Annotations[constants.ExcludedOrdinalsAnnotationKey]; ok {
 			currentExclusions[role.Name] = value
 		}
@@ -205,6 +207,9 @@ func ApplyRevision(
 			restoredRbg.Spec.Roles[i].Replicas = &currentNum
 		} else {
 			restoredRbg.Spec.Roles[i].Replicas = ptr.To(int32(1))
+		}
+		if lifecycle, exists := currentLifecycle[role.Name]; exists {
+			restoredRbg.Spec.Roles[i].Lifecycle = lifecycle.DeepCopy()
 		}
 	}
 
@@ -443,6 +448,7 @@ func getRBGPatch(rbg *workloadsv1alpha2.RoleBasedGroup) ([]byte, error) {
 	clone := rbg.DeepCopy()
 	for i := range clone.Spec.Roles {
 		clone.Spec.Roles[i].Replicas = nil
+		clone.Spec.Roles[i].Lifecycle = nil
 		delete(clone.Spec.Roles[i].Annotations, constants.ExcludedOrdinalsAnnotationKey)
 		delete(clone.Spec.Roles[i].Annotations, constants.CommittedSkipOrdinalsAnnotationKey)
 		if len(clone.Spec.Roles[i].Annotations) == 0 {

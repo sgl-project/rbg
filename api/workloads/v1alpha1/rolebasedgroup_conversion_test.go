@@ -687,6 +687,85 @@ func TestRoleBasedGroup_RoundTrip_LossyFieldsPreserved(t *testing.T) {
 	assert.Equal(t, "coord", restored.Spec.CoordinationRequirements[0].Name)
 }
 
+// TestRoleBasedGroup_RoundTrip_PreservesRoleLifecycle pins the deprecated-API
+// round trip: a v1alpha2 RBG with role lifecycle is read through v1alpha1 and
+// written back with a full-object update, and the lifecycle must survive via
+// the conversion annotation instead of being silently dropped.
+func TestRoleBasedGroup_RoundTrip_PreservesRoleLifecycle(t *testing.T) {
+	lifecycle := &v2.RoleInstanceLifecycle{
+		PreDelete: &v2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/drain": "true"},
+		},
+		PostReady: &v2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/ready": ""},
+		},
+	}
+	hub := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{
+			Roles: []v2.RoleSpec{
+				{Name: "worker", Replicas: ptr.To(int32(1)), Lifecycle: lifecycle},
+				{Name: "router", Replicas: ptr.To(int32(2))},
+			},
+		},
+	}
+
+	legacy := &RoleBasedGroup{}
+	require.NoError(t, legacy.ConvertFrom(hub))
+	require.Len(t, legacy.Spec.Roles, 2)
+	require.NotEmpty(t, legacy.Annotations[constants.ConversionV1alpha2RoleLifecycleAnnotationKey],
+		"the v1alpha1 view must carry the lifecycle stash")
+	require.Empty(t, hub.Annotations,
+		"stashing must not write into the hub object's metadata")
+
+	roundTripped := &v2.RoleBasedGroup{}
+	require.NoError(t, legacy.ConvertTo(roundTripped))
+	require.Len(t, roundTripped.Spec.Roles, 2)
+	assert.Equal(t, lifecycle, roundTripped.Spec.Roles[0].Lifecycle)
+	assert.Nil(t, roundTripped.Spec.Roles[1].Lifecycle)
+	assert.NotContains(t, roundTripped.Annotations, constants.ConversionV1alpha2RoleLifecycleAnnotationKey,
+		"the stash must not leak into storage")
+
+	// A write that drops the stash annotation drops the lifecycle: the
+	// annotation is the only carrier through the deprecated version.
+	dropped := legacy.DeepCopy()
+	delete(dropped.Annotations, constants.ConversionV1alpha2RoleLifecycleAnnotationKey)
+	withoutStash := &v2.RoleBasedGroup{}
+	require.NoError(t, dropped.ConvertTo(withoutStash))
+	assert.Nil(t, withoutStash.Spec.Roles[0].Lifecycle)
+}
+
+// The lifecycle stash must survive repeated conversions of the same legacy
+// view: restoreV2RoleLifecycle mutates the annotation map, which must not
+// alias the source view's map.
+func TestRoleBasedGroup_DoubleConvertPreservesRoleLifecycle(t *testing.T) {
+	lifecycle := &v2.RoleInstanceLifecycle{
+		PreDelete: &v2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/drain": "true"},
+		},
+	}
+	hub := &v2.RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{Name: "rbg", Namespace: "ns"},
+		Spec: v2.RoleBasedGroupSpec{
+			Roles: []v2.RoleSpec{
+				{Name: "worker", Replicas: ptr.To(int32(1)), Lifecycle: lifecycle},
+			},
+		},
+	}
+
+	legacy := &RoleBasedGroup{}
+	require.NoError(t, legacy.ConvertFrom(hub))
+	require.NotEmpty(t, legacy.Annotations[constants.ConversionV1alpha2RoleLifecycleAnnotationKey])
+
+	for i := 0; i < 2; i++ {
+		converted := &v2.RoleBasedGroup{}
+		require.NoError(t, legacy.ConvertTo(converted))
+		require.Len(t, converted.Spec.Roles, 1)
+		assert.Equal(t, lifecycle, converted.Spec.Roles[0].Lifecycle,
+			"conversion %d must preserve the lifecycle", i+1)
+	}
+}
+
 // TestRoleBasedGroup_EngineRuntimeRoundTrip verifies that every EngineRuntime
 // field survives a v1alpha1 → v1alpha2 → v1alpha1 round-trip through the
 // Hub conversion: component, targetContainers (including each entry's
@@ -1520,4 +1599,20 @@ func TestRestartBudgetV2OnlyConversion(t *testing.T) {
 			}
 		}
 	}
+}
+
+// A present-but-empty lifecycle stash must still delete the conversion-only
+// annotation: leaking the key into the persisted v1alpha2 object would let a
+// later full-object write carry conversion state as user data.
+func TestRoleBasedGroup_EmptyLifecycleStashStillDeletesAnnotation(t *testing.T) {
+	legacy := &RoleBasedGroup{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "empty-stash",
+			Namespace:   "ns",
+			Annotations: map[string]string{constants.ConversionV1alpha2RoleLifecycleAnnotationKey: ""},
+		},
+	}
+	require.NoError(t, restoreV2RoleLifecycle(&v2.RoleBasedGroupSpec{}, legacy.Annotations))
+	assert.NotContains(t, legacy.Annotations, constants.ConversionV1alpha2RoleLifecycleAnnotationKey,
+		"the conversion-only key must be deleted even when its value is empty")
 }

@@ -20,6 +20,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strconv"
 	"time"
 
 	"github.com/openkruise/kruise/pkg/util/expectations"
@@ -42,8 +43,10 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	inplaceupdatepod "sigs.k8s.io/rbgs/pkg/inplace/pod"
+	"sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/lifecycle"
 	revisioncontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/revision"
 	synccontrol "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/sync"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
@@ -63,6 +66,7 @@ func NewReconciler(mgr ctrl.Manager, bindings *synccontrol.NodeBindingStore) rec
 		statusUpdater:         newStatusUpdater(c, mgr.GetAPIReader()),
 		revisionControl:       revisioncontrol.NewRevisionControl(),
 		syncControl:           synccontrol.New(c, mgr.GetAPIReader(), recorder, bindings),
+		hookControl:           lifecycle.NewHookControl(c),
 		revisionEqualityCache: lru.New(pkgutils.MaxRevisionEqualityCacheEntries),
 	}
 }
@@ -75,6 +79,7 @@ type reconciler struct {
 	revisionControl   revisioncontrol.Interface
 	syncControl       synccontrol.Interface
 	recorder          record.EventRecorder
+	hookControl       *lifecycle.HookControl
 	// revisionEqualityCache caches semantic revision equality results to avoid
 	// expensive ApplyRevision + buildPatch reconstruction on every reconcile.
 	revisionEqualityCache *lru.Cache
@@ -104,6 +109,13 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	// caused by precondition failures when the object's UID becomes empty during foreground deletion.
 	if instance.DeletionTimestamp != nil {
 		r.syncControl.ClearRestarting(instance)
+		blocked, err := r.reconcileLifecycleDeletion(ctx, instance)
+		if err != nil {
+			return reconcile.Result{}, err
+		}
+		if blocked {
+			return reconcile.Result{RequeueAfter: lifecycleHookRequeue}, nil
+		}
 		return reconcile.Result{}, r.syncControl.CleanupRestartBudget(ctx, instance)
 	}
 
@@ -149,15 +161,28 @@ func (r *reconciler) Reconcile(ctx context.Context, request reconcile.Request) (
 	}
 	*newStatus.CollisionCount = collisionCount
 
-	res := r.syncInstance(ctx, instance, &newStatus, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
-
 	phaseFacts := r.phaseFacts(instance, &newStatus, filteredPods)
+	lifecycleResult, err := r.prepareLifecycleOperation(ctx, instance, &newStatus, phaseFacts, filteredPods)
+	if err != nil {
+		return reconcile.Result{}, err
+	}
+
+	var res syncResult
+	if lifecycleResult.blocked {
+		res = syncResult{requeue: lifecycleHookRequeue}
+	} else {
+		res = r.syncInstance(ctx, instance, &newStatus, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
+		phaseFacts = r.phaseFacts(instance, &newStatus, filteredPods)
+	}
 	newStatus.Phase = nextRoleInstancePhase(instance.Status.Phase, phaseFacts)
 	if phaseCompletionSatisfied(phaseFacts, &newStatus) {
 		// Latch phase completion separately from serving readiness: external
 		// readiness gates must not keep spec-driven updates classified as
 		// active after the controller-observed work has converged.
 		newStatus.LastPhaseCompleteGeneration = instance.Generation
+	}
+	if err := r.finishLifecycleOperation(ctx, instance, &newStatus, phaseFacts, lifecycleResult.operation, filteredPods); err != nil {
+		return reconcile.Result{}, err
 	}
 
 	if err = r.statusUpdater.UpdateInstanceStatus(ctx, instance, &newStatus, filteredPods); err != nil {
@@ -441,7 +466,8 @@ func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newSta
 	// last confirmed-ready generation and stays recovery.
 	revisionUpdate := newStatus.UpdateRevision != "" && newStatus.UpdateRevision != newStatus.CurrentRevision
 	confirmedGeneration := lastConfirmedPhaseGeneration(instance)
-	specDrivenUpdate := confirmedGeneration != 0 && instance.Generation > confirmedGeneration
+	specDrivenUpdate := confirmedGeneration != 0 && instance.Generation > confirmedGeneration &&
+		!lifecycleOnlyGenerationBump(instance)
 	updateActive := revisionUpdate || specDrivenUpdate
 
 	readySatisfied := true
@@ -474,6 +500,32 @@ func (r *reconciler) phaseFacts(instance *workloadsv1alpha2.RoleInstance, newSta
 		previouslyEstablished: confirmedGeneration != 0,
 		newInstance:           instance.Status.ObservedGeneration == 0,
 	}
+}
+
+// lifecycleOnlyGenerationBump reports whether the current generation was
+// created by a lifecycle snapshot sync that landed on an already-confirmed
+// generation. The sync writes the generation marker in the same
+// optimistic-lock patch as the lifecycle spec, so the bump changes no
+// workload-relevant spec and must not reclassify the instance as updating.
+// The pre-snapshot generation must have been phase-confirmed: if an update
+// was already in flight (a size change is not in the revision), a lifecycle
+// change must not mask that update.
+func lifecycleOnlyGenerationBump(instance *workloadsv1alpha2.RoleInstance) bool {
+	if instance == nil || instance.Annotations == nil {
+		return false
+	}
+	value, ok := instance.Annotations[constants.RoleInstanceLifecycleSnapshotGenerationAnnotationKey]
+	if !ok {
+		return false
+	}
+	generation, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || generation != instance.Generation {
+		return false
+	}
+	// The generation before the snapshot must have been confirmed: only then
+	// is the current bump purely the lifecycle snapshot write.
+	confirmedGeneration := lastConfirmedPhaseGeneration(instance)
+	return confirmedGeneration == generation-1
 }
 
 // podPhaseRuntimeReady reports controller-observed runtime readiness: the Pod

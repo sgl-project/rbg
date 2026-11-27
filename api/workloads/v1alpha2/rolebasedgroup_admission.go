@@ -80,7 +80,34 @@ func validateRBGStaticSpec(rbg *RoleBasedGroup) []error {
 	if err := ValidateRoleTemplateReferences(rbg); err != nil {
 		errs = append(errs, fmt.Errorf("invalid template references: %w", err))
 	}
+	if err := validateRoleInstanceLifecycle(rbg); err != nil {
+		errs = append(errs, err)
+	}
 	return errs
+}
+
+func validateRoleInstanceLifecycle(rbg *RoleBasedGroup) error {
+	return validateRoleInstanceLifecycleList("spec.roles", rbg.Spec.Roles)
+}
+
+func validateRoleInstanceLifecycleList(path string, roles []RoleSpec) error {
+	for i := range roles {
+		role := &roles[i]
+		if !HasRoleInstanceLifecycleHooks(role.Lifecycle) {
+			continue
+		}
+		pattern := role.Annotations[constants.RoleInstancePatternKey]
+		if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType ||
+			(pattern != "" && pattern != string(constants.StatefulPattern)) {
+			return fmt.Errorf("%s[%d].lifecycle requires the native Stateful RoleInstanceSet backend",
+				path, i)
+		}
+		if err := ValidateRoleInstanceLifecycle(
+			fmt.Sprintf("%s[%d].lifecycle", path, i), role.Lifecycle, nil); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // ValidateCreate validates a RoleBasedGroup on creation.

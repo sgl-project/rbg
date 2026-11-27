@@ -354,6 +354,12 @@ type RoleSpec struct {
 	// +optional
 	// +kubebuilder:default=Parallel
 	PodManagementPolicy constants.PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
+
+	// Lifecycle defines the KEP-527 RoleInstance lifecycle hooks for this role.
+	// The RBG controller propagates it to the owning RoleInstanceSet's
+	// RoleInstance template and never to the legacy RoleInstanceSet lifecycle.
+	// +optional
+	Lifecycle *RoleInstanceLifecycle `json:"lifecycle,omitempty"`
 }
 
 // GetWorkloadType returns the workload type for this role.

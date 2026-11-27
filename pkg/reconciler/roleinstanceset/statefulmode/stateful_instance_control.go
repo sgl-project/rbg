@@ -41,7 +41,7 @@ type StatefulInstanceControlObjectManager interface {
 	CreateInstance(ctx context.Context, instance *workloadsv1alpha2.RoleInstance) error
 	GetInstance(namespace, instanceName string) (*workloadsv1alpha2.RoleInstance, error)
 	UpdateInstance(instance *workloadsv1alpha2.RoleInstance) error
-	DeleteInstance(instance *workloadsv1alpha2.RoleInstance) error
+	DeleteInstance(instance *workloadsv1alpha2.RoleInstance, opts ...sigsclient.DeleteOption) error
 }
 
 // StatefulInstanceControl defines the interface that InstanceSetController uses to create, update, and delete Instances,
@@ -83,8 +83,8 @@ func (om *realStatefulInstanceControlObjectManager) UpdateInstance(instance *wor
 	return om.client.Update(context.TODO(), instance)
 }
 
-func (om *realStatefulInstanceControlObjectManager) DeleteInstance(instance *workloadsv1alpha2.RoleInstance) error {
-	return om.client.Delete(context.TODO(), instance)
+func (om *realStatefulInstanceControlObjectManager) DeleteInstance(instance *workloadsv1alpha2.RoleInstance, opts ...sigsclient.DeleteOption) error {
+	return om.client.Delete(context.TODO(), instance, opts...)
 }
 
 func (sic *StatefulInstanceControl) CreateStatefulInstance(ctx context.Context, set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance) error {
@@ -137,8 +137,8 @@ func (sic *StatefulInstanceControl) UpdateStatefulInstance(set *workloadsv1alpha
 	return err
 }
 
-func (sic *StatefulInstanceControl) DeleteStatefulInstance(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance) error {
-	err := sic.objectMgr.DeleteInstance(instance)
+func (sic *StatefulInstanceControl) DeleteStatefulInstance(set *workloadsv1alpha2.RoleInstanceSet, instance *workloadsv1alpha2.RoleInstance, opts ...sigsclient.DeleteOption) error {
+	err := sic.objectMgr.DeleteInstance(instance, opts...)
 	sic.recordInstanceEvent("delete", set, instance, err)
 	return err
 }

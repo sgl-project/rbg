@@ -27,6 +27,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/rand"
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/rbgs/pkg/utils/expectations"
 
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -271,6 +272,15 @@ func (rc *realControl) deleteInstances(gs *workloadsv1alpha2.RoleInstanceSet, in
 				modified = true
 				utils.ResourceVersionExpectations.Expect(gotInstance)
 			}
+			continue
+		}
+
+		if gs.Spec.RoleInstanceTemplate.Lifecycle != nil &&
+			gs.Spec.RoleInstanceTemplate.Lifecycle.PreDelete != nil &&
+			!controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
+			// The reserved finalizer is the preDelete enablement window. Deletion
+			// cannot start before the RoleInstance controller installs it, or the
+			// hook is skipped entirely.
 			continue
 		}
 

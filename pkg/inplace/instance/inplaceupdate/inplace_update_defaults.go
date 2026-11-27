@@ -63,8 +63,14 @@ func defaultPatchUpdateSpecToRoleInstance(instance *workloadsv1alpha2.RoleInstan
 	if err := json.Unmarshal(newBytes, newRoleInstanceSpec); err != nil {
 		return nil, err
 	}
+	// ControllerRevisions intentionally omit the KEP-527 lifecycle snapshot. Preserve
+	// the live snapshot so an in-place workload update does not disable hooks.
+	lifecycle := instance.Spec.Lifecycle
 
 	instance.Spec = *newRoleInstanceSpec
+	if instance.Spec.Lifecycle == nil {
+		instance.Spec.Lifecycle = lifecycle
+	}
 	InjectVersionedRoleInstanceSpec(instance)
 
 	klog.V(5).Infof("Decide to in-place update role instance %s/%s with state %v", instance.Namespace, instance.Name, util.DumpJSON(state))

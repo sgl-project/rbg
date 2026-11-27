@@ -17,6 +17,8 @@ limitations under the License.
 package sync
 
 import (
+	"context"
+
 	apps "k8s.io/api/apps/v1"
 	"k8s.io/client-go/tools/record"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -38,6 +40,7 @@ type Interface interface {
 	) (bool, error)
 
 	Update(
+		ctx context.Context,
 		set *workloadsv1alpha2.RoleInstanceSet,
 		currentRevision *apps.ControllerRevision,
 		updateRevision *apps.ControllerRevision,

@@ -18,11 +18,13 @@ package workloads
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/equality"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
@@ -511,5 +513,578 @@ func TestCleanupStaleInstances(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// A stale-pattern instance whose set configures preDelete waits until the
+// reserved finalizer is installed: deleting first would skip the hook.
+func TestCleanupStaleInstancesWaitsForPreDeleteFinalizer(t *testing.T) {
+	setUID := types.UID("gate-set-uid")
+	matchLabels := map[string]string{"app": "gate-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "gate-set",
+			Namespace:   "default",
+			UID:         setUID,
+			Annotations: map[string]string{constants.RoleInstancePatternKey: string(constants.StatelessPattern)},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			Replicas: ptr.To(int32(1)),
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/drain": "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+	stale := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "stale-stateful-0",
+			Namespace: "default",
+			Labels:    matchLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+	}
+	ready := stale.DeepCopy()
+	ready.Name = "stale-stateful-1"
+	ready.UID = types.UID("stale-stateful-1-uid")
+	ready.Finalizers = []string{constants.RoleInstancePreDeleteFinalizer}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().WithScheme(scheme).WithRuntimeObjects(set, stale, ready).Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	requeue, err := r.cleanupStaleInstances(context.Background(), set)
+	if err != nil {
+		t.Fatalf("cleanupStaleInstances() error = %v", err)
+	}
+	if !requeue {
+		t.Fatal("deleting the finalizer-bearing instance must report a requeue")
+	}
+
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(stale), live); err != nil {
+		t.Fatalf("the instance without the finalizer must survive: %v", err)
+	}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(ready), live); err != nil {
+		t.Fatalf("the finalizer-bearing instance must still be visible: %v", err)
+	}
+	if live.DeletionTimestamp == nil {
+		t.Fatal("the instance with the finalizer must start deleting")
+	}
+}
+
+// A lifecycle snapshot patch records the generation it creates in the same
+// write, so the phase machine can treat the bump as lifecycle-only instead of
+// a spec-driven workload update, in any phase.
+func TestSyncRoleInstanceLifecycleSnapshotsRecordsGenerationMarker(t *testing.T) {
+	setUID := types.UID("latch-set-uid")
+	matchLabels := map[string]string{"app": "latch-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "latch-set",
+			Namespace: "default",
+			UID:       setUID,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/recover": "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "recovering-0",
+			Namespace:  "default",
+			UID:        types.UID("recovering-0-uid"),
+			Generation: 2,
+			Labels:     matchLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			Phase:                       workloadsv1alpha2.RoleInstancePhaseRecovering,
+			ObservedGeneration:          1,
+			LastPhaseCompleteGeneration: 1,
+		},
+	}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithRuntimeObjects(set, instance).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	if err := r.syncRoleInstanceLifecycleSnapshots(context.Background(), set); err != nil {
+		t.Fatalf("syncRoleInstanceLifecycleSnapshots() error = %v", err)
+	}
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if got := live.Annotations[constants.RoleInstanceLifecycleSnapshotGenerationAnnotationKey]; got != "3" {
+		t.Fatalf("lifecycle snapshot generation marker = %q, want 3 (base generation 2 + one spec write)",
+			got)
+	}
+}
+
+// A deleting instance still receives lifecycle snapshot updates: removing the
+// preDelete hook is the documented way to let a stuck deletion continue, and
+// that change must reach instances held by the reserved finalizer.
+func TestSyncRoleInstanceLifecycleSnapshotsUpdatesDeletingInstances(t *testing.T) {
+	setUID := types.UID("escape-set-uid")
+	matchLabels := map[string]string{"app": "escape-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "escape-set",
+			Namespace: "default",
+			UID:       setUID,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: nil,
+				},
+			},
+		},
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "stuck-0",
+			Namespace:         "default",
+			UID:               types.UID("stuck-0-uid"),
+			Generation:        2,
+			Labels:            matchLabels,
+			DeletionTimestamp: ptr.To(metav1.Now()),
+			Finalizers:        []string{constants.RoleInstancePreDeleteFinalizer, "test.rbg.io/hold"},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+				PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+					SignalLabels: map[string]string{"consumer.example/drain": "true"},
+				},
+			},
+		},
+	}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithRuntimeObjects(set, instance).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	if err := r.syncRoleInstanceLifecycleSnapshots(context.Background(), set); err != nil {
+		t.Fatalf("syncRoleInstanceLifecycleSnapshots() error = %v", err)
+	}
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Spec.Lifecycle != nil {
+		t.Fatal("removing the preDelete hook must reach the deleting instance so its deletion can continue")
+	}
+}
+
+// The controller must fail safely when admission is bypassed: lifecycle
+// configuration on a Stateless set is rejected and never propagated to its
+// instances.
+func TestSyncRoleInstanceLifecycleSnapshotsRejectsStatelessPattern(t *testing.T) {
+	setUID := types.UID("stateless-set-uid")
+	matchLabels := map[string]string{"app": "stateless-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        "stateless-set",
+			Namespace:   "default",
+			UID:         setUID,
+			Annotations: map[string]string{constants.RoleInstancePatternKey: string(constants.StatelessPattern)},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			Replicas: ptr.To(int32(1)),
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/recover": "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "stateless-0",
+			Namespace: "default",
+			Labels:    matchLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+	}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithRuntimeObjects(set, instance).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	err := r.syncRoleInstanceLifecycleSnapshots(context.Background(), set)
+	if err == nil {
+		t.Fatal("syncRoleInstanceLifecycleSnapshots() must reject lifecycle hooks on a Stateless set")
+	}
+
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Spec.Lifecycle != nil {
+		t.Fatalf("the Stateless instance must not receive lifecycle configuration, got %+v", live.Spec.Lifecycle)
+	}
+}
+
+// A Foreground-deleted set must hand its preDelete-protected RoleInstances
+// to the drain path: the controller deletes finalizer-held RIs with
+// Background propagation, so the Foreground cascade above the set cannot be
+// rejected by the RI guard and wedge the owner in foregroundDeletion.
+func TestForegroundDeletedSetDrainsPreDeleteInstances(t *testing.T) {
+	setUID := types.UID("drain-set-uid")
+	matchLabels := map[string]string{"app": "drain-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "drain-set",
+			Namespace:         "default",
+			UID:               setUID,
+			DeletionTimestamp: ptr.To(metav1.Now()),
+			Finalizers:        []string{metav1.FinalizerDeleteDependents},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			Replicas: ptr.To(int32(2)),
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/drain": "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+	owned := func(name string) *workloadsv1alpha2.RoleInstance {
+		return &workloadsv1alpha2.RoleInstance{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:       name,
+				Namespace:  "default",
+				Labels:     matchLabels,
+				Finalizers: []string{constants.RoleInstancePreDeleteFinalizer},
+				OwnerReferences: []metav1.OwnerReference{
+					*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+				},
+			},
+		}
+	}
+	draining := owned("drain-0")
+	draining.UID = types.UID("drain-0-uid")
+	pending := owned("drain-1")
+	pending.UID = types.UID("drain-1-uid")
+	alreadyDeleting := owned("drain-2")
+	alreadyDeleting.UID = types.UID("drain-2-uid")
+	alreadyDeleting.DeletionTimestamp = ptr.To(metav1.Now())
+	unprotected := owned("drain-3")
+	unprotected.UID = types.UID("drain-3-uid")
+	unprotected.Finalizers = nil
+	foreign := owned("drain-4")
+	foreign.UID = types.UID("drain-4-uid")
+	foreign.OwnerReferences = nil
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(set, draining, pending, alreadyDeleting, unprotected, foreign).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	if err := r.drainPreDeleteInstances(context.Background(), set); err != nil {
+		t.Fatalf("drainPreDeleteInstances() error = %v", err)
+	}
+
+	for name, deleting := range map[string]bool{
+		draining.Name:        true,
+		pending.Name:         true,
+		alreadyDeleting.Name: true,
+		unprotected.Name:     false,
+		foreign.Name:         false,
+	} {
+		live := &workloadsv1alpha2.RoleInstance{}
+		if err := c.Get(context.Background(), types.NamespacedName{Namespace: "default", Name: name}, live); err != nil {
+			t.Fatalf("get instance %s: %v", name, err)
+		}
+		if (live.DeletionTimestamp != nil) != deleting {
+			t.Fatalf("instance %s deleting = %v, want %v", name, live.DeletionTimestamp != nil, deleting)
+		}
+	}
+}
+
+// When a concurrent writer already applied the lifecycle spec, the retried
+// snapshot patch must notice and return without writing the generation
+// marker: the annotation-only patch would not bump metadata.generation, and
+// the predicted marker would then misclassify the next real spec write.
+func TestPatchLifecycleSnapshotReturnsAfterConcurrentApply(t *testing.T) {
+	matchLabels := map[string]string{"app": "conflict-app"}
+	desired := &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/recover": "true"},
+		},
+	}
+	// The stored object already carries the desired lifecycle with a newer
+	// resourceVersion; the caller's copy is stale.
+	stored := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "instance-0",
+			Namespace:       "default",
+			Generation:      2,
+			ResourceVersion: "2",
+			Labels:          matchLabels,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{Lifecycle: desired.DeepCopy()},
+	}
+	stale := stored.DeepCopy()
+	stale.ResourceVersion = "1"
+	stale.Spec.Lifecycle = nil
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithObjects(stored).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	if err := r.patchLifecycleSnapshot(context.Background(), stale, desired); err != nil {
+		t.Fatalf("patchLifecycleSnapshot() error = %v", err)
+	}
+
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(stored), live); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := live.Annotations[constants.RoleInstanceLifecycleSnapshotGenerationAnnotationKey]; exists {
+		t.Fatal("no generation marker must be written when the concurrent write already applied the lifecycle")
+	}
+	if !equality.Semantic.DeepEqual(live.Spec.Lifecycle, desired) {
+		t.Fatalf("stored lifecycle = %+v, want the concurrently applied snapshot", live.Spec.Lifecycle)
+	}
+}
+
+// The RoleInstanceSet webhook routing label tracks the lifecycle
+// configuration: it is added for lifecycle-configured sets (standalone ones
+// included) and removed when the last hook is removed.
+func TestSyncRoleInstanceLifecycleSnapshotsSyncsRoutingLabel(t *testing.T) {
+	buildSet := func(lifecycle *workloadsv1alpha2.RoleInstanceLifecycle) *workloadsv1alpha2.RoleInstanceSet {
+		return &workloadsv1alpha2.RoleInstanceSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      "routing-set",
+				Namespace: "default",
+				UID:       types.UID("routing-set-uid"),
+				Labels:    map[string]string{},
+			},
+			Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+				Selector: &metav1.LabelSelector{MatchLabels: map[string]string{"app": "routing"}},
+				RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+					RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{Lifecycle: lifecycle},
+				},
+			},
+		}
+	}
+	hooks := &workloadsv1alpha2.RoleInstanceLifecycle{
+		PreRecover: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+			SignalLabels: map[string]string{"consumer.example/recover": "true"},
+		},
+	}
+	set := buildSet(hooks)
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithRuntimeObjects(set).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	if err := r.syncRoleInstanceLifecycleSnapshots(context.Background(), set); err != nil {
+		t.Fatalf("syncRoleInstanceLifecycleSnapshots() error = %v", err)
+	}
+	live := &workloadsv1alpha2.RoleInstanceSet{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(set), live); err != nil {
+		t.Fatal(err)
+	}
+	if got := live.Labels[constants.RoleInstanceLifecycleConfiguredLabelKey]; got != "true" {
+		t.Fatalf("routing label = %q, want true", got)
+	}
+
+	// Removing the last hook removes the label: the webhook stops routing
+	// this set even if the label was written by an older controller.
+	live.Spec.RoleInstanceTemplate.Lifecycle = nil
+	if err := c.Update(context.Background(), live); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.syncRoleInstanceLifecycleSnapshots(context.Background(), live); err != nil {
+		t.Fatalf("syncRoleInstanceLifecycleSnapshots() error = %v", err)
+	}
+	updated := &workloadsv1alpha2.RoleInstanceSet{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(set), updated); err != nil {
+		t.Fatal(err)
+	}
+	if _, exists := updated.Labels[constants.RoleInstanceLifecycleConfiguredLabelKey]; exists {
+		t.Fatal("the routing label must be removed when the last hook is removed")
+	}
+}
+
+// An Orphan (or Background) delete of the set must not start deleting the
+// finalizer-held RoleInstances: an Orphan delete is an explicit request to
+// keep the children, and a Background cascade is accepted by the RI guard and
+// drains on its own. Only the Foreground cascade can wedge.
+func TestOrphanDeletedSetKeepsPreDeleteInstances(t *testing.T) {
+	setUID := types.UID("orphan-set-uid")
+	matchLabels := map[string]string{"app": "orphan-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:              "orphan-set",
+			Namespace:         "default",
+			UID:               setUID,
+			DeletionTimestamp: ptr.To(metav1.Now()),
+			// An Orphan delete adds the GC orphan finalizer, not
+			// foregroundDeletion: the children are meant to be kept.
+			Finalizers: []string{metav1.FinalizerOrphanDependents},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreDelete: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{"consumer.example/drain": "true"},
+						},
+					},
+				},
+			},
+		},
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:       "orphan-0",
+			Namespace:  "default",
+			UID:        types.UID("orphan-0-uid"),
+			Labels:     matchLabels,
+			Finalizers: []string{constants.RoleInstancePreDeleteFinalizer},
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+	}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithRuntimeObjects(set, instance).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	if err := r.drainPreDeleteInstances(context.Background(), set); err != nil {
+		t.Fatalf("drainPreDeleteInstances() error = %v", err)
+	}
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if live.DeletionTimestamp != nil {
+		t.Fatal("an Orphan delete of the set must not start deleting finalizer-held RoleInstances")
+	}
+}
+
+// The set-side fail-safe must validate the lifecycle configuration itself,
+// not only the pattern: a standalone set created before the routing label
+// lands (or with webhooks disabled) otherwise arms preUpdate with a
+// reserved-prefix signal key that overwrites controller-owned labels.
+func TestSyncRoleInstanceLifecycleSnapshotsRejectsInvalidLifecycle(t *testing.T) {
+	setUID := types.UID("invalid-set-uid")
+	matchLabels := map[string]string{"app": "invalid-app"}
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "invalid-set",
+			Namespace: "default",
+			UID:       setUID,
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			Selector: &metav1.LabelSelector{MatchLabels: matchLabels},
+			RoleInstanceTemplate: workloadsv1alpha2.RoleInstanceTemplate{
+				RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{
+					Lifecycle: &workloadsv1alpha2.RoleInstanceLifecycle{
+						PreUpdate: &workloadsv1alpha2.RoleInstanceLifecycleHook{
+							SignalLabels: map[string]string{
+								constants.RoleInstanceLifecycleHookStateKey: "Terminating",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "invalid-0",
+			Namespace: "default",
+			Labels:    matchLabels,
+			OwnerReferences: []metav1.OwnerReference{
+				*metav1.NewControllerRef(set, workloadsv1alpha2.GroupVersion.WithKind("RoleInstanceSet")),
+			},
+		},
+	}
+
+	scheme := newTestScheme()
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.RoleInstance{}).
+		WithRuntimeObjects(set, instance).
+		Build()
+	r := &RoleInstanceSetReconciler{client: c, recorder: record.NewFakeRecorder(10)}
+
+	err := r.syncRoleInstanceLifecycleSnapshots(context.Background(), set)
+	if err == nil || !strings.Contains(err.Error(), "role-instance-hook-state") {
+		t.Fatalf("syncRoleInstanceLifecycleSnapshots() error = %v, want a rejection naming the reserved key", err)
+	}
+
+	live := &workloadsv1alpha2.RoleInstance{}
+	if err := c.Get(context.Background(), client.ObjectKeyFromObject(instance), live); err != nil {
+		t.Fatal(err)
+	}
+	if live.Spec.Lifecycle != nil {
+		t.Fatalf("an invalid lifecycle must not propagate to RoleInstances, got %+v", live.Spec.Lifecycle)
 	}
 }

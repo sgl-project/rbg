@@ -17,6 +17,7 @@ limitations under the License.
 package sync
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -36,6 +37,7 @@ import (
 )
 
 func (rc *realControl) Update(
+	ctx context.Context,
 	set *workloadsv1alpha2.RoleInstanceSet,
 	currentRevision *apps.ControllerRevision,
 	updateRevision *apps.ControllerRevision,
@@ -116,7 +118,7 @@ func (rc *realControl) Update(
 	// 6. update instances
 	for _, idx := range waitUpdateIndexes {
 		instance := instances[idx]
-		duration, err := rc.updateInstance(set, coreControl, targetRevision, revisions, instance)
+		duration, err := rc.updateInstance(ctx, set, coreControl, targetRevision, revisions, instance)
 		if duration > 0 {
 			utils.DurationStore.Push(key, duration)
 		}
@@ -174,7 +176,7 @@ func (rc *realControl) refreshInstanceState(gs *workloadsv1alpha2.RoleInstanceSe
 	return false, res.DelayDuration, nil
 }
 
-func (rc *realControl) updateInstance(set *workloadsv1alpha2.RoleInstanceSet, coreControl core.Control,
+func (rc *realControl) updateInstance(ctx context.Context, set *workloadsv1alpha2.RoleInstanceSet, coreControl core.Control,
 	updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision,
 	instance *workloadsv1alpha2.RoleInstance,
 ) (time.Duration, error) {

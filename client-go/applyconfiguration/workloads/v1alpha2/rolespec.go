@@ -32,11 +32,12 @@ type RoleSpecApplyConfiguration struct {
 	RolloutStrategy           *RolloutStrategyApplyConfiguration `json:"rolloutStrategy,omitempty"`
 	Dependencies              []string                           `json:"dependencies,omitempty"`
 	PatternApplyConfiguration `json:",inline"`
-	ServicePorts              []v1.ServicePort                   `json:"servicePorts,omitempty"`
-	EngineRuntimes            []EngineRuntimeApplyConfiguration  `json:"engineRuntimes,omitempty"`
-	ScalingAdapter            *ScalingAdapterApplyConfiguration  `json:"scalingAdapter,omitempty"`
-	MinReadySeconds           *int32                             `json:"minReadySeconds,omitempty"`
-	PodManagementPolicy       *constants.PodManagementPolicyType `json:"podManagementPolicy,omitempty"`
+	ServicePorts              []v1.ServicePort                         `json:"servicePorts,omitempty"`
+	EngineRuntimes            []EngineRuntimeApplyConfiguration        `json:"engineRuntimes,omitempty"`
+	ScalingAdapter            *ScalingAdapterApplyConfiguration        `json:"scalingAdapter,omitempty"`
+	MinReadySeconds           *int32                                   `json:"minReadySeconds,omitempty"`
+	PodManagementPolicy       *constants.PodManagementPolicyType       `json:"podManagementPolicy,omitempty"`
+	Lifecycle                 *RoleInstanceLifecycleApplyConfiguration `json:"lifecycle,omitempty"`
 }
 
 // RoleSpecApplyConfiguration constructs a declarative configuration of the RoleSpec type for use with
@@ -175,5 +176,13 @@ func (b *RoleSpecApplyConfiguration) WithMinReadySeconds(value int32) *RoleSpecA
 // If called multiple times, the PodManagementPolicy field is set to the value of the last call.
 func (b *RoleSpecApplyConfiguration) WithPodManagementPolicy(value constants.PodManagementPolicyType) *RoleSpecApplyConfiguration {
 	b.PodManagementPolicy = &value
+	return b
+}
+
+// WithLifecycle sets the Lifecycle field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the Lifecycle field is set to the value of the last call.
+func (b *RoleSpecApplyConfiguration) WithLifecycle(value *RoleInstanceLifecycleApplyConfiguration) *RoleSpecApplyConfiguration {
+	b.Lifecycle = value
 	return b
 }

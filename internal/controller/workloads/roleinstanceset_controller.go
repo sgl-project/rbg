@@ -21,11 +21,12 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/equality"
-	"k8s.io/apimachinery/pkg/api/errors"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/tools/record"
 	"k8s.io/klog/v2"
@@ -33,6 +34,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
 	"sigs.k8s.io/controller-runtime/pkg/reconcile"
@@ -80,10 +82,19 @@ func NewRoleInstanceSetReconciler(mgr ctrl.Manager) (*RoleInstanceSetReconciler,
 func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request reconcile.Request) (reconcile.Result, error) {
 	set := &v1alpha2.RoleInstanceSet{}
 	if err := r.client.Get(ctx, request.NamespacedName, set); err != nil {
-		if errors.IsNotFound(err) {
+		if apierrors.IsNotFound(err) {
 			return reconcile.Result{}, nil
 		}
 		return reconcile.Result{}, err
+	}
+	if set.DeletionTimestamp != nil {
+		// KEP-527: a Foreground cascade is the only deletion that can wedge.
+		// The drain (gated on the foregroundDeletion finalizer) hands the
+		// finalizer-held RoleInstances to the Background path; Background and
+		// Orphan deletes keep their requested semantics.
+		if err := r.drainPreDeleteInstances(ctx, set); err != nil {
+			return reconcile.Result{}, err
+		}
 	}
 	// Validate the only persisted membership record before any cleanup or
 	// pattern dispatch can create/delete instances using a dense fallback.
@@ -91,6 +102,12 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		return reconcile.Result{}, err
 	}
 
+	// Sync lifecycle snapshots before any cleanup or pattern dispatch can
+	// delete instances: the snapshot is what lets the RoleInstance controller
+	// install the reserved preDelete finalizer before deletion starts.
+	if err := r.syncRoleInstanceLifecycleSnapshots(ctx, set); err != nil {
+		return reconcile.Result{}, err
+	}
 	// Clean up RoleInstances that belong to a different pattern than the current one.
 	// This handles the case where the pattern annotation is changed (stateful ↔ stateless),
 	// leaving behind instances from the old pattern that the new reconciler won't manage.
@@ -113,6 +130,155 @@ func (r *RoleInstanceSetReconciler) Reconcile(ctx context.Context, request recon
 		r.recorder.Event(set, corev1.EventTypeWarning, "UnknownRoleInstancePattern", err.Error())
 		return reconcile.Result{}, err
 	}
+}
+
+// syncRoleInstanceLifecycleSnapshots propagates the desired KEP-527 lifecycle
+// configuration to existing RoleInstances without changing the workload
+// revision. The patch records the generation it creates in the same write, so
+// a lifecycle change never reclassifies the instance as mid-update and never
+// bypasses preRecover.
+func (r *RoleInstanceSetReconciler) syncRoleInstanceLifecycleSnapshots(ctx context.Context, set *v1alpha2.RoleInstanceSet) error {
+	if set.DeletionTimestamp != nil {
+		return nil
+	}
+	desired := set.Spec.RoleInstanceTemplate.Lifecycle
+	if HasLifecycleHooks(desired) && !isStatefulPattern(set) {
+		// The Alpha scope is Stateful-only. Admission rejects this, but the
+		// controller must fail safely when admission is bypassed.
+		return fmt.Errorf("spec.roleInstanceTemplate.lifecycle requires the Stateful RoleInstanceSet pattern")
+	}
+	// Keep the webhook routing label in step with the configuration. The RBG
+	// reconciler stamps it for RBG-owned sets; this pass covers standalone
+	// RoleInstanceSets, and removes it when the last hook is removed.
+	if err := r.syncLifecycleRoutingLabel(ctx, set, HasLifecycleHooks(desired)); err != nil {
+		return err
+	}
+	if HasLifecycleHooks(desired) {
+		// Admission validates the same static rules, but the controller must
+		// fail safely when admission is bypassed: a standalone set is created
+		// before the routing label can land, and --enable-webhooks=none skips
+		// admission entirely. Validation must precede snapshot propagation and
+		// set-side arming, which write the hook's signal labels directly.
+		if err := v1alpha2.ValidateRoleInstanceSetLifecycle(set); err != nil {
+			return err
+		}
+	}
+	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
+	if err != nil {
+		return err
+	}
+	instanceList := &v1alpha2.RoleInstanceList{}
+	if err := r.client.List(ctx, instanceList,
+		client.InNamespace(set.Namespace),
+		client.MatchingLabelsSelector{Selector: selector},
+	); err != nil {
+		return err
+	}
+	for i := range instanceList.Items {
+		instance := &instanceList.Items[i]
+		if !metav1.IsControlledBy(instance, set) {
+			continue
+		}
+		if equality.Semantic.DeepEqual(instance.Spec.Lifecycle, desired) {
+			continue
+		}
+		// Deleting instances are still synced: removing the preDelete hook is
+		// the documented way to let a stuck deletion continue, and that
+		// configuration change must reach instances already held by the
+		// reserved finalizer.
+		if err := r.patchLifecycleSnapshot(ctx, instance, desired); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// syncLifecycleRoutingLabel keeps the controller-set label that scopes the
+// RoleInstanceSet validating webhook to lifecycle-configured sets. The write
+// is skipped when the label already matches, so sets that never use the
+// feature are untouched.
+const lifecycleRoutingLabelEnabled = "true"
+
+func (r *RoleInstanceSetReconciler) syncLifecycleRoutingLabel(
+	ctx context.Context,
+	set *v1alpha2.RoleInstanceSet,
+	configured bool,
+) error {
+	want := ""
+	if configured {
+		want = lifecycleRoutingLabelEnabled
+	}
+	if set.Labels[constants.RoleInstanceLifecycleConfiguredLabelKey] == want {
+		return nil
+	}
+	base := set.DeepCopy()
+	if want == "" {
+		delete(set.Labels, constants.RoleInstanceLifecycleConfiguredLabelKey)
+	} else {
+		if set.Labels == nil {
+			set.Labels = make(map[string]string)
+		}
+		set.Labels[constants.RoleInstanceLifecycleConfiguredLabelKey] = want
+	}
+	return r.client.Patch(ctx, set,
+		client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+}
+
+// patchLifecycleSnapshot writes the lifecycle spec and the generation marker
+// in one optimistic-lock patch. The apiserver bumps metadata.generation by
+// exactly one for a spec-changing write applied at the pinned resource
+// version, so the predicted generation is exact; a conflict means a
+// concurrent write landed first, and the retry recomputes from fresh state.
+func (r *RoleInstanceSetReconciler) patchLifecycleSnapshot(
+	ctx context.Context,
+	instance *v1alpha2.RoleInstance,
+	desired *v1alpha2.RoleInstanceLifecycle,
+) error {
+	for attempt := 0; ; attempt++ {
+		base := instance.DeepCopy()
+		instance.Spec.Lifecycle = desired.DeepCopy()
+		if instance.Annotations == nil {
+			instance.Annotations = make(map[string]string)
+		}
+		instance.Annotations[constants.RoleInstanceLifecycleSnapshotGenerationAnnotationKey] =
+			strconv.FormatInt(base.Generation+1, 10)
+		err := r.client.Patch(ctx, instance,
+			client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
+		if err == nil {
+			return nil
+		}
+		if !apierrors.IsConflict(err) || attempt >= 5 {
+			return err
+		}
+		latest := &v1alpha2.RoleInstance{}
+		if err := r.client.Get(ctx, client.ObjectKeyFromObject(instance), latest); err != nil {
+			return err
+		}
+		*instance = *latest
+		// A concurrent writer may have applied the lifecycle spec while this
+		// patch was in flight. The retry would then be annotation-only: the
+		// spec is unchanged so metadata.generation is not bumped, but the
+		// marker is still written as base.Generation+1. The next real spec
+		// write would reach exactly that generation and be misclassified as
+		// a lifecycle snapshot, so return without patching instead.
+		if equality.Semantic.DeepEqual(instance.Spec.Lifecycle, desired) {
+			return nil
+		}
+	}
+}
+
+// hasLifecycleHooks reports whether any KEP-527 hook is configured.
+func HasLifecycleHooks(lifecycle *v1alpha2.RoleInstanceLifecycle) bool {
+	return v1alpha2.HasRoleInstanceLifecycleHooks(lifecycle)
+}
+
+// isStatefulPattern reports whether the set uses the Stateful pattern.
+func isStatefulPattern(set *v1alpha2.RoleInstanceSet) bool {
+	if set == nil {
+		return false
+	}
+	pattern := constants.InstancePatternType(set.Annotations[constants.RoleInstancePatternKey])
+	return pattern == "" || pattern == constants.StatefulPattern
 }
 
 const invalidCommittedOrdinalsReason = "InvalidCommittedOrdinals"
@@ -194,6 +360,53 @@ func (r *RoleInstanceSetReconciler) validateCommittedMembership(ctx context.Cont
 // cleanupStaleInstances lists all RoleInstances owned by the set and deletes those
 // that don't belong to the current pattern. Returns true if any instance was deleted
 // (caller should requeue to wait for deletion and let the new reconciler create fresh instances).
+// drainPreDeleteInstances starts deletion for every owned RoleInstance that
+// holds the reserved preDelete finalizer but is not deleting yet. It runs only
+// for a Foreground cascade of the set (the foregroundDeletion finalizer), the
+// one case that can wedge: GC then sends Foreground deletes down to the RIs,
+// which the RI guard rejects for armed instances. Background cascades are
+// accepted by the guard and drain on their own; an Orphan delete deliberately
+// keeps the children, so this must not delete anything for it. The delete
+// uses Background propagation and a UID precondition: the GC skips items that
+// are already deleting without Foreground, so the drains run undisturbed while
+// the Foreground cascade above the set completes only after them.
+func (r *RoleInstanceSetReconciler) drainPreDeleteInstances(ctx context.Context, set *v1alpha2.RoleInstanceSet) error {
+	if set.DeletionTimestamp == nil ||
+		!controllerutil.ContainsFinalizer(set, metav1.FinalizerDeleteDependents) {
+		return nil
+	}
+	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
+	if err != nil {
+		return err
+	}
+	instanceList := &v1alpha2.RoleInstanceList{}
+	if err := r.client.List(ctx, instanceList,
+		client.InNamespace(set.Namespace),
+		client.MatchingLabelsSelector{Selector: selector},
+	); err != nil {
+		return err
+	}
+	background := metav1.DeletePropagationBackground
+	for i := range instanceList.Items {
+		instance := &instanceList.Items[i]
+		if !metav1.IsControlledBy(instance, set) ||
+			instance.DeletionTimestamp != nil ||
+			!controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
+			continue
+		}
+		klog.InfoS("Deleting preDelete-held RoleInstance with background propagation",
+			"instanceSet", klog.KObj(set), "instance", klog.KObj(instance))
+		if err := r.client.Delete(ctx, instance,
+			&client.DeleteOptions{
+				PropagationPolicy: &background,
+				Preconditions:     &metav1.Preconditions{UID: &instance.UID},
+			}); err != nil && !apierrors.IsNotFound(err) {
+			return err
+		}
+	}
+	return nil
+}
+
 func (r *RoleInstanceSetReconciler) cleanupStaleInstances(ctx context.Context, set *v1alpha2.RoleInstanceSet) (bool, error) {
 	selector, err := metav1.LabelSelectorAsSelector(set.Spec.Selector)
 	if err != nil {
@@ -218,8 +431,28 @@ func (r *RoleInstanceSetReconciler) cleanupStaleInstances(ctx context.Context, s
 		if instanceBelongsToPattern(instance, set, pattern) {
 			continue
 		}
+		if set.Spec.RoleInstanceTemplate.Lifecycle != nil &&
+			set.Spec.RoleInstanceTemplate.Lifecycle.PreDelete != nil &&
+			!controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
+			// Deletion beginning before the reserved finalizer is installed
+			// would skip the preDelete hook entirely. Wait for the RoleInstance
+			// controller to install it before this instance is deleted.
+			continue
+		}
 		klog.InfoS("Deleting stale RoleInstance from different pattern", "instanceSet", klog.KObj(set), "instance", klog.KObj(instance), "currentPattern", pattern)
-		if err := r.client.Delete(ctx, instance); err != nil && !errors.IsNotFound(err) {
+		// Finalizer-held RIs are deleted with Background propagation and a UID
+		// precondition, so any Foreground cascade above completes only after
+		// the preDelete drain.
+		deleteOptions := []client.DeleteOption{}
+		if controllerutil.ContainsFinalizer(instance, constants.RoleInstancePreDeleteFinalizer) {
+			background := metav1.DeletePropagationBackground
+			deleteOptions = append(deleteOptions,
+				&client.DeleteOptions{
+					PropagationPolicy: &background,
+					Preconditions:     &metav1.Preconditions{UID: &instance.UID},
+				})
+		}
+		if err := r.client.Delete(ctx, instance, deleteOptions...); err != nil && !apierrors.IsNotFound(err) {
 			return false, err
 		}
 		deleted = true
