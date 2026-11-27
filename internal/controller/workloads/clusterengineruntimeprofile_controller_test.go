@@ -30,6 +30,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -244,9 +245,9 @@ func TestClusterEngineRuntimeProfileTracking(t *testing.T) {
 	})
 }
 
-// TestProfilesReferencedBy pins the watch mapping: an RBG or RBGSet enqueue
-// exactly the profiles its roles name, deduped, and a set's group template
-// counts even at zero replicas.
+// TestProfilesReferencedBy pins the spec-to-request mapping used by the real
+// watch handlers: profiles are deduped, blank names are skipped, and order is
+// preserved.
 func TestProfilesReferencedBy(t *testing.T) {
 	spec := workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{
 		{Name: "a", EngineRuntimes: []workloadsv1alpha2.EngineRuntime{
@@ -262,46 +263,104 @@ func TestProfilesReferencedBy(t *testing.T) {
 	}
 	assert.Equal(t, []string{"ik", "torch"}, names,
 		"deduped, blank profile names skipped, order preserved")
-
 	assert.Empty(t, profilesReferencedBy(&workloadsv1alpha2.RoleBasedGroupSpec{}))
-	assert.Nil(t, profilesReferencedByRBG(context.Background(), &workloadsv1alpha2.RoleBasedGroupSet{}))
-	assert.Nil(t, profilesReferencedByRBGSet(context.Background(), &workloadsv1alpha2.RoleBasedGroup{}))
 }
 
-func TestEngineRuntimeLabelDriftRequeuesReferencedProfiles(t *testing.T) {
+// The RoleBasedGroup watch handlers that SetupWithManager wires.
+func TestEngineRuntimeProfileWatchHandlersForRBG(t *testing.T) {
 	ctx := context.Background()
-	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
 	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{}
+	h := r.engineRuntimeProfileRequestsForRBG()
+	group := func(profile string, labeled bool) *workloadsv1alpha2.RoleBasedGroup {
+		obj := controllerRBG("grp", "ns-a", profile)
+		obj.UID = "grp-uid"
+		if labeled {
+			obj.Labels = map[string]string{constants.HasEngineRuntimesLabelKey: constants.HasEngineRuntimesLabelValue}
+		}
+		return obj
+	}
 
-	unlabeled := controllerRBG("grp-old", "ns-a", "ik")
-	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
-	requests := profilesReferencedByRBG(ctx, unlabeled)
-	require.Len(t, requests, 1)
-	assert.Equal(t, "ik", requests[0].Name)
+	// The backfill's own patch: only the old object lacks the label.
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
+	q := newProfileRequestQueue()
+	h.Update(ctx, event.UpdateEvent{ObjectOld: group("ik", false), ObjectNew: group("ik", true)}, q)
+	assert.True(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"the backfill's own patch must not mark drift")
+	assert.Equal(t, []string{"ik"}, drainProfileRequests(q))
+
+	// A write that skipped the defaulter strips the label and moves the reference.
+	q = newProfileRequestQueue()
+	h.Update(ctx, event.UpdateEvent{ObjectOld: group("ik", true), ObjectNew: group("ik-v2", false)}, q)
 	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
-		"a label-only bypassed write must un-converge the gate before the queued reconcile runs")
+		"an unlabeled referencing object must mark drift")
+	assert.Equal(t, []string{"ik", "ik-v2"}, drainProfileRequests(q),
+		"both the old and the new profile must be reconciled")
 
-	old := controllerRBG("grp", "ns-a", "ik")
-	old.Labels = map[string]string{constants.HasEngineRuntimesLabelKey: constants.HasEngineRuntimesLabelValue}
-	newObj := old.DeepCopy()
-	delete(newObj.Labels, constants.HasEngineRuntimesLabelKey)
-	assert.True(t, engineRuntimeLabelOrGenerationChanged().Update(event.UpdateEvent{
-		ObjectOld: old,
-		ObjectNew: newObj,
-	}), "a label-only update must pass the watch predicate")
+	// A delete drops the object's backfill failure state.
+	gone := group("ik", false)
+	r.recordEngineRuntimeLabelBackfillFailure(gone, errors.New("webhook rejected the patch"), time.Now())
+	q = newProfileRequestQueue()
+	h.Delete(ctx, event.DeleteEvent{Object: gone}, q)
+	_, kept := r.engineRuntimeLabelBackfillFailure.Load(engineRuntimeLabelBackfillKeyForObject(gone))
+	assert.False(t, kept, "a deleted object's failure state must be dropped")
+	assert.Equal(t, []string{"ik"}, drainProfileRequests(q))
 }
 
-func TestEngineRuntimeLabelDriftRequeuesReferencedProfilesForSets(t *testing.T) {
-	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
+// The RoleBasedGroupSet watch handlers that SetupWithManager wires.
+func TestEngineRuntimeProfileWatchHandlersForRBGSet(t *testing.T) {
+	ctx := context.Background()
 	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{}
+	h := r.engineRuntimeProfileRequestsForRBGSet()
+	set := func(profile string, labeled bool) *workloadsv1alpha2.RoleBasedGroupSet {
+		obj := controllerRBGSet("set", "ns-a", profile)
+		obj.UID = "set-uid"
+		if labeled {
+			obj.Labels = map[string]string{constants.HasEngineRuntimesLabelKey: constants.HasEngineRuntimesLabelValue}
+		}
+		return obj
+	}
 
-	unlabeled := controllerRBGSet("set-old", "ns-a", "ik")
-	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
-	requests := profilesReferencedByRBGSet(context.Background(), unlabeled)
-	require.Len(t, requests, 1)
-	assert.Equal(t, "ik", requests[0].Name)
+	// The backfill's own patch: only the old object lacks the label.
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
+	q := newProfileRequestQueue()
+	h.Update(ctx, event.UpdateEvent{ObjectOld: set("ik", false), ObjectNew: set("ik", true)}, q)
+	assert.True(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"the backfill's own patch must not mark drift")
+	assert.Equal(t, []string{"ik"}, drainProfileRequests(q))
+
+	// A write that skipped the defaulter strips the label and moves the reference.
+	q = newProfileRequestQueue()
+	h.Update(ctx, event.UpdateEvent{ObjectOld: set("ik", true), ObjectNew: set("ik-v2", false)}, q)
 	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
-		"an unlabeled referencing RoleBasedGroupSet must un-converge the gate before the queued reconcile runs")
+		"an unlabeled referencing object must mark drift")
+	assert.Equal(t, []string{"ik", "ik-v2"}, drainProfileRequests(q),
+		"both the old and the new profile must be reconciled")
+
+	// A delete drops the object's backfill failure state.
+	gone := set("ik", false)
+	r.recordEngineRuntimeLabelBackfillFailure(gone, errors.New("webhook rejected the patch"), time.Now())
+	q = newProfileRequestQueue()
+	h.Delete(ctx, event.DeleteEvent{Object: gone}, q)
+	_, kept := r.engineRuntimeLabelBackfillFailure.Load(engineRuntimeLabelBackfillKeyForObject(gone))
+	assert.False(t, kept, "a deleted object's failure state must be dropped")
+	assert.Equal(t, []string{"ik"}, drainProfileRequests(q))
+}
+
+func newProfileRequestQueue() workqueue.TypedRateLimitingInterface[ctrl.Request] {
+	return workqueue.NewTypedRateLimitingQueue(
+		workqueue.DefaultTypedControllerRateLimiter[ctrl.Request]())
+}
+
+func drainProfileRequests(q workqueue.TypedRateLimitingInterface[ctrl.Request]) []string {
+	var names []string
+	for q.Len() > 0 {
+		item, _ := q.Get()
+		names = append(names, item.Name)
+		q.Done(item)
+	}
+	return names
 }
 
 // TestClusterEngineRuntimeProfileLabelBackfill pins the upgrade path of the
