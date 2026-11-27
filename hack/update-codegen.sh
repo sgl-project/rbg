@@ -26,10 +26,10 @@ REPO_ROOT="$(git rev-parse --show-toplevel)"
 
 source "${CODEGEN_PKG}/kube_codegen.sh"
 
-GOFLAGS=-mod=readonly kube::codegen::gen_helpers ${REPO_ROOT}/api \
+GOFLAGS=-mod=mod kube::codegen::gen_helpers ${REPO_ROOT}/api \
     --boilerplate "${REPO_ROOT}/hack/boilerplate.go.txt"
 
-GOFLAGS=-mod=readonly kube::codegen::gen_client ${REPO_ROOT}/api \
+GOFLAGS=-mod=mod kube::codegen::gen_client ${REPO_ROOT}/api \
     --with-watch \
     --with-applyconfig \
     --applyconfig-externals "k8s.io/api/core/v1.PodTemplateSpec:k8s.io/client-go/applyconfigurations/core/v1" \

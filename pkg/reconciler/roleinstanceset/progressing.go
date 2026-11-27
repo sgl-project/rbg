@@ -183,15 +183,13 @@ func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newSta
 // scale-up; the separate condition keeps the classification stable across
 // such intermediate observations.
 func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {
-	if !setEstablished(set, instances) {
-		effectiveSet := set.DeepCopy()
-		effectiveSet.Status = *newStatus
-		if !setEstablished(effectiveSet, instances) {
-			// Still establishing, or no durable evidence yet. setEstablished reads
-			// the persisted status, so a Progressing reason about to be replaced by
-			// this write is still visible here and is captured before the erasure.
-			return
-		}
+	if !setEstablished(set, instances) && !newProgressingProvesEstablishment(newStatus, set.Generation) {
+		// Still establishing, or no durable evidence yet. setEstablished reads
+		// the persisted status, so a Progressing reason about to be replaced by
+		// this write is still visible here and is captured before the erasure.
+		// Only a fresh Converged write proves completion of this target; a first
+		// activity reason such as ScalingDown must not create a durable fact.
+		return
 	}
 	var persisted *workloadsv1alpha2.RoleInstanceSetCondition
 	for i := range set.Status.Conditions {
@@ -228,6 +226,22 @@ func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus
 		}
 	}
 	newStatus.Conditions = append(newStatus.Conditions, *persisted)
+}
+
+// newProgressingProvesEstablishment reports whether the status about to be
+// written proves completion of the current target. Only Converged carries that
+// evidence; an activity reason can be the first observation of a changed target
+// before the set has ever fully established one.
+func newProgressingProvesEstablishment(newStatus *workloadsv1alpha2.RoleInstanceSetStatus, generation int64) bool {
+	for _, condition := range newStatus.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
+			condition.Status == v1.ConditionFalse &&
+			condition.Reason == workloadconstants.ProgressingReasonConverged &&
+			condition.ObservedGeneration == generation {
+			return true
+		}
+	}
+	return false
 }
 
 // ComputeSetProgressingCondition builds the RIS Progressing condition. Blockers outrank
