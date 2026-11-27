@@ -32,6 +32,8 @@ const (
 
 // EngineRuntimeProfileReference names one live referencing object of a
 // ClusterEngineRuntimeProfile.
+//
+// +kubebuilder:object:generate=false
 type EngineRuntimeProfileReference struct {
 	// Kind is the referencing object's kind: RoleBasedGroup or
 	// RoleBasedGroupSet.
