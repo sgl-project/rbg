@@ -38,7 +38,7 @@ import (
 
 var _ = Describe("LWS-compatible restart budget revisions", func() {
 	DescribeTable("[restart-budget-resize] starts a fresh size revision but preserves surviving replica budgets",
-		func(pattern constants.InstancePatternType, strategy v2.UpdateStrategyType, exhausted bool) {
+		func(pattern constants.InstancePatternType, strategy v2.UpdateStrategyType, exhausted, recoverFirst bool) {
 			ctx, cli := testutil.Ctx, testutil.K8sClient
 			namespace := fmt.Sprintf("budget-resize-%d", time.Now().UnixNano())
 			testutil.CreateNamespace(namespace)
@@ -158,6 +158,11 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 			Eventually(readyInstances, timeout, interval).Should(Equal(2))
 			Expect(pods()).To(HaveLen(4))
 			target := instances()[0]
+			Eventually(func(g Gomega) bool {
+				live := &v2.RoleInstance{}
+				g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(&target), live)).To(Succeed())
+				return live.Status.ObservedGeneration == live.Generation
+			}, timeout, interval).Should(BeTrue())
 			failMember(target)
 			Eventually(func() bool {
 				live := &v2.RoleInstance{}
@@ -328,11 +333,13 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 				Expect(live.Status.GroupRestartRevision).To(Equal(original.Status.GroupRestartRevision))
 			}
 		},
-		Entry("stateful in-place", constants.StatefulPattern, v2.InPlaceIfPossibleUpdateStrategyType, false),
-		Entry("stateful recreate", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, false),
-		Entry("stateless in-place with surge", constants.StatelessPattern, v2.InPlaceIfPossibleUpdateStrategyType, false),
-		Entry("stateless recreate with surge", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, false),
-		Entry("exhausted stateful recreate", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, true),
-		Entry("exhausted stateless recreate", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, true),
+		Entry("stateful in-place", constants.StatefulPattern, v2.InPlaceIfPossibleUpdateStrategyType, false, false),
+		Entry("stateful recreate", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, false, false),
+		Entry("stateless in-place with surge", constants.StatelessPattern, v2.InPlaceIfPossibleUpdateStrategyType, false, false),
+		Entry("stateless recreate with surge", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, false, false),
+		Entry("exhausted stateful recreate", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, true, false),
+		Entry("exhausted stateless recreate", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, true, false),
+		Entry("exhausted stateful recreate, then recover", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, true, true),
+		Entry("exhausted stateless recreate, then recover", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, true, true),
 	)
 })

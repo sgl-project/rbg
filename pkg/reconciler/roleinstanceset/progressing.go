@@ -183,13 +183,15 @@ func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newSta
 // scale-up; the separate condition keeps the classification stable across
 // such intermediate observations.
 func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {
-	if !setEstablished(set, instances) && !newProgressingProvesEstablishment(newStatus, set.Generation) {
-		// Still establishing, or no durable evidence yet. setEstablished reads
-		// the persisted status, so a Progressing reason about to be replaced by
-		// this write is still visible here and is captured before the erasure.
-		// Only a fresh Converged write proves completion of this target; a first
-		// activity reason such as ScalingDown must not create a durable fact.
-		return
+	if !setEstablished(set, instances) {
+		effectiveSet := set.DeepCopy()
+		effectiveSet.Status = *newStatus
+		if !setEstablished(effectiveSet, instances) {
+			// Still establishing, or no durable evidence yet. setEstablished reads
+			// the persisted status, so a Progressing reason about to be replaced by
+			// this write is still visible here and is captured before the erasure.
+			return
+		}
 	}
 	var persisted *workloadsv1alpha2.RoleInstanceSetCondition
 	for i := range set.Status.Conditions {
@@ -226,22 +228,6 @@ func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus
 		}
 	}
 	newStatus.Conditions = append(newStatus.Conditions, *persisted)
-}
-
-// newProgressingProvesEstablishment reports whether the status about to be
-// written proves completion of the current target. Only Converged carries that
-// evidence; an activity reason can be the first observation of a changed target
-// before the set has ever fully established one.
-func newProgressingProvesEstablishment(newStatus *workloadsv1alpha2.RoleInstanceSetStatus, generation int64) bool {
-	for _, condition := range newStatus.Conditions {
-		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
-			condition.Status == v1.ConditionFalse &&
-			condition.Reason == workloadconstants.ProgressingReasonConverged &&
-			condition.ObservedGeneration == generation {
-			return true
-		}
-	}
-	return false
 }
 
 // ComputeSetProgressingCondition builds the RIS Progressing condition. Blockers outrank
@@ -446,9 +432,7 @@ func setEstablished(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloa
 		if condition.Type != workloadsv1alpha2.RoleInstanceSetProgressing {
 			continue
 		}
-		if condition.Status == v1.ConditionTrue &&
-			condition.ObservedGeneration == set.Generation &&
-			isSetBlockerFamily(condition.Reason) {
+		if condition.Status == v1.ConditionTrue && isSetBlockerFamily(condition.Reason) {
 			persistedBlocker = true
 		}
 		switch {
@@ -470,10 +454,10 @@ func setEstablished(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloa
 	// until it has been fully ready once, and its later scale-ups would report
 	// Creating. A persisted Creating condition still takes precedence, so initial
 	// creation of a fresh set is unaffected by a partially ready instance.
-	// A current blocker-family Progressing condition means the set has already
-	// been written by this controller and must not use the legacy latch
-	// fallback. Activity conditions such as InstancesNotReady do not carry that
-	// evidence and must preserve the upgrade fallback.
+	// A persisted blocker-family Progressing condition, regardless of generation,
+	// means the set has already been written by this controller and must not use
+	// the legacy latch fallback. Activity conditions such as InstancesNotReady do
+	// not carry that evidence and must preserve the upgrade fallback.
 	if !persistedBlocker && anyInstanceCompletedStartup(instances) {
 		return true
 	}
@@ -630,7 +614,8 @@ func currentSetBlocker(ownBlocker, priorBlocker *SetBlocker, instances []*worklo
 		if message, ok := candidates[family]; ok {
 			if family == workloadconstants.ProgressingReasonRestartBudgetExceeded && len(restartBudgetInstances) > 0 {
 				sort.Strings(restartBudgetInstances)
-				message = "restart budget exhausted for RoleInstances " + strings.Join(restartBudgetInstances, ", ")
+				message = "restart budget exhausted for RoleInstances " + strings.Join(restartBudgetInstances, ", ") +
+					"; annotate each with rbg.workloads.x-k8s.io/recover=true to recover"
 			}
 			return family, message
 		}

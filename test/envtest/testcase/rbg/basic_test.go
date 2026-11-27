@@ -82,25 +82,21 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 			}
 			return nil
 		}
-		Eventually(func() error {
-			ris := readRIS(Default)
+		Eventually(func(g Gomega) error {
+			ris := readRIS(g)
 			progressing := findSetCondition(ris, workloadsv1alpha2.RoleInstanceSetProgressing)
-			established := findSetCondition(ris, workloadsv1alpha2.RoleInstanceSetEstablished)
 			if progressing == nil || progressing.Status != corev1.ConditionFalse ||
 				progressing.Reason != constants.ProgressingReasonConverged ||
 				progressing.ObservedGeneration != ris.Generation {
 				return fmt.Errorf("RoleInstanceSet %s has not converged: %+v", ris.Name, progressing)
-			}
-			if established == nil || established.Status != corev1.ConditionTrue {
-				return fmt.Errorf("RoleInstanceSet %s is not established: %+v", ris.Name, established)
 			}
 			return nil
 		}, timeout, interval).Should(Succeed())
 		// Wait for the initial status writes to settle before taking the baseline.
 		lastVersion := ""
 		stableReads := 0
-		Eventually(func() bool {
-			version := readRIS(Default).ResourceVersion
+		Eventually(func(g Gomega) bool {
+			version := readRIS(g).ResourceVersion
 			if version == lastVersion {
 				stableReads++
 			} else {

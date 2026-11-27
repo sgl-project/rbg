@@ -185,8 +185,10 @@ func (r *RoleBasedGroupReconciler) reportRBGProgressingBlocker(
 	// cleared; a lower-priority own blocker still loses the family race.
 	observations, readErr := r.collectRISObservations(ctx, rbg)
 	facts := r.observeRuntimeFacts(ctx, rbg)
-	observationErr := stderrors.Join(readErr, facts.observationError())
-	childBlocker := childDerivedBlockerForObservationFailure(rbg, observationErr)
+	// Restart-budget facts are observed from RoleInstanceSets. A gang or
+	// dependency read failure must not preserve a child blocker that the
+	// successful RoleInstanceSet reads already show as cleared.
+	childBlocker := childDerivedBlockerForObservationFailure(rbg, readErr)
 	if childBlocker != nil && rbgBlockerFamilyRank(childBlocker.Reason) < rbgBlockerFamilyRank(reason) {
 		condition = *childBlocker
 	} else if readErr == nil {

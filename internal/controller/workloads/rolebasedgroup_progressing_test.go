@@ -614,6 +614,65 @@ func TestObservationIncompleteSuffixDoesNotGrow(t *testing.T) {
 	}
 }
 
+func TestGangObservationFailureDoesNotRetainClearedRestartBudget(t *testing.T) {
+	ctx := context.Background()
+	rbg := newProgressingRBG()
+	rbg.Status.Conditions = []metav1.Condition{{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+		Status:             metav1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonRestartBudgetExceeded,
+		Message:            "restart budget affects roles prefill",
+		ObservedGeneration: rbg.Generation,
+	}}
+	scheme := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	objects := make([]client.Object, 0, 1+len(rbg.Spec.Roles))
+	objects = append(objects, rbg)
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		set := &workloadsv1alpha2.RoleInstanceSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace, Generation: rbg.Generation,
+			},
+			Status: workloadsv1alpha2.RoleInstanceSetStatus{
+				ObservedGeneration: rbg.Generation,
+				Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status:             corev1.ConditionFalse,
+					Reason:             workloadconstants.ProgressingReasonConverged,
+					ObservedGeneration: rbg.Generation,
+				}},
+			},
+		}
+		objects = append(objects, set)
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(objects...).
+		WithObjects(objects...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cli client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*workloadsv1alpha2.CoordinatedPolicy); ok {
+					return stderrors.New("coordinated policy read timed out")
+				}
+				return cli.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	r := &RoleBasedGroupReconciler{client: c, apiReader: c, scheme: scheme}
+	if err := r.reportRBGProgressingBlocker(
+		ctx, rbg, nil, workloadconstants.ProgressingReasonPermissionDenied, "rbac denied",
+	); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing))
+	if condition == nil || condition.Reason != workloadconstants.ProgressingReasonPermissionDenied {
+		t.Fatalf("gang observation failure must not retain a cleared restart budget, got %+v", condition)
+	}
+}
+
 func TestPodGroupWaitingPhase(t *testing.T) {
 	podGroup := func(phase string, unschedulable bool) *unstructured.Unstructured {
 		object := map[string]interface{}{
