@@ -29,6 +29,7 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -640,6 +641,74 @@ func TestUnreadyDependencies(t *testing.T) {
 	}
 	if missingErr != nil {
 		t.Fatalf("unexpected observation error: %v", missingErr)
+	}
+
+	// A rolling dependency covered by a CoordinatedPolicy maxSkew rule must not
+	// report dependents as blocked (matching the execution gate).
+	rollingRIS := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      rbg.GetWorkloadName(&rbg.Spec.Roles[0]),
+			Namespace: rbg.Namespace,
+			Labels:    map[string]string{workloadconstants.GroupNameLabelKey: rbg.Name},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{Replicas: ptr.To(int32(2))},
+		Status: workloadsv1alpha2.RoleInstanceSetStatus{
+			Replicas:                2,
+			ReadyReplicas:           1,
+			UpdatedReplicas:         1,
+			UpdatedReadyReplicas:    0,
+			ExpectedUpdatedReplicas: 2,
+			CurrentRevision:         "rev-1",
+			UpdateRevision:          "rev-2",
+		},
+	}
+	policy := &workloadsv1alpha2.CoordinatedPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: rbg.Name, Namespace: rbg.Namespace},
+		Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+			Policies: []workloadsv1alpha2.CoordinatedPolicyRule{{
+				Name:  "skew",
+				Roles: []string{"prefill", "decode"},
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+					RollingUpdate: &workloadsv1alpha2.RollingUpdateCoordinationStrategy{
+						MaxSkew: ptr.To(intstr.FromString("10%")),
+					},
+				},
+			}},
+		},
+	}
+	coordinated, coordinatedErr := newReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(rollingRIS, policy).Build()).unreadyDependencies(ctx, rbg)
+	if len(coordinated) != 0 || coordinatedErr != nil {
+		t.Fatalf("coordinated rolling dependency must satisfy the gate, got blocked=%v err=%v", coordinated, coordinatedErr)
+	}
+
+	// A coordinated rolling dependency with zero ready replicas must still report
+	// dependents as blocked so KEP-502 matches CheckDependencyReady's readiness floor.
+	zeroReadyRIS := rollingRIS.DeepCopy()
+	zeroReadyRIS.Status.ReadyReplicas = 0
+	blocked, blockedErr := newReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(zeroReadyRIS, policy).Build()).unreadyDependencies(ctx, rbg)
+	if len(blocked) != 1 || blocked[0] != "decode" || blockedErr != nil {
+		t.Fatalf("coordinated rolling dependency with readyReplicas=0 must stay blocked, got blocked=%v err=%v", blocked, blockedErr)
+	}
+
+	// A dependency converged at a non-zero partition with later partial
+	// unavailability must still report dependents as blocked.
+	completedPartitionRIS := rollingRIS.DeepCopy()
+	completedPartitionRIS.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(1))
+	completedPartitionRIS.Status.ExpectedUpdatedReplicas = 1
+	completedPartitionRIS.Status.UpdatedReplicas = 1
+	completedPartitionRIS.Status.UpdatedReadyReplicas = 1
+	completedPartitionRIS.Status.ReadyReplicas = 1
+	partBlocked, partErr := newReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(completedPartitionRIS, policy).Build()).unreadyDependencies(ctx, rbg)
+	if len(partBlocked) != 1 || partBlocked[0] != "decode" || partErr != nil {
+		t.Fatalf("converged partition dependency with partial unavailability must stay blocked, got blocked=%v err=%v", partBlocked, partErr)
+	}
+
+	// A paused RIS rollout must not use the coordinated exception.
+	pausedRIS := rollingRIS.DeepCopy()
+	pausedRIS.Spec.UpdateStrategy.Paused = true
+	pausedBlocked, pausedErr := newReconciler(fake.NewClientBuilder().WithScheme(scheme).WithObjects(pausedRIS, policy).Build()).unreadyDependencies(ctx, rbg)
+	if len(pausedBlocked) != 1 || pausedBlocked[0] != "decode" || pausedErr != nil {
+		t.Fatalf("paused rolling dependency must stay blocked, got blocked=%v err=%v", pausedBlocked, pausedErr)
 	}
 }
 

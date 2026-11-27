@@ -33,6 +33,7 @@ import (
 	appsapplyv1 "k8s.io/client-go/applyconfigurations/apps/v1"
 	metaapplyv1 "k8s.io/client-go/applyconfigurations/meta/v1"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
@@ -272,12 +273,9 @@ func (r *DeploymentReconciler) CheckWorkloadReady(
 		return false, nil
 	}
 
-	// We don't check ready if workload is rolling update if maxSkew is set.
-	if utils.RoleInMaxSkewCoordinationV2(rbg, role.Name) &&
-		deploy.Status.UpdatedReplicas != deploy.Status.Replicas {
-		return true, nil
-	}
-	return deploy.Status.ReadyReplicas == *deploy.Spec.Replicas, nil
+	// Deployment does not support partition-based skew pacing, so it uses
+	// standard replica readiness without the coordinated maxSkew exception.
+	return deploy.Status.ReadyReplicas == ptr.Deref(deploy.Spec.Replicas, 1), nil
 }
 
 func (r *DeploymentReconciler) CleanupOrphanedWorkloads(

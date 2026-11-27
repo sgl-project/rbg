@@ -25,6 +25,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
@@ -245,6 +246,7 @@ func TestDefaultDependencyManager_SortRoles_EmptyRoles(t *testing.T) {
 
 func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 	scheme := runtime.NewScheme()
+	_ = appsv1.AddToScheme(scheme)
 	_ = workloadsv1alpha2.AddToScheme(scheme)
 
 	// The dependency's workload is one the RBG below already controls.
@@ -255,10 +257,25 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 		UID:        "test-rbg-uid",
 		Controller: ptr.To(true),
 	}
+	maxSkewPolicy := &workloadsv1alpha2.CoordinatedPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default"},
+		Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+			Policies: []workloadsv1alpha2.CoordinatedPolicyRule{{
+				Name:  "skew-rule",
+				Roles: []string{"role1", "role2"},
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+					RollingUpdate: &workloadsv1alpha2.RollingUpdateCoordinationStrategy{
+						MaxSkew: ptr.To(intstr.FromString("10%")),
+					},
+				},
+			}},
+		},
+	}
 
 	tests := []struct {
 		name        string
 		sts         *appsv1.StatefulSet
+		policy      *workloadsv1alpha2.CoordinatedPolicy
 		wantErr     bool
 		expectReady bool
 	}{
@@ -300,6 +317,35 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 			wantErr:     false,
 			expectReady: false,
 		},
+		{
+			name: "dependency rolling without maxSkew blocks downstream",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbg-role2", Namespace: "default", OwnerReferences: []metav1.OwnerReference{ownerRef}},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
+				Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, Replicas: 2, CurrentRevision: "r1", UpdateRevision: "r2"},
+			},
+			expectReady: false,
+		},
+		{
+			name: "dependency rolling with maxSkew and readyReplicas 0 blocks downstream",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbg-role2", Namespace: "default", OwnerReferences: []metav1.OwnerReference{ownerRef}},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
+				Status:     appsv1.StatefulSetStatus{ReadyReplicas: 0, Replicas: 2, CurrentRevision: "r1", UpdateRevision: "r2"},
+			},
+			policy:      maxSkewPolicy,
+			expectReady: false,
+		},
+		{
+			name: "dependency rolling with maxSkew unblocks downstream",
+			sts: &appsv1.StatefulSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "test-rbg-role2", Namespace: "default", OwnerReferences: []metav1.OwnerReference{ownerRef}},
+				Spec:       appsv1.StatefulSetSpec{Replicas: ptr.To(int32(2))},
+				Status:     appsv1.StatefulSetStatus{ReadyReplicas: 1, Replicas: 2, CurrentRevision: "r1", UpdateRevision: "r2"},
+			},
+			policy:      maxSkewPolicy,
+			expectReady: true,
+		},
 	}
 
 	rbg := &workloadsv1alpha2.RoleBasedGroup{
@@ -328,7 +374,11 @@ func TestDefaultDependencyManager_CheckDependencyReady(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(
 			tt.name, func(t *testing.T) {
-				client := fake.NewClientBuilder().WithObjects(tt.sts).Build()
+				builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(tt.sts)
+				if tt.policy != nil {
+					builder = builder.WithObjects(tt.policy)
+				}
+				client := builder.Build()
 				dependencyManager := NewDefaultDependencyManager(scheme, client)
 
 				ctx := log.IntoContext(context.TODO(), zap.New().WithValues("env", "test"))

@@ -18,6 +18,7 @@ package reconciler
 
 import (
 	"context"
+	"errors"
 	"maps"
 	"testing"
 
@@ -31,9 +32,11 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	lwsv1 "sigs.k8s.io/lws/api/leaderworkerset/v1"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
@@ -628,5 +631,256 @@ func TestDeprecatedWorkloadBuildersDropRecoverAnnotation(t *testing.T) {
 			assert.NotContains(t, workload.GetAnnotations(), constants.RoleInstanceRecoverAnnotationKey)
 			assert.Equal(t, "a", workload.GetAnnotations()["team"], "user annotations on the role must still reach the workload")
 		})
+	}
+}
+
+func TestWorkloadReconcilers_CheckWorkloadReady_MaxSkewCoordination(t *testing.T) {
+	scheme := claimTestScheme(t)
+	maxSkewPolicy := &workloadsv1alpha2.CoordinatedPolicy{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-rbg", Namespace: "default"},
+		Spec: workloadsv1alpha2.CoordinatedPolicySpec{
+			Policies: []workloadsv1alpha2.CoordinatedPolicyRule{{
+				Name:  "skew-rule",
+				Roles: []string{"worker", "peer"},
+				Strategy: workloadsv1alpha2.CoordinatedPolicyStrategy{
+					RollingUpdate: &workloadsv1alpha2.RollingUpdateCoordinationStrategy{
+						MaxSkew: ptr.To(intstr.FromString("10%")),
+					},
+				},
+			}},
+		},
+	}
+
+	type state struct {
+		specReplicas            *int32
+		partition               *int32
+		paused                  bool
+		replicas                int32
+		readyReplicas           int32
+		updatedReplicas         int32
+		updatedReadyReplicas    int32
+		expectedUpdatedReplicas int32
+		currentRev              string
+		updateRev               string
+	}
+	buildObj := func(kind string, meta metav1.ObjectMeta, st state) client.Object {
+		switch kind {
+		case "RoleInstanceSet":
+			ris := &workloadsv1alpha2.RoleInstanceSet{
+				ObjectMeta: meta,
+				Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+					Replicas:       st.specReplicas,
+					UpdateStrategy: workloadsv1alpha2.RoleInstanceSetUpdateStrategy{Paused: st.paused},
+				},
+				Status: workloadsv1alpha2.RoleInstanceSetStatus{
+					Replicas: st.replicas, ReadyReplicas: st.readyReplicas,
+					UpdatedReplicas: st.updatedReplicas, UpdatedReadyReplicas: st.updatedReadyReplicas,
+					ExpectedUpdatedReplicas: st.expectedUpdatedReplicas,
+					CurrentRevision:         st.currentRev, UpdateRevision: st.updateRev,
+				},
+			}
+			if st.partition != nil {
+				ris.Spec.UpdateStrategy.Partition = ptr.To(intstr.FromInt32(*st.partition))
+			}
+			return ris
+		case "StatefulSet":
+			sts := &appsv1.StatefulSet{
+				ObjectMeta: meta,
+				Spec:       appsv1.StatefulSetSpec{Replicas: st.specReplicas},
+				Status: appsv1.StatefulSetStatus{
+					Replicas: st.replicas, ReadyReplicas: st.readyReplicas,
+					UpdatedReplicas: st.updatedReplicas, CurrentRevision: st.currentRev, UpdateRevision: st.updateRev,
+				},
+			}
+			if st.partition != nil {
+				sts.Spec.UpdateStrategy = appsv1.StatefulSetUpdateStrategy{
+					Type:          appsv1.RollingUpdateStatefulSetStrategyType,
+					RollingUpdate: &appsv1.RollingUpdateStatefulSetStrategy{Partition: st.partition},
+				}
+			}
+			return sts
+		case "Deployment":
+			return &appsv1.Deployment{
+				ObjectMeta: meta,
+				Spec:       appsv1.DeploymentSpec{Replicas: st.specReplicas},
+				Status: appsv1.DeploymentStatus{
+					Replicas: st.replicas, ReadyReplicas: st.readyReplicas, UpdatedReplicas: st.updatedReplicas,
+				},
+			}
+		case "LeaderWorkerSet":
+			lws := &lwsv1.LeaderWorkerSet{
+				ObjectMeta: meta,
+				Spec:       lwsv1.LeaderWorkerSetSpec{Replicas: st.specReplicas},
+				Status: lwsv1.LeaderWorkerSetStatus{
+					Replicas: st.replicas, ReadyReplicas: st.readyReplicas, UpdatedReplicas: st.updatedReplicas,
+				},
+			}
+			if st.partition != nil {
+				lws.Spec.RolloutStrategy.RollingUpdateConfiguration = &lwsv1.RollingUpdateConfiguration{Partition: st.partition}
+			}
+			return lws
+		default:
+			t.Fatalf("unexpected kind %q", kind)
+			return nil
+		}
+	}
+
+	cases := []struct {
+		name           string
+		st             state
+		withPolicy     bool
+		failPolicyRead bool
+		wantReady      bool
+		wantErr        bool
+	}{
+		{
+			name:       "day-0 creation stays not ready even with maxSkew policy",
+			st:         state{specReplicas: ptr.To(int32(3)), replicas: 0, readyReplicas: 0, updatedReplicas: 0, expectedUpdatedReplicas: 3},
+			withPolicy: true,
+			wantReady:  false,
+		},
+		{
+			name:       "scale-up stays not ready even with maxSkew policy",
+			st:         state{specReplicas: ptr.To(int32(5)), replicas: 3, readyReplicas: 3, updatedReplicas: 3, updatedReadyReplicas: 3, expectedUpdatedReplicas: 5, currentRev: "r1", updateRev: "r1"},
+			withPolicy: true,
+			wantReady:  false,
+		},
+		{
+			name:       "rolling update without maxSkew policy stays not ready",
+			st:         state{specReplicas: ptr.To(int32(3)), replicas: 3, readyReplicas: 2, updatedReplicas: 1, expectedUpdatedReplicas: 3, currentRev: "r1", updateRev: "r2"},
+			withPolicy: false,
+			wantReady:  false,
+		},
+		{
+			name:       "rolling update with maxSkew policy and readyReplicas 0 stays not ready",
+			st:         state{specReplicas: ptr.To(int32(3)), replicas: 3, readyReplicas: 0, updatedReplicas: 1, expectedUpdatedReplicas: 3, currentRev: "r1", updateRev: "r2"},
+			withPolicy: true,
+			wantReady:  false,
+		},
+		{
+			name:       "rolling update with maxSkew policy and readyReplicas > 0 unblocks dependents",
+			st:         state{specReplicas: ptr.To(int32(3)), replicas: 3, readyReplicas: 1, updatedReplicas: 1, expectedUpdatedReplicas: 3, currentRev: "r1", updateRev: "r2"},
+			withPolicy: true,
+			wantReady:  true,
+		},
+		{
+			name:       "active non-zero partition with outstanding update work unblocks dependents",
+			st:         state{specReplicas: ptr.To(int32(3)), partition: ptr.To(int32(2)), replicas: 3, readyReplicas: 2, updatedReplicas: 0, expectedUpdatedReplicas: 1, currentRev: "r1", updateRev: "r2"},
+			withPolicy: true,
+			wantReady:  true,
+		},
+		{
+			name:       "completed non-zero partition with partial unavailability stays not ready",
+			st:         state{specReplicas: ptr.To(int32(3)), partition: ptr.To(int32(2)), replicas: 3, readyReplicas: 2, updatedReplicas: 1, updatedReadyReplicas: 1, expectedUpdatedReplicas: 1, currentRev: "r1", updateRev: "r2"},
+			withPolicy: true,
+			wantReady:  false,
+		},
+		{
+			name:           "rolling update propagates CoordinatedPolicy read error",
+			st:             state{specReplicas: ptr.To(int32(3)), replicas: 3, readyReplicas: 1, updatedReplicas: 1, expectedUpdatedReplicas: 3, currentRev: "r1", updateRev: "r2"},
+			failPolicyRead: true,
+			wantErr:        true,
+		},
+		{
+			name:      "nil spec replicas defaults to 1",
+			st:        state{specReplicas: nil, replicas: 1, readyReplicas: 1, updatedReplicas: 1, updatedReadyReplicas: 1, expectedUpdatedReplicas: 1, currentRev: "r1", updateRev: "r1"},
+			wantReady: true,
+		},
+		{
+			name:           "steady state skips CoordinatedPolicy read",
+			st:             state{specReplicas: ptr.To(int32(2)), replicas: 2, readyReplicas: 2, updatedReplicas: 2, updatedReadyReplicas: 2, expectedUpdatedReplicas: 2, currentRev: "r1", updateRev: "r1"},
+			failPolicyRead: true,
+			wantReady:      true,
+		},
+	}
+
+	peerRole := wrappersv2.BuildStandaloneRole("peer").WithReplicas(1).Obj()
+	policyReadInterceptor := interceptor.Funcs{
+		Get: func(ctx context.Context, c client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+			if _, ok := obj.(*workloadsv1alpha2.CoordinatedPolicy); ok {
+				return errors.New("CoordinatedPolicy read failed")
+			}
+			return c.Get(ctx, key, obj, opts...)
+		},
+	}
+
+	for _, wl := range claimTestWorkloads() {
+		if wl.kind == "Deployment" {
+			// Deployment cannot enforce partition-based skew pacing, so it never
+			// uses the maxSkew readiness exception or reads CoordinatedPolicy.
+			t.Run("Deployment/rolling update with maxSkew policy stays not ready", func(t *testing.T) {
+				role := wl.role
+				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+					WithRoles([]workloadsv1alpha2.RoleSpec{role, peerRole}).Obj()
+				meta := metav1.ObjectMeta{
+					Name:            rbg.GetWorkloadName(&role),
+					Namespace:       rbg.Namespace,
+					OwnerReferences: claimTestOwnedBy(rbg),
+				}
+				deploy := buildObj("Deployment", meta, state{
+					specReplicas: ptr.To(int32(3)), replicas: 3, readyReplicas: 1, updatedReplicas: 1,
+				})
+				c := fake.NewClientBuilder().WithScheme(scheme).
+					WithObjects(deploy, maxSkewPolicy).
+					WithInterceptorFuncs(policyReadInterceptor).
+					Build()
+				ready, err := wl.reconciler(scheme, c).CheckWorkloadReady(context.Background(), rbg, &role)
+				require.NoError(t, err)
+				assert.False(t, ready)
+			})
+			continue
+		}
+
+		for _, tc := range cases {
+			t.Run(wl.kind+"/"+tc.name, func(t *testing.T) {
+				role := wl.role
+				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+					WithRoles([]workloadsv1alpha2.RoleSpec{role, peerRole}).Obj()
+				meta := metav1.ObjectMeta{
+					Name:            rbg.GetWorkloadName(&role),
+					Namespace:       rbg.Namespace,
+					OwnerReferences: claimTestOwnedBy(rbg),
+				}
+				builder := fake.NewClientBuilder().WithScheme(scheme).WithObjects(buildObj(wl.kind, meta, tc.st))
+				if tc.withPolicy {
+					builder = builder.WithObjects(maxSkewPolicy)
+				}
+				if tc.failPolicyRead {
+					builder = builder.WithInterceptorFuncs(policyReadInterceptor)
+				}
+				ready, err := wl.reconciler(scheme, builder.Build()).CheckWorkloadReady(context.Background(), rbg, &role)
+				if tc.wantErr {
+					require.Error(t, err)
+					assert.False(t, ready)
+					return
+				}
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantReady, ready)
+			})
+		}
+
+		if wl.kind == "RoleInstanceSet" {
+			t.Run("RoleInstanceSet/paused rolling update with maxSkew policy stays not ready", func(t *testing.T) {
+				role := wl.role
+				rbg := wrappersv2.BuildBasicRoleBasedGroup("test-rbg", "default").
+					WithRoles([]workloadsv1alpha2.RoleSpec{role, peerRole}).Obj()
+				meta := metav1.ObjectMeta{
+					Name:            rbg.GetWorkloadName(&role),
+					Namespace:       rbg.Namespace,
+					OwnerReferences: claimTestOwnedBy(rbg),
+				}
+				ris := buildObj("RoleInstanceSet", meta, state{
+					specReplicas: ptr.To(int32(3)), paused: true, replicas: 3, readyReplicas: 2,
+					updatedReplicas: 1, expectedUpdatedReplicas: 3, currentRev: "r1", updateRev: "r2",
+				})
+				c := fake.NewClientBuilder().WithScheme(scheme).
+					WithObjects(ris, maxSkewPolicy).
+					WithInterceptorFuncs(policyReadInterceptor).
+					Build()
+				ready, err := wl.reconciler(scheme, c).CheckWorkloadReady(context.Background(), rbg, &role)
+				require.NoError(t, err)
+				assert.False(t, ready)
+			})
+		}
 	}
 }

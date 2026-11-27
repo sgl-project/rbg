@@ -177,7 +177,17 @@ func (r *LeaderWorkerSetReconciler) CheckWorkloadReady(
 	if checkWorkloadClaimable(lws, rbg) != nil {
 		return false, nil
 	}
-	return lws.Status.ReadyReplicas == lws.Status.Replicas, nil
+	desired := ptr.Deref(lws.Spec.Replicas, 1)
+	var partition int32
+	if lws.Spec.RolloutStrategy.RollingUpdateConfiguration != nil &&
+		lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition != nil {
+		partition = max(*lws.Spec.RolloutStrategy.RollingUpdateConfiguration.Partition, 0)
+	}
+	expectedUpdated := max(desired-partition, 0)
+	inRollout := lws.Status.UpdatedReplicas != lws.Status.Replicas &&
+		lws.Status.UpdatedReplicas < expectedUpdated
+	return checkWorkloadReady(ctx, r.client, rbg, role.Name, inRollout,
+		lws.Status.ReadyReplicas, lws.Spec.Replicas)
 }
 
 func (r *LeaderWorkerSetReconciler) CleanupOrphanedWorkloads(

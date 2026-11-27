@@ -28,10 +28,12 @@ import (
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
 func ConstructRoleStatue(rbg *workloadsv1alpha2.RoleBasedGroup, role *workloadsv1alpha2.RoleSpec, currentReplicas, currentReady, updatedReplicas int32) workloadsv1alpha2.RoleStatus {
@@ -200,4 +202,30 @@ func RecreateObj(ctx context.Context, c client.Client, rbg *workloadsv1alpha2.Ro
 	}
 
 	return nil
+}
+
+// checkWorkloadReady returns true when readyReplicas matches desiredReplicas, or
+// when the workload is mid-rolling-update (inRollout), its role participates in
+// a CoordinatedPolicy maxSkew rule, and at least one replica is still ready
+// (readyReplicas > 0). CoordinatedPolicy is only read when inRollout is true,
+// avoiding lookups on steady-state, initial-creation, and pure scale-up paths.
+func checkWorkloadReady(
+	ctx context.Context,
+	reader client.Reader,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	roleName string,
+	inRollout bool,
+	readyReplicas int32,
+	desiredReplicas *int32,
+) (bool, error) {
+	if inRollout {
+		inMaxSkew, err := utils.RoleInMaxSkewCoordinationV2WithClient(ctx, reader, rbg, roleName)
+		if err != nil {
+			return false, err
+		}
+		if inMaxSkew {
+			return readyReplicas > 0, nil
+		}
+	}
+	return readyReplicas == ptr.Deref(desiredReplicas, 1), nil
 }

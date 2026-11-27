@@ -589,11 +589,20 @@ func (r *StatefulSetReconciler) CheckWorkloadReady(
 		return false, nil
 	}
 
-	if utils.RoleInMaxSkewCoordinationV2(rbg, role.Name) &&
-		sts.Status.CurrentRevision != sts.Status.UpdateRevision {
-		return true, nil
+	desired := ptr.Deref(sts.Spec.Replicas, 1)
+	var partition int32
+	if sts.Spec.UpdateStrategy.RollingUpdate != nil && sts.Spec.UpdateStrategy.RollingUpdate.Partition != nil {
+		partition = max(*sts.Spec.UpdateStrategy.RollingUpdate.Partition, 0)
 	}
-	return sts.Status.ReadyReplicas == *sts.Spec.Replicas, nil
+	expectedUpdated := max(desired-partition, 0)
+	inRollout := sts.Spec.UpdateStrategy.Type != appsv1.OnDeleteStatefulSetStrategyType &&
+		sts.Status.CurrentRevision != "" &&
+		sts.Status.UpdateRevision != "" &&
+		sts.Status.CurrentRevision != sts.Status.UpdateRevision &&
+		expectedUpdated > 0 &&
+		(partition == 0 || sts.Status.UpdatedReplicas < expectedUpdated)
+	return checkWorkloadReady(ctx, r.client, rbg, role.Name, inRollout,
+		sts.Status.ReadyReplicas, sts.Spec.Replicas)
 }
 
 func (r *StatefulSetReconciler) CleanupOrphanedWorkloads(

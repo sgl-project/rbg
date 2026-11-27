@@ -23,8 +23,11 @@ import (
 	"strings"
 
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/types"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/integer"
 	"k8s.io/utils/ptr"
@@ -232,6 +235,52 @@ func NonZeroValue(value int32) int32 {
 // RoleInMaxSkewCoordinationV2 checks if the given role is part of a MaxSkew coordination
 // in v1alpha2. In v1alpha2, coordination rules are managed via separate CoordinatedPolicy
 // resources, not embedded in the RoleBasedGroup spec, so this always returns false.
+//
+// Deprecated: Use RoleInMaxSkewCoordinationV2WithClient instead.
 func RoleInMaxSkewCoordinationV2(_ *workloadsv1alpha2.RoleBasedGroup, _ string) bool {
 	return false
+}
+
+// RoleInMaxSkewCoordinationV2WithClient reports whether roleName belongs to a
+// multi-role CoordinatedPolicy rule configuring rollingUpdate.maxSkew for rbg,
+// matching calculateRollingUpdateForPolicyRule's active-role scope (both
+// roleName and at least one distinct peer must resolve in rbg with replicas > 0).
+func RoleInMaxSkewCoordinationV2WithClient(
+	ctx context.Context,
+	reader client.Reader,
+	rbg *workloadsv1alpha2.RoleBasedGroup,
+	roleName string,
+) (bool, error) {
+	if rbg == nil || reader == nil || roleName == "" || rbg.Name == "" {
+		return false, nil
+	}
+	if GetRoleReplicasV2(rbg, roleName) <= 0 {
+		return false, nil
+	}
+
+	policy := &workloadsv1alpha2.CoordinatedPolicy{}
+	if err := reader.Get(ctx, types.NamespacedName{Namespace: rbg.Namespace, Name: rbg.Name}, policy); err != nil {
+		if apierrors.IsNotFound(err) || meta.IsNoMatchError(err) || runtime.IsNotRegisteredError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+
+	for _, rule := range policy.Spec.Policies {
+		if rule.Strategy.RollingUpdate == nil || rule.Strategy.RollingUpdate.MaxSkew == nil {
+			continue
+		}
+		var hasRole, hasActivePeer bool
+		for _, r := range rule.Roles {
+			if r == roleName {
+				hasRole = true
+			} else if GetRoleReplicasV2(rbg, r) > 0 {
+				hasActivePeer = true
+			}
+			if hasRole && hasActivePeer {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
