@@ -1,0 +1,48 @@
+# Fixtures for the deprecated workload types, applied by `rbg-fixtures.sh apply --with-deprecated`
+# next to rbg-fixtures.yaml (see references/verification-cases.md).
+# One RoleBasedGroup per deprecated workload type that runs on plain Kubernetes. LeaderWorkerSet
+# roles also need the LWS controller, so they are not included.
+# Creating these needs a controller under test that runs with --enable-deprecated-workload-types
+# (the default) and no RBG admission webhook on the cluster: with webhooks enabled, the 0.9.0 gate
+# rejects every new use of a deprecated type.
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: fx-sts
+spec:
+  roles:
+    - name: db
+      replicas: 2
+      annotations:
+        rbg.workloads.x-k8s.io/role-workload-type: apps/v1/StatefulSet
+      standalonePattern:
+        template:
+          spec:
+            terminationGracePeriodSeconds: 1
+            containers:
+              - name: main
+                image: __IMAGE__
+                command: ["sh", "-c", "sleep 2147483647"]
+                resources:
+                  requests: {cpu: 10m, memory: 16Mi}
+---
+apiVersion: workloads.x-k8s.io/v1alpha2
+kind: RoleBasedGroup
+metadata:
+  name: fx-deploy
+spec:
+  roles:
+    - name: api
+      replicas: 1
+      annotations:
+        rbg.workloads.x-k8s.io/role-workload-type: apps/v1/Deployment
+      standalonePattern:
+        template:
+          spec:
+            terminationGracePeriodSeconds: 1
+            containers:
+              - name: main
+                image: __IMAGE__
+                command: ["sh", "-c", "sleep 2147483647"]
+                resources:
+                  requests: {cpu: 10m, memory: 16Mi}

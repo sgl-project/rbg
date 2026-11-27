@@ -23,6 +23,11 @@ judge them.
 
 - **Form your own findings from the diff and the code around it,** using the checklists, before you
   read anyone else's review.
+- **Question the design, not only the code.** For every new mechanism, field, flag or state, ask
+  whether it is needed, whether a simpler design does the job, and how established controllers
+  such as StatefulSet and LeaderWorkerSet solve the same problem. Ask what the first reconcile after
+  an upgrade does to objects created before it. In #577 and #578 the user had to raise these
+  questions after the code review was done.
 - **Record them before you read other reviews,** each with its evidence and how sure you are: in your
   notes, a draft review or your working output, but never in a repository file. Step 3 compares
   against this record.
@@ -65,14 +70,25 @@ and push back with evidence where it is wrong.
 
 ## 4. Test what reading can't settle
 
+- **Run a PR that changes runtime behavior on a real cluster before you give a merge verdict.** This
+  covers reconcile logic, rendering, webhooks, the chart and the upgrade path.
+  - Use the remote cluster in your kubeconfig with kubectl rather than setting up a local one, and
+    follow [verification-cases.md](verification-cases.md): run the preflight, work in your own
+    namespace, scope your controller, and compare snapshots.
+  - Unit tests and envtest support the verdict but don't replace this run: envtest has no kubelet,
+    scheduler or garbage collector.
+  - Docs-only and test-only PRs can skip it; say so in the verdict. If no cluster is reachable, call
+    the verdict provisional and name the run that would settle it.
+  - In at least seven reviews (#474, #538, #571, #586, #591, #635, #637) the user had to ask whether
+    the change had been tested on a real cluster.
 - **Test every open finding, whatever its severity and whoever raised it,** before you present it as
   a fact. In #538, a first review round listed a managedFields concern only as an awareness item.
   Running the PR side by side with `main` in envtest in the next round showed a real regression, and
   it became a MUST.
-- **Use the cheapest test that can decide the question:** a direct reproduction with the real command
-  or tool, a unit test, envtest side by side with the base `main` for API-server behavior, or a real
-  cluster when kubelet, scheduler, GC or networking behavior matters. The `scripts/` directory and
-  [verification-cases.md](verification-cases.md) have ready-made cluster checks.
+- **Use the cheapest test that can decide each open question:** a direct reproduction with the real
+  command or tool, a unit test, envtest side by side with the base `main` for API-server behavior,
+  or a real cluster when kubelet, scheduler, GC or networking behavior matters. The `scripts/`
+  directory and [verification-cases.md](verification-cases.md) have ready-made cluster checks.
 - **Test against real behavior.** Capture what the tool or the API server actually returns instead
   of writing what you expect it to return. In #568, an offline test used an error message kubectl
   never prints for a refused connection, so it passed while the retry it covered was broken. An
@@ -87,9 +103,14 @@ and push back with evidence where it is wrong.
   question or a risk, not as a fact.
 - **Label each finding with its evidence level:** cluster, envtest, unit test, direct reproduction
   with the real tool, or code reading only.
+- **Show each problem as a concrete scenario:** the objects, the steps and the observed result,
+  ideally as a test the author can run. In #577 the user had to ask for concrete test cases.
 - **Quantify where you can:** reconcile counts, latency, or the number of affected objects in an
   A/B comparison. Put reproduction tests or proof-of-concept fixes in a collapsed block the author
   can reuse.
+- **Check churn findings against the latest `main`.** Before you flag changes to generated files,
+  `go.sum` or vendored code as accidental, compare them with the current `main`: in #620, 147 `go.sum`
+  lines flagged as stray churn had already reached `main` through another PR.
 - **Re-test after the fix,** and correct your own mistakes openly in the next round: retract or
   downgrade them.
 
@@ -114,9 +135,12 @@ Keep the scale consistent across rounds of the same PR.
    to touch.
 5. **Keep blocking items and follow-ups apart.** Pre-existing bugs and scope creep go to new issues,
    not into extra rounds on this PR.
-6. **On a re-review, map every earlier item** to ✅ fixed, ↩️ retracted, ⬇️ downgraded, or ⏳ still
+6. **Report non-blocking issues too,** as nits, suggestions or follow-up issues, each with a
+   concrete fix or the place to document it. Don't drop them because they don't block the merge; in
+   #587 the user asked for them.
+7. **On a re-review, map every earlier item** to ✅ fixed, ↩️ retracted, ⬇️ downgraded, or ⏳ still
    open.
-7. **Say what you did not run or verify.**
+8. **Say what you did not run or verify.**
 
 ## 7. Posting
 
@@ -133,31 +157,46 @@ Keep the scale consistent across rounds of the same PR.
 
 ## 8. Merge readiness on `main`
 
-The branch ruleset on `main` requires:
+The active branch ruleset requires:
 
 - squash merge only
-- at least 1 approval, including a code-owner review
+- at least 1 approval. The ruleset also asks for a code-owner review, but the repository has no
+  `CODEOWNERS` file, so any approval from someone with write access counts.
 - one extra approval for pull requests that Copilot opened without attribution to a person
 - an approval that comes after the last push
 - every review thread resolved
 
-Stale reviews are **not** dismissed on push. Before saying "ready", check:
+Stale reviews are **not** dismissed on push. The squash commit takes its message from the PR's
+commit messages (repository setting `COMMIT_MESSAGES`), not from the PR description, and its title
+from the PR title when the PR has several commits. Before saying "ready", check:
 
 - [ ] CI is green on the current head SHA, and the head hasn't moved since your review.
 - [ ] No unresolved threads, and no outstanding `CHANGES_REQUESTED` review. These are not dismissed
       automatically.
-- [ ] The approval postdates the last push, and the code-owner review is present.
+- [ ] The approval postdates the last push.
 - [ ] After a force-push, `git range-diff` shows only the expected changes.
 - [ ] The PR builds and its tests pass when merged onto the latest `main`.
-- [ ] Commits carry a DCO sign-off, and the PR template is filled in accurately.
-- [ ] `/release-test` has run for chart, image or release-manifest changes. It is informational, so
-      re-run it after new pushes.
-- [ ] Never bypass the rules with an admin merge.
+- [ ] Commits carry a DCO sign-off, their messages describe the change accurately, and the PR
+      template is filled in accurately.
+- [ ] A PR that changes runtime behavior ran on a real cluster (step 4).
+- [ ] `/release-test` has run for chart, manifest or image-bump changes. Only repository owners,
+      organization members and collaborators can start it, and its results are informational, so
+      re-run it after new pushes. It runs `main`'s
+      workflow on the PR head: the helm and manifest jobs and the published-target upgrade legs
+      install the chart's published images, and only the `pod-cache` upgrade leg builds the PR's
+      controller. So a new e2e spec that needs the PR's controller fails there until a release
+      ships it (#588), and a pass says little about controller changes; E2E Test, which builds
+      from source, and the cluster run cover those.
+- [ ] Never bypass the rules with an admin merge. Merge with
+      `gh pr merge <n> --squash --match-head-commit <reviewed SHA>`, so a later push can't slip in.
 
 ## 9. Docs and KEP quality
 
 - **Check every claim against `main` and cite `file:line`.** Watch for wrong API groups (it is
   `workloads.x-k8s.io`), functions that don't exist, and contradictions with earlier KEPs (#548).
+- **Run documented procedures instead of only reading them:** upgrade, migration and rollback steps,
+  on a cluster or in envtest. In #586, running a migration guide's prerequisite in envtest showed
+  that it couldn't be completed for Deployment roles.
 - **The PR description must match the current head.** Look for an empty body, a `fixes #XXXX`
   placeholder, or a wrong docs checkbox.
 - **KEPs need these sections:**
@@ -168,5 +207,6 @@ Stale reviews are **not** dismissed on push. Before saying "ready", check:
 - **Keep docs bilingual and code in English:**
   - Keep `README.md` and `README-zh_CN.md` in sync, and the zh copy of a KEP if there is one.
   - Write code comments, CRD descriptions and `kep.yaml` in English (#510, #528).
-- **Record behavior changes in the release note or squash message without overstating them,**
-  especially what happens to objects that existed before the upgrade (#478).
+- **Record behavior changes in the commit messages without overstating them,** especially what
+  happens to objects that existed before the upgrade (#478). The squash commit is built from them,
+  so a change described only in the PR description never reaches the history.

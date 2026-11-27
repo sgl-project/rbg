@@ -2,7 +2,7 @@
 name: rbg-conventions
 description: Development and code-review conventions for the RBG (RoleBasedGroup) operator, distilled from past PR reviews, with kubectl checks to verify them on a cluster. Use when adding or changing API fields or CRDs (v1alpha1/v1alpha2), defaults, validation, webhooks or conversion; when changing what the controller renders or writes (RoleInstanceSet or pod templates, labels, annotations, env, status, revision hashes); when touching the Helm chart, manifests, RBAC or codegen; when writing tests or KEPs; when verifying that an upgrade or binary swap leaves workloads untouched; and when reviewing an RBG pull request, evaluating other reviewers' comments, or judging merge readiness.
 license: Apache-2.0
-compatibility: Agent-neutral (Agent Skills format). The verification scripts need bash, kubectl and jq; the cluster cases need a namespace you own and, for controller cases, a cluster where no other RBG controller runs.
+compatibility: Agent-neutral (Agent Skills format). The verification scripts need bash, kubectl and jq; the cluster cases need a namespace you own and, for controller cases, a controller scoped to that namespace and no unscoped RBG controller on the cluster.
 ---
 
 # RBG development and review conventions
@@ -103,7 +103,8 @@ the most important rules on a cluster. Each one is described, with its last veri
       reach every writer of that status.
 - [ ] Services, StatefulSets and Deployments you create carry `rbg.workloads.x-k8s.io/group-name`.
       Without it the cache hides them.
-- [ ] Every new input is watched. `RBGPredicate` only enqueues RBG spec changes.
+- [ ] Every new input is watched. `RBGPredicate` enqueues only changes to an RBG's spec, labels and
+      annotations.
 - [ ] Unrelated roles stay isolated (dependency order still applies), there is no new periodic
       requeue, and events fire only on transitions.
 - [ ] Upgrade safety is shown in one of these ways:
@@ -121,13 +122,17 @@ the most important rules on a cluster. Each one is described, with its last veri
       stay safe.
 - [ ] Images are bumped everywhere together, and the window with old and new versions side by side is
       considered.
-- [ ] `make test-chart` and `helm lint` pass, and a maintainer has run `/release-test`.
+- [ ] `make test-chart` and `helm lint` pass. `make test-chart` needs helm 3.10 or later and skips
+      without helm.
+- [ ] A maintainer has run `/release-test`. Except for its `pod-cache` leg, it installs the
+      published images, so it checks release plumbing, not the PR's controller.
 
 ### Reviewing a pull request
 
 - [ ] Do your own pass before reading any other review: the PR description, the linked issue or
-      KEP, the diff and the code around it. Write your findings down, each marked settled or open.
-      If you were handed another review's points, read only those until you have your own view.
+      KEP, the diff and the code around it. Question the design too, not only the code. Write your
+      findings down, each marked settled or open. If you were handed another review's points, read
+      only those until you have your own view.
 - [ ] Walk the checklists above for every area the diff touches.
 - [ ] Then read every other review: maintainers, Copilot and other bots, the author's replies and
       earlier rounds. Judge each point on its diagnosis, severity and fix, work out why you missed
@@ -136,8 +141,13 @@ the most important rules on a cluster. Each one is described, with its last veri
       reproduction, a unit test, envtest A/B against `main`, or a cluster when kubelet, scheduler or
       GC matter. Use real outputs and show that the test can fail. State each finding's evidence
       level, and name the test for anything you couldn't run.
+- [ ] Before a merge verdict on a PR that changes runtime behavior (controller, rendering, webhooks,
+      chart or upgrade), run it on the remote cluster in your kubeconfig with kubectl, following
+      [verification-cases.md](references/verification-cases.md). Docs-only and test-only PRs can
+      skip this; the verdict says so.
 - [ ] Write a verdict line, a findings table with `file:line` and a concrete fix, your verdict on
-      each other reviewer's point, what you verified, and what you didn't run.
+      each other reviewer's point, what you verified, and what you didn't run. Report non-blocking
+      findings too, as nits or follow-ups.
 - [ ] Keep it a draft. Post, approve or merge only on explicit instruction, and write GitHub comments
       in English.
 

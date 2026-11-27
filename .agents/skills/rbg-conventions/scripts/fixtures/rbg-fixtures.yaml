@@ -126,7 +126,8 @@ spec:
                     resources:
                       requests: {cpu: 10m, memory: 16Mi}
 ---
-# roleTemplates + templateRef: the referenced template is part of the role hash.
+# roleTemplates + templateRef: the referenced template is part of the role hash. The empty patch keeps
+# it valid for v0.8.0's admission webhook, which requires templateRef.patch.
 apiVersion: workloads.x-k8s.io/v1alpha2
 kind: RoleBasedGroup
 metadata:
@@ -149,3 +150,4 @@ spec:
       standalonePattern:
         templateRef:
           name: base
+          patch: {}

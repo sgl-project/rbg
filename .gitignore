@@ -30,9 +30,8 @@ test/e2e/**/artifacts/
 .idea
 .vscode
 .qoder
-# Track shared skills (team assets), ignore personal .claude/ content (memory, settings, etc.)
-.claude/*
-!.claude/skills/
+# Shared skills live in .agents/skills/; .claude/ holds only personal content (memory, settings, etc.)
+.claude/
 
 *.swp
 *.swo
