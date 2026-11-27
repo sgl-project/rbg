@@ -4,6 +4,14 @@ RBG (RoleBasedGroup) is a Kubernetes operator for multi-role LLM inference workl
 is `sigs.k8s.io/rbgs` and its API group is `workloads.x-k8s.io`. Docs for human contributors are in
 `CONTRIBUTING.md` and `doc/dev/how_to_develop.md`.
 
+## Understanding the code
+
+Before you change or review a subsystem you don't know, read its page under
+[doc/dev/architecture/](doc/dev/architecture/README.md). The pages describe how the code works on
+`main`: the reconcile flows, which file and function does what, labels and other data contracts,
+and where the tests are. They hold facts; the rules are in the skill below. The README maps changed
+paths to pages, which helps when you review a diff.
+
 ## Development and review conventions
 
 Read [.agents/skills/rbg-conventions/SKILL.md](.agents/skills/rbg-conventions/SKILL.md), and the
