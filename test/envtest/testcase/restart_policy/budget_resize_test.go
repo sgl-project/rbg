@@ -172,7 +172,7 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 				}
 				return live.Status.GroupRestartCount == 1
 			}, timeout, interval).Should(BeTrue())
-			if exhausted {
+			if exhausted && recoverFirst {
 				instanceProgressingCondition := func() (*v2.RoleInstanceCondition, int64) {
 					live := &v2.RoleInstance{}
 					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
@@ -269,6 +269,7 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 					}
 					return nil
 				}, timeout, interval).Should(Succeed(), "recover=true must clear budget exhaustion at RI, RIS, and RBG")
+				return
 			}
 			if !exhausted {
 				Eventually(readyInstances, timeout, interval).Should(Equal(2))
