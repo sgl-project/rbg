@@ -146,6 +146,11 @@ type RBGSnapshot struct {
 	// the spec comparison nor the generation sees it change, and it selects the
 	// content of the group's discovery ConfigMap.
 	DiscoveryConfigVersion string
+	// HasEngineRuntimeLabel records whether the root object carries the reserved
+	// has-engine-runtimes label. Like the discovery version, it is metadata the
+	// spec comparison cannot see; unlike that version, the upgrade is allowed to add it only
+	// to the objects recorded in engineRuntimeLabelPins.
+	HasEngineRuntimeLabel bool
 	// RBGReady is the RBG's Ready condition being True.
 	RBGReady bool
 }
@@ -207,11 +212,12 @@ func captureAll(g gomega.Gomega, f *framework.Framework) map[string]RBGSnapshot 
 	for i := range setList.Items {
 		set := &setList.Items[i]
 		out[set.Name] = RBGSnapshot{
-			Kind:       kindRBGSet,
-			Name:       set.Name,
-			RBGUID:     set.UID,
-			Generation: set.Generation,
-			Spec:       specJSONMap(set.Spec),
+			Kind:                  kindRBGSet,
+			Name:                  set.Name,
+			RBGUID:                set.UID,
+			Generation:            set.Generation,
+			Spec:                  specJSONMap(set.Spec),
+			HasEngineRuntimeLabel: set.Labels[constants.HasEngineRuntimesLabelKey] == constants.HasEngineRuntimesLabelValue,
 		}
 	}
 	return out
@@ -231,6 +237,7 @@ func captureRBG(g gomega.Gomega, f *framework.Framework, rbg *workloadsv1alpha2.
 		ReadyByRole:   make(map[string]int32, len(rbg.Spec.Roles)),
 
 		DiscoveryConfigVersion: string(rbg.GetDiscoveryConfigVersion()),
+		HasEngineRuntimeLabel:  rbg.Labels[constants.HasEngineRuntimesLabelKey] == constants.HasEngineRuntimesLabelValue,
 	}
 
 	for _, role := range rbg.Spec.Roles {
@@ -573,6 +580,7 @@ func checkSnapshotDiff(fs *findings, f *framework.Framework, before, after map[s
 	checkOwnersStable(fs, before, after, rec.specRewrites)
 	checkNoRevisionExplosion(fs, f, before, after, rec.revisionAdds)
 	checkDiscoveryConfigVersionStable(fs, before, after)
+	checkEngineRuntimeLabelStable(fs, before, after, rec.engineRuntimeLabelPins)
 	checkStillReady(fs, before, after)
 }
 
@@ -952,6 +960,12 @@ type recordedRewrites struct {
 	// phase 1 and phase 3 observe. The from-release leaves them without a
 	// ConfigMap; the upgraded controller must create, label, and own it.
 	discoveryConfigRBGs map[string]bool
+
+	// engineRuntimeLabelPins are the root objects whose has-engine-runtimes label
+	// the upgrade backfills. The entry asserts in both directions: the object must
+	// not carry the label before, and must carry it afterwards. Every other object
+	// has to keep the label state it had.
+	engineRuntimeLabelPins map[string]bool
 }
 
 // healStoredStrategyType is the rewrite the mutating webhook performs on a stored
@@ -1243,6 +1257,39 @@ func checkDiscoveryConfigVersionStable(fs *findings, before, after map[string]RB
 	}
 	sort.Strings(problems)
 	fs.add("the discovery config mode of RoleBasedGroups changed", problems)
+}
+
+// checkEngineRuntimeLabelStable records the root objects whose reserved
+// has-engine-runtimes label the upgrade is allowed to add. The label is metadata, so
+// neither the spec comparison nor a revision check sees it move; this detector keeps
+// the migration explicit and every other object's label state unchanged.
+func checkEngineRuntimeLabelStable(
+	fs *findings,
+	before, after map[string]RBGSnapshot,
+	pins map[string]bool,
+) {
+	var problems []string
+	for name, beforeSnap := range before {
+		afterSnap, ok := after[name]
+		if !ok {
+			continue
+		}
+		was, is := beforeSnap.HasEngineRuntimeLabel, afterSnap.HasEngineRuntimeLabel
+		switch {
+		case !pins[name]:
+			if was != is {
+				problems = append(problems, fmt.Sprintf("%s: %t -> %t", name, was, is))
+			}
+		case was:
+			problems = append(problems, fmt.Sprintf(
+				"%s: already had the has-engine-runtimes label before, so the recorded backfill is stale", name))
+		case !is:
+			problems = append(problems, fmt.Sprintf(
+				"%s: did not gain the has-engine-runtimes label the upgrade is recorded to backfill", name))
+		}
+	}
+	sort.Strings(problems)
+	fs.add("the has-engine-runtimes label changed outside the recorded backfill", problems)
 }
 
 // describeRevisionChange renders one RBG's revision change, including a content diff

@@ -18,7 +18,11 @@ package workloads
 
 import (
 	"context"
+	"errors"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -26,10 +30,14 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 )
 
@@ -43,6 +51,9 @@ func controllerHarness(t *testing.T, objs ...client.Object) (
 	t.Helper()
 	scheme := runtime.NewScheme()
 	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	// The label-convergence gate is process-global; every harness starts
+	// unconverged so the backfill scan actually runs.
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
 	c := fake.NewClientBuilder().WithScheme(scheme).
 		WithStatusSubresource(&workloadsv1alpha2.ClusterEngineRuntimeProfile{}).
 		WithObjects(objs...).Build()
@@ -64,6 +75,23 @@ func controllerRBG(name, namespace, profileName string) *workloadsv1alpha2.RoleB
 			Name:           "worker",
 			EngineRuntimes: []workloadsv1alpha2.EngineRuntime{{ProfileName: profileName}},
 		}}},
+	}
+}
+
+func controllerRBGSet(name, namespace, profileName string) *workloadsv1alpha2.RoleBasedGroupSet {
+	return &workloadsv1alpha2.RoleBasedGroupSet{
+		ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: namespace},
+		Spec: workloadsv1alpha2.RoleBasedGroupSetSpec{
+			GroupTemplate: workloadsv1alpha2.RoleBasedGroupTemplateSpec{
+				Spec: workloadsv1alpha2.RoleBasedGroupSpec{Roles: []workloadsv1alpha2.RoleSpec{{
+					Name:           "worker",
+					EngineRuntimes: []workloadsv1alpha2.EngineRuntime{{ProfileName: profileName}},
+				}}},
+			},
+			RolloutStrategy: &workloadsv1alpha2.GroupSetRolloutStrategy{
+				Type: workloadsv1alpha2.InPlaceUpdateStrategyType,
+			},
+		},
 	}
 }
 
@@ -238,4 +266,567 @@ func TestProfilesReferencedBy(t *testing.T) {
 	assert.Empty(t, profilesReferencedBy(&workloadsv1alpha2.RoleBasedGroupSpec{}))
 	assert.Nil(t, profilesReferencedByRBG(context.Background(), &workloadsv1alpha2.RoleBasedGroupSet{}))
 	assert.Nil(t, profilesReferencedByRBGSet(context.Background(), &workloadsv1alpha2.RoleBasedGroup{}))
+}
+
+func TestEngineRuntimeLabelDriftRequeuesReferencedProfiles(t *testing.T) {
+	ctx := context.Background()
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+
+	unlabeled := controllerRBG("grp-old", "ns-a", "ik")
+	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+	requests := profilesReferencedByRBG(ctx, unlabeled)
+	require.Len(t, requests, 1)
+	assert.Equal(t, "ik", requests[0].Name)
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"a label-only bypassed write must un-converge the gate before the queued reconcile runs")
+
+	old := controllerRBG("grp", "ns-a", "ik")
+	old.Labels = map[string]string{constants.HasEngineRuntimesLabelKey: constants.HasEngineRuntimesLabelValue}
+	newObj := old.DeepCopy()
+	delete(newObj.Labels, constants.HasEngineRuntimesLabelKey)
+	assert.True(t, engineRuntimeLabelOrGenerationChanged().Update(event.UpdateEvent{
+		ObjectOld: old,
+		ObjectNew: newObj,
+	}), "a label-only update must pass the watch predicate")
+}
+
+func TestEngineRuntimeLabelDriftRequeuesReferencedProfilesForSets(t *testing.T) {
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(true)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+
+	unlabeled := controllerRBGSet("set-old", "ns-a", "ik")
+	delete(unlabeled.Labels, constants.HasEngineRuntimesLabelKey)
+	requests := profilesReferencedByRBGSet(context.Background(), unlabeled)
+	require.Len(t, requests, 1)
+	assert.Equal(t, "ik", requests[0].Name)
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"an unlabeled referencing RoleBasedGroupSet must un-converge the gate before the queued reconcile runs")
+}
+
+// TestClusterEngineRuntimeProfileLabelBackfill pins the upgrade path of the
+// webhook's label-scoped reference lookup (#597): objects written before the
+// has-engine-runtimes label shipped — or past the admission defaulters —
+// get the label converged by the profile controller, in both directions.
+func TestClusterEngineRuntimeProfileLabelBackfill(t *testing.T) {
+	ctx := context.Background()
+	referencing := controllerRBG("grp-old", "ns-a", "ik")
+	stale := controllerRBG("grp-stale", "ns-a", "ik")
+	stale.Spec.Roles[0].EngineRuntimes = nil
+	stale.Labels = map[string]string{constants.HasEngineRuntimesLabelKey: "true"}
+
+	r, _, c := controllerHarness(t, referencing, stale, cerpFor("ik"))
+	reconcileProfile(t, ctx, r, "ik")
+
+	got := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-old"}, got))
+	assert.Equal(t, "true", got.Labels[constants.HasEngineRuntimesLabelKey],
+		"a referencing object written before the label must be backfilled")
+
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-stale"}, got))
+	assert.NotContains(t, got.Labels, constants.HasEngineRuntimesLabelKey,
+		"a stale label on an object that no longer references any profile must be removed")
+}
+
+func TestClusterEngineRuntimeProfileDriftWarningSurvivesBackfillFailure(t *testing.T) {
+	ctx := context.Background()
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	profile := cerpFor("ik")
+	profile.Generation = 2
+	profile.Status = workloadsv1alpha2.ClusterEngineRuntimeProfileStatus{
+		ReferenceCount:       1,
+		ReferencedGeneration: 1,
+		Conditions: []metav1.Condition{{
+			Type: workloadsv1alpha2.FrozenConditionType, Status: metav1.ConditionTrue,
+			Reason: workloadsv1alpha2.ReasonReferenced, ObservedGeneration: 1,
+			LastTransitionTime: metav1.Now(),
+		}},
+	}
+	unlabeled := controllerRBG("grp-old", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	failures := 1
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.ClusterEngineRuntimeProfile{}).
+		WithObjects(profile, unlabeled).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				if _, ok := obj.(*workloadsv1alpha2.RoleBasedGroup); ok && failures > 0 {
+					failures--
+					return errors.New("failed calling webhook: no endpoints available")
+				}
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	warnings := 0
+	for i := 1; i <= 3; i++ {
+		_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: "ik"}})
+		if i == 1 {
+			require.Error(t, err, "the failed backfill still returns an error for retry")
+		} else {
+			require.NoError(t, err)
+		}
+		for _, event := range drainControllerEvents(recorder) {
+			if strings.Contains(event, ReasonEngineRuntimeProfileMutatedWhileReferenced) {
+				warnings++
+			}
+		}
+	}
+	assert.Equal(t, 1, warnings,
+		"the drift warning must survive a failed label backfill")
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillContinuesAfterPatchFailure(t *testing.T) {
+	ctx := context.Background()
+	bad := controllerRBG("grp-bad", "ns-a", "ik")
+	good := controllerRBG("grp-good", "ns-a", "ik")
+	recorder := record.NewFakeRecorder(32)
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(bad, good).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				if obj.GetName() == "grp-bad" {
+					return errors.New("webhook rejected the patch")
+				}
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	_, err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "grp-bad")
+	_, err = r.backfillHasEngineRuntimesLabels(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "grp-bad")
+	result, err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.NoError(t, err,
+		"a permanently failing object must stop failing profile reconciles after bounded retries")
+	assert.Equal(t, engineRuntimeLabelBackfillRetryAfter, result.RequeueAfter,
+		"a transient failure must schedule a bounded retry")
+
+	got := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-good"}, got))
+	assert.Equal(t, constants.HasEngineRuntimesLabelValue, got.Labels[constants.HasEngineRuntimesLabelKey],
+		"a patch failure on one object must not stop the rest of the backfill scan")
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"convergence must wait until every mismatching object is patched")
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1)
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillRetriesAfterWarning(t *testing.T) {
+	recorder := record.NewFakeRecorder(32)
+	r := &ClusterEngineRuntimeProfileReconciler{
+		Recorder: recorder,
+	}
+	obj := controllerRBG("grp-old", "ns-a", "ik")
+	obj.Generation = 1
+	err := errors.New("webhook rejected the patch")
+	now := time.Now()
+
+	for i := 0; i < engineRuntimeLabelBackfillRetryLimit; i++ {
+		_, _ = r.recordEngineRuntimeLabelBackfillFailure(obj, err, now)
+	}
+	retry, scheduledRetry := r.recordEngineRuntimeLabelBackfillFailure(obj, err, now)
+	assert.False(t, retry)
+	assert.Equal(t, engineRuntimeLabelBackfillRetryAfter, scheduledRetry)
+
+	afterRetryWindow := now.Add(engineRuntimeLabelBackfillRetryAfter + time.Second)
+	attempt, retryAfter := r.shouldAttemptEngineRuntimeLabelBackfill(obj, afterRetryWindow)
+	assert.True(t, attempt)
+	assert.Zero(t, retryAfter)
+
+	_, scheduledRetry = r.recordEngineRuntimeLabelBackfillFailure(obj, err, afterRetryWindow)
+	assert.Equal(t, engineRuntimeLabelBackfillRetryAfter, scheduledRetry,
+		"a failure after the warning window must schedule another retry")
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1,
+		"the warning event must remain one-shot across repeated retries")
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillReturnsListErrors(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				return errors.New("simulated list error")
+			},
+		}).Build()
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c}
+
+	_, err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "listing rolebasedgroups")
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillUsesOptimisticLock(t *testing.T) {
+	ctx := context.Background()
+	live := controllerRBG("grp-racy", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	var stale *workloadsv1alpha2.RoleBasedGroup
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(live).
+		WithInterceptorFuncs(interceptor.Funcs{
+			List: func(ctx context.Context, c client.WithWatch, list client.ObjectList, opts ...client.ListOption) error {
+				if typed, ok := list.(*workloadsv1alpha2.RoleBasedGroupList); ok {
+					typed.Items = []workloadsv1alpha2.RoleBasedGroup{*stale.DeepCopy()}
+					return nil
+				}
+				return c.List(ctx, list, opts...)
+			},
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				data, err := p.Data(obj)
+				require.NoError(t, err)
+				assert.Contains(t, string(data), `"resourceVersion":"`+stale.ResourceVersion+`"`,
+					"the label backfill must carry the cached resourceVersion precondition")
+				return errors.New("object was modified")
+			},
+		}).Build()
+	current := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-racy"}, current))
+	stale = current.DeepCopy()
+	current.Labels = map[string]string{"probe": "changed"}
+	require.NoError(t, c.Update(ctx, current))
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c}
+
+	_, err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "object was modified")
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillFailureKeysIncludeKind(t *testing.T) {
+	ctx := context.Background()
+	badRBG := controllerRBG("same-name", "ns-a", "ik")
+	badRBGSet := controllerRBGSet("same-name", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(badRBG, badRBGSet).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				return errors.New("webhook rejected the patch")
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	for i := 0; i < engineRuntimeLabelBackfillRetryLimit; i++ {
+		_, err := r.backfillHasEngineRuntimesLabels(ctx)
+		if i < engineRuntimeLabelBackfillRetryLimit-1 {
+			require.Error(t, err)
+		} else {
+			require.NoError(t, err)
+		}
+	}
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 2,
+		"an RBG and RBGSet with the same namespace/name must keep separate failure state")
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
+	assert.Contains(t, events[1], ReasonEngineRuntimeLabelBackfillFailed)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillFailureResetsOnGeneration(t *testing.T) {
+	r := &ClusterEngineRuntimeProfileReconciler{}
+	obj := controllerRBG("grp-old", "ns-a", "ik")
+	obj.Generation = 1
+	err := errors.New("webhook rejected the patch")
+
+	for i := 0; i < engineRuntimeLabelBackfillRetryLimit; i++ {
+		_, _ = r.recordEngineRuntimeLabelBackfillFailure(obj, err, time.Now())
+	}
+	attempt, retryAfter := r.shouldAttemptEngineRuntimeLabelBackfill(obj, time.Now())
+	assert.False(t, attempt)
+	require.NotZero(t, retryAfter)
+
+	obj.Generation = 2
+	attempt, retryAfter = r.shouldAttemptEngineRuntimeLabelBackfill(obj, time.Now())
+	assert.True(t, attempt)
+	assert.Zero(t, retryAfter)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillFailureKeysIncludeUID(t *testing.T) {
+	r := &ClusterEngineRuntimeProfileReconciler{}
+	old := controllerRBG("grp-old", "ns-a", "ik")
+	old.UID = types.UID("old-uid")
+	old.Generation = 1
+	new := controllerRBG("grp-old", "ns-a", "ik")
+	new.UID = types.UID("new-uid")
+	new.Generation = 1
+	err := errors.New("webhook rejected the patch")
+
+	for i := 0; i < engineRuntimeLabelBackfillRetryLimit; i++ {
+		_, _ = r.recordEngineRuntimeLabelBackfillFailure(old, err, time.Now())
+	}
+	attempt, retryAfter := r.shouldAttemptEngineRuntimeLabelBackfill(new, time.Now())
+	assert.True(t, attempt,
+		"a same-name replacement object must not inherit the deleted object's failure state")
+	assert.Zero(t, retryAfter)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillFailureStateIsConcurrencySafe(t *testing.T) {
+	ctx := context.Background()
+	bad := controllerRBG("grp-bad", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(bad).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				return errors.New("webhook rejected the patch")
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	const workers = 4
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = r.backfillHasEngineRuntimesLabels(ctx)
+		}()
+	}
+	wg.Wait()
+	_, _ = r.backfillHasEngineRuntimesLabels(ctx)
+	_, err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.NoError(t, err)
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1)
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillFailed)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillDeduplicatesConcurrentSuccess(t *testing.T) {
+	ctx := context.Background()
+	unlabeled := controllerRBG("grp-old", "ns-a", "ik")
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	var mu sync.Mutex
+	patches := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(unlabeled).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				mu.Lock()
+				patches++
+				mu.Unlock()
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	const workers = 10
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, err := r.backfillHasEngineRuntimesLabels(ctx)
+			errs <- err
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	assert.Equal(t, 1, patches,
+		"concurrent profile reconciles must share one global backfill, not patch the same object repeatedly")
+	assert.True(t, workloadsv1alpha2.EngineRuntimeLabelConverged())
+	assert.Empty(t, drainControllerEvents(recorder),
+		"a successful shared backfill must not emit a failure warning")
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategyObjects(t *testing.T) {
+	ctx := context.Background()
+	legacy := controllerRBG("grp-legacy", "ns-a", "ik")
+	legacy.Spec.Roles[0].RolloutStrategy = &workloadsv1alpha2.RolloutStrategy{
+		Type:          workloadsv1alpha2.RollingUpdateStrategyType,
+		RollingUpdate: &workloadsv1alpha2.RollingUpdate{},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	patches := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(legacy).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				patches++
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	result, err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	assert.Equal(t, 0, patches,
+		"the backfill must not patch an object whose stored strategy the mutating webhook would heal")
+	got := &workloadsv1alpha2.RoleBasedGroup{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "grp-legacy"}, got))
+	assert.NotContains(t, got.Labels, constants.HasEngineRuntimesLabelKey,
+		"a skipped object must stay unlabeled so admission keeps the unscoped lookup")
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"the gate must not converge past a skipped referencing object")
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1)
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillSkipped)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillSkipsLegacyStrategySets(t *testing.T) {
+	ctx := context.Background()
+	legacy := controllerRBGSet("set-legacy", "ns-a", "ik")
+	legacy.Spec.RolloutStrategy.Type = ""
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	patches := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(legacy).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				patches++
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	result, err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	assert.Equal(t, 0, patches,
+		"the backfill must not patch a set whose stored strategy the mutating webhook would heal")
+	got := &workloadsv1alpha2.RoleBasedGroupSet{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "set-legacy"}, got))
+	assert.NotContains(t, got.Labels, constants.HasEngineRuntimesLabelKey,
+		"a skipped set must stay unlabeled so admission keeps the unscoped lookup")
+	assert.False(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"the gate must not converge past a skipped referencing set")
+
+	events := drainControllerEvents(recorder)
+	assert.Len(t, events, 1)
+	assert.Contains(t, events[0], ReasonEngineRuntimeLabelBackfillSkipped)
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillsZeroReplicaSets(t *testing.T) {
+	ctx := context.Background()
+	set := controllerRBGSet("set-zero", "ns-a", "ik")
+	set.Spec.Replicas = ptr.To(int32(0))
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	patches := 0
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithObjects(set).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Patch: func(ctx context.Context, c client.WithWatch, obj client.Object, p client.Patch, opts ...client.PatchOption) error {
+				patches++
+				return c.Patch(ctx, obj, p, opts...)
+			},
+		}).Build()
+	recorder := record.NewFakeRecorder(32)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	result, err := r.backfillHasEngineRuntimesLabels(ctx)
+	require.NoError(t, err)
+	require.Zero(t, result.RequeueAfter)
+	assert.Equal(t, 1, patches,
+		"a pre-label zero-replica RoleBasedGroupSet must be backfilled")
+
+	got := &workloadsv1alpha2.RoleBasedGroupSet{}
+	require.NoError(t, c.Get(ctx, types.NamespacedName{Namespace: "ns-a", Name: "set-zero"}, got))
+	assert.Equal(t, constants.HasEngineRuntimesLabelValue, got.Labels[constants.HasEngineRuntimesLabelKey])
+	assert.True(t, workloadsv1alpha2.EngineRuntimeLabelConverged(),
+		"the set's group template is the live reference, so zero replicas must still converge")
+	assert.Empty(t, drainControllerEvents(recorder))
+}
+
+func TestClusterEngineRuntimeProfileLabelBackfillWarningIsConcurrencySafe(t *testing.T) {
+	ctx := context.Background()
+	profiles := []*workloadsv1alpha2.ClusterEngineRuntimeProfile{cerpFor("ik-a"), cerpFor("ik-b")}
+	legacy := controllerRBG("grp-legacy", "ns-a", "ik-a")
+	legacy.Spec.Roles[0].EngineRuntimes[0].ProfileName = "ik-b"
+	legacy.Spec.Roles[0].RolloutStrategy = &workloadsv1alpha2.RolloutStrategy{
+		Type:          workloadsv1alpha2.RollingUpdateStrategyType,
+		RollingUpdate: &workloadsv1alpha2.RollingUpdate{},
+	}
+
+	scheme := runtime.NewScheme()
+	require.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+	c := fake.NewClientBuilder().WithScheme(scheme).
+		WithStatusSubresource(&workloadsv1alpha2.ClusterEngineRuntimeProfile{}).
+		WithObjects(profiles[0], profiles[1], legacy).Build()
+	recorder := record.NewFakeRecorder(64)
+	workloadsv1alpha2.SetEngineRuntimeLabelConverged(false)
+	t.Cleanup(func() { workloadsv1alpha2.SetEngineRuntimeLabelConverged(false) })
+	r := &ClusterEngineRuntimeProfileReconciler{Client: c, Recorder: recorder}
+
+	const workers = 2
+	errs := make(chan error, workers)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			_, err := r.Reconcile(ctx, ctrl.Request{NamespacedName: types.NamespacedName{Name: profiles[i%len(profiles)].Name}})
+			errs <- err
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		require.NoError(t, err)
+	}
+
+	assert.Equal(t, 1, len(drainControllerEvents(recorder)),
+		"concurrent profile reconciles must emit one warning for the skipped object")
 }

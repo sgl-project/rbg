@@ -26,6 +26,19 @@ const (
 	RBGPrefix      = "rbg.workloads.x-k8s.io/"
 )
 
+// HasEngineRuntimesLabelKey marks a RoleBasedGroup or the top-level
+// RoleBasedGroupSet object whose roles carry at least one engineRuntimes
+// entry.
+// The ClusterEngineRuntimeProfile admission webhook uses it to scope its
+// live reference Lists to referencing objects instead of the whole cluster
+// (KEP-531 Profile Mutability); the admission defaulters and the profile
+// controller keep it in sync with the spec.
+const HasEngineRuntimesLabelKey = RBGPrefix + "has-engine-runtimes"
+
+// HasEngineRuntimesLabelValue is the value carried by objects that reference
+// at least one engine runtime profile.
+const HasEngineRuntimesLabelValue = "true"
+
 // ========== Enum Types ==========
 
 // InstancePatternType defines supported organization patterns

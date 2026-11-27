@@ -94,7 +94,22 @@ func (v *ClusterEngineRuntimeProfileValidator) ValidateDelete(ctx context.Contex
 }
 
 func (v *ClusterEngineRuntimeProfileValidator) rejectWhileReferenced(ctx context.Context, profileName, verb string) error {
-	refs, err := ListEngineRuntimeProfileReferences(ctx, v.Reader, profileName)
+	var refs []EngineRuntimeProfileReference
+	var err error
+	if !EngineRuntimeLabelConverged() {
+		refs, err = ListAllEngineRuntimeProfileReferences(ctx, v.Reader, profileName)
+	} else {
+		refs, err = ListEngineRuntimeProfileReferences(ctx, v.Reader, profileName)
+		if err == nil && len(refs) == 0 {
+			// The convergence gate follows this replica's informer, while the
+			// scoped lookup reads from the API server. A committed pre-label
+			// reference can therefore still be invisible to the selector
+			// until its informer event arrives. Confirm a zero-result scoped
+			// lookup with the label-independent list before admitting a
+			// profile write.
+			refs, err = ListAllEngineRuntimeProfileReferences(ctx, v.Reader, profileName)
+		}
+	}
 	if err != nil {
 		// failurePolicy: Fail — a lookup error blocks the write rather
 		// than passing it unenforced.

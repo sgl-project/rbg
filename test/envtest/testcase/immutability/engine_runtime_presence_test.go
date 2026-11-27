@@ -21,8 +21,10 @@ import (
 	. "github.com/onsi/gomega"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/utils/ptr"
 
+	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha1 "sigs.k8s.io/rbgs/api/workloads/v1alpha1"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	"sigs.k8s.io/rbgs/test/envtest/testutil"
@@ -199,6 +201,59 @@ var _ = Describe("engine runtime targetContainers presence rule", func() {
 				workloadsv1alpha1.EngineRuntime{ProfileName: "p", TargetContainers: bareV1a1()},
 				template,
 			))).To(Succeed())
+		})
+
+		It("stamps the has-engine-runtimes label on v1alpha1 writes", func() {
+			obj := v1a1RBG(
+				"presence-v1a1-label",
+				workloadsv1alpha1.EngineRuntime{ProfileName: "p", TargetContainers: bareV1a1()},
+				template,
+			)
+			Expect(testutil.K8sClient.Create(testutil.Ctx, obj)).To(Succeed())
+
+			got := &workloadsv1alpha1.RoleBasedGroup{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{
+				Namespace: obj.Namespace,
+				Name:      obj.Name,
+			}, got)).To(Succeed())
+			Expect(got.Labels[constants.HasEngineRuntimesLabelKey]).To(Equal("true"))
+		})
+
+		It("stamps the has-engine-runtimes label on v1alpha1 RoleBasedGroupSet writes", func() {
+			set := &workloadsv1alpha1.RoleBasedGroupSet{
+				ObjectMeta: metav1.ObjectMeta{Name: "presence-v1a1-set-label", Namespace: testNs},
+				Spec: workloadsv1alpha1.RoleBasedGroupSetSpec{
+					Replicas: ptr.To(int32(0)),
+					Template: workloadsv1alpha1.RoleBasedGroupSpec{
+						Roles: []workloadsv1alpha1.RoleSpec{{
+							Name:     "worker",
+							Replicas: ptr.To(int32(0)),
+							Workload: workloadsv1alpha1.WorkloadSpec{
+								APIVersion: "workloads.x-k8s.io/v1alpha2",
+								Kind:       "RoleInstanceSet",
+							},
+							TemplateSource: workloadsv1alpha1.TemplateSource{
+								Template: &corev1.PodTemplateSpec{Spec: corev1.PodSpec{Containers: []corev1.Container{{
+									Name:  "engine",
+									Image: "nginx:latest",
+								}}}},
+							},
+							EngineRuntimes: []workloadsv1alpha1.EngineRuntime{{
+								ProfileName:      "p",
+								TargetContainers: bareV1a1(),
+							}},
+						}},
+					},
+				},
+			}
+			Expect(testutil.K8sClient.Create(testutil.Ctx, set)).To(Succeed())
+
+			got := &workloadsv1alpha1.RoleBasedGroupSet{}
+			Expect(testutil.K8sClient.Get(testutil.Ctx, types.NamespacedName{
+				Namespace: set.Namespace,
+				Name:      set.Name,
+			}, got)).To(Succeed())
+			Expect(got.Labels[constants.HasEngineRuntimesLabelKey]).To(Equal("true"))
 		})
 
 		It("accepts the empty components edge (a present-but-empty list is pattern-unset)", func() {

@@ -83,6 +83,11 @@ func (d *RoleBasedGroupSetDefaulter) Default(ctx context.Context, obj runtime.Ob
 		}
 		ru.RollingUpdate.Type = NormalizeUpdateStrategyType(ru.RollingUpdate.Type)
 	}
+	// Keep the engine-runtime reference marker selectable on the wire. This
+	// webhook also receives v1alpha1 writes through Equivalent matchPolicy;
+	// the ClusterEngineRuntimeProfile admission webhook scopes its live
+	// reference lookup to this label (#597).
+	SetRoleBasedGroupSetHasEngineRuntimesLabel(rbgset)
 	return nil
 }
 

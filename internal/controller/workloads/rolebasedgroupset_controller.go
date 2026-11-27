@@ -542,21 +542,29 @@ func (r *RoleBasedGroupSetReconciler) needsUpdate(
 	return r.needsTemplateAnnotationUpdate(rbgset, rbg)
 }
 
-// needsTemplateLabelUpdate checks if the RBG labels need to be updated to match Template.Labels.
-// System-managed labels (GroupSetNameLabelKey, GroupSetIndexLabelKey) are excluded from comparison.
+// needsTemplateLabelUpdate checks if the RBG labels need to be updated to
+// match GroupTemplate.Labels. System-managed labels are excluded from the
+// comparison; in particular, the engine-runtime label is derived from the
+// child's own spec rather than copied from the set template.
 func (r *RoleBasedGroupSetReconciler) needsTemplateLabelUpdate(
 	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) bool {
 	templateLabels := rbgset.Spec.GroupTemplate.Labels
 	for k, v := range templateLabels {
+		if k == constants.HasEngineRuntimesLabelKey {
+			continue
+		}
 		if rbg.Labels[k] != v {
 			return true
 		}
 	}
 	// Check if any template label was removed from the template but still exists on RBG
 	for k := range rbg.Labels {
-		// Skip system-managed labels
-		if k == constants.GroupSetNameLabelKey || k == constants.GroupSetIndexLabelKey {
+		// Skip system-managed labels. The has-engine-runtimes label is
+		// derived from the child's own spec (the group template's roles), so
+		// it is not template-owned and must not be treated as divergence.
+		if k == constants.GroupSetNameLabelKey || k == constants.GroupSetIndexLabelKey ||
+			k == constants.HasEngineRuntimesLabelKey {
 			continue
 		}
 		if _, exists := templateLabels[k]; !exists {
@@ -628,6 +636,7 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 				); err != nil {
 					return err
 				}
+				base := latestRBG.DeepCopy()
 
 				// Update the spec from template, normalizing legacy update-strategy type
 				// values so a pre-webhook legacy template cannot poison the child.
@@ -637,8 +646,8 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 				// Sync labels and annotations from the template
 				r.syncRBGMetadata(rbgset, latestRBG)
 
-				// Perform the update
-				return r.client.Update(ctx, latestRBG)
+				return r.client.Patch(ctx, latestRBG,
+					client.MergeFromWithOptions(base, client.MergeFromWithOptimisticLock{}))
 			},
 		)
 
@@ -655,8 +664,9 @@ func (r *RoleBasedGroupSetReconciler) updateExistingRBGs(
 	return utilerrors.NewAggregate(allErrs)
 }
 
-// syncRBGMetadata syncs the labels and annotations from Template to the child RBG.
-// System-managed labels (GroupSetNameLabelKey, GroupSetIndexLabelKey) are preserved.
+// syncRBGMetadata syncs the labels and annotations from GroupTemplate to
+// the child RBG. System-managed labels are preserved or recomputed rather
+// than copied from the template.
 func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	rbgset *workloadsv1alpha2.RoleBasedGroupSet, rbg *workloadsv1alpha2.RoleBasedGroup,
 ) {
@@ -669,6 +679,10 @@ func (r *RoleBasedGroupSetReconciler) syncRBGMetadata(
 	newLabels[constants.GroupSetNameLabelKey] = rbgset.Name
 	newLabels[constants.GroupSetIndexLabelKey] = rbg.Labels[constants.GroupSetIndexLabelKey]
 	rbg.Labels = newLabels
+	// The has-engine-runtimes label is derived from the child's own spec, so
+	// it survives the whole-label replace instead of flapping against the
+	// admission defaulters and the profile controller's backfill.
+	workloadsv1alpha2.SetHasEngineRuntimesLabel(rbg)
 
 	// Sync annotations: keys the controllers own are carried over from the child, template
 	// annotations are applied over them, and anything else is removed.
@@ -731,7 +745,7 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 	// does not fall back to the webhook's v1 default when the set predates
 	// KEP-576 or explicitly opted out.
 	rbgAnnotations = withChildDiscoveryConfigVersion(rbgAnnotations, spec.Roles, rbgset.Spec.GroupTemplate.Annotations)
-	return &workloadsv1alpha2.RoleBasedGroup{
+	rbg := &workloadsv1alpha2.RoleBasedGroup{
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace:   rbgset.Namespace,
 			Name:        fmt.Sprintf("%s-%d", rbgset.Name, index),
@@ -741,6 +755,10 @@ func newRBGForSet(rbgset *workloadsv1alpha2.RoleBasedGroupSet, index int) *workl
 		},
 		Spec: *spec,
 	}
+	// Stamp the engine-runtime reference marker the same way the admission
+	// defaulters do, so a fresh child is selectable from its first write.
+	workloadsv1alpha2.SetHasEngineRuntimesLabel(rbg)
+	return rbg
 }
 
 // withChildDiscoveryConfigVersion returns child annotations carrying the

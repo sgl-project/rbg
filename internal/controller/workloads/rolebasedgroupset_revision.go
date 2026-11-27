@@ -81,6 +81,7 @@ func normalizedGroupSetTemplate(template *workloadsv1alpha2.RoleBasedGroupTempla
 	delete(result.Labels, constants.GroupSetNameLabelKey)
 	delete(result.Labels, constants.GroupSetIndexLabelKey)
 	delete(result.Labels, constants.GroupSetRevisionLabelKey)
+	delete(result.Labels, constants.HasEngineRuntimesLabelKey)
 	for k := range systemManagedAnnotationKeys {
 		delete(result.Annotations, k)
 	}

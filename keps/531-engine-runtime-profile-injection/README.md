@@ -960,10 +960,29 @@ subject to the same review as any other.
 
 Enforcement is a CERP validating webhook: on update it compares `old.spec` to
 `new.spec` and rejects a substantive change while a live reference exists. It
-consults references across RoleBasedGroups and RoleBasedGroupSets cluster-wide
-via an **uncached lookup**: profile writes are rare platform operations, so
-the cost is negligible, and skipping the informer cache removes the stale-cache
-variant of the window below. A set's group template counts as a reference even
+consults references across RoleBasedGroups and RoleBasedGroupSets
+via an **uncached lookup**, scoped to the objects carrying the reserved
+`rbg.workloads.x-k8s.io/has-engine-runtimes` label. For a referenced
+profile, the non-zero result scales with the number of referencing objects
+rather than with the cluster: profile writes are rare platform operations,
+and skipping the informer cache removes the stale-cache variant of the window
+below. The RoleBasedGroup and
+RoleBasedGroupSet admission defaulters maintain the label on every write; v1alpha1
+writes reach the same webhook through Equivalent matchPolicy. The label is
+derived from the roles' `engineRuntimes`, and the profile controller backfills
+it onto referencing objects written before the label existed. Until
+that backfill converges after an upgrade or restart, the webhook falls back
+to the unscoped lookup, so pre-label references still block writes; once a
+clean scan converges, the scoped lookup takes over, and a zero-result scoped
+lookup is confirmed with the unscoped live lookup before a profile write is
+admitted. Objects written with the
+webhooks disabled (`--enable-webhooks=none`, a debugging mode) can drift from
+the label; that mode has no admission to protect anyway. With leader election
+enabled, non-leader replicas serve webhooks but never run the controller.
+Each replica still runs its own read-only startup scan through the manager's
+cache and flips its local convergence gate once it observes a clean label
+state, so every webhook replica eventually takes the scoped lookup. A set's
+group template counts as a reference even
 at zero replicas, no child RBG required. The rejection names the referencing
 objects and points to the new-profile workflow. The webhook deploys with the
 controller image, mirroring the RoleBasedGroup webhook's deployment shape, and
@@ -1473,7 +1492,9 @@ Alpha (v0.9.0):
   object
 - [ ] Warning events: `UnaimedContainerPatch`, `EngineRuntimeRenderFailed`,
   `EngineRuntimeNameCollision`, `EngineRuntimeEnvCollision`,
-  `EngineRuntimeWrapShadowed`, the capability form-hazard warning
+  `EngineRuntimeWrapShadowed`, the capability form-hazard warning, and the
+  label-backfill diagnostics `EngineRuntimeLabelBackfillSkipped` and
+  `EngineRuntimeLabelBackfillFailed`
 - [ ] CERP immutability admission deployed with the controller, registered
   `failurePolicy: Fail` from the alpha: spec updates and DELETEs to
   referenced profiles rejected; no warning-window staging, opt-out flag, or
@@ -1533,6 +1554,17 @@ controller's startup reconcile; adoption, per workload (`component` or
 them. Until the new controller serves that entry, its `failurePolicy: Fail`
 means CERP updates and deletes are rejected rather than slipping past
 unvalidated — retry them once the upgrade has completed.
+
+**The label backfill is one deliberate upgrade-time write.** A pre-existing
+referencing object gets the `has-engine-runtimes` label on the profile
+controller's first reconcile. Before patching, the controller runs the
+mutating defaulter on a copy; if that would also change `spec`, it skips the
+object, emits an `EngineRuntimeLabelBackfillSkipped` warning, and leaves the
+object unlabeled so admission keeps the unscoped fallback. Repeated patch
+failures emit one `EngineRuntimeLabelBackfillFailed` warning and continue
+retrying every 30 seconds until the patch succeeds or the object changes,
+leaving the gate unconverged in the meantime. A later user write heals the
+stored spec and labels the object through the normal admission path.
 
 **Rollback.** `helm rollback` restores the previous controller and webhook
 configuration but keeps the new CRDs, because the CRD upgrader runs only on

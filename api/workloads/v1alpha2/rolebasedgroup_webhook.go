@@ -17,6 +17,8 @@ limitations under the License.
 package v1alpha2
 
 import (
+	"time"
+
 	ctrl "sigs.k8s.io/controller-runtime"
 )
 
@@ -64,6 +66,14 @@ func (r *CoordinatedPolicy) SetupWebhookWithManager(mgr ctrl.Manager, perRoleGan
 // +kubebuilder:webhook:path=/validate-workloads-x-k8s-io-v1alpha2-clusterengineruntimeprofile,mutating=false,failurePolicy=fail,sideEffects=None,groups=workloads.x-k8s.io,resources=clusterengineruntimeprofiles,verbs=update;delete,versions=v1alpha2,name=vclusterengineruntimeprofile.kb.io,admissionReviewVersions=v1
 
 func (r *ClusterEngineRuntimeProfile) SetupWebhookWithManager(mgr ctrl.Manager) error {
+	scanner := &engineRuntimeLabelStartupScanner{
+		reader:     mgr.GetCache(),
+		cache:      mgr.GetCache(),
+		retryAfter: 30 * time.Second,
+	}
+	if err := mgr.Add(scanner); err != nil {
+		return err
+	}
 	return ctrl.NewWebhookManagedBy(mgr).
 		For(r).
 		WithValidator(&ClusterEngineRuntimeProfileValidator{
