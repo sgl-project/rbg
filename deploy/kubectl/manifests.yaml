@@ -100009,7 +100009,7 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
-        image: rolebasedgroup/rbgs-controller:v0.9.0-45e6e1c2
+        image: rolebasedgroup/rbgs-controller:v0.9.0-6f8dcd25
         imagePullPolicy: IfNotPresent
         lifecycle:
           preStop:
