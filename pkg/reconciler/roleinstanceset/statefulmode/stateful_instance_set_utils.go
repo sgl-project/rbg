@@ -643,11 +643,12 @@ func nextSurgeOrdinal(skips, exclusions ordinals.Ranges, start int) (int, error)
 }
 
 // rolloutReplacementStateActive conservatively checks the whole current update
-// range while replacement intent for this revision is persisted. The recorded
-// positional bounds cannot identify the original members after gap filling:
-// a saved position may now refer to a different, healthy instance. Keeping the
-// current range protected can retain surge longer, but cannot release it while
-// a desired replacement is missing or unready. No new status fields are needed.
+// range while the rollout transition intent for this revision is persisted. The
+// recorded positional bounds cannot identify the original members after gap
+// filling: a saved position may now refer to a different, healthy instance.
+// Keeping the current range protected can retain surge longer, but cannot
+// release it while a desired transition is missing or unready. No new status
+// fields are needed.
 // This function does not mutate the informer snapshot or status.
 func rolloutReplacementStateActive(
 	set *workloadsv1alpha2.RoleInstanceSet,

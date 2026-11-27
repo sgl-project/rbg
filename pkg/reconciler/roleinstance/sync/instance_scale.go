@@ -263,10 +263,12 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 			}
 
 			// Scale in: delete pods for a component only when every component in its deletion
-			// gates (reverse-of-start ∪ explicit deleteAfter) has no remaining excess pods.
+			// gates (reverse-of-start ∪ explicit deleteAfter) has no remaining excess pods
+			// and no orphan Pods left — a deleteAfter reference to a component that was
+			// removed from the spec must still hold the gate until its Pods are gone.
 			for _, rg := range prt.Topologies {
 				if rg.ToDeleteIDs.Len() > 0 {
-					if allDependentsDeleted(deletionGates[rg.Name], topoMap) {
+					if allDependentsDeleted(deletionGates[rg.Name], topoMap, orphanComponentPods) {
 						toDeleteNum += rg.ToDeleteIDs.Len()
 						toDeletePods = append(toDeletePods, rg.ToDeletePod...)
 					}
@@ -337,11 +339,14 @@ func collectOrphanComponentDeletions(components sets.Set[string], pods, inactive
 }
 
 // appendGatedOrphanComponentDeletions extends the delete diff with orphan Pods
-// that are no longer gated. An orphan component stays blocked while any of its
-// dependents still has orphan Pods or pending scale-in deletions, so removing
-// components from the spec cannot invert a component-depends-on deletion
-// order. Dependents the spec intentionally keeps (no pending deletions, no
-// orphan Pods) do not block: the removed dependency was explicitly deleted.
+// that are no longer gated. An orphan component stays blocked while any
+// dependent still declared by the updated spec — directly or through a
+// deleteAfter reference — has orphan Pods or pending scale-in deletions, so
+// removing a component from the spec cannot invert a declared deletion order.
+// Dependents the spec intentionally keeps (no pending deletions, no orphan
+// Pods) do not block: the removed dependency was explicitly deleted. When a
+// dependency and its dependent are removed together, their edge is no longer
+// declared anywhere and their orphan Pods are cleaned up in parallel.
 func appendGatedOrphanComponentDeletions(
 	toDeleteNum int,
 	toDeletePods []*v1.Pod,
@@ -1411,8 +1416,11 @@ func allNamedComponentsReady(depNames []string, componentStatuses []workloadsv1a
 // excess pods remaining to delete (ToDeleteIDs is empty), meaning all components
 // that depend on the current one have already been torn down or reached their
 // target size. It is used during scale-in to gate deletion of a dependency's pods.
-func allDependentsDeleted(dependentNames []string, topoMap map[string]*instancecore.ComponentPodGroup) bool {
+func allDependentsDeleted(dependentNames []string, topoMap map[string]*instancecore.ComponentPodGroup, orphaned map[string][]*v1.Pod) bool {
 	for _, name := range dependentNames {
+		if len(orphaned[name]) > 0 {
+			return false
+		}
 		rg, ok := topoMap[name]
 		if !ok {
 			continue

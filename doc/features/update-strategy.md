@@ -69,8 +69,10 @@ Stateless-pattern roles are not covered by this change: their `RecreatePod`
 rollouts still replace the RoleInstance objects through the specified-delete
 path. Aligning the two backends is a follow-up design decision.
 
-Stateful RoleInstanceSet recreate rollouts and scale-down honor
-`spec.lifecycle.preDelete`. To hold deletion, the consumer must add a label
+Stateful RoleInstanceSet object-replacement paths — legacy-lifecycle recreate
+rollouts, topology revisions and scale-down — honor `spec.lifecycle.preDelete`.
+The identity-preserving `RecreatePod` path deletes member Pods directly and
+does not invoke the set-level pre-delete hook. To hold deletion, the consumer must add a label
 matching `labelsHandler` or a finalizer listed in `finalizersHandler` to the
 RoleInstance before it enters `PreparingDelete`. The controller waits until
 the matching markers are removed before requesting deletion.
@@ -149,7 +151,7 @@ gaps have been filled.
 
 Changing `partition` or `replicas` can consequently retain surge while newly
 eligible or unrelated members are missing or unhealthy, even after the original
-replacement recovers. Members outside the current update range do not delay
+transition recovers. Members outside the current update range do not delay
 completion. During scale-down, a healthy former base instance can serve as the
 remaining surge. Pausing retains unfinished protection; an empty current update
 range or a different target revision ends it.

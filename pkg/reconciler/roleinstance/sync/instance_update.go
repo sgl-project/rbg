@@ -73,25 +73,27 @@ func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.Ro
 			waitUpdateComponentPods[componentName] = append(waitUpdateComponentPods[componentName], pods[i])
 		}
 	}
-	// gateUpdateComponentPods holds every owned update-wave Pod, including
-	// terminating ones. Terminating Pods are classified inactive by
-	// IsPodActive, so they never reach waitUpdateComponentPods; without this
-	// map a deletion gate would release as soon as the gate component's DELETE
-	// was accepted instead of when its Pods have actually disappeared.
-	// Non-terminating inactive Pods (Succeeded/Failed) are deliberately
-	// excluded: nothing guarantees they will ever disappear, and gating on
-	// them could wedge the rollout.
+	// gateUpdateComponentPods holds every owned update-wave Pod that still
+	// occupies a deletion-gate slot: active outdated Pods, terminating
+	// (inactive) outdated Pods — including Pods of components the spec no
+	// longer lists, which a deleteAfter reference may still gate on — and
+	// Failed non-terminating outdated Pods, which the scale diff owns deleting.
+	// Without this map a deletion gate would release as soon as the gate
+	// component's DELETE was accepted instead of when its Pods have actually
+	// disappeared. Succeeded non-terminating Pods are deliberately treated as
+	// logically gone: nothing guarantees they will ever disappear, and gating
+	// on them could wedge the rollout.
 	gateUpdateComponentPods := make(map[string][]*v1.Pod, len(waitUpdateComponentPods))
 	for componentName, componentPods := range waitUpdateComponentPods {
 		gateUpdateComponentPods[componentName] = append([]*v1.Pod(nil), componentPods...)
 	}
 	for i := range inactivePods {
 		pod := inactivePods[i]
-		if pod.DeletionTimestamp == nil {
+		if pod.DeletionTimestamp == nil && pod.Status.Phase != v1.PodFailed {
 			continue
 		}
 		componentName := instanceutil.GetPodComponentName(pod)
-		if componentName == "" || !componentNames.Has(componentName) {
+		if componentName == "" {
 			continue
 		}
 		if !instanceutil.EqualToRevisionHash("", pod, updateRevision.Name) {
@@ -174,14 +176,11 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 // deletePodForUpdate removes one member Pod so it is recreated from the
 // current instance spec. The delete is addressed by the observed Pod UID: a
 // same-name replacement created by a concurrent reconcile must never be
-// removed, and an already-deleted incarnation counts as handled. The replaced
-// Pod is a new incarnation, so its in-place update baselines are dropped: an
-// old baseline would otherwise grant the new Pod one spurious "expected"
-// restart allowance.
+// removed, and an already-deleted incarnation counts as handled. The baseline
+// of the old incarnation is dropped only once the delete is accepted (or the
+// Pod is already gone): a failed delete must leave the still-running Pod's
+// baseline intact.
 func (c *realControl) deletePodForUpdate(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, pod *v1.Pod) error {
-	if newStatus != nil {
-		delete(newStatus.InPlaceUpdateContainerBaselines, pod.Name)
-	}
 	opts := &client.DeleteOptions{}
 	if pod.UID != "" {
 		uid := pod.UID
@@ -189,13 +188,28 @@ func (c *realControl) deletePodForUpdate(ctx context.Context, instance *workload
 	}
 	if err := c.Delete(ctx, pod, opts); err != nil {
 		if apierrors.IsNotFound(err) {
+			// The old incarnation is already gone; a replacement is a new
+			// incarnation and must not inherit the old baseline.
+			dropInPlaceUpdateBaseline(newStatus, pod.Name)
 			return nil
 		}
 		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate",
 			"failed to delete pod %s for update: %v", pod.Name, err)
 		return err
 	}
+	// The delete was accepted, so the Pod is being replaced by a new
+	// incarnation: an old in-place baseline would otherwise grant the new Pod
+	// one spurious "expected" restart allowance.
+	dropInPlaceUpdateBaseline(newStatus, pod.Name)
 	return nil
+}
+
+// dropInPlaceUpdateBaseline removes the per-pod in-place update baseline from
+// the status under construction. Deleting from a nil map is a no-op.
+func dropInPlaceUpdateBaseline(newStatus *workloadsv1alpha2.RoleInstanceStatus, podName string) {
+	if newStatus != nil {
+		delete(newStatus.InPlaceUpdateContainerBaselines, podName)
+	}
 }
 
 // orderedUpdateComponents returns the components holding outdated active Pods

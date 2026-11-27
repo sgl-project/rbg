@@ -527,6 +527,144 @@ func TestDeletePodForUpdateUIDPrecondition(t *testing.T) {
 	}
 }
 
+func TestDeletePodForUpdateKeepsBaselineUntilDeleteAccepted(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "keep-baseline", Namespace: "default", UID: "keep-baseline-uid"},
+	}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "keep-baseline-main-0",
+			Namespace: "default",
+			UID:       "keep-baseline-pod-uid",
+		},
+	}
+	deleteCalls := 0
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deleteCalls++
+				if deleteCalls == 1 {
+					return apierrors.NewConflict(v1.Resource("pods"), obj.GetName(), errors.New("transient failure"))
+				}
+				return apierrors.NewNotFound(v1.Resource("pods"), obj.GetName())
+			},
+		}).
+		Build()
+	ctrl := &realControl{
+		Client:           fakeClient,
+		inplaceControl:   &fakeInplaceControl{},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+		InPlaceUpdateContainerBaselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+			pod.Name: {"main": {RestartCount: 0, ImageID: "registry/rbg:old"}},
+		},
+	}
+
+	// A failed delete leaves the old incarnation running; its baseline must
+	// survive so a real crash on it is still classified correctly.
+	if err := ctrl.deletePodForUpdate(context.Background(), instance, newStatus, pod); err == nil {
+		t.Fatal("expected the failed delete to return an error")
+	}
+	if _, exists := newStatus.InPlaceUpdateContainerBaselines[pod.Name]; !exists {
+		t.Fatal("baseline must survive a failed delete while the old Pod incarnation still exists")
+	}
+
+	// Once the delete is accepted (here: the Pod is already gone), the
+	// replacement is a new incarnation and must not inherit the baseline.
+	if err := ctrl.deletePodForUpdate(context.Background(), instance, newStatus, pod); err != nil {
+		t.Fatalf("deletePodForUpdate for an already-deleted pod returned error: %v", err)
+	}
+	if _, exists := newStatus.InPlaceUpdateContainerBaselines[pod.Name]; exists {
+		t.Fatal("baseline must be dropped once the old incarnation is gone")
+	}
+}
+
+func TestUpdateRecreatePodWaitsForOrphanGateComponents(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	// leader waits for router through deleteAfter, but the router component
+	// was removed from the spec while its old Pod is still terminating.
+	dependsOn := `{"deleteAfter":["router"]}`
+	size := int32(1)
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "orphan-gate", Namespace: "default", UID: "orphan-gate-uid"},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			UpdatePolicy: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+			},
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Name: "leader", Size: &size, Template: v1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+						componentdiscovery.ComponentDependsOnAnnotationKey: dependsOn,
+					}},
+				}},
+			},
+		},
+	}
+	newPod := func(name string) *v1.Pod {
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels: map[string]string{
+					apps.ControllerRevisionHashLabelKey: "rev-old",
+				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: workloadsv1alpha2.SchemeGroupVersion.String(),
+					Kind:       "RoleInstance",
+					Name:       instance.Name,
+					UID:        instance.UID,
+					Controller: ptr.To(true),
+				}},
+			},
+		}
+	}
+	leaderPod := newPod("orphan-gate-leader-0")
+	terminatingRouter := newPod("orphan-gate-router-0")
+	now := metav1.Now()
+	terminatingRouter.DeletionTimestamp = &now
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(leaderPod).
+		Build()
+	ctrl := &realControl{
+		Client:           fakeClient,
+		inplaceControl:   &fakeInplaceControl{},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+	updateRevision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "rev-new"}}
+	revisions := []*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: "rev-old"}}, updateRevision}
+
+	_, err := ctrl.Update(context.Background(), instance, &workloadsv1alpha2.RoleInstanceStatus{}, nil, updateRevision, revisions, []*v1.Pod{leaderPod}, []*v1.Pod{terminatingRouter})
+	if err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+	if getErr := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leaderPod), &v1.Pod{}); getErr != nil {
+		t.Fatalf("leader pod must survive while the removed router component still has a terminating Pod: %v", getErr)
+	}
+
+	// Once the terminating router Pod is fully gone, the leader is released.
+	_, err = ctrl.Update(context.Background(), instance, &workloadsv1alpha2.RoleInstanceStatus{}, nil, updateRevision, revisions, []*v1.Pod{leaderPod}, nil)
+	if err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+	if !apierrors.IsNotFound(fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leaderPod), &v1.Pod{})) {
+		t.Fatal("leader pod should be deleted after its orphan gate is released")
+	}
+}
+
 func TestUpdateRecreatePodClearsInPlaceUpdateBaselines(t *testing.T) {
 	scheme := runtime.NewScheme()
 	_ = v1.AddToScheme(scheme)

@@ -188,7 +188,7 @@ spec:
               updatePolicy:
                 description: |-
                   UpdatePolicy is the update policy snapshot propagated to this RoleInstance
-                  by the owning RoleInstanceSet controller.
+                  by the owning stateful RoleInstanceSet controller.
                 properties:
                   inPlaceUpdatePolicy:
                     description: InPlaceUpdatePolicy configures in-place Pod updates.

@@ -228,6 +228,14 @@ func (rc *realControl) updateInstance(set *workloadsv1alpha2.RoleInstanceSet, co
 
 			opts := coreControl.GetUpdateOptions()
 			opts.AdditionalFuncs = append(opts.AdditionalFuncs, lifecycle.SetRoleInstanceLifecycle(constants.RoleInstanceLifecycleStateUpdating))
+			// The revision template embeds the user-editable RoleInstanceSpec,
+			// so a template-provided spec.updatePolicy would be restored by the
+			// spec replacement. Stateless instances never consume this
+			// controller-owned stateful snapshot; strip it before persisting.
+			opts.PostPatchSpecFuncs = append(opts.PostPatchSpecFuncs, func(updated *workloadsv1alpha2.RoleInstance) error {
+				updated.Spec.UpdatePolicy = nil
+				return nil
+			})
 			res := rc.inplaceControl.Update(instance, oldRevision, updateRevision, opts)
 			if res.InPlaceUpdate {
 				if res.UpdateErr == nil {

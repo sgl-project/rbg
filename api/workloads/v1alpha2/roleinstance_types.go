@@ -56,8 +56,9 @@ type RoleInstanceSpec struct {
 	// RoleInstance are overwritten by the next propagated update. When unset,
 	// member Pods follow the default behavior: update in place when possible,
 	// and recreate only the Pods that cannot be updated in place.
-	// Stateless-pattern RoleInstances do not use this snapshot; their rollouts
-	// are driven by the set-level update strategy's specified-delete path.
+	// Stateless-pattern RoleInstances are not populated with this
+	// controller-owned snapshot: the set-level update strategy drives their
+	// rollouts, with RecreatePod using the specified-delete path.
 	// +optional
 	UpdatePolicy *RoleInstanceUpdatePolicy `json:"updatePolicy,omitempty"`
 }
@@ -82,7 +83,7 @@ const (
 // RoleInstance. It is rendered from the owning RoleInstanceSet update strategy,
 // not from the RoleInstanceSet template, so changing the update strategy does
 // not create a new RoleInstanceSet ControllerRevision. Stateless-pattern
-// RoleInstances never carry this snapshot.
+// RoleInstances are not populated with this snapshot by the controller.
 type RoleInstanceUpdatePolicy struct {
 	// Type selects the Pod update behavior for this RoleInstance.
 	// Default is InPlaceIfPossible.

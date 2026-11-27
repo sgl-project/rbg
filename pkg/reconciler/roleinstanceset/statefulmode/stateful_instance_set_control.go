@@ -1383,21 +1383,18 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 	// so the controller-owned snapshot must be re-stamped after every
 	// propagated spec replacement — including the legacy-lifecycle in-place
 	// path, whose template replacement would otherwise silently drop the
-	// snapshot. The same-shape spec move additionally fills ports whose
-	// annotations are missing (for example after a same-shape revision changed
-	// the port-allocator configuration) without disturbing ports already
-	// assigned to running Pods.
+	// snapshot. Every propagated spec move also fills ports whose annotations
+	// are missing (for example after a same-shape revision changed the
+	// port-allocator configuration) without disturbing ports already assigned
+	// to running Pods; an unfillable allocation aborts the move before the
+	// half-moved spec is persisted.
 	policy := instanceUpdatePolicyFromStrategy(&set.Spec.UpdateStrategy)
-	fillPorts := moveSpec
 	opts.PostPatchSpecFuncs = append(opts.PostPatchSpecFuncs, func(updated *workloadsv1alpha2.RoleInstance) error {
 		updated.Spec.UpdatePolicy = policy.DeepCopy()
 		// The instance keeps its identity, so controller-owned annotations
 		// propagated from the set at creation time must be refreshed here
 		// rather than surviving until the object is replaced.
 		syncSetOwnedInstanceAnnotations(updated, set)
-		if !fillPorts {
-			return nil
-		}
 		return portallocator.EnsurePortsForInstance(updated, set)
 	})
 

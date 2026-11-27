@@ -363,7 +363,8 @@ spec:
               rolloutReplacementState:
                 description: |-
                   RolloutReplacementState protects existing surge while early-rollback base
-                  replacements are in flight, including across controller restarts.
+                  transitions — in-place spec moves or replacements — are in flight,
+                  including across controller restarts.
                 properties:
                   partition:
                     description: |-

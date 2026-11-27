@@ -681,6 +681,41 @@ func TestApplyTargetUpdateLegacyLifecycleRestampsUpdatePolicy(t *testing.T) {
 	}
 }
 
+func TestApplyTargetUpdateLegacyLifecycleClearsStalePolicy(t *testing.T) {
+	// A default strategy renders no policy snapshot, so a directly written
+	// stale value must be cleared by the next propagated spec move instead of
+	// surviving on the instance.
+	set := buildSet("legacy-clear", 1, nil, nil)
+	set.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceSetLifecycle{}
+	set.Spec.UpdateStrategy.Type = workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType
+	target := buildInst("legacy-clear", 0, testOldRev, true, true)
+	target.Spec.UpdatePolicy = &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+		Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+	}
+	objectManager := &fakeInstanceObjectManager{}
+	inplaceControl := &fakeInplaceControl{canUpdateInPlace: true}
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objectManager, record.NewFakeRecorder(10)),
+		inplaceControl:  inplaceControl,
+	}
+
+	_, err := control.applyTargetUpdate(
+		context.Background(), set, &workloadsv1alpha2.RoleInstanceSetStatus{},
+		target,
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testOldRev}},
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testUpdateRev}},
+		[]*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: testOldRev}}},
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("applyTargetUpdate() error = %v", err)
+	}
+	if target.Spec.UpdatePolicy != nil {
+		t.Fatalf("default strategy must clear a stale directly written policy, got %+v", target.Spec.UpdatePolicy)
+	}
+}
+
 func TestApplyTargetUpdateLegacyLifecycleKeepsReplacement(t *testing.T) {
 	set := buildSet("legacy-replace", 1, nil, nil)
 	set.Spec.UpdateStrategy.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType

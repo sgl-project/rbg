@@ -99072,7 +99072,7 @@ spec:
               updatePolicy:
                 description: |-
                   UpdatePolicy is the update policy snapshot propagated to this RoleInstance
-                  by the owning RoleInstanceSet controller.
+                  by the owning stateful RoleInstanceSet controller.
                 properties:
                   inPlaceUpdatePolicy:
                     description: InPlaceUpdatePolicy configures in-place Pod updates.
@@ -99652,7 +99652,8 @@ spec:
               rolloutReplacementState:
                 description: |-
                   RolloutReplacementState protects existing surge while early-rollback base
-                  replacements are in flight, including across controller restarts.
+                  transitions — in-place spec moves or replacements — are in flight,
+                  including across controller restarts.
                 properties:
                   partition:
                     description: |-

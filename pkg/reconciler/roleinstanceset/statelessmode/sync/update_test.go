@@ -35,18 +35,24 @@ import (
 
 // fakeStatelessInplaceControl is a recording fake for the stateless inplace interface.
 type fakeStatelessInplaceControl struct {
-	canUpdateCalls int
-	updateCalls    int
+	canUpdateCalls   int
+	updateCalls      int
+	canUpdateInPlace bool
 }
 
 func (f *fakeStatelessInplaceControl) CanUpdateInPlace(_, _ *apps.ControllerRevision, _ *inplaceupdate.UpdateOptions) bool {
 	f.canUpdateCalls++
-	return false
+	return f.canUpdateInPlace
 }
 
-func (f *fakeStatelessInplaceControl) Update(_ *workloadsv1alpha2.RoleInstance, _, _ *apps.ControllerRevision, _ *inplaceupdate.UpdateOptions) inplaceupdate.UpdateResult {
+func (f *fakeStatelessInplaceControl) Update(instance *workloadsv1alpha2.RoleInstance, _, _ *apps.ControllerRevision, opts *inplaceupdate.UpdateOptions) inplaceupdate.UpdateResult {
 	f.updateCalls++
-	return inplaceupdate.UpdateResult{}
+	for _, fn := range opts.PostPatchSpecFuncs {
+		if err := fn(instance); err != nil {
+			return inplaceupdate.UpdateResult{InPlaceUpdate: true, UpdateErr: err}
+		}
+	}
+	return inplaceupdate.UpdateResult{InPlaceUpdate: true, NewResourceVersion: "2"}
 }
 
 func (f *fakeStatelessInplaceControl) Refresh(_ *workloadsv1alpha2.RoleInstance, _ *inplaceupdate.UpdateOptions) inplaceupdate.RefreshResult {
@@ -108,6 +114,63 @@ func TestUpdateInstanceRecreatePodSkipsInPlace(t *testing.T) {
 	}
 	if _, ok := updated.Labels[constants.RoleInstanceDeleteLabelKey]; !ok {
 		t.Fatal("expected specified-delete label to be set on instance")
+	}
+}
+
+func TestUpdateInstanceStripsTemplateUpdatePolicyOnInPlaceUpdate(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	// A directly written value (mirroring the user-editable template) must not
+	// survive the stateless in-place spec replacement.
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "inst-0",
+			Namespace:       "default",
+			UID:             types.UID("uid-0"),
+			ResourceVersion: "1",
+			Labels: map[string]string{
+				apps.ControllerRevisionHashLabelKey: "old-rev",
+			},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			UpdatePolicy: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+			},
+		},
+	}
+
+	set := &workloadsv1alpha2.RoleInstanceSet{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-set", Namespace: "default"},
+		Spec: workloadsv1alpha2.RoleInstanceSetSpec{
+			UpdateStrategy: workloadsv1alpha2.RoleInstanceSetUpdateStrategy{
+				Type: workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
+			},
+		},
+	}
+
+	oldRevision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "old-rev"}}
+	updateRevision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "new-rev"}}
+
+	fakeClient := fake.NewClientBuilder().WithScheme(scheme).WithObjects(instance).Build()
+	inplaceControl := &fakeStatelessInplaceControl{canUpdateInPlace: true}
+
+	rc := &realControl{
+		Client:         fakeClient,
+		inplaceControl: inplaceControl,
+		recorder:       record.NewFakeRecorder(10),
+	}
+	coreCtrl := &fakeStatelessCoreControl{}
+
+	_, err := rc.updateInstance(set, coreCtrl, updateRevision, []*apps.ControllerRevision{oldRevision}, instance)
+	if err != nil {
+		t.Fatalf("updateInstance() error = %v", err)
+	}
+	if inplaceControl.updateCalls != 1 {
+		t.Fatalf("expected in-place update called once, got %d", inplaceControl.updateCalls)
+	}
+	if instance.Spec.UpdatePolicy != nil {
+		t.Fatalf("stateless in-place update must strip the template updatePolicy, got %+v", instance.Spec.UpdatePolicy)
 	}
 }
 
