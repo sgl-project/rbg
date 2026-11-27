@@ -19,6 +19,7 @@ limitations under the License.
 package roleinstanceset
 
 import (
+	"sort"
 	"strings"
 
 	v1 "k8s.io/api/core/v1"
@@ -31,9 +32,12 @@ import (
 	"sigs.k8s.io/rbgs/pkg/utils"
 )
 
-// familyPriority is the blocker-family reporting order from KEP-502. It affects
-// reporting only, not controller execution order.
+// familyPriority is the blocker-family reporting order from KEP-502. RIS does not
+// own the configuration family, so RestartBudgetExceeded is the first family it
+// maps; in the full model it follows configuration. The order affects reporting
+// only, not controller execution order.
 var familyPriority = []string{
+	workloadconstants.ProgressingReasonRestartBudgetExceeded,
 	workloadconstants.ProgressingReasonPermissionDenied,
 	workloadconstants.ProgressingReasonAdmissionDenied,
 	workloadconstants.ProgressingReasonWaitingForQuota,
@@ -44,6 +48,7 @@ var familyPriority = []string{
 // instanceReasonFamily maps operation-specific RI Progressing reasons to the RIS
 // canonical family reason.
 var instanceReasonFamily = map[string]string{
+	workloadsv1alpha2.ReasonGroupRestartBudgetExceeded:    workloadconstants.ProgressingReasonRestartBudgetExceeded,
 	workloadsv1alpha2.ReasonPodCreateForbidden:            workloadconstants.ProgressingReasonPermissionDenied,
 	workloadsv1alpha2.ReasonPodUpdateForbidden:            workloadconstants.ProgressingReasonPermissionDenied,
 	workloadsv1alpha2.ReasonPodAdmissionRejected:          workloadconstants.ProgressingReasonAdmissionDenied,
@@ -178,10 +183,12 @@ func ApplySetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newSta
 // scale-up; the separate condition keeps the classification stable across
 // such intermediate observations.
 func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus, instances []*workloadsv1alpha2.RoleInstance) {
-	if !setEstablished(set, instances) {
+	if !setEstablished(set, instances) && !newProgressingProvesEstablishment(newStatus, set.Generation) {
 		// Still establishing, or no durable evidence yet. setEstablished reads
 		// the persisted status, so a Progressing reason about to be replaced by
 		// this write is still visible here and is captured before the erasure.
+		// Only a fresh Converged write proves completion of this target; a first
+		// activity reason such as ScalingDown must not create a durable fact.
 		return
 	}
 	var persisted *workloadsv1alpha2.RoleInstanceSetCondition
@@ -198,6 +205,7 @@ func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus
 			LastTransitionTime: now,
 			Reason:             "InstancesEstablished",
 			Message:            "the set has established the instances of a previous target",
+			ObservedGeneration: set.Generation,
 		}
 		if persisted != nil {
 			established.LastTransitionTime = persisted.LastTransitionTime
@@ -218,6 +226,22 @@ func applyEstablishedCondition(set *workloadsv1alpha2.RoleInstanceSet, newStatus
 		}
 	}
 	newStatus.Conditions = append(newStatus.Conditions, *persisted)
+}
+
+// newProgressingProvesEstablishment reports whether the status about to be
+// written proves completion of the current target. Only Converged carries that
+// evidence; an activity reason can be the first observation of a changed target
+// before the set has ever fully established one.
+func newProgressingProvesEstablishment(newStatus *workloadsv1alpha2.RoleInstanceSetStatus, generation int64) bool {
+	for _, condition := range newStatus.Conditions {
+		if condition.Type == workloadsv1alpha2.RoleInstanceSetProgressing &&
+			condition.Status == v1.ConditionFalse &&
+			condition.Reason == workloadconstants.ProgressingReasonConverged &&
+			condition.ObservedGeneration == generation {
+			return true
+		}
+	}
+	return false
 }
 
 // ComputeSetProgressingCondition builds the RIS Progressing condition. Blockers outrank
@@ -303,6 +327,14 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 		return condition
 	}
 
+	if instancesBehindGeneration(instances) {
+		// KEP-502: status written for an older RI generation never counts
+		// toward completion. Keep this guard ahead of pause and readiness so a
+		// just-dispatched target cannot transiently report Converged.
+		condition.Reason = workloadconstants.ProgressingReasonRoleInstanceUpdated
+		return condition
+	}
+
 	if paused && updatePending && !pausedWithInFlightUpdate {
 		// A fully paused update with no other workflow is not progress toward the
 		// target: all relevant progress is paused.
@@ -322,16 +354,6 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 		condition.Message = "instances are ready but have not satisfied minReadySeconds"
 		return condition
 	}
-	if instancesBehindGeneration(instances) {
-		// The set dispatched a new spec to at least one RI, but that RI's
-		// persisted status still describes the old generation: its revision label
-		// already moved, and its Ready condition and phase predate the update.
-		// Status written for an older generation must not count toward
-		// completion, or the set briefly reports Converged before the RI has even
-		// started updating.
-		condition.Reason = workloadconstants.ProgressingReasonRoleInstanceUpdated
-		return condition
-	}
 
 	condition.Status = v1.ConditionFalse
 	condition.Reason = workloadconstants.ProgressingReasonConverged
@@ -339,11 +361,11 @@ func ComputeSetProgressingCondition(set *workloadsv1alpha2.RoleInstanceSet, newS
 }
 
 // instancesBehindGeneration reports whether any non-terminating RoleInstance
-// still reports status for an older generation than its current spec. Such
-// status describes the previous target: the instance's revision label has
-// already moved with the dispatched spec, while its readiness facts have not
-// been recomputed yet. Synthetic (nil) slots and instances being deleted carry
-// no current status to wait for.
+// has not yet recorded status for its current generation. This covers both a
+// never-written object and stale status for an older generation: the revision
+// label has already moved with the dispatched spec, while the readiness facts
+// do not describe the current target. Synthetic (nil) slots and instances being
+// deleted carry no current status to wait for.
 func instancesBehindGeneration(instances []*workloadsv1alpha2.RoleInstance) bool {
 	for _, instance := range instances {
 		if instance == nil || instance.DeletionTimestamp != nil {
@@ -388,10 +410,17 @@ func persistedProgressingReason(set *workloadsv1alpha2.RoleInstanceSet) string {
 }
 
 // anyInstanceStarting reports whether any observed instance is still in its
-// initial startup: its phase or fresh Progressing reason is Creating. Such an
-// instance keeps the workflow that created it active until it completes startup.
+// initial startup: it has never written status, its phase is Creating, or its
+// fresh Progressing reason is Creating. Such an instance keeps the workflow
+// that created it active until it completes startup.
 func anyInstanceStarting(instances []*workloadsv1alpha2.RoleInstance) bool {
 	for _, instance := range instances {
+		if instance == nil {
+			continue
+		}
+		if instance.Generation > 0 && instance.Status.ObservedGeneration == 0 {
+			return true
+		}
 		if instance.Status.Phase == workloadsv1alpha2.RoleInstancePhaseCreating ||
 			instanceProgressingReason(instance) == workloadsv1alpha2.ReasonInstanceCreating {
 			return true
@@ -405,6 +434,7 @@ func anyInstanceStarting(instances []*workloadsv1alpha2.RoleInstance) bool {
 // initialize CurrentRevision before any RoleInstance exists, and a ready subset during
 // OrderedReady initial creation is not establishment.
 func setEstablished(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloadsv1alpha2.RoleInstance) bool {
+	persistedBlocker := false
 	for _, condition := range set.Status.Conditions {
 		if condition.Type == workloadsv1alpha2.RoleInstanceSetEstablished {
 			// Durable establishment evidence, recorded independently of the
@@ -415,6 +445,9 @@ func setEstablished(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloa
 		}
 		if condition.Type != workloadsv1alpha2.RoleInstanceSetProgressing {
 			continue
+		}
+		if condition.Status == v1.ConditionTrue && isSetBlockerFamily(condition.Reason) {
+			persistedBlocker = true
 		}
 		switch {
 		case condition.Reason == workloadconstants.ProgressingReasonCreating:
@@ -435,7 +468,11 @@ func setEstablished(set *workloadsv1alpha2.RoleInstanceSet, instances []*workloa
 	// until it has been fully ready once, and its later scale-ups would report
 	// Creating. A persisted Creating condition still takes precedence, so initial
 	// creation of a fresh set is unaffected by a partially ready instance.
-	if anyInstanceCompletedStartup(instances) {
+	// A persisted blocker-family Progressing condition, regardless of generation,
+	// means the set has already been written by this controller and must not use
+	// the legacy latch fallback. Activity conditions such as InstancesNotReady do
+	// not carry that evidence and must preserve the upgrade fallback.
+	if !persistedBlocker && anyInstanceCompletedStartup(instances) {
 		return true
 	}
 	return set.Status.Replicas > 0 && set.Status.ReadyReplicas == set.Status.Replicas &&
@@ -515,6 +552,14 @@ func isSetBlockerFamily(reason string) bool {
 	return false
 }
 
+// isSetChildDerivedBlockerFamily reports whether the family is observed from
+// child RoleInstances rather than this controller's own CR operations. Such a
+// fact must not be retained as prior evidence when a later operation error is
+// unclassified.
+func isSetChildDerivedBlockerFamily(reason string) bool {
+	return reason == workloadconstants.ProgressingReasonRestartBudgetExceeded
+}
+
 // priorSetBlocker returns the previously persisted current-generation specific blocker
 // family for this controller's own operations, if any. It is used to keep a confirmed
 // family when a later same-generation failure cannot be classified.
@@ -524,6 +569,7 @@ func priorSetBlocker(set *workloadsv1alpha2.RoleInstanceSet) *SetBlocker {
 			condition.Status != v1.ConditionTrue ||
 			condition.ObservedGeneration != set.Generation ||
 			condition.Reason == workloadconstants.ProgressingReasonUnclassifiedBlocker ||
+			isSetChildDerivedBlockerFamily(condition.Reason) ||
 			!isSetBlockerFamily(condition.Reason) {
 			continue
 		}
@@ -538,6 +584,7 @@ func priorSetBlocker(set *workloadsv1alpha2.RoleInstanceSet) *SetBlocker {
 // confirmed blocker family is never replaced by an unclassified error.
 func currentSetBlocker(ownBlocker, priorBlocker *SetBlocker, instances []*workloadsv1alpha2.RoleInstance) (string, string) {
 	candidates := map[string]string{}
+	restartBudgetInstances := make([]string, 0)
 	if ownBlocker != nil && ownBlocker.Reason != "" &&
 		ownBlocker.Reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
 		candidates[ownBlocker.Reason] = ownBlocker.Message
@@ -556,6 +603,9 @@ func currentSetBlocker(ownBlocker, priorBlocker *SetBlocker, instances []*worklo
 	}
 
 	for _, instance := range instances {
+		if instanceProgressingReason(instance) == workloadsv1alpha2.ReasonGroupRestartBudgetExceeded {
+			restartBudgetInstances = append(restartBudgetInstances, instance.Name)
+		}
 		for _, condition := range instance.Status.Conditions {
 			if condition.Type != workloadsv1alpha2.RoleInstanceProgressing || condition.Status != v1.ConditionTrue {
 				continue
@@ -576,6 +626,11 @@ func currentSetBlocker(ownBlocker, priorBlocker *SetBlocker, instances []*worklo
 
 	for _, family := range familyPriority {
 		if message, ok := candidates[family]; ok {
+			if family == workloadconstants.ProgressingReasonRestartBudgetExceeded && len(restartBudgetInstances) > 0 {
+				sort.Strings(restartBudgetInstances)
+				message = "restart budget exhausted for RoleInstances " + strings.Join(restartBudgetInstances, ", ") +
+					"; annotate each with rbg.workloads.x-k8s.io/recover=true to recover"
+			}
 			return family, message
 		}
 	}
@@ -640,7 +695,8 @@ func EmitOperationFailureEvent(recorder record.EventRecorder, set *workloadsv1al
 }
 
 // updateActive reports whether update work remains for the current target: a
-// revision rollout in progress, an instance still executing its own update, or a
+// revision rollout in progress, an instance still executing its own update, an
+// instance whose current-generation status has not yet been written, or a
 // replacement gap that the previously reported update workflow explains.
 func updateActive(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1alpha2.RoleInstanceSetStatus,
 	instances []*workloadsv1alpha2.RoleInstance, observedReplicas, target int32) bool {
@@ -672,7 +728,7 @@ func updateActive(set *workloadsv1alpha2.RoleInstanceSet, newStatus *workloadsv1
 	// that the missing instances belong to the rollout rather than to recovery or
 	// scale-up.
 	if persistedProgressingReason(set) == workloadconstants.ProgressingReasonRoleInstanceUpdated &&
-		(observedReplicas < target || anyInstanceStarting(instances)) {
+		(observedReplicas < target || anyInstanceStarting(instances) || instancesBehindGeneration(instances)) {
 		return true
 	}
 	return false

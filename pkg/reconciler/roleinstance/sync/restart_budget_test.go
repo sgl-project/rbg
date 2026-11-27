@@ -95,6 +95,81 @@ func liveBudgetInstance(t *testing.T, c *realControl, instance *workloadsv1alpha
 	return live
 }
 
+func TestEnforceRestartBudgetConditionsIncludesProgressing(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Generation: 3},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			RestartBudgetExhausted: true,
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{{
+				Type:   workloadsv1alpha2.RoleInstanceProgressing,
+				Status: v1.ConditionTrue,
+				Reason: workloadsv1alpha2.ReasonInstanceRecovering,
+			}},
+		},
+	}
+	EnforceRestartBudgetConditions(instance)
+	progressing := func() *workloadsv1alpha2.RoleInstanceCondition {
+		for i := range instance.Status.Conditions {
+			if instance.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceProgressing {
+				return &instance.Status.Conditions[i]
+			}
+		}
+		return nil
+	}()
+	require.NotNil(t, progressing)
+	require.Equal(t, v1.ConditionTrue, progressing.Status)
+	require.Equal(t, workloadsv1alpha2.ReasonGroupRestartBudgetExceeded, progressing.Reason)
+	require.Equal(t, GroupRestartBudgetMessage, progressing.Message)
+	require.EqualValues(t, 3, progressing.ObservedGeneration)
+}
+
+func TestEnforceRestartBudgetConditionsClearsAfterReset(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Generation: 3},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{
+				{
+					Type:   workloadsv1alpha2.RoleInstanceReady,
+					Status: v1.ConditionFalse,
+					Reason: workloadsv1alpha2.ReasonGroupRestartBudgetExceeded,
+				},
+				{
+					Type:   workloadsv1alpha2.RoleInstanceProgressing,
+					Status: v1.ConditionTrue,
+					Reason: workloadsv1alpha2.ReasonGroupRestartBudgetExceeded,
+				},
+			},
+		},
+	}
+	EnforceRestartBudgetConditions(instance)
+	require.False(t, slices.ContainsFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+		return cond.Reason == workloadsv1alpha2.ReasonGroupRestartBudgetExceeded
+	}), "a live reset must clear budget-owned Ready and Progressing facts")
+}
+
+func TestEnforceRestartBudgetConditionsRefreshesDegradedGeneration(t *testing.T) {
+	now := metav1.Now()
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Generation: 4},
+		Status: workloadsv1alpha2.RoleInstanceStatus{
+			RestartBudgetExhausted: true,
+			Conditions: []workloadsv1alpha2.RoleInstanceCondition{{
+				Type:               workloadsv1alpha2.RoleInstanceDegraded,
+				Status:             v1.ConditionTrue,
+				Reason:             workloadsv1alpha2.ReasonGroupRestartBudgetExceeded,
+				Message:            "Recovery is waiting for 2 old owned Pod object(s) to disappear",
+				LastTransitionTime: now,
+				ObservedGeneration: 3,
+			}},
+		},
+	}
+	EnforceRestartBudgetConditions(instance)
+	degraded := instance.Status.Conditions[0]
+	require.EqualValues(t, 4, degraded.ObservedGeneration)
+	require.Equal(t, "Recovery is waiting for 2 old owned Pod object(s) to disappear", degraded.Message)
+	require.Equal(t, now, degraded.LastTransitionTime)
+}
+
 func TestRestartBudgetUnsetAndHealthyZero(t *testing.T) {
 	ctx := context.Background()
 	t.Run("unset needs no reader and does not block scale", func(t *testing.T) {
@@ -400,6 +475,15 @@ func TestRestartBudgetOwnerReleasedAfterReset(t *testing.T) {
 			require.NotContains(t, instance.Annotations, constants.RoleInstanceRecoverAnnotationKey)
 			require.False(t, instance.Status.RestartBudgetExhausted)
 			require.Zero(t, instance.Status.GroupRestartCount)
+			require.False(t, slices.ContainsFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+				return cond.Type == workloadsv1alpha2.RoleInstanceProgressing &&
+					cond.Status == v1.ConditionTrue &&
+					cond.Reason == workloadsv1alpha2.ReasonGroupRestartBudgetExceeded
+			}), "recovery must clear the exhausted Progressing fact")
+			require.False(t, slices.ContainsFunc(instance.Status.Conditions, func(cond workloadsv1alpha2.RoleInstanceCondition) bool {
+				return cond.Type == workloadsv1alpha2.RoleInstanceReady &&
+					cond.Reason == workloadsv1alpha2.ReasonGroupRestartBudgetExceeded
+			}), "recovery must clear the budget-owned Ready fact")
 		})
 	}
 }

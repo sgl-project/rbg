@@ -39,11 +39,13 @@ import (
 
 // rbgBlockerFamilyPriority is the RBG reporting order from KEP-502. Configuration-family
 // blockers rank first because a human must change the spec, referenced configuration, or
-// environment. The order affects reporting only, not controller execution order.
+// environment. Restart-budget exhaustion follows configuration because it also needs an
+// explicit operator decision. The order affects reporting only, not controller execution order.
 var rbgBlockerFamilyPriority = []string{
 	constants.ProgressingReasonInvalidSpec,
 	constants.ProgressingReasonIncompatibleGangConfig,
 	constants.ProgressingReasonSchedulerUnsupported,
+	constants.ProgressingReasonRestartBudgetExceeded,
 	constants.ProgressingReasonPermissionDenied,
 	constants.ProgressingReasonAdmissionDenied,
 	constants.ProgressingReasonWaitingForQuota,
@@ -62,18 +64,19 @@ var rbgActivityPriority = []string{
 
 // risReasonToRBG maps RIS Progressing reasons to their RBG aggregates.
 var risReasonToRBG = map[string]string{
-	constants.ProgressingReasonCreating:            constants.ProgressingReasonCreating,
-	constants.ProgressingReasonRecovering:          constants.ProgressingReasonRecovering,
-	constants.ProgressingReasonInvalidSpec:         constants.ProgressingReasonInvalidSpec,
-	constants.ProgressingReasonRoleInstanceUpdated: constants.ProgressingReasonRoleInstanceSetUpdated,
-	constants.ProgressingReasonScalingUp:           constants.ProgressingReasonRoleInstanceSetUpdated,
-	constants.ProgressingReasonScalingDown:         constants.ProgressingReasonRoleInstanceSetUpdated,
-	constants.ProgressingReasonPermissionDenied:    constants.ProgressingReasonPermissionDenied,
-	constants.ProgressingReasonAdmissionDenied:     constants.ProgressingReasonAdmissionDenied,
-	constants.ProgressingReasonWaitingForQuota:     constants.ProgressingReasonWaitingForQuota,
-	constants.ProgressingReasonWaitingForResources: constants.ProgressingReasonWaitingForResources,
-	constants.ProgressingReasonUnclassifiedBlocker: constants.ProgressingReasonUnclassifiedBlocker,
-	constants.ProgressingReasonInstancesNotReady:   constants.ProgressingReasonRolesNotReady,
+	constants.ProgressingReasonCreating:              constants.ProgressingReasonCreating,
+	constants.ProgressingReasonRecovering:            constants.ProgressingReasonRecovering,
+	constants.ProgressingReasonInvalidSpec:           constants.ProgressingReasonInvalidSpec,
+	constants.ProgressingReasonRoleInstanceUpdated:   constants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonRestartBudgetExceeded: constants.ProgressingReasonRestartBudgetExceeded,
+	constants.ProgressingReasonScalingUp:             constants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonScalingDown:           constants.ProgressingReasonRoleInstanceSetUpdated,
+	constants.ProgressingReasonPermissionDenied:      constants.ProgressingReasonPermissionDenied,
+	constants.ProgressingReasonAdmissionDenied:       constants.ProgressingReasonAdmissionDenied,
+	constants.ProgressingReasonWaitingForQuota:       constants.ProgressingReasonWaitingForQuota,
+	constants.ProgressingReasonWaitingForResources:   constants.ProgressingReasonWaitingForResources,
+	constants.ProgressingReasonUnclassifiedBlocker:   constants.ProgressingReasonUnclassifiedBlocker,
+	constants.ProgressingReasonInstancesNotReady:     constants.ProgressingReasonRolesNotReady,
 }
 
 // allRolesUseRoleInstanceSet reports whether the RBG qualifies for the new condition
@@ -177,18 +180,23 @@ func (r *RoleBasedGroupReconciler) reportRBGProgressingBlocker(
 	// quota failure must not hide a RoleInstanceSet's current permission denial.
 	// The historical entry blocker keeps its stricter generation confirmation;
 	// the new own-operation failure is a current fact without one.
-	// A failed runtime observation keeps the plain own-blocker condition: an
-	// incomplete observation must not replace a confirmed controller-owned
-	// failure with Unknown.
-	if observations, readErr := r.collectRISObservations(ctx, rbg); readErr == nil {
-		facts := r.observeRuntimeFacts(ctx, rbg)
-		if facts.observationError() == nil {
-			if computed := computeRBGProgressingCondition(
-				rbg, rbg.Status.RoleStatuses, observations, nil, facts,
-				entryBlocker, &rbgOwnBlocker{reason: reason, message: message},
-			); isRBGBlockerFamily(computed.Reason) && computed.Status == metav1.ConditionTrue {
-				condition = computed
-			}
+	// A failed observation keeps a higher-priority child-derived restart-budget
+	// blocker, because an incomplete read is not evidence that the child fact
+	// cleared; a lower-priority own blocker still loses the family race.
+	observations, readErr := r.collectRISObservations(ctx, rbg)
+	facts := r.observeRuntimeFacts(ctx, rbg)
+	// Restart-budget facts are observed from RoleInstanceSets. A gang or
+	// dependency read failure must not preserve a child blocker that the
+	// successful RoleInstanceSet reads already show as cleared.
+	childBlocker := childDerivedBlockerForObservationFailure(rbg, readErr)
+	if childBlocker != nil && rbgBlockerFamilyRank(childBlocker.Reason) < rbgBlockerFamilyRank(reason) {
+		condition = *childBlocker
+	} else if readErr == nil {
+		if computed := computeRBGProgressingCondition(
+			rbg, rbg.Status.RoleStatuses, observations, nil, facts,
+			entryBlocker, &rbgOwnBlocker{reason: reason, message: message},
+		); isRBGBlockerFamily(computed.Reason) && computed.Status == metav1.ConditionTrue {
+			condition = computed
 		}
 	}
 	apimeta.SetStatusCondition(&rbg.Status.Conditions, condition)
@@ -260,14 +268,26 @@ func isRBGBlockerFamily(reason string) bool {
 	return false
 }
 
+func rbgBlockerFamilyRank(reason string) int {
+	for rank, family := range rbgBlockerFamilyPriority {
+		if family == reason {
+			return rank
+		}
+	}
+	return len(rbgBlockerFamilyPriority)
+}
+
 // isRBGRecomputedBlockerFamily reports whether the family is a blocker fact the
-// RBG re-observes on every reconcile from runtime state (gang waiting and
-// dependencies). Such facts must not be carried as entry blockers or retained
-// across unclassified errors: once the fresh observation clears, a carried
-// condition would keep reporting the family — with an empty role list — instead
-// of letting the status move on.
+// RBG re-observes on every reconcile from child or runtime state (restart
+// budgets, gang waiting, and dependencies). Such facts must not be carried as
+// controller-owned entry blockers or retained across unclassified errors: once
+// the fresh observation clears, a carried condition would keep reporting the
+// family — with an empty role list — instead of letting the status move on. A
+// failed observation is the exception: it is not evidence that the child-derived
+// restart-budget fact cleared.
 func isRBGRecomputedBlockerFamily(reason string) bool {
-	return reason == constants.ProgressingReasonWaitingForGang ||
+	return reason == constants.ProgressingReasonRestartBudgetExceeded ||
+		reason == constants.ProgressingReasonWaitingForGang ||
 		reason == constants.ProgressingReasonWaitingForDependencies
 }
 
@@ -322,13 +342,51 @@ func rbgEntryOwnBlocker(rbg *workloadsv1alpha2.RoleBasedGroup) *metav1.Condition
 		condition.Status != metav1.ConditionTrue ||
 		condition.ObservedGeneration != rbg.Generation ||
 		condition.Reason == constants.ProgressingReasonUnclassifiedBlocker ||
-		// Gang waiting and dependencies are re-observed every reconcile; a
-		// persisted entry copy of them must not outlive the fresh observation.
+		// Restart budgets, gang waiting, and dependencies are re-observed every
+		// reconcile; a persisted entry copy of them must not outlive a successful
+		// fresh observation.
 		isRBGRecomputedBlockerFamily(condition.Reason) ||
 		!isRBGBlockerFamily(condition.Reason) {
 		return nil
 	}
 	return condition.DeepCopy()
+}
+
+// observationIncompleteSuffixSeparator separates a retained child-derived
+// blocker's base message from the latest observation error appended to it.
+const observationIncompleteSuffixSeparator = "; observation incomplete: "
+
+// stripObservationIncompleteSuffix removes a previously appended
+// observation-error suffix. Retention is evaluated against the persisted
+// condition, whose message already carries the suffix from the previous retry;
+// without stripping it the message would grow on every reconcile until the API
+// limit rejects the write.
+func stripObservationIncompleteSuffix(message string) string {
+	if index := strings.Index(message, observationIncompleteSuffixSeparator); index >= 0 {
+		return message[:index]
+	}
+	return message
+}
+
+// childDerivedBlockerForObservationFailure returns a persisted restart-budget
+// blocker that must survive an incomplete observation. Unlike a controller-owned
+// entry blocker, this fact is re-observed from children on every successful
+// reconcile; a failed read is therefore not evidence that it cleared.
+func childDerivedBlockerForObservationFailure(rbg *workloadsv1alpha2.RoleBasedGroup, observationErr error) *metav1.Condition {
+	if observationErr == nil {
+		return nil
+	}
+	condition := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing))
+	if condition == nil ||
+		condition.Status != metav1.ConditionTrue ||
+		condition.ObservedGeneration != rbg.Generation ||
+		condition.Reason != constants.ProgressingReasonRestartBudgetExceeded {
+		return nil
+	}
+	retained := condition.DeepCopy()
+	retained.Message = fmt.Sprintf("%s%s%v",
+		stripObservationIncompleteSuffix(condition.Message), observationIncompleteSuffixSeparator, observationErr)
+	return retained
 }
 
 // collectRISObservations reads each role's RoleInstanceSet. A missing RIS is a fact
@@ -651,6 +709,7 @@ func rbgCurrentBlocker(
 		}
 		switch mapped {
 		case constants.ProgressingReasonInvalidSpec,
+			constants.ProgressingReasonRestartBudgetExceeded,
 			constants.ProgressingReasonPermissionDenied,
 			constants.ProgressingReasonAdmissionDenied,
 			constants.ProgressingReasonWaitingForQuota,

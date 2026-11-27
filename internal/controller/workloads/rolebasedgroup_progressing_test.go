@@ -168,6 +168,26 @@ func TestComputeRBGProgressingCondition(t *testing.T) {
 			wantStatus: metav1.ConditionTrue,
 		},
 		{
+			name: "ris restart budget exhaustion aggregates at rbg",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonRestartBudgetExceeded, corev1.ConditionTrue, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonWaitingForQuota, corev1.ConditionTrue, "hash"),
+			},
+			wantReason: workloadconstants.ProgressingReasonRestartBudgetExceeded,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
+			name: "configuration blockers outrank restart budget exhaustion",
+			rbg:  newProgressingRBG(),
+			observations: map[string]risObservation{
+				"prefill": observation(workloadconstants.ProgressingReasonInvalidSpec, corev1.ConditionTrue, "hash"),
+				"decode":  observation(workloadconstants.ProgressingReasonRestartBudgetExceeded, corev1.ConditionTrue, "hash"),
+			},
+			wantReason: workloadconstants.ProgressingReasonInvalidSpec,
+			wantStatus: metav1.ConditionTrue,
+		},
+		{
 			name: "family blocker outranks dependencies",
 			rbg:  newProgressingRBG(),
 			observations: map[string]risObservation{
@@ -462,10 +482,8 @@ func TestOwnBlockerCompetesWithFreshChildBlockers(t *testing.T) {
 }
 
 func TestRecomputedBlockerFamiliesAreNotCarried(t *testing.T) {
-	// Gang waiting and dependencies are re-observed on every reconcile. A
-	// persisted entry copy must not outlive the fresh observation: carrying it
-	// would keep reporting WaitingForDependencies with an empty role list after
-	// the dependencies became ready.
+	// Restart budgets, gang waiting, and dependencies are re-observed on every
+	// reconcile. A persisted entry copy must not outlive the fresh observation.
 	entry := metav1.Condition{
 		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
 		Status:             metav1.ConditionTrue,
@@ -498,6 +516,162 @@ func TestRecomputedBlockerFamiliesAreNotCarried(t *testing.T) {
 			t.Fatalf("recomputed blocker families must not be retained, got %s", reason)
 		}
 	})
+
+	t.Run("child-derived restart budgets are not carried", func(t *testing.T) {
+		rbg := newProgressingRBG()
+		restartBudget := entry
+		restartBudget.Reason = workloadconstants.ProgressingReasonRestartBudgetExceeded
+		restartBudget.Message = "restart budget affects roles prefill"
+		rbg.Status.Conditions = []metav1.Condition{restartBudget}
+		if got := rbgEntryOwnBlocker(rbg); got != nil {
+			t.Fatalf("child-derived restart-budget blocker must not be captured, got %+v", got)
+		}
+		reason, _ := retainRBGBlockerFamily(rbg, &restartBudget, workloadconstants.ProgressingReasonUnclassifiedBlocker, "operation failed")
+		if reason != workloadconstants.ProgressingReasonUnclassifiedBlocker {
+			t.Fatalf("child-derived restart-budget blocker must not be retained, got %s", reason)
+		}
+	})
+}
+
+func TestReportRBGProgressingBlockerKeepsRestartBudgetOnObservationError(t *testing.T) {
+	ctx := context.Background()
+	rbg := newProgressingRBG()
+	rbg.Status.Conditions = []metav1.Condition{{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+		Status:             metav1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonRestartBudgetExceeded,
+		Message:            "restart budget affects roles prefill",
+		ObservedGeneration: rbg.Generation,
+	}}
+	scheme := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	objects := make([]client.Object, 0, 1+len(rbg.Spec.Roles))
+	objects = append(objects, rbg)
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		set := &workloadsv1alpha2.RoleInstanceSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace,
+			},
+		}
+		objects = append(objects, set)
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(objects...).
+		WithObjects(objects...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cli client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*workloadsv1alpha2.RoleInstanceSet); ok {
+					return stderrors.New("observe RoleInstanceSet failed")
+				}
+				return cli.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	if err := c.Get(ctx, client.ObjectKey{Name: objects[1].GetName(), Namespace: objects[1].GetNamespace()}, &workloadsv1alpha2.RoleInstanceSet{}); err == nil {
+		t.Fatal("expected interceptor to fail RoleInstanceSet Get")
+	}
+	r := &RoleBasedGroupReconciler{client: c, scheme: scheme}
+	if err := r.reportRBGProgressingBlocker(
+		ctx, rbg, nil, workloadconstants.ProgressingReasonPermissionDenied, "rbac denied",
+	); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing))
+	if condition == nil || condition.Reason != workloadconstants.ProgressingReasonRestartBudgetExceeded {
+		t.Fatalf("observation failure must not downgrade restart budget, got %+v", condition)
+	}
+	if !strings.Contains(condition.Message, "observation incomplete") {
+		t.Fatalf("retained restart budget must record incomplete observation, got %q", condition.Message)
+	}
+}
+
+func TestObservationIncompleteSuffixDoesNotGrow(t *testing.T) {
+	rbg := newProgressingRBG()
+	rbg.Status.Conditions = []metav1.Condition{{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+		Status:             metav1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonRestartBudgetExceeded,
+		Message:            "restart budget affects roles prefill",
+		ObservedGeneration: rbg.Generation,
+	}}
+	first := childDerivedBlockerForObservationFailure(rbg, stderrors.New("first timeout"))
+	if first == nil {
+		t.Fatal("first retention failed")
+	}
+	rbg.Status.Conditions[0].Message = first.Message
+	second := childDerivedBlockerForObservationFailure(rbg, stderrors.New("second timeout"))
+	if second == nil {
+		t.Fatal("second retention failed")
+	}
+	if got := strings.Count(second.Message, observationIncompleteSuffixSeparator); got != 1 {
+		t.Fatalf("suffix count = %d, want 1; message=%q", got, second.Message)
+	}
+	if !strings.HasSuffix(second.Message, "second timeout") {
+		t.Fatalf("latest observation error must replace the previous one, got %q", second.Message)
+	}
+}
+
+func TestGangObservationFailureDoesNotRetainClearedRestartBudget(t *testing.T) {
+	ctx := context.Background()
+	rbg := newProgressingRBG()
+	rbg.Status.Conditions = []metav1.Condition{{
+		Type:               string(workloadsv1alpha2.RoleBasedGroupProgressing),
+		Status:             metav1.ConditionTrue,
+		Reason:             workloadconstants.ProgressingReasonRestartBudgetExceeded,
+		Message:            "restart budget affects roles prefill",
+		ObservedGeneration: rbg.Generation,
+	}}
+	scheme := runtime.NewScheme()
+	if err := workloadsv1alpha2.AddToScheme(scheme); err != nil {
+		t.Fatal(err)
+	}
+	objects := make([]client.Object, 0, 1+len(rbg.Spec.Roles))
+	objects = append(objects, rbg)
+	for i := range rbg.Spec.Roles {
+		role := &rbg.Spec.Roles[i]
+		set := &workloadsv1alpha2.RoleInstanceSet{
+			ObjectMeta: metav1.ObjectMeta{
+				Name: rbg.GetWorkloadName(role), Namespace: rbg.Namespace, Generation: rbg.Generation,
+			},
+			Status: workloadsv1alpha2.RoleInstanceSetStatus{
+				ObservedGeneration: rbg.Generation,
+				Conditions: []workloadsv1alpha2.RoleInstanceSetCondition{{
+					Type:               workloadsv1alpha2.RoleInstanceSetProgressing,
+					Status:             corev1.ConditionFalse,
+					Reason:             workloadconstants.ProgressingReasonConverged,
+					ObservedGeneration: rbg.Generation,
+				}},
+			},
+		}
+		objects = append(objects, set)
+	}
+	c := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithStatusSubresource(objects...).
+		WithObjects(objects...).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Get: func(ctx context.Context, cli client.WithWatch, key client.ObjectKey, obj client.Object, opts ...client.GetOption) error {
+				if _, ok := obj.(*workloadsv1alpha2.CoordinatedPolicy); ok {
+					return stderrors.New("coordinated policy read timed out")
+				}
+				return cli.Get(ctx, key, obj, opts...)
+			},
+		}).
+		Build()
+	r := &RoleBasedGroupReconciler{client: c, apiReader: c, scheme: scheme}
+	if err := r.reportRBGProgressingBlocker(
+		ctx, rbg, nil, workloadconstants.ProgressingReasonPermissionDenied, "rbac denied",
+	); err != nil {
+		t.Fatal(err)
+	}
+	condition := apimeta.FindStatusCondition(rbg.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing))
+	if condition == nil || condition.Reason != workloadconstants.ProgressingReasonPermissionDenied {
+		t.Fatalf("gang observation failure must not retain a cleared restart budget, got %+v", condition)
+	}
 }
 
 func TestPodGroupWaitingPhase(t *testing.T) {

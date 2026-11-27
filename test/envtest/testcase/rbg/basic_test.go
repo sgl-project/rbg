@@ -74,6 +74,37 @@ var _ = Describe("RoleBasedGroup Controller", func() {
 			return readRIS(g).Spec.RoleInstanceTemplate.Components[0].Template.Spec.Affinity
 		}
 		Eventually(affinity, timeout, interval).Should(BeNil())
+		findSetCondition := func(ris *workloadsv1alpha2.RoleInstanceSet, typ workloadsv1alpha2.RoleInstanceSetConditionType) *workloadsv1alpha2.RoleInstanceSetCondition {
+			for i := range ris.Status.Conditions {
+				if ris.Status.Conditions[i].Type == typ {
+					return &ris.Status.Conditions[i]
+				}
+			}
+			return nil
+		}
+		Eventually(func(g Gomega) error {
+			ris := readRIS(g)
+			progressing := findSetCondition(ris, workloadsv1alpha2.RoleInstanceSetProgressing)
+			if progressing == nil || progressing.Status != corev1.ConditionFalse ||
+				progressing.Reason != constants.ProgressingReasonConverged ||
+				progressing.ObservedGeneration != ris.Generation {
+				return fmt.Errorf("RoleInstanceSet %s has not converged: %+v", ris.Name, progressing)
+			}
+			return nil
+		}, timeout, interval).Should(Succeed())
+		// Wait for the initial status writes to settle before taking the baseline.
+		lastVersion := ""
+		stableReads := 0
+		Eventually(func(g Gomega) bool {
+			version := readRIS(g).ResourceVersion
+			if version == lastVersion {
+				stableReads++
+			} else {
+				lastVersion = version
+				stableReads = 0
+			}
+			return stableReads >= 8
+		}, timeout, interval).Should(BeTrue())
 		// Drain the initial child events before testing the annotation-only watch.
 		initialVersion := readRIS(Default).ResourceVersion
 		Consistently(func(g Gomega) string {

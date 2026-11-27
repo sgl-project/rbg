@@ -798,6 +798,53 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		rbg.Spec.Roles[0].Annotations = map[string]string{constants.RoleInstancePatternKey: string(pattern)}
 		Expect(testutil.K8sClient.Create(testutil.Ctx, rbg)).To(Succeed())
 		waitChildReady(testNs, rbg.Name)
+		Eventually(func() error {
+			child := &workloadsv1alpha2.RoleBasedGroup{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(rbg), child); err != nil {
+				return err
+			}
+			progressing := meta.FindStatusCondition(child.Status.Conditions, string(workloadsv1alpha2.RoleBasedGroupProgressing))
+			if progressing == nil || progressing.Status != metav1.ConditionFalse ||
+				progressing.Reason != constants.ProgressingReasonConverged {
+				return fmt.Errorf("RoleBasedGroup %s has not converged: %+v", child.Name, progressing)
+			}
+			return nil
+		}, timeout, interval).Should(Succeed())
+		risKey := client.ObjectKey{Name: rbg.GetWorkloadName(&rbg.Spec.Roles[0]), Namespace: rbg.Namespace}
+		setConverged := func() error {
+			set := &workloadsv1alpha2.RoleInstanceSet{}
+			if err := testutil.K8sClient.Get(testutil.Ctx, risKey, set); err != nil {
+				return err
+			}
+			if set.Status.ObservedGeneration < set.Generation {
+				return fmt.Errorf("RoleInstanceSet %s is at observedGeneration %d, want %d",
+					set.Name, set.Status.ObservedGeneration, set.Generation)
+			}
+			var progressing *workloadsv1alpha2.RoleInstanceSetCondition
+			for i := range set.Status.Conditions {
+				if set.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetProgressing {
+					progressing = &set.Status.Conditions[i]
+					break
+				}
+			}
+			if progressing == nil || progressing.Status != corev1.ConditionFalse ||
+				progressing.Reason != constants.ProgressingReasonConverged {
+				return fmt.Errorf("RoleInstanceSet %s has not converged: %+v", set.Name, progressing)
+			}
+			var established *workloadsv1alpha2.RoleInstanceSetCondition
+			for i := range set.Status.Conditions {
+				if set.Status.Conditions[i].Type == workloadsv1alpha2.RoleInstanceSetEstablished {
+					established = &set.Status.Conditions[i]
+					break
+				}
+			}
+			if established == nil || established.Status != corev1.ConditionTrue {
+				return fmt.Errorf("RoleInstanceSet %s is not established: %+v", set.Name, established)
+			}
+			return nil
+		}
+		Eventually(setConverged, timeout, interval).Should(Succeed())
+		Consistently(setConverged, 2*time.Second, interval).Should(Succeed())
 		Expect(testutil.K8sClient.Get(testutil.Ctx, client.ObjectKeyFromObject(rbg), rbg)).To(Succeed())
 		before := downstreamOf(Default, rbg)
 		revisions := &appsv1.ControllerRevisionList{}

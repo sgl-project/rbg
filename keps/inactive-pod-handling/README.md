@@ -209,8 +209,8 @@ wave's own Terminating triggers until its original Pod UIDs disappear.
 Acquire the RI's `rbg.workloads.x-k8s.io/group-restart-budget-cleanup` finalizer
 before persisting exhaustion and before any Pod retention/deletion. Healthy
 budgeted RIs do not acquire it. Then persist `restartBudgetExhausted=true`, set RI
-`Degraded=True` with reason `GroupRestartBudgetExceeded`, and force
-`RoleInstanceReady=False`. Suppress all replacement creation and updates. Add
+`Degraded=True` and `Progressing=True` with reason `GroupRestartBudgetExceeded`, and
+force `RoleInstanceReady=False`. Suppress all replacement creation and updates. Add
 the same finalizer to the COMPLETE owned group's Pods that can still receive it,
 before requesting deletion of any of them. Already terminating Pods cannot gain
 finalizers. Use owner-UID validation, optimistic
@@ -259,8 +259,8 @@ While explicit recovery or an exhausted topology-revision change waits, keep
 the remaining old owned Pod-object count from the authoritative list after drain
 attempts. Update that message only when the count changes; do not include elapsed
 time or refresh it on retry polls. Preserve the waiting message through the
-generic status reader/computation/writer path. `RoleInstanceReady=False` keeps
-reason `GroupRestartBudgetExceeded`. No new API field or condition is needed.
+generic status reader/computation/writer path. `RoleInstanceReady=False` and
+`Progressing=True` keep reason `GroupRestartBudgetExceeded`. No new API field is needed.
 
 Only then commit the status reset, clearing suppression/count and backoff tracking,
 then remove the RI budget finalizer and consume the annotation. A changed

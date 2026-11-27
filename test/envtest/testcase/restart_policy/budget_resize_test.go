@@ -38,7 +38,7 @@ import (
 
 var _ = Describe("LWS-compatible restart budget revisions", func() {
 	DescribeTable("[restart-budget-resize] starts a fresh size revision but preserves surviving replica budgets",
-		func(pattern constants.InstancePatternType, strategy v2.UpdateStrategyType, exhausted bool) {
+		func(pattern constants.InstancePatternType, strategy v2.UpdateStrategyType, exhausted, recoverFirst bool) {
 			ctx, cli := testutil.Ctx, testutil.K8sClient
 			namespace := fmt.Sprintf("budget-resize-%d", time.Now().UnixNano())
 			testutil.CreateNamespace(namespace)
@@ -158,6 +158,11 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 			Eventually(readyInstances, timeout, interval).Should(Equal(2))
 			Expect(pods()).To(HaveLen(4))
 			target := instances()[0]
+			Eventually(func(g Gomega) bool {
+				live := &v2.RoleInstance{}
+				g.Expect(cli.Get(ctx, client.ObjectKeyFromObject(&target), live)).To(Succeed())
+				return live.Status.ObservedGeneration == live.Generation
+			}, timeout, interval).Should(BeTrue())
 			failMember(target)
 			Eventually(func() bool {
 				live := &v2.RoleInstance{}
@@ -167,6 +172,105 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 				}
 				return live.Status.GroupRestartCount == 1
 			}, timeout, interval).Should(BeTrue())
+			if exhausted && recoverFirst {
+				instanceProgressingCondition := func() (*v2.RoleInstanceCondition, int64) {
+					live := &v2.RoleInstance{}
+					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
+						return nil, 0
+					}
+					for i := range live.Status.Conditions {
+						if live.Status.Conditions[i].Type == v2.RoleInstanceProgressing {
+							return &live.Status.Conditions[i], live.Generation
+						}
+					}
+					return nil, 0
+				}
+				setProgressingCondition := func() (*v2.RoleInstanceSetCondition, int64) {
+					list := &v2.RoleInstanceSetList{}
+					if err := cli.List(ctx, list, client.InNamespace(namespace)); err != nil || len(list.Items) != 1 {
+						return nil, 0
+					}
+					for i := range list.Items[0].Status.Conditions {
+						if list.Items[0].Status.Conditions[i].Type == v2.RoleInstanceSetProgressing {
+							return &list.Items[0].Status.Conditions[i], list.Items[0].Generation
+						}
+					}
+					return nil, 0
+				}
+				groupProgressingCondition := func() (*metav1.Condition, int64) {
+					live := &v2.RoleBasedGroup{}
+					if err := cli.Get(ctx, client.ObjectKeyFromObject(group), live); err != nil {
+						return nil, 0
+					}
+					for i := range live.Status.Conditions {
+						if live.Status.Conditions[i].Type == string(v2.RoleBasedGroupProgressing) {
+							return &live.Status.Conditions[i], live.Generation
+						}
+					}
+					return nil, 0
+				}
+				Eventually(func() string {
+					condition, _ := instanceProgressingCondition()
+					if condition == nil {
+						return ""
+					}
+					return condition.Reason
+				}, timeout, interval).Should(Equal(v2.ReasonGroupRestartBudgetExceeded))
+				Eventually(func() string {
+					condition, _ := setProgressingCondition()
+					if condition == nil {
+						return ""
+					}
+					return condition.Reason
+				}, timeout, interval).Should(Equal(constants.ProgressingReasonRestartBudgetExceeded))
+				Eventually(func() string {
+					condition, _ := groupProgressingCondition()
+					if condition == nil {
+						return ""
+					}
+					return condition.Reason
+				}, timeout, interval).Should(Equal(constants.ProgressingReasonRestartBudgetExceeded))
+
+				Expect(retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+					live := &v2.RoleInstance{}
+					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
+						return err
+					}
+					if live.Annotations == nil {
+						live.Annotations = map[string]string{}
+					}
+					live.Annotations[constants.RoleInstanceRecoverAnnotationKey] = "true"
+					return cli.Update(ctx, live)
+				})).To(Succeed())
+				Eventually(func() error {
+					if readyInstances() != 2 {
+						return fmt.Errorf("ready instances: %d", readyInstances())
+					}
+					live := &v2.RoleInstance{}
+					if err := cli.Get(ctx, client.ObjectKeyFromObject(&target), live); err != nil {
+						return err
+					}
+					instanceProgressing, instanceGeneration := instanceProgressingCondition()
+					setProgressing, setGeneration := setProgressingCondition()
+					groupProgressing, groupGeneration := groupProgressingCondition()
+					if live.Status.RestartBudgetExhausted ||
+						live.Annotations[constants.RoleInstanceRecoverAnnotationKey] != "" ||
+						instanceProgressing == nil || setProgressing == nil || groupProgressing == nil ||
+						instanceProgressing.Status != v1.ConditionFalse ||
+						instanceProgressing.Reason != constants.ProgressingReasonConverged ||
+						instanceProgressing.ObservedGeneration != instanceGeneration ||
+						setProgressing.Status != v1.ConditionFalse ||
+						setProgressing.Reason != constants.ProgressingReasonConverged ||
+						setProgressing.ObservedGeneration != setGeneration ||
+						groupProgressing.Status != metav1.ConditionFalse ||
+						groupProgressing.Reason != constants.ProgressingReasonConverged ||
+						groupProgressing.ObservedGeneration != groupGeneration {
+						return fmt.Errorf("RI=%+v RIS=%+v RBG=%+v", instanceProgressing, setProgressing, groupProgressing)
+					}
+					return nil
+				}, timeout, interval).Should(Succeed(), "recover=true must clear budget exhaustion at RI, RIS, and RBG")
+				return
+			}
 			if !exhausted {
 				Eventually(readyInstances, timeout, interval).Should(Equal(2))
 			}
@@ -230,11 +334,13 @@ var _ = Describe("LWS-compatible restart budget revisions", func() {
 				Expect(live.Status.GroupRestartRevision).To(Equal(original.Status.GroupRestartRevision))
 			}
 		},
-		Entry("stateful in-place", constants.StatefulPattern, v2.InPlaceIfPossibleUpdateStrategyType, false),
-		Entry("stateful recreate", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, false),
-		Entry("stateless in-place with surge", constants.StatelessPattern, v2.InPlaceIfPossibleUpdateStrategyType, false),
-		Entry("stateless recreate with surge", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, false),
-		Entry("exhausted stateful recreate", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, true),
-		Entry("exhausted stateless recreate", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, true),
+		Entry("stateful in-place", constants.StatefulPattern, v2.InPlaceIfPossibleUpdateStrategyType, false, false),
+		Entry("stateful recreate", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, false, false),
+		Entry("stateless in-place with surge", constants.StatelessPattern, v2.InPlaceIfPossibleUpdateStrategyType, false, false),
+		Entry("stateless recreate with surge", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, false, false),
+		Entry("exhausted stateful recreate", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, true, false),
+		Entry("exhausted stateless recreate", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, true, false),
+		Entry("exhausted stateful recreate, then recover", constants.StatefulPattern, v2.RecreatePodUpdateStrategyType, true, true),
+		Entry("exhausted stateless recreate, then recover", constants.StatelessPattern, v2.RecreatePodUpdateStrategyType, true, true),
 	)
 })

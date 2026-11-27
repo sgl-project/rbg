@@ -350,7 +350,9 @@ On exhaustion, the controller first acquires the internal
 `rbg.workloads.x-k8s.io/group-restart-budget-cleanup` finalizer on the RI,
 **before** persisting exhaustion or retaining/deleting Pods. A healthy budgeted
 RI does not acquire this cleanup finalizer. The RI reports `Degraded=True`, reason
-`GroupRestartBudgetExceeded`, and `RoleInstanceReady=False`. The controller stops
+`GroupRestartBudgetExceeded`, `RoleInstanceReady=False`, and
+`Progressing=True` with the same reason; RIS and RBG aggregate that fact as
+`RestartBudgetExceeded` instead of `Recovering`. The controller stops
 replacement creation and in-place updates, adds the same finalizer to **all owned
 Pods that can still receive it**, then requests deletion of the complete group. Pods
 already deleting cannot acquire a new finalizer. Suppression is persisted in RI
@@ -396,9 +398,9 @@ barrier, `Degraded=True` keeps reason `GroupRestartBudgetExceeded` and its messa
 reports how many old owned Pod objects remain, using the authoritative remaining
 Pod list after deletion/finalizer-release attempts. The waiting message changes
 only when that count changes, not as time passes. Generic status recomputation
-preserves it across reads and writes. `RoleInstanceReady` remains False with
-reason `GroupRestartBudgetExceeded`; waiting does not redefine Ready or add an
-API field.
+preserves it across reads and writes. `RoleInstanceReady` remains False and
+`Progressing` remains True with reason `GroupRestartBudgetExceeded`; waiting does
+not redefine Ready, report repair activity, or add an API field.
 
 Only after that barrier does the controller commit the status reset, clearing
 suppression, the durable count and backoff tracking, then remove the RI budget
