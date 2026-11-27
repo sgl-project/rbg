@@ -23,6 +23,7 @@ import (
 	"reflect"
 	"sort"
 	"strconv"
+	"strings"
 	"time"
 
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -94,6 +95,16 @@ func resolveGroupSetRollout(set *workloadsv1alpha2.RoleBasedGroupSet) (groupSetR
 func groupSetOrdinal(set *workloadsv1alpha2.RoleBasedGroupSet, child *workloadsv1alpha2.RoleBasedGroup) (int, bool) {
 	index, err := strconv.Atoi(child.Labels[constants.GroupSetIndexLabelKey])
 	return index, err == nil && index >= 0 && child.Name == fmt.Sprintf("%s-%d", set.Name, index)
+}
+
+// groupSetNameOrdinal returns the ordinal a child's name was built from, whatever its labels say.
+func groupSetNameOrdinal(set *workloadsv1alpha2.RoleBasedGroupSet, child *workloadsv1alpha2.RoleBasedGroup) (int, bool) {
+	suffix, found := strings.CutPrefix(child.Name, set.Name+"-")
+	if !found {
+		return 0, false
+	}
+	index, err := strconv.Atoi(suffix)
+	return index, err == nil && index >= 0 && strconv.Itoa(index) == suffix
 }
 
 func groupSetChildReady(child *workloadsv1alpha2.RoleBasedGroup) bool {
@@ -390,9 +401,10 @@ func convergeTemplateOwnedAnnotations(
 	return changed
 }
 
-// deleteOutOfRangeGroupSetChildren removes children with a broken ordinal label or an ordinal at
-// or above replicas+maxSurge, and returns the remaining children by ordinal plus the ready count
-// the delete budget below is measured against.
+// deleteOutOfRangeGroupSetChildren repairs the ordinal label of a child whose name still maps to an
+// ordinal below replicas+maxSurge, removes the other children with a broken ordinal label or an
+// ordinal at or above replicas+maxSurge, and returns the remaining children by ordinal plus the
+// ready count the delete budget below is measured against.
 func (r *RoleBasedGroupSetReconciler) deleteOutOfRangeGroupSetChildren(
 	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, children *workloadsv1alpha2.RoleBasedGroupList,
 	replicas int, limits groupSetRolloutLimits,
@@ -409,6 +421,18 @@ func (r *RoleBasedGroupSetReconciler) deleteOutOfRangeGroupSetChildren(
 	for i := range children.Items {
 		child := &children.Items[i]
 		index, valid := groupSetOrdinal(set, child)
+		if !valid && child.DeletionTimestamp.IsZero() && metav1.IsControlledBy(child, set) {
+			// The name is derived from the ordinal, so it still says which group this is. Restoring
+			// the label keeps a serving group, where a delete would rebuild it and spend budget.
+			if nameIndex, ok := groupSetNameOrdinal(set, child); ok && nameIndex < replicas+limits.maxSurge {
+				repaired, err := r.restoreGroupSetChildIdentity(ctx, child, set.Name, strconv.Itoa(nameIndex))
+				if err != nil {
+					return existing, ready, changed, err
+				}
+				changed = changed || repaired
+				continue
+			}
+		}
 		if !valid || index >= replicas+limits.maxSurge {
 			isReady := groupSetChildReady(child)
 			if child.DeletionTimestamp.IsZero() && (!isReady || ready > minimumReady) {
@@ -621,24 +645,34 @@ func (r *RoleBasedGroupSetReconciler) createRollingGroupSetChild(
 			return r.adoptGroupSetChild(ctx, set, existing)
 		}
 		// The name is derived from the ordinal, so a child of this set that holds it is the one
-		// being created here. It was skipped because a label that identifies it is missing or
-		// wrong: the set-name label hides it from the listing, the ordinal label from
-		// groupSetOrdinal. Restore both, or every pass would retry this create and report
-		// progress. The revision label is left alone: it records what the child runs.
+		// being created here. The listing skipped it because its set-name label is missing or
+		// wrong (a listed child's ordinal label is repaired by deleteOutOfRangeGroupSetChildren).
+		// Restore both identity labels, or every pass would retry this create and report progress.
 		if existing.DeletionTimestamp.IsZero() {
-			repaired := existing.DeepCopy()
-			if repaired.Labels == nil {
-				repaired.Labels = make(map[string]string)
-			}
-			for _, key := range []string{constants.GroupSetNameLabelKey, constants.GroupSetIndexLabelKey} {
-				repaired.Labels[key] = child.Labels[key]
-			}
-			if !maps.Equal(existing.Labels, repaired.Labels) {
-				return r.client.Patch(ctx, repaired, client.MergeFromWithOptions(existing, client.MergeFromWithOptimisticLock{}))
-			}
+			_, err := r.restoreGroupSetChildIdentity(ctx, existing,
+				child.Labels[constants.GroupSetNameLabelKey], child.Labels[constants.GroupSetIndexLabelKey])
+			return err
 		}
 	}
 	return nil
+}
+
+// restoreGroupSetChildIdentity sets the set-name and ordinal labels of a child this set controls,
+// and reports whether it wrote. The revision label is left alone: it records what the child runs.
+// The patch carries an optimistic lock, so a conflict comes back as an error.
+func (r *RoleBasedGroupSetReconciler) restoreGroupSetChildIdentity(
+	ctx context.Context, child *workloadsv1alpha2.RoleBasedGroup, setName, ordinal string,
+) (bool, error) {
+	repaired := child.DeepCopy()
+	if repaired.Labels == nil {
+		repaired.Labels = make(map[string]string)
+	}
+	repaired.Labels[constants.GroupSetNameLabelKey] = setName
+	repaired.Labels[constants.GroupSetIndexLabelKey] = ordinal
+	if maps.Equal(child.Labels, repaired.Labels) {
+		return false, nil
+	}
+	return true, r.client.Patch(ctx, repaired, client.MergeFromWithOptions(child, client.MergeFromWithOptimisticLock{}))
 }
 
 func (r *RoleBasedGroupSetReconciler) deleteRollingGroupSetChild(ctx context.Context, child *workloadsv1alpha2.RoleBasedGroup) error {

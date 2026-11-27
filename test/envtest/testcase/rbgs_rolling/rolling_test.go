@@ -353,8 +353,10 @@ var _ = Describe("RoleBasedGroupSet rolling update", func() {
 		Expect(set.Status.Replicas).To(Equal(int32(2)))
 		Expect(fetchChildren(testNs, setName)).To(HaveLen(2))
 	},
-		// maxUnavailable=0 keeps every ready group, so one with a broken ordinal label can't be deleted and rebuilt.
+		// The name still maps to the ordinal, so the label is repaired whether or not a delete budget is
+		// available; with maxUnavailable=1 the group used to be deleted and rebuilt.
 		Entry("ordinal label, maxUnavailable 0", constants.GroupSetIndexLabelKey, int32(0)),
+		Entry("ordinal label, maxUnavailable 1", constants.GroupSetIndexLabelKey, int32(1)),
 		// Without the set-name label the group isn't listed at all, so no delete budget reaches it.
 		Entry("set-name label, maxUnavailable 0", constants.GroupSetNameLabelKey, int32(0)),
 		Entry("set-name label, maxUnavailable 1", constants.GroupSetNameLabelKey, int32(1)),
