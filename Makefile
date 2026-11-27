@@ -95,7 +95,7 @@ test-coverage-html: test
 	go tool cover -html=cover.out -o cover.html
 
 .PHONY: test-chart
-test-chart: ## Test Helm chart rendering, workload toggles, probes, preStop drain and Pod cache controls. Requires helm; needs no cluster.
+test-chart: ## Render the Helm chart and the install manifests and check the deprecated-workload-types toggle, the manager health probes and preStop drain, and the manager PDB and topology spread. Requires helm; needs no cluster.
 	go test ./test/chart/ -v
 
 .PHONY: test-e2e-matrix-coverage

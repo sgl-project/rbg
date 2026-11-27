@@ -24,6 +24,27 @@ controller:
       memory: 256Mi
   nodeSelector: {}
   tolerations: []
+  affinity: {}
+  # topologySpreadConstraints for the controller pods. By default the scheduler
+  # prefers a different node for each replica but never blocks scheduling
+  # (ScheduleAnyway). Set to [] to remove the default.
+  topologySpreadConstraints:
+    - maxSkew: 1
+      topologyKey: kubernetes.io/hostname
+      whenUnsatisfiable: ScheduleAnyway
+      labelSelector:
+        matchLabels:
+          control-plane: rbgs-controller
+  # podDisruptionBudget limits voluntary evictions, such as node drains, to
+  # one Ready controller pod at a time (maxUnavailable: 1). Pods that are not
+  # Ready can always be evicted. With replicaCount above 1 on a single-node
+  # cluster, a drain therefore evicts one pod and then waits, because its
+  # replacement cannot schedule on the cordoned node: set enabled: false, or
+  # drain with `kubectl drain --disable-eviction`, to take that node down.
+  # With replicaCount: 1 the budget allows evicting the only pod, so neither
+  # is needed.
+  podDisruptionBudget:
+    enabled: true
   podAnnotations: {}
   podSecurityContext: {}
   # fsGroup: 2000

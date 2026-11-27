@@ -7,6 +7,8 @@ CRD upgrade Job into your Kubernetes cluster.
 ## What Gets Installed
 
 - **Controller manager** (`rbgs-controller-manager` Deployment) reconciling RBG workloads.
+- **PodDisruptionBudget** (optional, enabled by default) that limits voluntary evictions, such as
+  node drains, to one controller pod at a time.
 - **RBAC**: ServiceAccounts, ClusterRole/ClusterRoleBinding, and cert Role/RoleBinding.
 - **Webhooks**: validating and mutating webhook configurations and the webhook Service
   (certificates are bootstrapped by the controller itself, no cert-manager required).
@@ -133,6 +135,9 @@ kubectl -n rbgs-system get pods -l control-plane=rbgs-controller
 | `controller.resources` | Controller container resources | see `values.yaml` |
 | `controller.nodeSelector` | Controller pod node selector | `{}` |
 | `controller.tolerations` | Controller pod tolerations | `[]` |
+| `controller.affinity` | Controller pod affinity | `{}` |
+| `controller.topologySpreadConstraints` | Controller pod topology spread constraints. The default prefers one replica per node (`kubernetes.io/hostname`, `ScheduleAnyway`); `[]` removes it | see `values.yaml` |
+| `controller.podDisruptionBudget.enabled` | Create a PodDisruptionBudget for the controller pods (`maxUnavailable: 1`, `unhealthyPodEvictionPolicy: AlwaysAllow`). With `controller.replicaCount` above 1 on a single-node cluster, a drain evicts one pod and then waits, because its replacement cannot schedule on the cordoned node; set `false`, or drain with `kubectl drain --disable-eviction`, to take that node down. With one replica, the budget allows evicting the only pod, so neither is needed | `true` |
 | `controller.podAnnotations` | Controller pod annotations | `{}` |
 | `controller.podSecurityContext` | Controller pod security context | `{}` |
 | `controller.securityContext` | Controller container security context | `{}` |
@@ -197,6 +202,11 @@ before SIGTERM (`terminationGracePeriodSeconds: 35`). An upgrade that picks this
 controller Pods, which take about 5s longer to terminate; RBG workloads are not affected. On large
 clusters where endpoint propagation takes longer, raise both with a post-renderer or kustomize
 patch; keep the grace period at least the sleep plus 30s.
+
+With `--reuse-values`, Helm keeps the old release's values in place of the new chart's defaults, so
+an upgrade from a chart without `controller.podDisruptionBudget` and
+`controller.topologySpreadConstraints` leaves both off. Upgrade with `--reset-then-reuse-values`
+(Helm 3.14.0 or later) instead, or set both keys explicitly.
 
 ### Engine runtime profiles (KEP-531) in chart v0.9.0
 

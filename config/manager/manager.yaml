@@ -73,3 +73,11 @@ spec:
             requests:
               cpu: 100m
               memory: 256Mi
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              control-plane: rbgs-controller
+              app.kubernetes.io/name: rbgs
