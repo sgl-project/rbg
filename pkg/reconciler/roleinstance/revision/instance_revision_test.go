@@ -144,3 +144,22 @@ func TestSetMatchesRevision(t *testing.T) {
 		assert.Equal(t, 0, cache.Len())
 	})
 }
+
+func TestNewRevisionIgnoresUpdatePolicy(t *testing.T) {
+	control := NewRevisionControl()
+	instance := newRevisionTestInstance("nginx:1.0")
+
+	withoutPolicy, err := control.NewRevision(instance, 1, ptr.To(int32(0)))
+	require.NoError(t, err)
+
+	instance.Spec.UpdatePolicy = &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+		Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+	}
+	withPolicy, err := control.NewRevision(instance, 1, ptr.To(int32(0)))
+	require.NoError(t, err)
+
+	assert.Equal(t, withoutPolicy.Name, withPolicy.Name,
+		"the controller-owned update policy must not change the RoleInstance revision")
+	assert.Equal(t, string(withoutPolicy.Data.Raw), string(withPolicy.Data.Raw),
+		"the controller-owned update policy must not enter the RoleInstance revision patch")
+}

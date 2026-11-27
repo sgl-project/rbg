@@ -40,6 +40,7 @@ import (
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
 	instanceinplace "sigs.k8s.io/rbgs/pkg/inplace/instance/inplaceupdate"
 	instancelifecycle "sigs.k8s.io/rbgs/pkg/inplace/instance/lifecycle"
+	portallocator "sigs.k8s.io/rbgs/pkg/port-allocator"
 	setprogressing "sigs.k8s.io/rbgs/pkg/reconciler/roleinstanceset"
 	"sigs.k8s.io/rbgs/pkg/utils"
 	historyutil "sigs.k8s.io/rbgs/pkg/utils/history"
@@ -698,8 +699,8 @@ func countUnhealthy(replicas, condemned []*workloadsv1alpha2.RoleInstance) (int,
 	return unhealthy, firstUnhealthyInstance
 }
 
-// progressUpdate is Phase C: drive the rolling update by replacing base
-// instances at non-update revision with their updateRev counterparts (in-place
+// progressUpdate is Phase C: drive the rolling update by moving base instances
+// at non-update revision to their updateRev counterparts (in-place spec move
 // or delete-and-recreate).
 //
 // Budget model:
@@ -934,8 +935,12 @@ func buildUpdateTargets(
 	return out
 }
 
-// applyTargetUpdate performs a single target's update — in-place when possible,
-// otherwise delete-and-recreate via Phase B on the next reconcile. Returns
+// applyTargetUpdate performs a single target's update. Without the legacy
+// RoleInstanceSet lifecycle protocol, a same-shape revision moves the target's
+// spec in place and the RoleInstance controller converges member Pods under
+// the update policy stamped on the instance. Topology revisions — a changed
+// component set or replica count — and sets using the legacy lifecycle
+// protocol keep the established replacement semantics. Returns
 // `decrementCurrent=true` when the operation actually transitioned the target
 // away from currentRevision (so caller can decrement status.CurrentReplicas).
 func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
@@ -961,8 +966,13 @@ func (ssc *defaultStatefulInstanceSetControl) applyTargetUpdate(
 	}
 	var inplacing bool
 	var err error
-	if set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
-		inplacing, err = ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions)
+	if set.Spec.Lifecycle == nil {
+		inplacing, err = ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions, true)
+		if err != nil {
+			return false, err
+		}
+	} else if set.Spec.UpdateStrategy.Type != workloadsv1alpha2.RecreatePodUpdateStrategyType {
+		inplacing, err = ssc.inPlaceUpdateInstance(set, target, updateRevision, revisions, false)
 		if err != nil {
 			return false, err
 		}
@@ -1346,7 +1356,12 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 	instance *workloadsv1alpha2.RoleInstance,
 	updateRevision *apps.ControllerRevision,
 	revisions []*apps.ControllerRevision,
+	moveSpec bool,
 ) (bool, error) {
+	// The spec replacement below always re-stamps the controller-owned policy
+	// snapshot and set-owned annotations; moveSpec additionally fills missing
+	// port annotations. The revision shape check below and the component-size
+	// check in CalculateSpec keep topology revisions on the replacement path.
 	opts := &instanceinplace.UpdateOptions{}
 	opts = instanceinplace.SetOptionsDefaults(opts)
 
@@ -1363,8 +1378,37 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 			break
 		}
 	}
+
+	// The revision template does not carry the set-level update strategy,
+	// so the controller-owned snapshot must be re-stamped after every
+	// propagated spec replacement — including the legacy-lifecycle in-place
+	// path, whose template replacement would otherwise silently drop the
+	// snapshot. Every propagated spec move also fills ports whose annotations
+	// are missing (for example after a same-shape revision changed the
+	// port-allocator configuration) without disturbing ports already assigned
+	// to running Pods; an unfillable allocation aborts the move before the
+	// half-moved spec is persisted.
+	policy := instanceUpdatePolicyFromStrategy(&set.Spec.UpdateStrategy)
+	opts.PostPatchSpecFuncs = append(opts.PostPatchSpecFuncs, func(updated *workloadsv1alpha2.RoleInstance) error {
+		updated.Spec.UpdatePolicy = policy.DeepCopy()
+		// The instance keeps its identity, so controller-owned annotations
+		// propagated from the set at creation time must be refreshed here
+		// rather than surviving until the object is replaced.
+		syncSetOwnedInstanceAnnotations(updated, set)
+		return portallocator.EnsurePortsForInstance(updated, set)
+	})
+
 	if currentRevision == nil {
 		// If no current revision found, cannot perform in-place update
+		return false, nil
+	}
+
+	if moveSpec && revisionChangesComponentShape(currentRevision, updateRevision) {
+		// A topology revision keeps the replacement path. A fresh RoleInstance
+		// carries fresh per-group restart budgets and rebuilt member Pods, and
+		// per-pod template state derived from group size — such as the
+		// LeaderWorkerPattern group-size env — must not survive a topology
+		// revision inside old containers.
 		return false, nil
 	}
 

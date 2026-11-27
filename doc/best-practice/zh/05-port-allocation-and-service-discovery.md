@@ -469,6 +469,12 @@ customComponentsPattern:
 | `from` | string | 是 | 引用格式：`{roleName}.{componentName}.{portName}` |
 
 
+### 更新时的 RoleScoped 分配
+
+已存在的 RoleScoped 分配会被保留：控制器会复制已分配的端口值，而不是重新分配。
+当更新请求新的 RoleScoped 分配时，控制器会在 RoleInstanceSet 上补分配缺失的 key，
+并在下一次同形状 spec 迁移时传播到既有的 RoleInstance。
+
 ### 端口分配的存储与传播
 
 端口值通过注解在资源层级间传播，不依赖 ConfigMap 或额外的 CRD：

@@ -261,6 +261,35 @@ func GetReferencePodName(instance *workloadsv1alpha2.RoleInstance, componentName
 	return roleinstanceutil.FormatComponentPodName(instance.Name, componentName, 0, roleTemplateType)
 }
 
+// AllocateMissingRoleScopedPorts returns the role-scoped ports for a component:
+// keys already present in existing keep their value so existing assignments
+// stay stable, while keys requested by the config but not yet allocated are
+// newly allocated. A set update uses it to converge when a revision requests
+// new role-scoped allocations instead of leaving the keys unallocated.
+func AllocateMissingRoleScopedPorts(existing map[string]string, config *PortAllocatorConfig, componentName string) (map[string]string, error) {
+	result := make(map[string]string)
+	missing := make([]PortAllocation, 0, len(config.GetRoleScopedAllocations()))
+	for _, alloc := range config.GetRoleScopedAllocations() {
+		key := FormatRoleScopedPortKey(componentName, alloc.Name)
+		if port, exists := existing[key]; exists {
+			result[key] = port
+			continue
+		}
+		missing = append(missing, alloc)
+	}
+	if len(missing) > 0 {
+		ports, err := AllocateBatch(int32(len(missing)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to allocate role-scoped ports: %w", err)
+		}
+		for i, alloc := range missing {
+			key := FormatRoleScopedPortKey(componentName, alloc.Name)
+			result[key] = strconv.Itoa(int(ports[i]))
+		}
+	}
+	return result, nil
+}
+
 // CollectRoleScopedPortsFromInstanceSet collects RoleScoped ports from InstanceSet annotation for a specific component
 func CollectRoleScopedPortsFromInstanceSet(instanceSetAnnotations map[string]string, componentName string, config *PortAllocatorConfig) map[string]string {
 	if instanceSetAnnotations == nil || config == nil {
@@ -329,4 +358,69 @@ func AllocatePortsForInstance(instance *workloadsv1alpha2.RoleInstance, instance
 			}
 		}
 	}
+}
+
+// EnsurePortsForInstance fills in missing port annotations for an existing
+// RoleInstance. Existing keys are never overwritten: pod-scoped ports are
+// stable per pod name, and re-allocating them would change the environment of
+// running Pods. It runs after every propagated spec move — for example when a
+// same-shape revision changed the port-allocator configuration or an earlier
+// assignment is missing — never when a topology revision replaces the object.
+func EnsurePortsForInstance(instance *workloadsv1alpha2.RoleInstance, instanceSet *workloadsv1alpha2.RoleInstanceSet) error {
+	if instance.Annotations == nil {
+		instance.Annotations = make(map[string]string)
+	}
+
+	for _, component := range instance.Spec.Components {
+		if !HasPortAllocatorConfig(&component.Template) {
+			continue
+		}
+		config, err := ParsePortAllocatorConfigFromTemplate(&component.Template)
+		if err != nil {
+			return fmt.Errorf("component %s has an invalid port-allocator config: %w", component.Name, err)
+		}
+
+		// RoleScoped ports are shared across the role and copied from the
+		// InstanceSet annotations, so filling a missing key is deterministic.
+		for _, alloc := range config.GetRoleScopedAllocations() {
+			key := FormatRoleScopedPortKey(component.Name, alloc.Name)
+			if _, alreadySet := instance.Annotations[key]; alreadySet {
+				continue
+			}
+			port, exists := instanceSet.Annotations[key]
+			if !exists {
+				return fmt.Errorf("role-scoped port %s for component %s is not allocated on the RoleInstanceSet", alloc.Name, component.Name)
+			}
+			instance.Annotations[key] = port
+		}
+
+		// PodScoped ports are stable per pod name; allocate only keys that are
+		// still missing so existing Pods keep their assigned ports.
+		size := instanceutil.GetComponentSize(&component)
+		for id := int32(0); id < size; id++ {
+			roleTemplateType := instance.GetRoleTemplateType()
+			podName := roleinstanceutil.FormatComponentPodName(instance.Name, component.Name, id, roleTemplateType)
+			podScopedAllocs := config.GetPodScopedAllocations()
+			if len(podScopedAllocs) == 0 {
+				continue
+			}
+			missing := make([]PortAllocation, 0, len(podScopedAllocs))
+			for _, alloc := range podScopedAllocs {
+				if _, exists := instance.Annotations[FormatPodScopedPortKey(podName, alloc.Name)]; !exists {
+					missing = append(missing, alloc)
+				}
+			}
+			if len(missing) == 0 {
+				continue
+			}
+			ports, err := AllocateBatch(int32(len(missing)))
+			if err != nil {
+				return fmt.Errorf("failed to allocate pod-scoped ports for %s: %w", podName, err)
+			}
+			for i, alloc := range missing {
+				instance.Annotations[FormatPodScopedPortKey(podName, alloc.Name)] = strconv.Itoa(int(ports[i]))
+			}
+		}
+	}
+	return nil
 }

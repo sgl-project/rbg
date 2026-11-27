@@ -329,17 +329,18 @@ append onto a role-owned name is a render error.
 
 `status.rolloutReplacementState` is managed by the controller during an early
 rollback (A → B → A). It preserves existing surge instances across controller
-restarts while base instances are being replaced.
+restarts while base instances are being moved to the rollback revision or
+replaced.
 
 | Field | Description |
 |-------|-------------|
-| `updateRevision` | Target revision of the replacements |
-| `replicas` | Recorded exclusive upper position bound when replacement intent was persisted |
-| `partition` | Recorded inclusive lower position bound when replacement intent was persisted |
+| `updateRevision` | Target revision of the rollout transitions |
+| `replicas` | Recorded exclusive upper position bound when the rollout transition intent was persisted |
+| `partition` | Recorded inclusive lower position bound when the rollout transition intent was persisted |
 
-When maxSurge is positive, the controller persists this state before replacing
-a base instance and waits for its cache to observe the write before reconciling
-again. It clears the state when all base members in the current update range
+When maxSurge is positive, the controller persists this state before moving a
+base instance to the target revision or replacing it, and waits for its cache
+to observe the write before reconciling again. It clears the state when all base members in the current update range
 exist, are ready at the target revision, are not terminating, and have observed
 their current generation.
 
@@ -348,18 +349,18 @@ move a different member into the same position. Completion therefore
 conservatively checks the entire current update range, without restricting it
 to the saved bounds. No additional API fields are required. Scale-up or a
 partition decrease may retain surge for newly eligible members, even after the
-original replacements recover.
+original transitions recover.
 
 A different target revision invalidates the previous state. An empty current
 update range ends protection; members outside that range no longer block it.
 Pause and resume preserve unfinished protection. After scale-down, a former
 base instance may temporarily act as surge until the current range is ready.
 
-Update the RoleInstanceSet CRD together with the controller. If replacement
-intent cannot be persisted, the controller emits a Warning event and retries
-without replacing the instance; an outdated CRD may have pruned the new field.
-With maxSurge=0 there is no surge to protect, so replacement does not require
-this state and remains possible with the older CRD.
+Update the RoleInstanceSet CRD together with the controller. If the rollout
+transition intent cannot be persisted, the controller emits a Warning event and
+retries without transitioning the instance; an outdated CRD may have pruned the
+new field. With maxSurge=0 there is no surge to protect, so a rollout
+transition does not require this state and remains possible with the older CRD.
 
 ## Condition Types
 

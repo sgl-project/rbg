@@ -473,6 +473,14 @@ For every allocation, the controller declares the allocated value as `containerP
 | `from` | string | Yes | Reference format: `{roleName}.{componentName}.{portName}` |
 
 
+### RoleScoped Allocations on Update
+
+Existing RoleScoped assignments are preserved: the controller copies the
+already-allocated values instead of reallocating them. When an update requests
+a new RoleScoped allocation, the controller allocates the missing key on the
+RoleInstanceSet and it propagates to existing RoleInstances on the next
+same-shape spec move.
+
 ### Port Allocation Storage and Propagation
 
 Port values propagate through annotations across resource levels, without relying on ConfigMaps or additional CRDs:

@@ -198,6 +198,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 					"recreate all pods of instance: %v", instanceutil.GetPodComponentName(pods[i]), klog.KObj(updateInstance)))
 				return &expectationDiff{toDeleteNum: len(pods), toDeletePod: pods}, nil
 			}
+
 		}
 	}
 
@@ -222,6 +223,8 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	if err != nil {
 		return nil, err
 	}
+
+	orphanComponentPods := collectOrphanComponentDeletions(prt.Components, pods, inactivePods)
 
 	// Build the per-component dependency graphs from template annotations.
 	startDeps, deleteDeps, err := componentdiscovery.ParseAllComponentDependencies(updateInstance.Spec.Components)
@@ -260,15 +263,24 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 			}
 
 			// Scale in: delete pods for a component only when every component in its deletion
-			// gates (reverse-of-start ∪ explicit deleteAfter) has no remaining excess pods.
+			// gates (reverse-of-start ∪ explicit deleteAfter) has no remaining excess pods
+			// and no orphan Pods left — a deleteAfter reference to a component that was
+			// removed from the spec must still hold the gate until its Pods are gone.
 			for _, rg := range prt.Topologies {
 				if rg.ToDeleteIDs.Len() > 0 {
-					if allDependentsDeleted(deletionGates[rg.Name], topoMap) {
+					if allDependentsDeleted(deletionGates[rg.Name], topoMap, orphanComponentPods) {
 						toDeleteNum += rg.ToDeleteIDs.Len()
 						toDeletePods = append(toDeletePods, rg.ToDeletePod...)
 					}
 				}
 			}
+
+			// Pods of removed components go through the same deletion-gate
+			// decision: a removed dependency is deleted only after its
+			// dependents are torn down, so a startAfter ordering cannot be
+			// inverted by removing the component from the spec.
+			toDeleteNum, toDeletePods = appendGatedOrphanComponentDeletions(
+				toDeleteNum, toDeletePods, orphanComponentPods, deletionGates, topoMap)
 		}
 	}
 
@@ -284,6 +296,10 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 				toScaleRoleIDS[rg.Name] = rg.ToScaleIDs
 			}
 		}
+		for _, orphanPods := range orphanComponentPods {
+			toDeleteNum += len(orphanPods)
+			toDeletePods = append(toDeletePods, orphanPods...)
+		}
 	}
 
 	return &expectationDiff{
@@ -292,6 +308,71 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 		toScaleRoleIDS: toScaleRoleIDS,
 		toDeletePod:    toDeletePods,
 	}, nil
+}
+
+// collectOrphanComponentDeletions returns the Pods of components that no
+// longer exist in the spec, grouped by component name. Those Pods belong to no
+// topology group, so the per-component diff never selects them. Without this
+// cleanup a component removal leaves orphan Pods behind, and the instance never
+// reports update completion because the Pod count stays above the sum of
+// component sizes. Failed members already queued for replacement and
+// terminating members are skipped; both are already handled by the caller.
+func collectOrphanComponentDeletions(components sets.Set[string], pods, inactivePods []*v1.Pod) map[string][]*v1.Pod {
+	orphaned := make(map[string][]*v1.Pod)
+	for componentName, componentPods := range instanceutil.GroupPodsByComponentName(pods) {
+		if componentName == "" || components.Has(componentName) {
+			continue
+		}
+		orphaned[componentName] = append(orphaned[componentName], componentPods...)
+	}
+	for _, pod := range inactivePods {
+		if pod.DeletionTimestamp != nil || pod.Status.Phase == v1.PodFailed {
+			continue
+		}
+		componentName := instanceutil.GetPodComponentName(pod)
+		if componentName == "" || components.Has(componentName) {
+			continue
+		}
+		orphaned[componentName] = append(orphaned[componentName], pod)
+	}
+	return orphaned
+}
+
+// appendGatedOrphanComponentDeletions extends the delete diff with orphan Pods
+// that are no longer gated. An orphan component stays blocked while any
+// dependent still declared by the updated spec — directly or through a
+// deleteAfter reference — has orphan Pods or pending scale-in deletions, so
+// removing a component from the spec cannot invert a declared deletion order.
+// Dependents the spec intentionally keeps (no pending deletions, no orphan
+// Pods) do not block: the removed dependency was explicitly deleted. When a
+// dependency and its dependent are removed together, their edge is no longer
+// declared anywhere and their orphan Pods are cleaned up in parallel.
+func appendGatedOrphanComponentDeletions(
+	toDeleteNum int,
+	toDeletePods []*v1.Pod,
+	orphaned map[string][]*v1.Pod,
+	deletionGates map[string][]string,
+	topoMap map[string]*instancecore.ComponentPodGroup,
+) (int, []*v1.Pod) {
+	for componentName, orphanPods := range orphaned {
+		blocked := false
+		for _, dependent := range deletionGates[componentName] {
+			if len(orphaned[dependent]) > 0 {
+				blocked = true
+				break
+			}
+			if rg, ok := topoMap[dependent]; ok && rg.ToDeleteIDs.Len() > 0 {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
+			continue
+		}
+		toDeleteNum += len(orphanPods)
+		toDeletePods = append(toDeletePods, orphanPods...)
+	}
+	return toDeleteNum, toDeletePods
 }
 
 func (c *realControl) calculateRestartDiff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, allPods, activePods, inactivePods []*v1.Pod, fresh *workloadsv1alpha2.RoleInstance, target *apps.ControllerRevision) (*expectationDiff, error) {
@@ -1335,8 +1416,11 @@ func allNamedComponentsReady(depNames []string, componentStatuses []workloadsv1a
 // excess pods remaining to delete (ToDeleteIDs is empty), meaning all components
 // that depend on the current one have already been torn down or reached their
 // target size. It is used during scale-in to gate deletion of a dependency's pods.
-func allDependentsDeleted(dependentNames []string, topoMap map[string]*instancecore.ComponentPodGroup) bool {
+func allDependentsDeleted(dependentNames []string, topoMap map[string]*instancecore.ComponentPodGroup, orphaned map[string][]*v1.Pod) bool {
 	for _, name := range dependentNames {
+		if len(orphaned[name]) > 0 {
+			return false
+		}
 		rg, ok := topoMap[name]
 		if !ok {
 			continue

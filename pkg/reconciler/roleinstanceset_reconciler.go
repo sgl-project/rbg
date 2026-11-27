@@ -324,8 +324,11 @@ func (r *RoleInstanceSetReconciler) constructRoleInstanceSetApplyConfiguration(
 		return nil, constructErr
 	}
 
-	// Allocate RoleScoped ports and add to annotations.
-	// todo: Move this to RoleInstanceSet mutating webhook. Handle it only when created, not updated
+	// Allocate RoleScoped ports and add to annotations. Keys already present
+	// on an existing set are copied unchanged; keys requested by this update
+	// are allocated so existing instances can converge on the next spec move.
+	// todo: Move this to RoleInstanceSet mutating webhook so allocation is
+	// admission-time and idempotent per set.
 	if portallocator.IsEnabled() {
 		if err := allocateRoleScopedPortAnnotations(roleInstanceTemplateConfig.Components, old, roleInstanceSetAnnotation); err != nil {
 			return nil, err
@@ -711,8 +714,15 @@ func allocateRoleScopedPortAnnotations(
 				annotations[k] = v
 			}
 		} else {
-			// Directly copy from old roleInstanceSet annotations to avoid reallocating.
-			portAnnotations := portallocator.CollectRoleScopedPortsFromInstanceSet(old.Annotations, *component.Name, config)
+			// Copy from old roleInstanceSet annotations so existing instances
+			// keep their assignments, then allocate keys requested by this
+			// update. Without the fill, adding a RoleScoped allocation to an
+			// existing component is a same-shape revision whose propagated
+			// spec move would fail in EnsurePortsForInstance forever.
+			portAnnotations, err := portallocator.AllocateMissingRoleScopedPorts(old.Annotations, config, *component.Name)
+			if err != nil {
+				return fmt.Errorf("failed to allocate role-scoped ports for component %s: %w", *component.Name, err)
+			}
 			for k, v := range portAnnotations {
 				annotations[k] = v
 			}

@@ -17,11 +17,16 @@ limitations under the License.
 package statefulmode
 
 import (
+	"encoding/json"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
+	"github.com/stretchr/testify/require"
 	apps "k8s.io/api/apps/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
 	intstrutil "k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/utils/ptr"
 
@@ -203,5 +208,152 @@ func TestReplacementScopeRetainsFormerBaseAsSurgeAfterScaleDown(t *testing.T) {
 	}
 	if topo.inRollout || topo.endOrdinal != 2 {
 		t.Fatalf("topology=%+v, want surge released after remaining replacement is ready", topo)
+	}
+}
+
+func TestInstanceUpdatePolicyFromStrategy(t *testing.T) {
+	grace := int32(30)
+	tests := []struct {
+		name     string
+		strategy *workloadsv1alpha2.RoleInstanceSetUpdateStrategy
+		want     *workloadsv1alpha2.RoleInstanceUpdatePolicy
+	}{
+		{
+			name:     "nil strategy keeps the policy unset",
+			strategy: nil,
+			want:     nil,
+		},
+		{
+			name:     "default strategy keeps the policy unset",
+			strategy: &workloadsv1alpha2.RoleInstanceSetUpdateStrategy{},
+			want:     nil,
+		},
+		{
+			name:     "RecreatePod stamps the recreate policy",
+			strategy: &workloadsv1alpha2.RoleInstanceSetUpdateStrategy{Type: workloadsv1alpha2.RecreatePodUpdateStrategyType},
+			want: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+			},
+		},
+		{
+			name: "grace period stamps the in-place policy",
+			strategy: &workloadsv1alpha2.RoleInstanceSetUpdateStrategy{
+				Type:                  workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType,
+				InPlaceUpdateStrategy: &workloadsv1alpha2.RoleInstanceSetInPlaceUpdateStrategy{GracePeriodSeconds: grace},
+			},
+			want: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type:                workloadsv1alpha2.RoleInstanceUpdatePolicyInPlaceIfPossible,
+				InPlaceUpdatePolicy: &workloadsv1alpha2.RoleInstanceInPlaceUpdatePolicy{GracePeriodSeconds: grace},
+			},
+		},
+		{
+			name: "RecreatePod with grace period carries both",
+			strategy: &workloadsv1alpha2.RoleInstanceSetUpdateStrategy{
+				Type:                  workloadsv1alpha2.RecreatePodUpdateStrategyType,
+				InPlaceUpdateStrategy: &workloadsv1alpha2.RoleInstanceSetInPlaceUpdateStrategy{GracePeriodSeconds: grace},
+			},
+			want: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type:                workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+				InPlaceUpdatePolicy: &workloadsv1alpha2.RoleInstanceInPlaceUpdatePolicy{GracePeriodSeconds: grace},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := instanceUpdatePolicyFromStrategy(tt.strategy)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("instanceUpdatePolicyFromStrategy() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRevisionChangesComponentShape(t *testing.T) {
+	// Each entry is "name" or "name:size"; duplicated names are valid input
+	// for the comparison even though the API rejects them.
+	template := func(entries []string) workloadsv1alpha2.RoleInstanceTemplate {
+		components := make([]workloadsv1alpha2.RoleInstanceComponent, 0, len(entries))
+		for _, entry := range entries {
+			name, size, _ := strings.Cut(entry, ":")
+			if size == "" {
+				size = "1"
+			}
+			parsed, err := strconv.Atoi(size)
+			require.NoError(t, err)
+			s := int32(parsed)
+			components = append(components, workloadsv1alpha2.RoleInstanceComponent{Name: name, Size: &s})
+		}
+		return workloadsv1alpha2.RoleInstanceTemplate{
+			RoleInstanceSpec: workloadsv1alpha2.RoleInstanceSpec{Components: components},
+		}
+	}
+	makeRev := func(t *testing.T, tmpl workloadsv1alpha2.RoleInstanceTemplate) *apps.ControllerRevision {
+		data, err := json.Marshal(map[string]any{
+			"spec": map[string]any{
+				"roleInstanceTemplate": tmpl,
+			},
+		})
+		require.NoError(t, err)
+		return &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "rev"}, Data: runtime.RawExtension{Raw: data}}
+	}
+
+	tests := []struct {
+		name          string
+		oldComponents []string
+		newComponents []string
+		want          bool
+	}{
+		{name: "same shape", oldComponents: []string{"a"}, newComponents: []string{"a"}, want: false},
+		{name: "size change", oldComponents: []string{"a:1"}, newComponents: []string{"a:2"}, want: true},
+		{name: "component added", oldComponents: []string{"a"}, newComponents: []string{"a", "b"}, want: true},
+		{name: "component removed", oldComponents: []string{"a", "b"}, newComponents: []string{"a"}, want: true},
+		{name: "duplicated new name replacing a component", oldComponents: []string{"a", "b"}, newComponents: []string{"a", "a"}, want: true},
+		{name: "duplicated old name", oldComponents: []string{"a", "a"}, newComponents: []string{"a", "b"}, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var oldRev, newRev *apps.ControllerRevision
+			if tt.oldComponents != nil {
+				oldRev = makeRev(t, template(tt.oldComponents))
+			}
+			newRev = makeRev(t, template(tt.newComponents))
+			if got := revisionChangesComponentShape(oldRev, newRev); got != tt.want {
+				t.Fatalf("revisionChangesComponentShape() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestSyncSetOwnedInstanceAnnotations(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{ObjectMeta: metav1.ObjectMeta{
+		Name:      "s-0",
+		Namespace: "default",
+		Annotations: map[string]string{
+			constants.RoleInstanceGangSchedulingAnnotationKey: "true",
+			constants.RoleInplaceUpdateGracePeriodSecondsKey:  "30",
+			"user-annotation": "keep",
+		},
+	}}
+	set := &workloadsv1alpha2.RoleInstanceSet{ObjectMeta: metav1.ObjectMeta{
+		Name:      "s",
+		Namespace: "default",
+		Annotations: map[string]string{
+			constants.RoleInplaceSchedulingAnnotationKey: "true",
+		},
+	}}
+
+	syncSetOwnedInstanceAnnotations(instance, set)
+
+	if instance.Annotations[constants.RoleInstanceGangSchedulingAnnotationKey] != "" {
+		t.Fatal("annotation removed from the set must be removed from the instance")
+	}
+	if instance.Annotations[constants.RoleInplaceSchedulingAnnotationKey] != "true" {
+		t.Fatal("annotation present on the set must be copied to the instance")
+	}
+	if instance.Annotations[constants.RoleInplaceUpdateGracePeriodSecondsKey] != "" {
+		t.Fatal("grace-period annotation removed from the set must be removed from the instance")
+	}
+	if instance.Annotations["user-annotation"] != "keep" {
+		t.Fatal("annotations outside the set-owned set must be preserved")
 	}
 }

@@ -279,7 +279,7 @@ func (r *reconciler) syncInstance(ctx context.Context, instance *workloadsv1alph
 		return syncResult{requeue: scaleRequeue}
 	}
 
-	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods)
+	requeueDuration, podsUpdateErr = r.syncControl.Update(ctx, instance, newStatus, currentRevision, updateRevision, revisions, filteredPods, inactivePods)
 	if podsUpdateErr != nil {
 		updateReason := classifyPodOperationError("Update", podsUpdateErr)
 		r.emitOperationFailureEvent(instance, updateReason, podsUpdateErr)

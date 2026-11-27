@@ -78,3 +78,28 @@ func TestGetUpdateOptionsReadsGracePeriodAnnotation(t *testing.T) {
 		})
 	}
 }
+
+func TestGetUpdateOptionsPrefersSpecPolicyOverAnnotation(t *testing.T) {
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Annotations: map[string]string{
+				constants.RoleInplaceUpdateGracePeriodSecondsKey: "30",
+			},
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			UpdatePolicy: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				InPlaceUpdatePolicy: &workloadsv1alpha2.RoleInstanceInPlaceUpdatePolicy{
+					GracePeriodSeconds: 60,
+				},
+			},
+		},
+	}
+
+	opts := New(instance).GetUpdateOptions()
+	require.Equal(t, int32(60), opts.GracePeriodSeconds)
+
+	instance.Spec.UpdatePolicy = nil
+	opts = New(instance).GetUpdateOptions()
+	require.Equal(t, int32(30), opts.GracePeriodSeconds,
+		"instances written before the spec field existed keep honoring the annotation")
+}

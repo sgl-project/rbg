@@ -18,21 +18,27 @@ package sync
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"time"
 
 	"github.com/openkruise/kruise/pkg/util/requeueduration"
 	apps "k8s.io/api/apps/v1"
 	v1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/klog/v2"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	componentdiscovery "sigs.k8s.io/rbgs/pkg/component-discovery"
 	instancecore "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/core"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
 
-func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, _, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pods []*v1.Pod) (time.Duration, error) {
+func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, _, updateRevision *apps.ControllerRevision, revisions []*apps.ControllerRevision, pods []*v1.Pod, inactivePods []*v1.Pod) (time.Duration, error) {
 	// Guard direct Update calls as well as the normal Scale -> Update path.
 	if blocked, err := c.reconcileRestartBudgetOnce(ctx, instance, selectedControllerRevision(updateRevision)); blocked || err != nil {
 		if err != nil {
@@ -45,7 +51,18 @@ func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.Ro
 	coreControl := instancecore.New(instance)
 
 	waitUpdateComponentPods := make(map[string][]*v1.Pod)
+	componentNames := sets.New[string]()
+	for _, component := range instance.Spec.Components {
+		componentNames.Insert(component.Name)
+	}
 	for i := range pods {
+		componentName := instanceutil.GetPodComponentName(pods[i])
+		if componentName != "" && !componentNames.Has(componentName) {
+			// The component no longer exists in the spec; the scale diff owns
+			// deleting these pods. Refreshing or updating them would act on
+			// pods that are already scheduled for deletion.
+			continue
+		}
 		if res := c.inplaceControl.Refresh(ctx, pods[i], coreControl.GetUpdateOptions()); res.RefreshErr != nil {
 			logger.Error(res.RefreshErr, "Instance failed to update pod condition for inplace", "pod", pods[i].Name)
 			return requeueDuration.Get(), res.RefreshErr
@@ -53,11 +70,49 @@ func (c *realControl) Update(ctx context.Context, instance *workloadsv1alpha2.Ro
 			requeueDuration.Update(res.DelayDuration)
 		}
 		if !instanceutil.EqualToRevisionHash("", pods[i], updateRevision.Name) {
-			waitUpdateComponentPods[instanceutil.GetPodComponentName(pods[i])] = append(waitUpdateComponentPods[instanceutil.GetPodComponentName(pods[i])], pods[i])
+			waitUpdateComponentPods[componentName] = append(waitUpdateComponentPods[componentName], pods[i])
 		}
 	}
-	for componentName := range waitUpdateComponentPods {
+	// gateUpdateComponentPods holds every owned update-wave Pod that still
+	// occupies a deletion-gate slot: active outdated Pods, terminating
+	// (inactive) outdated Pods — including Pods of components the spec no
+	// longer lists, which a deleteAfter reference may still gate on — and
+	// Failed non-terminating outdated Pods, which the scale diff owns deleting.
+	// Without this map a deletion gate would release as soon as the gate
+	// component's DELETE was accepted instead of when its Pods have actually
+	// disappeared. Succeeded non-terminating Pods are deliberately treated as
+	// logically gone: nothing guarantees they will ever disappear, and gating
+	// on them could wedge the rollout.
+	gateUpdateComponentPods := make(map[string][]*v1.Pod, len(waitUpdateComponentPods))
+	for componentName, componentPods := range waitUpdateComponentPods {
+		gateUpdateComponentPods[componentName] = append([]*v1.Pod(nil), componentPods...)
+	}
+	for i := range inactivePods {
+		pod := inactivePods[i]
+		if pod.DeletionTimestamp == nil && pod.Status.Phase != v1.PodFailed {
+			continue
+		}
+		componentName := instanceutil.GetPodComponentName(pod)
+		if componentName == "" {
+			continue
+		}
+		if !instanceutil.EqualToRevisionHash("", pod, updateRevision.Name) {
+			gateUpdateComponentPods[componentName] = append(gateUpdateComponentPods[componentName], pod)
+		}
+	}
+	recreatesPods := instance.Spec.GetUpdatePolicy().RecreatesPods()
+	ordered, gates, err := orderedUpdateComponents(instance, waitUpdateComponentPods, gateUpdateComponentPods)
+	if err != nil {
+		return requeueDuration.Get(), err
+	}
+	for _, componentName := range ordered {
 		componentPods := waitUpdateComponentPods[componentName]
+		if recreatesPods && !updateDeletionGatesReleased(gates[componentName], gateUpdateComponentPods) {
+			// component-depends-on gates member deletion: wait until the Pods
+			// gating this component have actually disappeared. The next
+			// reconcile, triggered by those deletions, releases this layer.
+			continue
+		}
 		for i := range componentPods {
 			if duration, err := c.updatePod(ctx, instance, newStatus, updateRevision, revisions, componentPods[i]); err != nil {
 				return requeueDuration.Get(), err
@@ -86,12 +141,13 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 			"revisionHash", pod.Labels[apps.ControllerRevisionHashLabelKey])
 		c.recorder.Eventf(instance, v1.EventTypeWarning, "RevisionNotFound",
 			"no matching revision found for pod %s, falling back to recreate", pod.Name)
-		if err := c.Delete(ctx, pod); err != nil {
-			c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate",
-				"failed to delete pod %s for update: %v", pod.Name, err)
-			return 0, err
-		}
-		return 0, nil
+		return 0, c.deletePodForUpdate(ctx, instance, newStatus, pod)
+	}
+	if instance.Spec.GetUpdatePolicy().RecreatesPods() {
+		// RecreatePod policy: replace the Pod instead of updating it in place,
+		// even when an in-place update would be possible.
+		logger.Info("Instance update policy is RecreatePod, so it will back off to ReCreate", "pod", klog.KObj(pod))
+		return 0, c.deletePodForUpdate(ctx, instance, newStatus, pod)
 	}
 	coreControl := instancecore.New(instance)
 	opts := coreControl.GetUpdateOptions()
@@ -114,11 +170,130 @@ func (c *realControl) updatePod(ctx context.Context, instance *workloadsv1alpha2
 		return res.DelayDuration, res.UpdateErr
 	}
 	logger.Info("Instance can not update Pod in-place, so it will back off to ReCreate", "pod", klog.KObj(pod))
-	if err := c.Delete(ctx, pod); err != nil {
-		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate", "failed to delete pod %s for update: %v", pod.Name, err)
-		return 0, err
+	return 0, c.deletePodForUpdate(ctx, instance, newStatus, pod)
+}
+
+// deletePodForUpdate removes one member Pod so it is recreated from the
+// current instance spec. The delete is addressed by the observed Pod UID: a
+// same-name replacement created by a concurrent reconcile must never be
+// removed, and an already-deleted incarnation counts as handled. The baseline
+// of the old incarnation is dropped only once the delete is accepted (or the
+// Pod is already gone): a failed delete must leave the still-running Pod's
+// baseline intact.
+func (c *realControl) deletePodForUpdate(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, newStatus *workloadsv1alpha2.RoleInstanceStatus, pod *v1.Pod) error {
+	opts := &client.DeleteOptions{}
+	if pod.UID != "" {
+		uid := pod.UID
+		opts.Preconditions = &metav1.Preconditions{UID: &uid}
 	}
-	return 0, nil
+	if err := c.Delete(ctx, pod, opts); err != nil {
+		if apierrors.IsNotFound(err) {
+			// The old incarnation is already gone; a replacement is a new
+			// incarnation and must not inherit the old baseline.
+			dropInPlaceUpdateBaseline(newStatus, pod.Name)
+			return nil
+		}
+		c.recorder.Eventf(instance, v1.EventTypeWarning, "FailedUpdatePodReCreate",
+			"failed to delete pod %s for update: %v", pod.Name, err)
+		return err
+	}
+	// The delete was accepted, so the Pod is being replaced by a new
+	// incarnation: an old in-place baseline would otherwise grant the new Pod
+	// one spurious "expected" restart allowance.
+	dropInPlaceUpdateBaseline(newStatus, pod.Name)
+	return nil
+}
+
+// dropInPlaceUpdateBaseline removes the per-pod in-place update baseline from
+// the status under construction. Deleting from a nil map is a no-op.
+func dropInPlaceUpdateBaseline(newStatus *workloadsv1alpha2.RoleInstanceStatus, podName string) {
+	if newStatus != nil {
+		delete(newStatus.InPlaceUpdateContainerBaselines, podName)
+	}
+}
+
+// orderedUpdateComponents returns the components holding outdated active Pods
+// in the component-depends-on deletion order together with the deletion gates.
+// A component is only handed to the update path after the components that gate
+// its deletion — its dependents — have been emitted. gatePods extends the
+// update wave with terminating (inactive) outdated Pods: they cannot be acted
+// on, but they still hold ordering slots and deletion gates open until they
+// actually disappear. An unparsable component-depends-on annotation fails
+// closed, matching the scale path; dependency cycles fall back to parallel
+// deletion after logging.
+func orderedUpdateComponents(instance *workloadsv1alpha2.RoleInstance, updatePods, gatePods map[string][]*v1.Pod) ([]string, map[string][]string, error) {
+	names := make([]string, 0, len(updatePods))
+	for name := range updatePods {
+		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return nil, nil, nil
+	}
+	sort.Strings(names)
+	startDeps, deleteDeps, err := componentdiscovery.ParseAllComponentDependencies(instance.Spec.Components)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to parse component dependencies for update: %w", err)
+	}
+	if !componentdiscovery.HasAnyDependency(instance.Spec.Components) {
+		return names, nil, nil
+	}
+	gates := componentdiscovery.BuildDeletionGates(startDeps, deleteDeps)
+	if componentdiscovery.DetectCycle(startDeps) || componentdiscovery.DetectCycle(gates) {
+		klog.ErrorS(nil, "component-depends-on graph has a cycle; falling back to parallel update", "instance", klog.KObj(instance))
+		return names, nil, nil
+	}
+	remaining := sets.New[string]()
+	for name := range gatePods {
+		remaining.Insert(name)
+	}
+	emitted := sets.New[string]()
+	ordered := make([]string, 0, len(names))
+	for len(ordered) < len(names) {
+		progressed := false
+		for _, name := range names {
+			if emitted.Has(name) {
+				continue
+			}
+			blocked := false
+			for _, dependent := range gates[name] {
+				if remaining.Has(dependent) && !emitted.Has(dependent) {
+					blocked = true
+					break
+				}
+			}
+			if blocked {
+				continue
+			}
+			emitted.Insert(name)
+			ordered = append(ordered, name)
+			progressed = true
+		}
+		if !progressed {
+			// The cycle checks above make this unreachable; keep a safe
+			// fallback so an ordering bug can never wedge the update path.
+			for _, name := range names {
+				if !emitted.Has(name) {
+					ordered = append(ordered, name)
+					emitted.Insert(name)
+				}
+			}
+		}
+	}
+	return ordered, gates, nil
+}
+
+// updateDeletionGatesReleased reports whether every component gating the
+// deletion of the named component has no remaining Pods in the update wave,
+// including terminating ones. Deletion alone is not enough: the gate stays
+// closed until the gating member Pods have actually disappeared. Pods already
+// at the update revision are not part of the wave and do not block.
+func updateDeletionGatesReleased(gateComponents []string, gatePods map[string][]*v1.Pod) bool {
+	for _, gate := range gateComponents {
+		if len(gatePods[gate]) > 0 {
+			return false
+		}
+	}
+	return true
 }
 
 // recordInPlaceUpdateBaselines records the pre-update RestartCount and ImageID

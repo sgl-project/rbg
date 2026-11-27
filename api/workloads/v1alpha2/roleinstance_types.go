@@ -49,6 +49,59 @@ type RoleInstanceSpec struct {
 
 	// ReadinessGates is an optional list of PodReadinessGates for the whole RoleInstance.
 	ReadinessGates []RoleInstanceReadinessGate `json:"readinessGates,omitempty"`
+
+	// UpdatePolicy is the update policy snapshot propagated to this RoleInstance
+	// by the owning stateful RoleInstanceSet controller. The RoleInstanceSet
+	// controller owns this field; writes made directly to a managed stateful
+	// RoleInstance are overwritten by the next propagated update. When unset,
+	// member Pods follow the default behavior: update in place when possible,
+	// and recreate only the Pods that cannot be updated in place.
+	// Stateless-pattern RoleInstances are not populated with this
+	// controller-owned snapshot: the set-level update strategy drives their
+	// rollouts, with RecreatePod using the specified-delete path.
+	// +optional
+	UpdatePolicy *RoleInstanceUpdatePolicy `json:"updatePolicy,omitempty"`
+}
+
+// RoleInstanceUpdatePolicyType selects how the RoleInstance controller moves
+// member Pods to a new target revision.
+// +kubebuilder:validation:Enum={InPlaceIfPossible,RecreatePod}
+type RoleInstanceUpdatePolicyType string
+
+const (
+	// RoleInstanceUpdatePolicyInPlaceIfPossible updates Pods in place when the
+	// target change allows it, and recreates only the Pods that cannot be
+	// updated in place.
+	RoleInstanceUpdatePolicyInPlaceIfPossible RoleInstanceUpdatePolicyType = "InPlaceIfPossible"
+
+	// RoleInstanceUpdatePolicyRecreatePod recreates all member Pods when the
+	// RoleInstance moves to a new target revision.
+	RoleInstanceUpdatePolicyRecreatePod RoleInstanceUpdatePolicyType = "RecreatePod"
+)
+
+// RoleInstanceUpdatePolicy is the update policy snapshot for a stateful
+// RoleInstance. It is rendered from the owning RoleInstanceSet update strategy,
+// not from the RoleInstanceSet template, so changing the update strategy does
+// not create a new RoleInstanceSet ControllerRevision. Stateless-pattern
+// RoleInstances are not populated with this snapshot by the controller.
+type RoleInstanceUpdatePolicy struct {
+	// Type selects the Pod update behavior for this RoleInstance.
+	// Default is InPlaceIfPossible.
+	// +optional
+	Type RoleInstanceUpdatePolicyType `json:"type,omitempty"`
+
+	// InPlaceUpdatePolicy configures in-place Pod updates.
+	// +optional
+	InPlaceUpdatePolicy *RoleInstanceInPlaceUpdatePolicy `json:"inPlaceUpdatePolicy,omitempty"`
+}
+
+// RoleInstanceInPlaceUpdatePolicy configures in-place Pod updates.
+type RoleInstanceInPlaceUpdatePolicy struct {
+	// GracePeriodSeconds is the timespan between setting the Pod status to
+	// not-ready and updating container images in the Pod spec. It is only used
+	// when Pods are updated in place.
+	// +optional
+	GracePeriodSeconds int32 `json:"gracePeriodSeconds,omitempty"`
 }
 
 // RoleInstanceReadinessGate contains the reference to a RoleInstance condition
@@ -67,6 +120,31 @@ func (s *RoleInstanceSpec) GetRestartPolicyConfig() RestartPolicyConfig {
 		return RestartPolicyConfig{}
 	}
 	return resolveRestartPolicyConfig(s.RestartPolicyConfig, s.RestartPolicy, "")
+}
+
+// GetUpdatePolicy returns the effective update policy. A nil policy keeps the
+// established behavior: update Pods in place when possible and recreate only
+// the Pods that cannot be updated in place.
+func (s *RoleInstanceSpec) GetUpdatePolicy() RoleInstanceUpdatePolicy {
+	if s == nil || s.UpdatePolicy == nil {
+		return RoleInstanceUpdatePolicy{}
+	}
+	return *s.UpdatePolicy
+}
+
+// RecreatesPods reports whether all member Pods must be recreated when the
+// RoleInstance moves to a new target revision.
+func (p RoleInstanceUpdatePolicy) RecreatesPods() bool {
+	return p.Type == RoleInstanceUpdatePolicyRecreatePod
+}
+
+// GetInPlaceUpdateGracePeriodSeconds returns the configured in-place update
+// grace period, or zero when no policy or no in-place update policy is set.
+func (p RoleInstanceUpdatePolicy) GetInPlaceUpdateGracePeriodSeconds() int32 {
+	if p.InPlaceUpdatePolicy == nil {
+		return 0
+	}
+	return p.InPlaceUpdatePolicy.GracePeriodSeconds
 }
 
 // GetRestartPolicy returns the effective restart policy type.

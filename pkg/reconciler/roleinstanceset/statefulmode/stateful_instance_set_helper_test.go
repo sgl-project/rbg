@@ -154,3 +154,17 @@ func TestSetMatchesRevision(t *testing.T) {
 		assert.Equal(t, 0, cache.Len())
 	})
 }
+
+func TestGetPatchIgnoresUpdateStrategy(t *testing.T) {
+	base := buildSet("revision-policy", 1, nil, nil)
+	patchDefault, err := getPatch(base)
+	require.NoError(t, err)
+
+	recreate := base.DeepCopy()
+	recreate.Spec.UpdateStrategy.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType
+	patchRecreate, err := getPatch(recreate)
+	require.NoError(t, err)
+
+	assert.Equal(t, string(patchDefault), string(patchRecreate),
+		"the set-level update strategy must not enter the RoleInstanceSet ControllerRevision")
+}

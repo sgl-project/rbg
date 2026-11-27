@@ -18,6 +18,7 @@ package sync
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	apps "k8s.io/api/apps/v1"
@@ -27,10 +28,13 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/tools/record"
+	"k8s.io/utils/ptr"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	componentdiscovery "sigs.k8s.io/rbgs/pkg/component-discovery"
 	podinplaceupdate "sigs.k8s.io/rbgs/pkg/inplace/pod/inplaceupdate"
 	instanceutil "sigs.k8s.io/rbgs/pkg/reconciler/roleinstance/utils"
 )
@@ -192,6 +196,66 @@ func TestUpdatePod(t *testing.T) {
 				t.Errorf("expected pod deleted=%v, got deleted=%v (err=%v)", tt.expectPodDeleted, podDeleted, getErr)
 			}
 		})
+	}
+}
+
+func TestUpdatePodRecreatePolicyRecreates(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-instance",
+			Namespace: "default",
+			UID:       "test-uid",
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			UpdatePolicy: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+			},
+		},
+	}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:            "test-pod",
+			Namespace:       "default",
+			UID:             "test-pod-uid",
+			ResourceVersion: "1",
+			Labels: map[string]string{
+				apps.ControllerRevisionHashLabelKey: "rev-abc123",
+			},
+		},
+	}
+	updateRevision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "rev-def456", Namespace: "default"}}
+	revisions := []*apps.ControllerRevision{
+		{ObjectMeta: metav1.ObjectMeta{Name: "rev-abc123", Namespace: "default"}},
+		{ObjectMeta: metav1.ObjectMeta{Name: "rev-def456", Namespace: "default"}},
+	}
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+	ctrl := &realControl{
+		Client: fakeClient,
+		inplaceControl: &fakeInplaceControl{updateFn: func(_ context.Context, _ *v1.Pod, _, _ *apps.ControllerRevision, _ *podinplaceupdate.UpdateOptions) podinplaceupdate.UpdateResult {
+			t.Fatal("inplaceControl.Update should not be called under the RecreatePod policy")
+			return podinplaceupdate.UpdateResult{}
+		}},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+
+	_, err := ctrl.updatePod(context.Background(), instance, &workloadsv1alpha2.RoleInstanceStatus{}, updateRevision, revisions, pod)
+	if err != nil {
+		t.Fatalf("updatePod returned unexpected error: %v", err)
+	}
+	gotPod := &v1.Pod{}
+	getErr := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(pod), gotPod)
+	if !apierrors.IsNotFound(getErr) {
+		t.Fatalf("expected pod deleted, got err=%v pod=%+v", getErr, gotPod)
 	}
 }
 
@@ -394,5 +458,379 @@ func TestUpdatePodRecordsBaselines(t *testing.T) {
 	}
 	if baselines["router"].RestartCount != 0 {
 		t.Errorf("expected router baseline RestartCount=0, got %d", baselines["router"].RestartCount)
+	}
+}
+
+func TestDeletePodForUpdateUIDPrecondition(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "test-instance", Namespace: "default", UID: "test-uid"},
+	}
+	staleSnapshot := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-pod",
+			Namespace: "default",
+			UID:       "old-pod-uid",
+		},
+	}
+
+	// The fake client does not enforce UID preconditions, so intercept the
+	// deletes to record the options and simulate a conflict followed by
+	// NotFound, as the real API server would for a same-name Pod with a
+	// different UID and for an already-deleted incarnation.
+	var captured *client.DeleteOptions
+	deleteCalls := 0
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				captured = &client.DeleteOptions{}
+				for _, opt := range opts {
+					opt.ApplyToDelete(captured)
+				}
+				deleteCalls++
+				if deleteCalls == 1 {
+					return apierrors.NewConflict(v1.Resource("pods"), obj.GetName(), errors.New("uid mismatch"))
+				}
+				return apierrors.NewNotFound(v1.Resource("pods"), obj.GetName())
+			},
+		}).
+		Build()
+	ctrl := &realControl{
+		Client:           fakeClient,
+		inplaceControl:   &fakeInplaceControl{},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+
+	err := ctrl.deletePodForUpdate(context.Background(), instance, nil, staleSnapshot)
+	if err == nil {
+		t.Fatal("expected the stale delete to fail instead of removing the replacement Pod")
+	}
+	if captured == nil || captured.Preconditions == nil || captured.Preconditions.UID == nil {
+		t.Fatal("delete must carry the observed Pod UID as a precondition")
+	}
+	if *captured.Preconditions.UID != staleSnapshot.UID {
+		t.Fatalf("delete precondition UID = %q, want %q", *captured.Preconditions.UID, staleSnapshot.UID)
+	}
+
+	// A Pod that already disappeared counts as handled.
+	err = ctrl.deletePodForUpdate(context.Background(), instance, nil, &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{Name: "gone-pod", Namespace: "default", UID: "gone-uid"},
+	})
+	if err != nil {
+		t.Fatalf("deletePodForUpdate for an already-deleted pod returned error: %v", err)
+	}
+}
+
+func TestDeletePodForUpdateKeepsBaselineUntilDeleteAccepted(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "keep-baseline", Namespace: "default", UID: "keep-baseline-uid"},
+	}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "keep-baseline-main-0",
+			Namespace: "default",
+			UID:       "keep-baseline-pod-uid",
+		},
+	}
+	deleteCalls := 0
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithInterceptorFuncs(interceptor.Funcs{
+			Delete: func(ctx context.Context, c client.WithWatch, obj client.Object, opts ...client.DeleteOption) error {
+				deleteCalls++
+				if deleteCalls == 1 {
+					return apierrors.NewConflict(v1.Resource("pods"), obj.GetName(), errors.New("transient failure"))
+				}
+				return apierrors.NewNotFound(v1.Resource("pods"), obj.GetName())
+			},
+		}).
+		Build()
+	ctrl := &realControl{
+		Client:           fakeClient,
+		inplaceControl:   &fakeInplaceControl{},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+		InPlaceUpdateContainerBaselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+			pod.Name: {"main": {RestartCount: 0, ImageID: "registry/rbg:old"}},
+		},
+	}
+
+	// A failed delete leaves the old incarnation running; its baseline must
+	// survive so a real crash on it is still classified correctly.
+	if err := ctrl.deletePodForUpdate(context.Background(), instance, newStatus, pod); err == nil {
+		t.Fatal("expected the failed delete to return an error")
+	}
+	if _, exists := newStatus.InPlaceUpdateContainerBaselines[pod.Name]; !exists {
+		t.Fatal("baseline must survive a failed delete while the old Pod incarnation still exists")
+	}
+
+	// Once the delete is accepted (here: the Pod is already gone), the
+	// replacement is a new incarnation and must not inherit the baseline.
+	if err := ctrl.deletePodForUpdate(context.Background(), instance, newStatus, pod); err != nil {
+		t.Fatalf("deletePodForUpdate for an already-deleted pod returned error: %v", err)
+	}
+	if _, exists := newStatus.InPlaceUpdateContainerBaselines[pod.Name]; exists {
+		t.Fatal("baseline must be dropped once the old incarnation is gone")
+	}
+}
+
+func TestUpdateRecreatePodWaitsForOrphanGateComponents(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	// leader waits for router through deleteAfter, but the router component
+	// was removed from the spec while its old Pod is still terminating.
+	dependsOn := `{"deleteAfter":["router"]}`
+	size := int32(1)
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "orphan-gate", Namespace: "default", UID: "orphan-gate-uid"},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			UpdatePolicy: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+			},
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Name: "leader", Size: &size, Template: v1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+						componentdiscovery.ComponentDependsOnAnnotationKey: dependsOn,
+					}},
+				}},
+			},
+		},
+	}
+	newPod := func(name string) *v1.Pod {
+		return &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels: map[string]string{
+					apps.ControllerRevisionHashLabelKey: "rev-old",
+				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: workloadsv1alpha2.SchemeGroupVersion.String(),
+					Kind:       "RoleInstance",
+					Name:       instance.Name,
+					UID:        instance.UID,
+					Controller: ptr.To(true),
+				}},
+			},
+		}
+	}
+	leaderPod := newPod("orphan-gate-leader-0")
+	terminatingRouter := newPod("orphan-gate-router-0")
+	now := metav1.Now()
+	terminatingRouter.DeletionTimestamp = &now
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(leaderPod).
+		Build()
+	ctrl := &realControl{
+		Client:           fakeClient,
+		inplaceControl:   &fakeInplaceControl{},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+	updateRevision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "rev-new"}}
+	revisions := []*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: "rev-old"}}, updateRevision}
+
+	_, err := ctrl.Update(context.Background(), instance, &workloadsv1alpha2.RoleInstanceStatus{}, nil, updateRevision, revisions, []*v1.Pod{leaderPod}, []*v1.Pod{terminatingRouter})
+	if err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+	if getErr := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leaderPod), &v1.Pod{}); getErr != nil {
+		t.Fatalf("leader pod must survive while the removed router component still has a terminating Pod: %v", getErr)
+	}
+
+	// Once the terminating router Pod is fully gone, the leader is released.
+	_, err = ctrl.Update(context.Background(), instance, &workloadsv1alpha2.RoleInstanceStatus{}, nil, updateRevision, revisions, []*v1.Pod{leaderPod}, nil)
+	if err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+	if !apierrors.IsNotFound(fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leaderPod), &v1.Pod{})) {
+		t.Fatal("leader pod should be deleted after its orphan gate is released")
+	}
+}
+
+func TestUpdateRecreatePodClearsInPlaceUpdateBaselines(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	size := int32(1)
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "baseline-0", Namespace: "default", UID: "baseline-uid"},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			UpdatePolicy: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+			},
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Name: "main", Size: &size},
+			},
+		},
+	}
+	pod := &v1.Pod{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "baseline-0-main-0",
+			Namespace: "default",
+			Labels: map[string]string{
+				apps.ControllerRevisionHashLabelKey: "rev-old",
+			},
+			OwnerReferences: []metav1.OwnerReference{{
+				APIVersion: workloadsv1alpha2.SchemeGroupVersion.String(),
+				Kind:       "RoleInstance",
+				Name:       instance.Name,
+				UID:        instance.UID,
+				Controller: ptr.To(true),
+			}},
+		},
+	}
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(pod).
+		Build()
+	ctrl := &realControl{
+		Client:           fakeClient,
+		inplaceControl:   &fakeInplaceControl{},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+	newStatus := &workloadsv1alpha2.RoleInstanceStatus{
+		// Recorded by an earlier in-place update of the same pod name. The
+		// recreated Pod is a new incarnation and must not inherit it.
+		InPlaceUpdateContainerBaselines: map[string]map[string]workloadsv1alpha2.ContainerUpdateBaseline{
+			pod.Name: {
+				"main": {RestartCount: 0, ImageID: "registry/rbg:old"},
+			},
+		},
+	}
+	updateRevision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "rev-new"}}
+	revisions := []*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: "rev-old"}}, updateRevision}
+
+	_, err := ctrl.Update(context.Background(), instance, newStatus, nil, updateRevision, revisions, []*v1.Pod{pod}, nil)
+	if err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+	if !apierrors.IsNotFound(fakeClient.Get(context.Background(), client.ObjectKeyFromObject(pod), &v1.Pod{})) {
+		t.Fatal("member pod should be deleted under RecreatePod")
+	}
+	if _, exists := newStatus.InPlaceUpdateContainerBaselines[pod.Name]; exists {
+		t.Fatalf("in-place update baseline for the recreated pod must be dropped, got %+v", newStatus.InPlaceUpdateContainerBaselines[pod.Name])
+	}
+}
+
+func TestUpdateRecreatePodWaitsForDeletionGates(t *testing.T) {
+	scheme := runtime.NewScheme()
+	_ = v1.AddToScheme(scheme)
+	_ = apps.AddToScheme(scheme)
+	_ = workloadsv1alpha2.AddToScheme(scheme)
+
+	// router depends on leader, so leader's deletion is gated by router.
+	dependsOn := `{"startAfter":["leader"]}`
+	size := int32(1)
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{Name: "dep-0", Namespace: "default", UID: "dep-uid"},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			UpdatePolicy: &workloadsv1alpha2.RoleInstanceUpdatePolicy{
+				Type: workloadsv1alpha2.RoleInstanceUpdatePolicyRecreatePod,
+			},
+			Components: []workloadsv1alpha2.RoleInstanceComponent{
+				{Name: "leader", Size: &size},
+				{Name: "router", Size: &size, Template: v1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{Annotations: map[string]string{
+						componentdiscovery.ComponentDependsOnAnnotationKey: dependsOn,
+					}},
+				}},
+			},
+		},
+	}
+	newPod := func(name string, terminating bool) *v1.Pod {
+		pod := &v1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: "default",
+				Labels: map[string]string{
+					apps.ControllerRevisionHashLabelKey: "rev-old",
+				},
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: workloadsv1alpha2.SchemeGroupVersion.String(),
+					Kind:       "RoleInstance",
+					Name:       instance.Name,
+					UID:        instance.UID,
+					Controller: ptr.To(true),
+				}},
+			},
+		}
+		if terminating {
+			now := metav1.Now()
+			pod.DeletionTimestamp = &now
+		}
+		return pod
+	}
+	routerPod := newPod("dep-0-router-0", false)
+	leaderPod := newPod("dep-0-leader-0", false)
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(routerPod, leaderPod).
+		Build()
+	ctrl := &realControl{
+		Client:           fakeClient,
+		inplaceControl:   &fakeInplaceControl{},
+		recorder:         record.NewFakeRecorder(10),
+		lifecycleControl: &fakeLifecycleControl{},
+	}
+	updateRevision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "rev-new"}}
+	revisions := []*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: "rev-old"}}, updateRevision}
+
+	_, err := ctrl.Update(context.Background(), instance, &workloadsv1alpha2.RoleInstanceStatus{}, nil, updateRevision, revisions, []*v1.Pod{routerPod, leaderPod}, nil)
+	if err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+
+	// Only the router (the dependent) may be deleted in the first pass; leader
+	// waits for the router Pod to actually disappear.
+	routerGone := apierrors.IsNotFound(fakeClient.Get(context.Background(), client.ObjectKeyFromObject(routerPod), &v1.Pod{}))
+	if !routerGone {
+		t.Fatal("router pod should be deleted first")
+	}
+	liveLeader := &v1.Pod{}
+	if getErr := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leaderPod), liveLeader); getErr != nil {
+		t.Fatalf("leader pod must survive while its deletion gate is held: %v", getErr)
+	}
+
+	// A router Pod that is still terminating (classified inactive by
+	// IsPodActive) must keep the leader's deletion gate closed: DELETE being
+	// accepted is not enough, the Pod must actually disappear.
+	terminatingRouter := newPod("dep-0-router-0", true)
+	_, err = ctrl.Update(context.Background(), instance, &workloadsv1alpha2.RoleInstanceStatus{}, nil, updateRevision, revisions, []*v1.Pod{liveLeader}, []*v1.Pod{terminatingRouter})
+	if err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+	if getErr := fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leaderPod), &v1.Pod{}); getErr != nil {
+		t.Fatalf("leader pod must survive while the terminating router pod still exists: %v", getErr)
+	}
+
+	// Once the router Pod is fully gone, the next pass releases the leader.
+	_, err = ctrl.Update(context.Background(), instance, &workloadsv1alpha2.RoleInstanceStatus{}, nil, updateRevision, revisions, []*v1.Pod{liveLeader}, nil)
+	if err != nil {
+		t.Fatalf("Update returned error: %v", err)
+	}
+	if !apierrors.IsNotFound(fakeClient.Get(context.Background(), client.ObjectKeyFromObject(leaderPod), &v1.Pod{})) {
+		t.Fatal("leader pod should be deleted after its gate is released")
 	}
 }

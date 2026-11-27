@@ -196,7 +196,8 @@ type RoleInstanceSetStatus struct {
 	CurrentRevision string `json:"currentRevision,omitempty"`
 
 	// RolloutReplacementState protects existing surge while early-rollback base
-	// replacements are in flight, including across controller restarts.
+	// transitions — in-place spec moves or replacements — are in flight,
+	// including across controller restarts.
 	// +optional
 	RolloutReplacementState *RolloutReplacementState `json:"rolloutReplacementState,omitempty"`
 
@@ -212,12 +213,13 @@ type RoleInstanceSetStatus struct {
 	LabelSelector string `json:"labelSelector,omitempty"`
 }
 
-// RolloutReplacementState identifies an early rollback's replacement scope.
-// It is persisted before replacing a base instance when surge is enabled.
-// Existing surge is retained until every base instance in [Partition, Replicas)
-// is ready at UpdateRevision and its generation has been observed, including
-// instances that were not replaced. A non-ready unrelated instance in this
-// scope can therefore retain surge after the actual replacements are ready.
+// RolloutReplacementState identifies an early rollback's protected transition
+// scope. It is persisted before moving a base instance to the target revision
+// or replacing it when surge is enabled. Existing surge is retained until every
+// base instance in [Partition, Replicas) is ready at UpdateRevision and its
+// generation has been observed, including instances that were not transitioned.
+// A non-ready unrelated instance in this scope can therefore retain surge after
+// the actual transitions are ready.
 // Changes to replicas or partition restrict completion checks to the overlap
 // with the current update range; those changes alone do not extend the recorded
 // scope. Starting additional replacement work can extend the recorded scope.

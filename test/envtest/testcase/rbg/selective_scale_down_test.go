@@ -629,7 +629,9 @@ var _ = Describe("Stateful selective scale-down", func() {
 			if err := testutil.K8sClient.Get(testutil.Ctx, client.ObjectKey{Namespace: namespace, Name: setKey.Name + "-4"}, candidate); err != nil {
 				return false, err
 			}
-			return candidate.UID != original[candidate.Name] && candidate.Labels[apps.ControllerRevisionHashLabelKey] == current.Status.UpdateRevision && current.Status.ReadyReplicas == 3 && len(instances(group.Name)) == 3, nil
+			// A same-shape revision moves the spec in place: the member keeps
+			// its identity while its Pods are rebuilt at the update revision.
+			return candidate.UID == original[candidate.Name] && candidate.Labels[apps.ControllerRevisionHashLabelKey] == current.Status.UpdateRevision && current.Status.ReadyReplicas == 3 && len(instances(group.Name)) == 3, nil
 		}, timeout, interval).Should(BeTrue())
 		for _, ordinal := range []int{0, 2} {
 			name := fmt.Sprintf("%s-%d", setKey.Name, ordinal)

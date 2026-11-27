@@ -82,3 +82,11 @@ func (b *RoleInstanceTemplateApplyConfiguration) WithReadinessGates(values ...*R
 	}
 	return b
 }
+
+// WithUpdatePolicy sets the UpdatePolicy field in the declarative configuration to the given value
+// and returns the receiver, so that objects can be built by chaining "With" function invocations.
+// If called multiple times, the UpdatePolicy field is set to the value of the last call.
+func (b *RoleInstanceTemplateApplyConfiguration) WithUpdatePolicy(value *RoleInstanceUpdatePolicyApplyConfiguration) *RoleInstanceTemplateApplyConfiguration {
+	b.RoleInstanceSpecApplyConfiguration.UpdatePolicy = value
+	return b
+}
