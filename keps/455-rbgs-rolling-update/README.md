@@ -385,9 +385,11 @@ a per-child decimal counter, starting at `"1"` when no previous counter exists.
 Each later write uses one more than the larger of the annotation and
 `status.observedRolloutRequest`, so a child whose annotation was removed or reset
 never gets a request equal to its last acknowledgement. A value that is not a
-non-negative decimal integer in range is ignored, as if it were absent. A counter
-that cannot be incremented is an error: the child is not written and the reconcile
-returns the error. Reconciles that make no change do not advance it. The key is excluded from template identity and preserved during metadata
+non-negative decimal integer, or that is greater than `math.MaxInt` (2^63−1 on the
+64-bit images RBG ships), is ignored, as if it were absent. If either value equals
+`math.MaxInt`, the counter cannot be incremented: that is an error, the child is not
+written, and the reconcile returns the error. Reconciles that make no change do not
+advance it. The key is excluded from template identity and preserved during metadata
 sync, but is never copied from the template. Repeated content such as `A -> B -> A`
 therefore receives a new request rather than reusing an old acknowledgement.
 
