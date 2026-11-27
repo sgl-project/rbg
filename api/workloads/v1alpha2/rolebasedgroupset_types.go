@@ -142,26 +142,27 @@ type RoleBasedGroupSetStatus struct {
 	// +optional
 	ReadyReplicas int32 `json:"readyReplicas" protobuf:"varint,3,opt,name=readyReplicas"`
 
-	// CurrentReplicas is the number of child RoleBasedGroups at ordinals below Replicas
-	// whose spec.roles do not match the current GroupTemplate, i.e. the groups the rollout
-	// has not moved onto the new template yet. Surge groups are not counted.
+	// When spec.rolloutStrategy is set, CurrentReplicas is the number of
+	// non-terminating base groups (ordinals below spec.replicas) that do not match
+	// the update revision, including held-back old groups.
 	// +optional
 	CurrentReplicas int32 `json:"currentReplicas,omitempty"`
 
-	// UpdatedReplicas is the number of child RoleBasedGroups at ordinals below Replicas
-	// whose spec.roles match the current GroupTemplate, whether they are ready or not.
-	// Surge groups are not counted.
+	// When spec.rolloutStrategy is set, UpdatedReplicas is the number of
+	// non-terminating base groups (ordinals below spec.replicas) that match the
+	// update revision, ready or not. Surge is excluded.
 	// +optional
 	UpdatedReplicas int32 `json:"updatedReplicas,omitempty"`
 
-	// UpdatedReadyReplicas is the number of child RoleBasedGroups at ordinals below
-	// Replicas whose spec.roles match the current GroupTemplate and are also ready.
-	// Surge groups are not counted.
+	// When spec.rolloutStrategy is set, UpdatedReadyReplicas is the number of
+	// non-terminating base groups (ordinals below spec.replicas) that match the
+	// update revision and are ready. Surge is excluded.
 	// +optional
 	UpdatedReadyReplicas int32 `json:"updatedReadyReplicas,omitempty"`
 
-	// ExpectedUpdatedReplicas is the number of RoleBasedGroups the rollout is expected to
-	// bring onto the current GroupTemplate. It is calculated as Replicas - Partition.
+	// When spec.rolloutStrategy is set, ExpectedUpdatedReplicas is spec.replicas minus
+	// the resolved partition, the number of base groups the rollout targets. It is
+	// not a cap on the updated counters.
 	// +optional
 	ExpectedUpdatedReplicas int32 `json:"expectedUpdatedReplicas,omitempty"`
 

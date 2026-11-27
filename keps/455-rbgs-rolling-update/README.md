@@ -381,9 +381,15 @@ are still rolling.
 protected `Update` as the spec, metadata, and set revision label: an in-place template
 update, a user-metadata-only change, and a `Recreate` replicas-only update, which is
 availability-gated and acknowledged like any other rather than a shortcut. The value is
-a per-child decimal counter, starting at `"1"` when no previous counter exists;
-actual later writes increment it. Reconciles that make no change do not advance
-it. The key is excluded from template identity and preserved during metadata
+a per-child decimal counter, starting at `"1"` when no previous counter exists.
+Each later write uses one more than the larger of the annotation and
+`status.observedRolloutRequest`, so a child whose annotation was removed or reset
+never gets a request equal to its last acknowledgement. A value that is not a
+non-negative decimal integer, or that is greater than `math.MaxInt` (2^63−1 on the
+64-bit images RBG ships), is ignored, as if it were absent. If either value equals
+`math.MaxInt`, the counter cannot be incremented: that is an error, the child is not
+written, and the reconcile returns the error. Reconciles that make no change do not
+advance it. The key is excluded from template identity and preserved during metadata
 sync, but is never copied from the template. Repeated content such as `A -> B -> A`
 therefore receives a new request rather than reusing an old acknowledgement.
 
@@ -498,7 +504,8 @@ These are coverage plans, not a claim that every case is already automated.
   generation.
 - **Request ownership**: template annotations cannot overwrite the request,
   requests do not affect set revision identity, and repeated writes advance the
-  counter without reusing an old acknowledgement.
+  counter without reusing an old acknowledgement, including after the annotation
+  was removed or reset on the child; an exhausted counter refuses the write.
 - **Acknowledgement ordering**: status construction before workload application
   never acknowledges a request; the post-application check requires every role
   to be complete, and both SSA status writers preserve the acknowledgement.
