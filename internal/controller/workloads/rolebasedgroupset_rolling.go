@@ -157,18 +157,21 @@ func (r *RoleBasedGroupSetReconciler) listRollingGroupSetChildren(
 
 // adoptGroupSetOrphans claims the listed orphans so the rolling path manages the same children the
 // legacy path does. Adoption happens before any budgeted write, which must not touch a child this
-// set does not own yet.
+// set does not own yet. A terminating orphan is never claimed, and the set is re-read right before
+// the first claim, so a listing without a claimable orphan costs no extra read.
 func (r *RoleBasedGroupSetReconciler) adoptGroupSetOrphans(
 	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, children *workloadsv1alpha2.RoleBasedGroupList,
 ) (bool, error) {
-	if err := r.recheckGroupSetBeforeAdoptingOrphans(ctx, set, children.Items); err != nil {
-		return false, err
-	}
 	adopted := false
 	for i := range children.Items {
 		child := &children.Items[i]
 		if metav1.GetControllerOfNoCopy(child) != nil || !child.DeletionTimestamp.IsZero() {
 			continue
+		}
+		if !adopted {
+			if err := r.recheckGroupSetForAdoption(ctx, set, "RoleBasedGroups"); err != nil {
+				return false, err
+			}
 		}
 		if err := r.adoptGroupSetChild(ctx, set, child); err != nil {
 			return adopted, err
@@ -222,19 +225,6 @@ func (r *RoleBasedGroupSetReconciler) recheckGroupSetForAdoption(
 	if fresh.UID != set.UID || !fresh.DeletionTimestamp.IsZero() || !set.DeletionTimestamp.IsZero() {
 		return fmt.Errorf("cannot adopt %s for RoleBasedGroupSet %s/%s: parent was replaced or is deleting",
 			kind, set.Namespace, set.Name)
-	}
-	return nil
-}
-
-// recheckGroupSetBeforeAdoptingOrphans runs recheckGroupSetForAdoption once if the listing holds
-// an orphan this set would claim, so the common case without orphans costs no extra read.
-func (r *RoleBasedGroupSetReconciler) recheckGroupSetBeforeAdoptingOrphans(
-	ctx context.Context, set *workloadsv1alpha2.RoleBasedGroupSet, children []workloadsv1alpha2.RoleBasedGroup,
-) error {
-	for i := range children {
-		if metav1.GetControllerOfNoCopy(&children[i]) == nil && r.isOwnedOrAdoptable(set, &children[i]) {
-			return r.recheckGroupSetForAdoption(ctx, set, "RoleBasedGroups")
-		}
 	}
 	return nil
 }
