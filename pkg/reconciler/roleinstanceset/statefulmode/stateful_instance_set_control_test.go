@@ -631,6 +631,56 @@ func TestApplyTargetUpdateRecreatePodMovesSpecInPlace(t *testing.T) {
 	}
 }
 
+func TestApplyTargetUpdateLegacyLifecycleRestampsUpdatePolicy(t *testing.T) {
+	// Legacy lifecycle keeps RecreatePod on the replacement path, but an
+	// InPlaceIfPossible rollout still moves the spec in place. The propagated
+	// spec replacement must re-stamp the controller-owned policy snapshot:
+	// the revision template does not carry it, so without the re-stamp the
+	// snapshot would be silently dropped after the first revision move.
+	set := buildSet("legacy-inplace", 1, nil, nil)
+	set.Spec.Lifecycle = &workloadsv1alpha2.RoleInstanceSetLifecycle{}
+	set.Spec.UpdateStrategy.Type = workloadsv1alpha2.InPlaceIfPossibleUpdateStrategyType
+	set.Spec.UpdateStrategy.InPlaceUpdateStrategy = &workloadsv1alpha2.RoleInstanceSetInPlaceUpdateStrategy{
+		GracePeriodSeconds: 30,
+	}
+	target := buildInst("legacy-inplace", 0, testOldRev, true, true)
+	objectManager := &fakeInstanceObjectManager{}
+	inplaceControl := &fakeInplaceControl{canUpdateInPlace: true}
+	control := &defaultStatefulInstanceSetControl{
+		instanceControl: NewStatefulInstanceControlFromManager(objectManager, record.NewFakeRecorder(10)),
+		inplaceControl:  inplaceControl,
+	}
+
+	transitioned, err := control.applyTargetUpdate(
+		context.Background(), set, &workloadsv1alpha2.RoleInstanceSetStatus{},
+		target,
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testOldRev}},
+		&apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: testUpdateRev}},
+		[]*apps.ControllerRevision{{ObjectMeta: metav1.ObjectMeta{Name: testOldRev}}},
+		false,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("applyTargetUpdate() error = %v", err)
+	}
+	if !transitioned {
+		t.Fatal("expected target to transition via the legacy in-place move")
+	}
+	if inplaceControl.updateCalls != 1 {
+		t.Fatalf("expected in-place update called once, got %d", inplaceControl.updateCalls)
+	}
+	if len(objectManager.deleted) != 0 {
+		t.Fatalf("expected target not deleted, got %v", objectManager.deleted)
+	}
+	policy := target.Spec.GetUpdatePolicy()
+	if policy.Type != workloadsv1alpha2.RoleInstanceUpdatePolicyInPlaceIfPossible {
+		t.Fatalf("expected InPlaceIfPossible policy stamped on instance, got %+v", target.Spec.UpdatePolicy)
+	}
+	if policy.InPlaceUpdatePolicy == nil || policy.InPlaceUpdatePolicy.GracePeriodSeconds != 30 {
+		t.Fatalf("expected grace period 30 to survive the legacy spec move, got %+v", target.Spec.UpdatePolicy)
+	}
+}
+
 func TestApplyTargetUpdateLegacyLifecycleKeepsReplacement(t *testing.T) {
 	set := buildSet("legacy-replace", 1, nil, nil)
 	set.Spec.UpdateStrategy.Type = workloadsv1alpha2.RecreatePodUpdateStrategyType

@@ -224,8 +224,7 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 		return nil, err
 	}
 
-	toDeleteNum, toDeletePods = appendOrphanComponentDeletions(toDeleteNum, toDeletePods, prt.Components, pods)
-	toDeleteNum, toDeletePods = appendInactiveOrphanComponentDeletions(toDeleteNum, toDeletePods, prt.Components, inactivePods)
+	orphanComponentPods := collectOrphanComponentDeletions(prt.Components, pods, inactivePods)
 
 	// Build the per-component dependency graphs from template annotations.
 	startDeps, deleteDeps, err := componentdiscovery.ParseAllComponentDependencies(updateInstance.Spec.Components)
@@ -273,6 +272,13 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 					}
 				}
 			}
+
+			// Pods of removed components go through the same deletion-gate
+			// decision: a removed dependency is deleted only after its
+			// dependents are torn down, so a startAfter ordering cannot be
+			// inverted by removing the component from the spec.
+			toDeleteNum, toDeletePods = appendGatedOrphanComponentDeletions(
+				toDeleteNum, toDeletePods, orphanComponentPods, deletionGates, topoMap)
 		}
 	}
 
@@ -288,6 +294,10 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 				toScaleRoleIDS[rg.Name] = rg.ToScaleIDs
 			}
 		}
+		for _, orphanPods := range orphanComponentPods {
+			toDeleteNum += len(orphanPods)
+			toDeletePods = append(toDeletePods, orphanPods...)
+		}
 	}
 
 	return &expectationDiff{
@@ -298,35 +308,66 @@ func (c *realControl) calculateDiffsWithExpectation(ctx context.Context, updateI
 	}, nil
 }
 
-// appendOrphanComponentDeletions returns the delete diff extended with Pods of
-// components that no longer exist in the spec. Those Pods belong to no topology
-// group, so the per-component diff never selects them. Without this cleanup a
-// component removal leaves orphan Pods behind, and the instance never reports
-// update completion because the Pod count stays above the sum of component
-// sizes.
-func appendOrphanComponentDeletions(toDeleteNum int, toDeletePods []*v1.Pod, components sets.Set[string], pods []*v1.Pod) (int, []*v1.Pod) {
-	for componentName, orphanPods := range instanceutil.GroupPodsByComponentName(pods) {
+// collectOrphanComponentDeletions returns the Pods of components that no
+// longer exist in the spec, grouped by component name. Those Pods belong to no
+// topology group, so the per-component diff never selects them. Without this
+// cleanup a component removal leaves orphan Pods behind, and the instance never
+// reports update completion because the Pod count stays above the sum of
+// component sizes. Failed members already queued for replacement and
+// terminating members are skipped; both are already handled by the caller.
+func collectOrphanComponentDeletions(components sets.Set[string], pods, inactivePods []*v1.Pod) map[string][]*v1.Pod {
+	orphaned := make(map[string][]*v1.Pod)
+	for componentName, componentPods := range instanceutil.GroupPodsByComponentName(pods) {
 		if componentName == "" || components.Has(componentName) {
+			continue
+		}
+		orphaned[componentName] = append(orphaned[componentName], componentPods...)
+	}
+	for _, pod := range inactivePods {
+		if pod.DeletionTimestamp != nil || pod.Status.Phase == v1.PodFailed {
+			continue
+		}
+		componentName := instanceutil.GetPodComponentName(pod)
+		if componentName == "" || components.Has(componentName) {
+			continue
+		}
+		orphaned[componentName] = append(orphaned[componentName], pod)
+	}
+	return orphaned
+}
+
+// appendGatedOrphanComponentDeletions extends the delete diff with orphan Pods
+// that are no longer gated. An orphan component stays blocked while any of its
+// dependents still has orphan Pods or pending scale-in deletions, so removing
+// components from the spec cannot invert a component-depends-on deletion
+// order. Dependents the spec intentionally keeps (no pending deletions, no
+// orphan Pods) do not block: the removed dependency was explicitly deleted.
+func appendGatedOrphanComponentDeletions(
+	toDeleteNum int,
+	toDeletePods []*v1.Pod,
+	orphaned map[string][]*v1.Pod,
+	deletionGates map[string][]string,
+	topoMap map[string]*instancecore.ComponentPodGroup,
+) (int, []*v1.Pod) {
+	for componentName, orphanPods := range orphaned {
+		blocked := false
+		for _, dependent := range deletionGates[componentName] {
+			if len(orphaned[dependent]) > 0 {
+				blocked = true
+				break
+			}
+			if rg, ok := topoMap[dependent]; ok && rg.ToDeleteIDs.Len() > 0 {
+				blocked = true
+				break
+			}
+		}
+		if blocked {
 			continue
 		}
 		toDeleteNum += len(orphanPods)
 		toDeletePods = append(toDeletePods, orphanPods...)
 	}
 	return toDeleteNum, toDeletePods
-}
-
-// appendInactiveOrphanComponentDeletions extends the delete diff with inactive
-// member Pods of components that no longer exist in the spec. Failed members
-// already queued for replacement and members that are terminating are skipped;
-// both are already handled by the caller.
-func appendInactiveOrphanComponentDeletions(toDeleteNum int, toDeletePods []*v1.Pod, components sets.Set[string], inactivePods []*v1.Pod) (int, []*v1.Pod) {
-	orphaned := make([]*v1.Pod, 0, len(inactivePods))
-	for _, pod := range inactivePods {
-		if pod.DeletionTimestamp == nil && pod.Status.Phase != v1.PodFailed {
-			orphaned = append(orphaned, pod)
-		}
-	}
-	return appendOrphanComponentDeletions(toDeleteNum, toDeletePods, components, orphaned)
 }
 
 func (c *realControl) calculateRestartDiff(ctx context.Context, instance *workloadsv1alpha2.RoleInstance, allPods, activePods, inactivePods []*v1.Pod, fresh *workloadsv1alpha2.RoleInstance, target *apps.ControllerRevision) (*expectationDiff, error) {

@@ -350,6 +350,32 @@ func TestMultiplePodsPodScopedPorts(t *testing.T) {
 	assert.Len(t, portMap, 5, "Each pod should get a unique port")
 }
 
+func TestAllocateMissingRoleScopedPorts(t *testing.T) {
+	portAllocator = newTestAllocator(30000, 2768)
+
+	configJSON := `{"allocations":[
+		{"name":"existing","env":"EXISTING_PORT","scope":"RoleScoped"},
+		{"name":"added","env":"ADDED_PORT","scope":"RoleScoped"}
+	]}`
+	config, err := ParsePortAllocatorConfigFromAnnotations(map[string]string{
+		PortAllocatorAnnotationKey: configJSON,
+	})
+	require.NoError(t, err)
+
+	// A set update carries the allocation requested by an earlier revision and
+	// requests one new allocation. The existing assignment must stay stable
+	// while the new key is filled so a same-shape revision can converge.
+	existing := map[string]string{
+		FormatRoleScopedPortKey("comp", "existing"): "32000",
+	}
+	allocated, err := AllocateMissingRoleScopedPorts(existing, config, "comp")
+	require.NoError(t, err)
+	assert.Equal(t, map[string]string{
+		FormatRoleScopedPortKey("comp", "existing"): "32000",
+		FormatRoleScopedPortKey("comp", "added"):    "30000",
+	}, allocated)
+}
+
 func TestEnsurePortsForInstanceKeepsExistingAssignments(t *testing.T) {
 	portAllocator = newTestAllocator(30000, 2768)
 

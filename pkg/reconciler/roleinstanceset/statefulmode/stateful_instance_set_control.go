@@ -1358,9 +1358,10 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 	revisions []*apps.ControllerRevision,
 	moveSpec bool,
 ) (bool, error) {
-	// moveSpec only gates the post-spec-move stamping below; the revision shape
-	// checks above and in CalculateSpec keep topology revisions on the
-	// replacement path.
+	// The spec replacement below always re-stamps the controller-owned policy
+	// snapshot and set-owned annotations; moveSpec additionally fills missing
+	// port annotations. The revision shape check below and the component-size
+	// check in CalculateSpec keep topology revisions on the replacement path.
 	opts := &instanceinplace.UpdateOptions{}
 	opts = instanceinplace.SetOptionsDefaults(opts)
 
@@ -1378,21 +1379,27 @@ func (ssc *defaultStatefulInstanceSetControl) inPlaceUpdateInstance(
 		}
 	}
 
-	if moveSpec {
-		// The revision template does not carry the set-level update strategy, so
-		// the propagated snapshot must be re-stamped after the spec replacement,
-		// and ports for components or replicas added by the new revision must be
-		// filled without disturbing ports already assigned to running Pods.
-		policy := instanceUpdatePolicyFromStrategy(&set.Spec.UpdateStrategy)
-		opts.PostPatchSpecFuncs = append(opts.PostPatchSpecFuncs, func(updated *workloadsv1alpha2.RoleInstance) error {
-			updated.Spec.UpdatePolicy = policy.DeepCopy()
-			// The instance keeps its identity, so controller-owned annotations
-			// propagated from the set at creation time must be refreshed here
-			// rather than surviving until the object is replaced.
-			syncSetOwnedInstanceAnnotations(updated, set)
-			return portallocator.EnsurePortsForInstance(updated, set)
-		})
-	}
+	// The revision template does not carry the set-level update strategy,
+	// so the controller-owned snapshot must be re-stamped after every
+	// propagated spec replacement — including the legacy-lifecycle in-place
+	// path, whose template replacement would otherwise silently drop the
+	// snapshot. The same-shape spec move additionally fills ports whose
+	// annotations are missing (for example after a same-shape revision changed
+	// the port-allocator configuration) without disturbing ports already
+	// assigned to running Pods.
+	policy := instanceUpdatePolicyFromStrategy(&set.Spec.UpdateStrategy)
+	fillPorts := moveSpec
+	opts.PostPatchSpecFuncs = append(opts.PostPatchSpecFuncs, func(updated *workloadsv1alpha2.RoleInstance) error {
+		updated.Spec.UpdatePolicy = policy.DeepCopy()
+		// The instance keeps its identity, so controller-owned annotations
+		// propagated from the set at creation time must be refreshed here
+		// rather than surviving until the object is replaced.
+		syncSetOwnedInstanceAnnotations(updated, set)
+		if !fillPorts {
+			return nil
+		}
+		return portallocator.EnsurePortsForInstance(updated, set)
+	})
 
 	if currentRevision == nil {
 		// If no current revision found, cannot perform in-place update

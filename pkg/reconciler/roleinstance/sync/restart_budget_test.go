@@ -1072,7 +1072,7 @@ func TestRestartBudgetWithoutSelectedRevisionFailsClosed(t *testing.T) {
 			require.ErrorContains(t, err, "requires a selected ControllerRevision")
 			require.True(t, handled)
 			require.Zero(t, delay)
-			_, err = c.Update(ctx, instance, &instance.Status, nil, nil, nil, pods)
+			_, err = c.Update(ctx, instance, &instance.Status, nil, nil, nil, pods, nil)
 			require.ErrorContains(t, err, "requires a selected ControllerRevision")
 			live := liveBudgetInstance(t, c, instance)
 			require.Equal(t, before, &live.Status)
@@ -1178,11 +1178,11 @@ func TestRestartBudgetSharesReconcileReadsAndSkipsHealthyAtLimitList(t *testing.
 			for _, pod := range pods {
 				pod.Labels[apps.ControllerRevisionHashLabelKey] = target.Name
 			}
-			_, err = c.Update(ctx, instance, &instance.Status, nil, target, nil, pods)
+			_, err = c.Update(ctx, instance, &instance.Status, nil, target, nil, pods, nil)
 			require.NoError(t, err)
 			require.Equal(t, 1, reader.gets, "Scale, restart tracking and Update share the fresh RI observation")
 			require.Zero(t, reader.lists, "healthy at-limit instances do not need an uncached Pod list")
-			_, err = c.Update(WithBudgetObservation(context.Background()), instance, &instance.Status, nil, target, nil, pods)
+			_, err = c.Update(WithBudgetObservation(context.Background()), instance, &instance.Status, nil, target, nil, pods, nil)
 			require.NoError(t, err)
 			require.Equal(t, 2, reader.gets, "a new reconcile must perform a new read")
 			if atLimit {
@@ -1425,7 +1425,7 @@ func TestRestartBudgetGenerationLagAndErrorRequeue(t *testing.T) {
 				require.Error(t, err)
 				require.Zero(t, delay, "errors use controller-runtime rate limiting")
 			}
-			updateDelay, updateErr := c.Update(ctx, instance, &instance.Status, nil, nil, nil, nil)
+			updateDelay, updateErr := c.Update(ctx, instance, &instance.Status, nil, nil, nil, nil, nil)
 			if change == "generation" {
 				require.NoError(t, updateErr)
 				require.Positive(t, updateDelay)

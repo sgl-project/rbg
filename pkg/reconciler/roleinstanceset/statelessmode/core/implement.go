@@ -209,6 +209,12 @@ func GenInstanceFromTemplate(template *workloadsv1alpha2.RoleInstanceTemplate, s
 		instance.OwnerReferences = append(instance.OwnerReferences, *controllerRef)
 	}
 	instance.Spec = *template.RoleInstanceSpec.DeepCopy()
+	// spec.updatePolicy is a stateful-mode, controller-owned snapshot rendered
+	// from the set-level update strategy. Stateless-pattern roles replace
+	// instances through the specified-delete path, so a value copied from the
+	// user-editable template must not reach the shared RoleInstance update
+	// path and silently change the stateless rollout behavior.
+	instance.Spec.UpdatePolicy = nil
 	// Propagate selected role-level annotations from RoleInstanceSet to RoleInstance so that
 	// instance-level controllers can act on them without access to the parent RBG.
 	annotationsToCopy := []string{

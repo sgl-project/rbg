@@ -261,6 +261,35 @@ func GetReferencePodName(instance *workloadsv1alpha2.RoleInstance, componentName
 	return roleinstanceutil.FormatComponentPodName(instance.Name, componentName, 0, roleTemplateType)
 }
 
+// AllocateMissingRoleScopedPorts returns the role-scoped ports for a component:
+// keys already present in existing keep their value so existing assignments
+// stay stable, while keys requested by the config but not yet allocated are
+// newly allocated. A set update uses it to converge when a revision requests
+// new role-scoped allocations instead of leaving the keys unallocated.
+func AllocateMissingRoleScopedPorts(existing map[string]string, config *PortAllocatorConfig, componentName string) (map[string]string, error) {
+	result := make(map[string]string)
+	missing := make([]PortAllocation, 0, len(config.GetRoleScopedAllocations()))
+	for _, alloc := range config.GetRoleScopedAllocations() {
+		key := FormatRoleScopedPortKey(componentName, alloc.Name)
+		if port, exists := existing[key]; exists {
+			result[key] = port
+			continue
+		}
+		missing = append(missing, alloc)
+	}
+	if len(missing) > 0 {
+		ports, err := AllocateBatch(int32(len(missing)))
+		if err != nil {
+			return nil, fmt.Errorf("failed to allocate role-scoped ports: %w", err)
+		}
+		for i, alloc := range missing {
+			key := FormatRoleScopedPortKey(componentName, alloc.Name)
+			result[key] = strconv.Itoa(int(ports[i]))
+		}
+	}
+	return result, nil
+}
+
 // CollectRoleScopedPortsFromInstanceSet collects RoleScoped ports from InstanceSet annotation for a specific component
 func CollectRoleScopedPortsFromInstanceSet(instanceSetAnnotations map[string]string, componentName string, config *PortAllocatorConfig) map[string]string {
 	if instanceSetAnnotations == nil || config == nil {
@@ -334,8 +363,9 @@ func AllocatePortsForInstance(instance *workloadsv1alpha2.RoleInstance, instance
 // EnsurePortsForInstance fills in missing port annotations for an existing
 // RoleInstance. Existing keys are never overwritten: pod-scoped ports are
 // stable per pod name, and re-allocating them would change the environment of
-// running Pods. It is used when the RoleInstanceSet controller moves an
-// existing RoleInstance to a revision that adds components or pod replicas.
+// running Pods. It runs after every propagated spec move — for example when a
+// same-shape revision changed the port-allocator configuration or an earlier
+// assignment is missing — never when a topology revision replaces the object.
 func EnsurePortsForInstance(instance *workloadsv1alpha2.RoleInstance, instanceSet *workloadsv1alpha2.RoleInstanceSet) error {
 	if instance.Annotations == nil {
 		instance.Annotations = make(map[string]string)

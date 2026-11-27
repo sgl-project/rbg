@@ -51,11 +51,13 @@ type RoleInstanceSpec struct {
 	ReadinessGates []RoleInstanceReadinessGate `json:"readinessGates,omitempty"`
 
 	// UpdatePolicy is the update policy snapshot propagated to this RoleInstance
-	// by the owning RoleInstanceSet controller. The RoleInstanceSet controller
-	// owns this field; writes made directly to a managed RoleInstance are
-	// overwritten by the next propagated update. When unset, member Pods follow
-	// the default behavior: update in place when possible, and recreate only the
-	// Pods that cannot be updated in place.
+	// by the owning stateful RoleInstanceSet controller. The RoleInstanceSet
+	// controller owns this field; writes made directly to a managed stateful
+	// RoleInstance are overwritten by the next propagated update. When unset,
+	// member Pods follow the default behavior: update in place when possible,
+	// and recreate only the Pods that cannot be updated in place.
+	// Stateless-pattern RoleInstances do not use this snapshot; their rollouts
+	// are driven by the set-level update strategy's specified-delete path.
 	// +optional
 	UpdatePolicy *RoleInstanceUpdatePolicy `json:"updatePolicy,omitempty"`
 }
@@ -76,10 +78,11 @@ const (
 	RoleInstanceUpdatePolicyRecreatePod RoleInstanceUpdatePolicyType = "RecreatePod"
 )
 
-// RoleInstanceUpdatePolicy is the update policy snapshot for a RoleInstance.
-// It is rendered from the owning RoleInstanceSet update strategy, not from the
-// RoleInstanceSet template, so changing the update strategy does not create a
-// new RoleInstanceSet ControllerRevision.
+// RoleInstanceUpdatePolicy is the update policy snapshot for a stateful
+// RoleInstance. It is rendered from the owning RoleInstanceSet update strategy,
+// not from the RoleInstanceSet template, so changing the update strategy does
+// not create a new RoleInstanceSet ControllerRevision. Stateless-pattern
+// RoleInstances never carry this snapshot.
 type RoleInstanceUpdatePolicy struct {
 	// Type selects the Pod update behavior for this RoleInstance.
 	// Default is InPlaceIfPossible.

@@ -39,6 +39,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	"sigs.k8s.io/rbgs/api/workloads/constants"
 	workloadsv1alpha2 "sigs.k8s.io/rbgs/api/workloads/v1alpha2"
+	componentdiscovery "sigs.k8s.io/rbgs/pkg/component-discovery"
 )
 
 // TestShouldRecreateInstance tests the shouldRecreateInstance function
@@ -3894,6 +3895,87 @@ func TestDeletePodsTreatsGoneAndTerminatingMembersAsHandled(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestScaleGatesOrphanComponentDeletionsOnDependents(t *testing.T) {
+	ctx := context.Background()
+	scheme := runtime.NewScheme()
+	assert.NoError(t, corev1.AddToScheme(scheme))
+	assert.NoError(t, workloadsv1alpha2.AddToScheme(scheme))
+
+	// worker startAfter leader: leader's deletion is gated by worker, even
+	// after the leader component itself was removed from the spec.
+	dependsOn := `{"startAfter":["leader"]}`
+	size := int32(1)
+	instance := &workloadsv1alpha2.RoleInstance{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "gated-0",
+			Namespace: "default",
+			UID:       "gated-instance-uid",
+		},
+		Spec: workloadsv1alpha2.RoleInstanceSpec{
+			Components: []workloadsv1alpha2.RoleInstanceComponent{{
+				Name: "worker",
+				Size: &size,
+				Template: corev1.PodTemplateSpec{
+					ObjectMeta: metav1.ObjectMeta{
+						Annotations: map[string]string{
+							componentdiscovery.ComponentDependsOnAnnotationKey: dependsOn,
+						},
+					},
+					Spec: corev1.PodSpec{
+						Containers: []corev1.Container{{Name: "main", Image: "rbg:latest"}},
+					},
+				},
+			}},
+		},
+	}
+	newOwnedPod := func(name string) *corev1.Pod {
+		return &corev1.Pod{
+			ObjectMeta: metav1.ObjectMeta{
+				Name:      name,
+				Namespace: instance.Namespace,
+				OwnerReferences: []metav1.OwnerReference{{
+					APIVersion: workloadsv1alpha2.SchemeGroupVersion.String(),
+					Kind:       "RoleInstance",
+					Name:       instance.Name,
+					UID:        instance.UID,
+					Controller: ptr.To(true),
+				}},
+			},
+			Status: corev1.PodStatus{Phase: corev1.PodRunning},
+		}
+	}
+	worker0 := newOwnedPod("gated-0-worker-0")
+	// Excess worker pod: worker is scaling in from 2 to 1, so the leader
+	// orphan must wait for the worker teardown to finish.
+	worker1 := newOwnedPod("gated-0-worker-1")
+	orphanLeader := newOwnedPod("gated-0-leader-0")
+
+	fakeClient := fake.NewClientBuilder().
+		WithScheme(scheme).
+		WithObjects(worker0, worker1, orphanLeader).
+		Build()
+	ctrl := &realControl{
+		Client:    fakeClient,
+		apiReader: fakeClient,
+		recorder:  record.NewFakeRecorder(10),
+	}
+	revision := &apps.ControllerRevision{ObjectMeta: metav1.ObjectMeta{Name: "revision-1"}}
+
+	_, _, err := ctrl.Scale(ctx, instance, revision, revision, nil, []*corev1.Pod{worker0, worker1, orphanLeader}, nil)
+	assert.NoError(t, err)
+
+	orphanLeaderErr := fakeClient.Get(ctx, client.ObjectKeyFromObject(orphanLeader), &corev1.Pod{})
+	assert.NoError(t, orphanLeaderErr, "the removed leader pod must survive while its dependent worker still has excess pods")
+	excessWorkerErr := fakeClient.Get(ctx, client.ObjectKeyFromObject(worker1), &corev1.Pod{})
+	assert.True(t, apierrors.IsNotFound(excessWorkerErr), "the excess worker pod must be deleted first")
+
+	// Once the worker reached its target size, the leader orphan is released.
+	_, _, err = ctrl.Scale(ctx, instance, revision, revision, nil, []*corev1.Pod{worker0, orphanLeader}, nil)
+	assert.NoError(t, err)
+	orphanLeaderErr = fakeClient.Get(ctx, client.ObjectKeyFromObject(orphanLeader), &corev1.Pod{})
+	assert.True(t, apierrors.IsNotFound(orphanLeaderErr), "the removed leader pod must be deleted once the worker teardown completed")
 }
 
 func TestScaleDeletesInactiveOrphanPodsOfRemovedComponents(t *testing.T) {

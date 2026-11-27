@@ -48,8 +48,9 @@ the Pod identities change.
 Two paths still replace the RoleInstance object itself:
 
 - Stateful sets that use the legacy `spec.lifecycle` protocol keep the
-  established delete-and-recreate behavior so the pre-update and pre-delete
-  hooks keep their original semantics.
+  established delete-and-recreate behavior so the pre-delete hook — the only
+  lifecycle hook stateful mode historically honored — keeps its original
+  semantics.
 - Topology revisions — a changed component set or component replica count —
   keep the replacement path so a new size revision receives fresh per-group
   restart budgets and no member Pod runs with template state derived from the
@@ -59,8 +60,10 @@ The instance-level behavior is carried by `spec.updatePolicy` on each
 RoleInstance. It is a controller-owned snapshot rendered from the set-level
 update strategy, not part of the revision template, so changing the strategy
 does not create a new RoleInstanceSet ControllerRevision. It is stamped when
-the strategy is `RecreatePod` or a grace period is configured, and on the next
-propagated revision move otherwise.
+the strategy is `RecreatePod` or a grace period is configured. For a default
+strategy the field remains unset — unset means the default `InPlaceIfPossible`
+behavior — and any stale directly written value is cleared by the next
+propagated spec move.
 
 Stateless-pattern roles are not covered by this change: their `RecreatePod`
 rollouts still replace the RoleInstance objects through the specified-delete
