@@ -212,11 +212,11 @@ func (s *engineRuntimeLabelStartupScanner) eventHandler() toolscache.ResourceEve
 func (s *engineRuntimeLabelStartupScanner) markDrift(obj interface{}) {
 	switch typed := obj.(type) {
 	case *RoleBasedGroup:
-		if !engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec) {
+		if !EngineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec) {
 			MarkEngineRuntimeLabelDrift()
 		}
 	case *RoleBasedGroupSet:
-		if !engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec.GroupTemplate.Spec) {
+		if !EngineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec.GroupTemplate.Spec) {
 			MarkEngineRuntimeLabelDrift()
 		}
 	}
@@ -230,9 +230,9 @@ func (s *engineRuntimeLabelStartupScanner) objectMatches(obj interface{}) bool {
 func (s *engineRuntimeLabelStartupScanner) objectMatchState(obj interface{}) (bool, bool) {
 	switch typed := obj.(type) {
 	case *RoleBasedGroup:
-		return engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec), true
+		return EngineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec), true
 	case *RoleBasedGroupSet:
-		return engineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec.GroupTemplate.Spec), true
+		return EngineRuntimeLabelMatchesSpec(typed.Labels, &typed.Spec.GroupTemplate.Spec), true
 	default:
 		return false, false
 	}
@@ -259,7 +259,7 @@ func scanEngineRuntimeLabelState(ctx context.Context, reader client.Reader) (boo
 		return false, fmt.Errorf("list rolebasedgroups for engine runtime label convergence: %w", err)
 	}
 	for i := range rbgList.Items {
-		if !engineRuntimeLabelMatchesSpec(rbgList.Items[i].Labels, &rbgList.Items[i].Spec) {
+		if !EngineRuntimeLabelMatchesSpec(rbgList.Items[i].Labels, &rbgList.Items[i].Spec) {
 			return false, nil
 		}
 	}
@@ -269,17 +269,17 @@ func scanEngineRuntimeLabelState(ctx context.Context, reader client.Reader) (boo
 		return false, fmt.Errorf("list rolebasedgroupsets for engine runtime label convergence: %w", err)
 	}
 	for i := range rbgsList.Items {
-		if !engineRuntimeLabelMatchesSpec(rbgsList.Items[i].Labels, &rbgsList.Items[i].Spec.GroupTemplate.Spec) {
+		if !EngineRuntimeLabelMatchesSpec(rbgsList.Items[i].Labels, &rbgsList.Items[i].Spec.GroupTemplate.Spec) {
 			return false, nil
 		}
 	}
 	return true, nil
 }
 
-// engineRuntimeLabelMatchesSpec reports whether an object's top-level label
+// EngineRuntimeLabelMatchesSpec reports whether an object's top-level label
 // state agrees with whether its roles reference any engine runtime profile.
-func engineRuntimeLabelMatchesSpec(labels map[string]string, spec *RoleBasedGroupSpec) bool {
-	if roleSpecReferencesEngineRuntime(spec) {
+func EngineRuntimeLabelMatchesSpec(labels map[string]string, spec *RoleBasedGroupSpec) bool {
+	if RoleSpecReferencesEngineRuntime(spec) {
 		return labels[constants.HasEngineRuntimesLabelKey] == constants.HasEngineRuntimesLabelValue
 	}
 	_, present := labels[constants.HasEngineRuntimesLabelKey]
@@ -404,10 +404,10 @@ func roleSpecReferencesProfile(spec *RoleBasedGroupSpec, profileName string) boo
 // so the webhook's label-scoped reference lookup cannot miss a reference
 // created after the lookup's label maintenance shipped.
 func SetHasEngineRuntimesLabel(rbg *RoleBasedGroup) {
-	if rbg.Labels == nil && roleSpecReferencesEngineRuntime(&rbg.Spec) {
+	if rbg.Labels == nil && RoleSpecReferencesEngineRuntime(&rbg.Spec) {
 		rbg.Labels = make(map[string]string, 1)
 	}
-	setHasEngineRuntimesLabel(rbg.Labels, roleSpecReferencesEngineRuntime(&rbg.Spec))
+	setHasEngineRuntimesLabel(rbg.Labels, RoleSpecReferencesEngineRuntime(&rbg.Spec))
 }
 
 // SetRoleBasedGroupSetHasEngineRuntimesLabel is the RoleBasedGroupSet
@@ -415,10 +415,10 @@ func SetHasEngineRuntimesLabel(rbg *RoleBasedGroup) {
 // template: a set whose template references a profile counts as a live
 // reference even at zero replicas.
 func SetRoleBasedGroupSetHasEngineRuntimesLabel(rbgs *RoleBasedGroupSet) {
-	if rbgs.Labels == nil && roleSpecReferencesEngineRuntime(&rbgs.Spec.GroupTemplate.Spec) {
+	if rbgs.Labels == nil && RoleSpecReferencesEngineRuntime(&rbgs.Spec.GroupTemplate.Spec) {
 		rbgs.Labels = make(map[string]string, 1)
 	}
-	setHasEngineRuntimesLabel(rbgs.Labels, roleSpecReferencesEngineRuntime(&rbgs.Spec.GroupTemplate.Spec))
+	setHasEngineRuntimesLabel(rbgs.Labels, RoleSpecReferencesEngineRuntime(&rbgs.Spec.GroupTemplate.Spec))
 }
 
 // setHasEngineRuntimesLabel upserts or removes the label value in place.
@@ -432,9 +432,9 @@ func setHasEngineRuntimesLabel(labels map[string]string, references bool) {
 	delete(labels, constants.HasEngineRuntimesLabelKey)
 }
 
-// roleSpecReferencesEngineRuntime reports whether any role of the spec
+// RoleSpecReferencesEngineRuntime reports whether any role of the spec
 // carries an engineRuntimes entry with any profile name.
-func roleSpecReferencesEngineRuntime(spec *RoleBasedGroupSpec) bool {
+func RoleSpecReferencesEngineRuntime(spec *RoleBasedGroupSpec) bool {
 	for i := range spec.Roles {
 		if len(spec.Roles[i].EngineRuntimes) > 0 {
 			return true
