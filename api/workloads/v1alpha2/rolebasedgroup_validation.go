@@ -818,6 +818,93 @@ func isWorkloadSelector(wt string) bool {
 	return strings.LastIndex(wt, "/") > 0
 }
 
+// roleInstancePatternChangeWarnings warns about every role of a RoleBasedGroup
+// update that keeps its name and its RoleInstanceSet workload but switches between
+// the Stateful and Stateless patterns. The RoleInstanceSet controller handles that
+// switch by deleting all of the role's RoleInstances at once
+// (cleanupStaleInstances), with no rollout budget. The switch is still accepted:
+// this is the warning step before admission rejects it (#655).
+func roleInstancePatternChangeWarnings(rbg, oldRBG *RoleBasedGroup) []string {
+	changes := roleInstancePatternChanges(rbg.Spec.Roles, oldRBG.Spec.Roles)
+	warnings := make([]string, 0, len(changes))
+	for _, change := range changes {
+		warnings = append(warnings, fmt.Sprintf(
+			"spec.roles[%d] (role %q): changing %s from %s to %s deletes all RoleInstances of this role at once "+
+				"and creates new ones; a later release will reject this change, so to switch patterns delete the role and add it again",
+			change.index, change.name, constants.RoleInstancePatternKey, change.from, change.to,
+		))
+	}
+	return warnings
+}
+
+// groupSetRoleInstancePatternChangeWarnings does the same for a RoleBasedGroupSet
+// template. A set that updates its children in place (any rollout strategy but
+// Recreate) copies the template onto each child, so every child's role loses all of
+// its RoleInstances at once. A Recreate set rebuilds the whole child anyway, so
+// the switch costs nothing extra there. Whether a set should reject the switch or
+// recreate the children is still open in #655, so this warning promises neither.
+func groupSetRoleInstancePatternChangeWarnings(rbgs, oldRBGS *RoleBasedGroupSet) []string {
+	if strategy := rbgs.Spec.RolloutStrategy; strategy != nil && strategy.Type == RecreateStrategyType {
+		return nil
+	}
+	changes := roleInstancePatternChanges(rbgs.Spec.GroupTemplate.Spec.Roles, oldRBGS.Spec.GroupTemplate.Spec.Roles)
+	warnings := make([]string, 0, len(changes))
+	for _, change := range changes {
+		warnings = append(warnings, fmt.Sprintf(
+			"spec.groupTemplate.spec.roles[%d] (role %q): changing %s from %s to %s deletes all RoleInstances of this role at once "+
+				"in each child RoleBasedGroup the set updates in place, and creates new ones; to switch patterns, delete the role and add it again",
+			change.index, change.name, constants.RoleInstancePatternKey, change.from, change.to,
+		))
+	}
+	return warnings
+}
+
+// roleInstancePatternChange is a role whose effective instance pattern an update switches.
+type roleInstancePatternChange struct {
+	index    int
+	name     string
+	from, to constants.InstancePatternType
+}
+
+// roleInstancePatternChanges returns the roles in roles that oldRoles already has
+// under the same name, that are RoleInstanceSet roles in both, and whose effective
+// pattern differs. Added roles and roles changing their workload type are left out.
+func roleInstancePatternChanges(roles, oldRoles []RoleSpec) []roleInstancePatternChange {
+	oldPatterns := make(map[string]constants.InstancePatternType, len(oldRoles))
+	for i := range oldRoles {
+		if pattern, ok := effectiveRoleInstancePattern(&oldRoles[i]); ok {
+			oldPatterns[oldRoles[i].Name] = pattern
+		}
+	}
+	var changes []roleInstancePatternChange
+	for i := range roles {
+		oldPattern, existed := oldPatterns[roles[i].Name]
+		pattern, ok := effectiveRoleInstancePattern(&roles[i])
+		if existed && ok && pattern != oldPattern {
+			changes = append(changes, roleInstancePatternChange{index: i, name: roles[i].Name, from: oldPattern, to: pattern})
+		}
+	}
+	return changes
+}
+
+// effectiveRoleInstancePattern returns the pattern a RoleInstanceSet role runs with.
+// An unset annotation means Stateful, as the RoleInstanceSet reconciler renders it.
+// It returns false for a role with another workload type and for an unknown
+// pattern, which the RoleInstanceSet controller refuses to reconcile.
+func effectiveRoleInstancePattern(role *RoleSpec) (constants.InstancePatternType, bool) {
+	if role.GetWorkloadType() != constants.RoleInstanceSetWorkloadType {
+		return "", false
+	}
+	switch pattern := constants.InstancePatternType(role.Annotations[constants.RoleInstancePatternKey]); pattern {
+	case "", constants.StatefulPattern:
+		return constants.StatefulPattern, true
+	case constants.StatelessPattern:
+		return constants.StatelessPattern, true
+	default:
+		return "", false
+	}
+}
+
 // validateDiscoveryConfigVersion checks the KEP-576 content-version
 // annotation. A missing value is the historical v1alpha1 content. The compact
 // v1 format supports the native RoleInstanceSet backend only; deprecated

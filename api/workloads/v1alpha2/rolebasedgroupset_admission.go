@@ -143,13 +143,15 @@ func (v *RoleBasedGroupSetValidator) ValidateUpdate(_ context.Context, oldObj, n
 			allErrs = append(allErrs, err)
 		}
 	}
+	var warnings admission.Warnings
 	if rbgs.DeletionTimestamp == nil {
 		if err := ratchetRBGSetDiscoveryConfigVersion(oldRBGS, rbgs); err != nil {
 			allErrs = append(allErrs, err)
 		}
+		warnings = groupSetRoleInstancePatternChangeWarnings(rbgs, oldRBGS)
 	}
 
-	return nil, utilerrors.NewAggregate(allErrs)
+	return warnings, utilerrors.NewAggregate(allErrs)
 }
 
 // ratchetRBGSetDiscoveryConfigVersion permits updates to objects that already

@@ -320,12 +320,14 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 		return nil, err
 	}
 	var allErrs []error
+	var warnings admission.Warnings
 	if rbg.DeletionTimestamp != nil {
 		// The deletion flow must not be blocked by spec validation: foreground
 		// garbage collection removes finalizers through PATCHes that carry a
 		// deletionTimestamp, and objects persisted before these checks existed
 		// still need to be deletable.
 	} else {
+		warnings = roleInstancePatternChangeWarnings(rbg, oldRBG)
 		// Removing or replacing the owner in this update must not bypass placement
 		// validation: the proposed object is restricted when it is managed in either
 		// snapshot. The persisted snapshot is validated with its own ownership, so a
@@ -355,9 +357,9 @@ func (v *RoleBasedGroupValidator) ValidateUpdate(ctx context.Context, oldObj, ne
 	// A single validation error is returned unwrapped so apierrors.IsInvalid and
 	// friends keep recognizing the rejection type.
 	if len(allErrs) == 1 {
-		return nil, allErrs[0]
+		return warnings, allErrs[0]
 	}
-	return nil, utilerrors.NewAggregate(allErrs)
+	return warnings, utilerrors.NewAggregate(allErrs)
 }
 
 // ratchetUpdateableSpec validates the locally checkable spec on update with a
